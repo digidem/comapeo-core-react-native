@@ -1,0 +1,17 @@
+{
+  "platforms": [
+    "apple",
+    "android",
+    "web"
+  ],
+  "apple": {
+    "modules": [
+      "ComapeoCoreModule"
+    ]
+  },
+  "android": {
+    "modules": [
+      "com.comapeo.core.ComapeoCoreModule"
+    ]
+  }
+}

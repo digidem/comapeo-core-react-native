@@ -1,0 +1,10 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "@comapeo/core-react-native": ["../src/index"],
+      "@comapeo/core-react-native/*": ["../src/*"]
+    }
+  }
+}
