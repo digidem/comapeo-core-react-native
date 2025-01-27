@@ -34,7 +34,7 @@ class ComapeoCoreService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-
+        initialize(applicationContext.filesDir.absolutePath)
         log("The service has been created".uppercase())
     }
 

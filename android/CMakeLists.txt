@@ -27,7 +27,8 @@ project("comapeo-core-react-native")
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED
     # List C/C++ source files with relative paths to this CMakeLists.txt.
-    src/main/cpp/native-lib.cpp)
+    src/main/cpp/jni-bridge.cpp
+    src/main/cpp/log.cpp)
 
 include_directories(src/main/cpp)
 
