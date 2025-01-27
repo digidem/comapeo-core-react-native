@@ -55,3 +55,10 @@ yarn-error.log
 
 # Expo
 .expo/*
+
+# Node binaries
+android/libnode/bin/*/libnode.so
+ios/NodeMobile.xcframework/**/NodeMobile
+
+# Node headers
+android/libnode/include/

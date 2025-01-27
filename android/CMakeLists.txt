@@ -30,12 +30,27 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
     src/main/cpp/jni-bridge.cpp
     src/main/cpp/log.cpp)
 
+include_directories(libnode/include/node/)
 include_directories(src/main/cpp)
+
+add_library( libnode
+             SHARED
+             IMPORTED )
+
+             set_target_properties( # Specifies the target library.
+             libnode
+
+             # Specifies the parameter you want to define.
+             PROPERTIES IMPORTED_LOCATION
+
+             # Provides the path to the library you want to import.
+             ${CMAKE_SOURCE_DIR}/libnode/bin/${ANDROID_ABI}/libnode.so )
 
 # Specifies libraries CMake should link to your target library. You
 # can link libraries from various origins, such as libraries defined in this
 # build script, prebuilt third-party libraries, or Android system libraries.
 target_link_libraries(${CMAKE_PROJECT_NAME}
     # List libraries link to the target library
+    libnode
     android
     log)

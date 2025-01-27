@@ -1,7 +1,3 @@
-//
-// Created by Gregor MacLennan on 27/01/2025.
-//
-
 #include <android/log.h>
 
 const char *ADBTAG = "ComapeoCore";

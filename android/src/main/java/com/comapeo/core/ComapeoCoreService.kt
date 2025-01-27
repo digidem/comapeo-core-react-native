@@ -10,10 +10,19 @@ import android.os.Build
 import android.os.IBinder
 import android.widget.Toast
 import android.app.PendingIntent
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class ComapeoCoreService : Service() {
 
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var nodeJob: Job? = null
     private var isServiceStarted: Boolean = false
 
     companion object {
@@ -30,12 +39,27 @@ class ComapeoCoreService : Service() {
 
         @JvmStatic
         external fun initialize(path: String)
+
+        @JvmStatic
+        external fun startNodeWithArguments(args: Array<String>, modulesPath: String): Int
     }
 
     override fun onCreate() {
         super.onCreate()
         initialize(applicationContext.filesDir.absolutePath)
         log("The service has been created".uppercase())
+
+        startNodeInNewThread(arrayOf("node", "-e", "console.log('Hello from Node.js')"), "")
+    }
+
+    private fun startNodeInNewThread(args: Array<String>, modulesPath: String) {
+        nodeJob = serviceScope.launch {
+            try {
+                startNodeWithArguments(args, modulesPath)
+            } catch (e: Exception) {
+                Log.e("ComapeoCoreService", "Error starting node", e)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -69,6 +93,9 @@ class ComapeoCoreService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         log("The service has been destroyed".uppercase())
+        // Cancel all coroutines when service is destroyed
+        nodeJob?.cancel()
+        serviceScope.cancel()
         Toast.makeText(this, "Service destroyed", Toast.LENGTH_SHORT).show()
     }
 
