@@ -1,16 +1,27 @@
 package com.comapeo.core
 
-import android.content.Intent
-import android.os.Build
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.io.File
 import java.net.URL
 
 class ComapeoCoreModule : Module() {
+  private lateinit var ipc: NodeJSIPC
+
   // Each module class must implement the definition function. The definition consists of components
   // that describes the module's functionality and behavior.
   // See https://docs.expo.dev/modules/module-api for more details about available components.
   override fun definition() = ModuleDefinition {
+    OnCreate {
+      appContext.reactContext?.let {
+        log("React context available")
+        ipc = NodeJSIPC(File(it.filesDir, ComapeoCoreService.SOCKET_FILENAME)) { message ->
+          log("Received message: ${message.decodeToString()}")
+          ipc.sendMessage("Hello from Kotlin!".encodeToByteArray())
+        }
+
+      }
+    }
     // Sets the name of the module that JavaScript code will use to refer to the module. Takes a string as an argument.
     // Can be inferred from module's class name, but it's recommended to set it explicitly for clarity.
     // The module will be accessible from `requireNativeModule('ComapeoCore')` in JavaScript.
@@ -27,6 +38,7 @@ class ComapeoCoreModule : Module() {
     // Defines a JavaScript synchronous function that runs the native code on the JavaScript thread.
     Function("hello") {
       log("Hello world! 👋")
+
       "Hello world! 👋"
     }
 

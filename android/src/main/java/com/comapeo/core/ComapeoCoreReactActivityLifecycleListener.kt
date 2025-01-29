@@ -3,12 +3,20 @@ package com.comapeo.core
 import android.app.Activity
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import expo.modules.core.interfaces.ReactActivityLifecycleListener
 
 class ComapeoCoreReactActivityLifecycleListener : ReactActivityLifecycleListener {
+
+    override fun onCreate(activity: Activity?, savedInstanceState: Bundle?) {
+        super.onCreate(activity, savedInstanceState)
+        log("onCreate")
+//        actionOnService(activity!!, Actions.USER_FOREGROUND)
+    }
+
     override fun onResume(activity: Activity) {
         super.onResume(activity)
-        log("onCreate")
+        log("onResume")
         actionOnService(activity, Actions.USER_FOREGROUND)
     }
 

@@ -22,14 +22,14 @@
 
 extern "C"
 JNIEXPORT jstring JNICALL
-Java_com_comapeo_core_ComapeoCoreService_getCurrentABIName(JNIEnv *env,
+Java_com_comapeo_core_NodeJSService_getCurrentABIName(JNIEnv *env,
                                                            [[maybe_unused]] jclass clazz) {
     log("getCurrentABIName: %s", CURRENT_ABI_NAME);
     return env->NewStringUTF(CURRENT_ABI_NAME);
 }
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_comapeo_core_ComapeoCoreService_initialize(JNIEnv *env, [[maybe_unused]] jclass clazz,
+Java_com_comapeo_core_NodeJSService_initialize(JNIEnv *env, [[maybe_unused]] jclass clazz,
                                                     jstring dataDir) {
     const char *nativeDataDir = env->GetStringUTFChars(dataDir, nullptr);
     log("initialize: %s", nativeDataDir);
@@ -92,17 +92,12 @@ int start_redirecting_stdout_stderr() {
 
 //node's libUV requires all arguments being on contiguous memory.
 extern "C" jint JNICALL
-Java_com_comapeo_core_ComapeoCoreService_startNodeWithArguments(
+Java_com_comapeo_core_NodeJSService_startNodeWithArguments(
         JNIEnv *env,
         [[maybe_unused]] jclass clazz,
-        jobjectArray arguments,
-        jstring modulesPath) {
+        jobjectArray arguments) {
 
-    //Set the builtin_modules path to NODE_PATH.
-    const char *path_path = env->GetStringUTFChars(modulesPath, nullptr);
-    setenv("NODE_PATH", path_path, 1);
-    env->ReleaseStringUTFChars(modulesPath, path_path);
-
+    log("Starting NodeJS with arguments.");
     //argc
     jsize argument_count = env->GetArrayLength(arguments);
 
@@ -139,11 +134,15 @@ Java_com_comapeo_core_ComapeoCoreService_startNodeWithArguments(
         current_args_position += strlen(current_args_position) + 1;
     }
 
+    log("about to start redirection");
+
     //Start threads to show stdout and stderr in logcat.
     if (start_redirecting_stdout_stderr() == -1) {
         __android_log_write(ANDROID_LOG_ERROR, ADBTAG,
                             "Couldn't start redirecting stdout and stderr to logcat.");
     }
+
+    log("about to start node");
 
     //Start node, with argc and argv.
     const int exit_code = node::Start(argument_count, argv);
