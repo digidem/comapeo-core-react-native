@@ -1,9 +1,9 @@
 import { useEvent } from 'expo';
-import ComapeoCore, { ComapeoCoreView } from '@comapeo/core-react-native';
+import ComapeoCore from '@comapeo/core-react-native';
 import { Button, SafeAreaView, ScrollView, Text, View } from 'react-native';
 
 export default function App() {
-  const onChangePayload = useEvent(ComapeoCore, 'onChange');
+  const onChangePayload = useEvent(ComapeoCore, 'messageReceived');
 
   return (
     <SafeAreaView style={styles.container}>
@@ -12,26 +12,18 @@ export default function App() {
         <Group name="Constants">
           <Text>{ComapeoCore.PI}</Text>
         </Group>
-        <Group name="Functions">
-          <Text>{ComapeoCore.hello()}</Text>
-        </Group>
-        <Group name="Async functions">
+        <Group name="Message Server">
           <Button
-            title="Set value"
+            title="Send"
             onPress={async () => {
-              await ComapeoCore.setValueAsync('Hello from JS!');
+              for (let i = 0; i < 1000; i++) {
+                ComapeoCore.sendMessage(`Hello ${i} from React Native!`.repeat(100));
+              }
             }}
           />
         </Group>
-        <Group name="Events">
-          <Text>{onChangePayload?.value}</Text>
-        </Group>
-        <Group name="Views">
-          <ComapeoCoreView
-            url="https://www.example.com"
-            onLoad={({ nativeEvent: { url } }) => console.log(`Loaded: ${url}`)}
-            style={styles.view}
-          />
+        <Group name="Received Messages">
+          <Text>{onChangePayload?.data}</Text>
         </Group>
       </ScrollView>
     </SafeAreaView>

@@ -5,11 +5,11 @@ export type OnLoadEventPayload = {
 };
 
 export type ComapeoCoreModuleEvents = {
-  onChange: (params: ChangeEventPayload) => void;
+  messageReceived: (params: MessageEventPayload) => void;
 };
 
-export type ChangeEventPayload = {
-  value: string;
+export type MessageEventPayload = {
+  data: string;
 };
 
 export type ComapeoCoreViewProps = {
