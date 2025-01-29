@@ -13,6 +13,8 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.file.FileSystems
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -42,7 +44,10 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
     fun sendMessage(message: ByteArray) {
         scope.launch {
             dataOutputStream?.let { out ->
-                out.writeInt(message.size)
+                val lengthBuffer =
+                    ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(message.size)
+                        .array()
+                out.write(lengthBuffer)
                 out.write(message)
                 out.flush()
             } ?: throw IllegalStateException("Socket not connected")
@@ -60,7 +65,10 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
         receiveJob = scope.launch {
             try {
                 while (isActive) {
-                    val messageLength = dataInputStream?.readInt() ?: break
+                    val lengthBuffer = ByteArray(4)
+                    dataInputStream?.readFully(lengthBuffer)
+                    val messageLength =
+                        ByteBuffer.wrap(lengthBuffer).order(ByteOrder.LITTLE_ENDIAN).int
                     val message = ByteArray(messageLength)
                     dataInputStream?.readFully(message)
                     onMessage(message)

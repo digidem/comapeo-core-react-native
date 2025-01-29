@@ -1,18 +1,15 @@
-import net from "net";
-import Buffer from "buffer";
+import net from "node:net";
+import {Buffer} from "node:buffer";
+import FramedStream from "framed-stream";
 
 const server = net.createServer((socket) => {
   console.log("Client connected");
-  const msg = "Hello from Node.js server!\n";
-  const buf = Buffer.from(msg, "utf-8");
-  const msgLength = buf.length;
-  const msgLengthBuf = Buffer.alloc(4);
-  msgLengthBuf.writeUInt32BE(msgLength, 0);
-  socket.write(msgLengthBuf);
-  socket.write(buf);
-  socket.on("data", (data) => {
-    console.log("Client sent:", data.subarray(4).toString("utf-8"));
-  });
+  const framedStream = new FramedStream(socket);
+  framedStream.on("data", (data) => {
+    console.log("Client sent:", data.toString("utf-8"));
+  })
+  framedStream.write(Buffer.from("Hello from Node.js server!\n", "utf-8"));
+  framedStream.write(Buffer.from("Long test message,".repeat(10), "utf-8"));
 });
 
 server.listen(process.argv[2], () => {
