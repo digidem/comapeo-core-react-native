@@ -9,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
@@ -29,6 +31,7 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
     private var dataInputStream: DataInputStream? = null
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     private var receiveJob: Job? = null
+    private val sendMutex = Mutex()
 
     init {
         // TODO: Support API level 24
@@ -43,14 +46,16 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
 
     fun sendMessage(message: ByteArray) {
         scope.launch {
-            dataOutputStream?.let { out ->
-                val lengthBuffer =
-                    ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(message.size)
-                        .array()
-                out.write(lengthBuffer)
-                out.write(message)
-                out.flush()
-            } ?: throw IllegalStateException("Socket not connected")
+            sendMutex.withLock {
+                dataOutputStream?.let { out ->
+                    val lengthBuffer =
+                        ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(message.size)
+                            .array()
+                    out.write(lengthBuffer)
+                    out.write(message)
+                    out.flush()
+                } ?: throw IllegalStateException("Socket not connected")
+            }
         }
     }
 
