@@ -2,8 +2,6 @@ package com.comapeo.core
 
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
-import android.os.Build
-import androidx.annotation.RequiresApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,10 +15,6 @@ import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.file.FileSystems
-import java.nio.file.Path
-import java.nio.file.Paths
-import java.nio.file.StandardWatchEventKinds
 
 
 class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray) -> Unit) {
@@ -34,9 +28,19 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
     private val sendMutex = Mutex()
 
     init {
-        // TODO: Support API level 24
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            watchForServerReady(::onServerReady)
+        scope.launch {
+            when (watchForFile(socketFile)) {
+                is FileWatchResult.FileExists,
+                is FileWatchResult.FileCreated -> {
+                    onServerReady()
+                }
+                is FileWatchResult.Cancelled -> {
+                    // Watch was cancelled
+                }
+                is FileWatchResult.Error -> {
+                    // Handle error
+                }
+            }
         }
     }
 
@@ -59,7 +63,7 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
         }
     }
 
-    fun onServerReady() {
+    private fun onServerReady() {
         socket = LocalSocket().apply {
             connect(socketAddress)
             dataOutputStream = DataOutputStream(outputStream)
@@ -84,43 +88,4 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private fun watchForServerReady(
-        onServerReady: () -> Unit
-    ): Job {
-        val scope = CoroutineScope(Dispatchers.IO + Job())
-
-        if (socketFile.exists()) {
-            println("Server is already ready!")
-            onServerReady()
-            return Job() // Return a completed Job
-        }
-
-        val path = Paths.get(socketFile.parent)
-        val fileName = socketFile.name
-
-        return scope.launch {
-            try {
-                FileSystems.getDefault().newWatchService().use { watchService ->
-                    path.register(watchService, StandardWatchEventKinds.ENTRY_CREATE)
-                    println("Waiting for server to be ready...")
-
-                    while (isActive) { // Check if the coroutine is still active
-                        val key = watchService.take() // Blocks until an event is available
-                        key.pollEvents().forEach { event ->
-                            val eventPath = event.context() as Path
-                            if (event.kind() == StandardWatchEventKinds.ENTRY_CREATE && eventPath.toString() == fileName) {
-                                println("Server is ready!")
-                                onServerReady()
-                                return@launch
-                            }
-                        }
-                        key.reset()
-                    }
-                }
-            } catch (e: Exception) {
-                println("Error watching for server readiness: ${e.message}")
-            }
-        }
-    }
 }
