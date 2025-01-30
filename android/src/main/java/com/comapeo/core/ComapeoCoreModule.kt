@@ -15,8 +15,7 @@ class ComapeoCoreModule : Module() {
             val socketFile =
                 File(appContext.persistentFilesDirectory, ComapeoCoreService.SOCKET_FILENAME)
             ipc = NodeJSIPC(socketFile) { message ->
-                log("Received message: ${message.decodeToString()}")
-                sendEvent("messageReceived", mapOf("data" to message.decodeToString()))
+                sendEvent("message", mapOf("data" to message.decodeToString()))
             }
         }
         // Sets the name of the module that JavaScript code will use to refer to the module. Takes a string as an argument.
@@ -24,16 +23,11 @@ class ComapeoCoreModule : Module() {
         // The module will be accessible from `requireNativeModule('ComapeoCore')` in JavaScript.
         Name("ComapeoCore")
 
-        // Sets constant properties on the module. Can take a dictionary or a closure that returns a dictionary.
-        Constants(
-            "PI" to Math.PI
-        )
-
         // Defines event names that the module can send to JavaScript.
-        Events("messageReceived")
+        Events("message")
 
         // Defines a JavaScript synchronous function that runs the native code on the JavaScript thread.
-        Function("sendMessage") { message: String ->
+        Function("postMessage") { message: String ->
             ipc.sendMessage(message.encodeToByteArray())
         }
     }

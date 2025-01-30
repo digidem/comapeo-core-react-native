@@ -28,12 +28,12 @@
   "author": "Awana Digital <developer@awana.digital> (https://github.com/digidem)",
   "license": "MIT",
   "homepage": "https://github.com/digidem/comapeo-core-react-native#readme",
-  "dependencies": {},
   "devDependencies": {
     "@types/react": "~18.3.12",
-    "expo-module-scripts": "^4.0.3",
     "expo": "~52.0.0",
-    "react-native": "0.76.0"
+    "expo-module-scripts": "^4.0.3",
+    "react-native": "0.76.0",
+    "type-fest": "^4.33.0"
   },
   "peerDependencies": {
     "expo": "*",

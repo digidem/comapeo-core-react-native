@@ -14,7 +14,7 @@ import java.io.File
 const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
-const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
+const val NODEJS_PROJECT_INDEX_FILENAME = "index.js"
 
 class NodeJSService(context: android.content.Context) : ContextWrapper(context) {
     interface Callback {

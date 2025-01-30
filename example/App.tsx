@@ -2,8 +2,10 @@ import { useEvent } from 'expo';
 import ComapeoCore from '@comapeo/core-react-native';
 import { Button, SafeAreaView, ScrollView, Text, View } from 'react-native';
 
+let renderCount = 0;
+
 export default function App() {
-  const onChangePayload = useEvent(ComapeoCore, 'messageReceived');
+  const onChangePayload = useEvent(ComapeoCore, 'message');
 
   return (
     <SafeAreaView style={styles.container}>
@@ -17,13 +19,16 @@ export default function App() {
             title="Send"
             onPress={async () => {
               for (let i = 0; i < 1000; i++) {
-                ComapeoCore.sendMessage(`Hello ${i} from React Native!`.repeat(100));
+                ComapeoCore.postMessage(`Hello ${i} from React Native!`);
               }
             }}
           />
         </Group>
         <Group name="Received Messages">
-          <Text>{onChangePayload?.data}</Text>
+          <Text>{JSON.stringify(onChangePayload)}</Text>
+        </Group>
+        <Group name="Render count">
+          <Text>{renderCount++}</Text>
         </Group>
       </ScrollView>
     </SafeAreaView>

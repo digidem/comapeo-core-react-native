@@ -2,6 +2,7 @@
   "name": "nodejs-project",
   "version": "1.0.0",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -10,6 +11,11 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "framed-stream": "^1.0.1"
+    "ensure-error": "^4.0.0",
+    "framed-stream": "^1.0.1",
+    "tiny-typed-emitter": "^2.1.0"
+  },
+  "devDependencies": {
+    "type-fest": "^4.33.0"
   }
 }

@@ -1,16 +1,18 @@
 import net from "node:net";
-import {Buffer} from "node:buffer";
-import FramedStream from "framed-stream";
+import { SocketMessagePort } from "./lib/message-port.js";
 
 let count = 0;
 
 const server = net.createServer((socket) => {
   console.log("Client connected");
-  const framedStream = new FramedStream(socket);
-  framedStream.on("data", (data) => {
-    console.log("Client sent:", data.toString("utf-8"));
-    framedStream.write(Buffer.from(`Hello from nodejs ${count++}`));
-  })
+  const messagePort = new SocketMessagePort(socket);
+  messagePort.on("message", (message) => {
+    messagePort.postMessage(`Hello from nodejs ${count++}`);
+  });
+  messagePort.on("messageerror", (error) => {
+    console.error("Client sent invalid message", error);
+  });
+  messagePort.start();
 });
 
 server.listen(process.argv[2], () => {
