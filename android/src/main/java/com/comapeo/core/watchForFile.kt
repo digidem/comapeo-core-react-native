@@ -1,67 +1,54 @@
 package com.comapeo.core
 
 import android.os.Build
+import android.os.FileObserver
 import androidx.annotation.RequiresApi
 import java.io.File
 import java.nio.file.*
 import kotlinx.coroutines.*
 
-sealed class FileWatchResult {
-    data object FileExists : FileWatchResult()
-    data object FileCreated : FileWatchResult()
-    data class Error(val exception: Exception) : FileWatchResult()
-    data object Cancelled : FileWatchResult()
-}
+/**
+ * A suspendable function that watches for file creation at the specified path.
+ * The function will suspend until the specified file is created or timeout occurs.
+ *
+ * @param file The file to watch for creation
+ * @return The created File object
+ * @throws IllegalArgumentException if the file has no parent directory
+ */
+suspend fun waitForFile(file: File): File = suspendCancellableCoroutine { continuation ->
 
-suspend fun watchForFile(file: File, pollIntervalMs: Long = 500): FileWatchResult {
+    // Check if the file already exists
     if (file.exists()) {
-        return FileWatchResult.FileExists
+        continuation.resumeWith(Result.success(file))
+        return@suspendCancellableCoroutine
     }
 
-    return withContext(Dispatchers.IO) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                watchWithWatchService(file)
-            } else {
-                watchWithPolling(file, pollIntervalMs)
-            }
-        } catch (e: CancellationException) {
-            FileWatchResult.Cancelled
-        } catch (e: Exception) {
-            FileWatchResult.Error(e)
-        }
+    // Get parent directory and throw if null
+    val parentDir = file.parentFile ?: throw IllegalArgumentException("File must have a parent directory")
+
+    // Create the directory if it doesn't exist
+    if (!parentDir.exists()) {
+        parentDir.mkdirs()
     }
-}
 
-@RequiresApi(Build.VERSION_CODES.O)
-private suspend fun watchWithWatchService(file: File): FileWatchResult = coroutineScope {
-    val path = Paths.get(file.parent)
-    val fileName = file.name
+    // Create file observer
+    val observer = object : FileObserver(parentDir, CREATE) {
+        override fun onEvent(event: Int, path: String?) {
+            if (path == file.name) {
+                // Stop observing
+                stopWatching()
 
-    FileSystems.getDefault().newWatchService().use { watchService ->
-        path.register(watchService, StandardWatchEventKinds.ENTRY_CREATE)
-
-        while (isActive) {
-            val key = watchService.take()
-            key.pollEvents().forEach { event ->
-                val eventPath = event.context() as Path
-                if (event.kind() == StandardWatchEventKinds.ENTRY_CREATE &&
-                    eventPath.toString() == fileName) {
-                    return@coroutineScope FileWatchResult.FileCreated
+                // Resume the coroutine with the file
+                if (!continuation.isCompleted) {
+                    continuation.resumeWith(Result.success(file))
                 }
             }
-            key.reset()
         }
-        return@coroutineScope FileWatchResult.Cancelled
     }
-}
 
-private suspend fun watchWithPolling(file: File, pollIntervalMs: Long): FileWatchResult = coroutineScope {
-    while (isActive) {
-        if (file.exists()) {
-            return@coroutineScope FileWatchResult.FileCreated
-        }
-        delay(pollIntervalMs)
+    observer.startWatching()
+
+    continuation.invokeOnCancellation {
+        observer.stopWatching()
     }
-    return@coroutineScope FileWatchResult.Cancelled
 }

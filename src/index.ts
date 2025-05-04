@@ -1,4 +1,4 @@
 // Reexport the native module. On web, it will be resolved to ComapeoCoreModule.web.ts
 // and on native platforms to ComapeoCoreModule.ts
-export { default } from './ComapeoCoreModule';
+export { state, messagePort } from './ComapeoCoreModule';
 export * from  './ComapeoCore.types';

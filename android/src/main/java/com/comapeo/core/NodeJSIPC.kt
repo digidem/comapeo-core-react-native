@@ -28,18 +28,16 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
     private val sendMutex = Mutex()
 
     init {
+        log("NodeJSIPC initialized with socket file: ${socketFile.absolutePath}")
         scope.launch {
-            when (watchForFile(socketFile)) {
-                is FileWatchResult.FileExists,
-                is FileWatchResult.FileCreated -> {
-                    onServerReady()
-                }
-                is FileWatchResult.Cancelled -> {
-                    // Watch was cancelled
-                }
-                is FileWatchResult.Error -> {
-                    // Handle error
-                }
+            try {
+                // Wait for the socket file to be created
+                waitForFile(socketFile)
+                onServerReady()
+            } catch (e: IllegalArgumentException) {
+                log("File has no parent directory: ${socketFile.absolutePath}, ${e.message}")
+            } catch (e: Exception) {
+                log("Unexpected error: ${e.message}")
             }
         }
     }

@@ -9,22 +9,63 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.RemoteCallbackList
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+
+enum class ServiceState {
+    STOPPED, STARTING, STARTED, STOPPING, ERROR
+}
 
 class ComapeoCoreService : Service() {
 
     private var isServiceStarted: Boolean = false
     private lateinit var nodeJSService: NodeJSService
 
+    private val callbacks = RemoteCallbackList<IServiceCallback>()
+    private val _serviceState = MutableStateFlow(ServiceState.STOPPED)
+
+    private val binder = object : IService.Stub() {
+        override fun getCurrentState(): Int {
+            return _serviceState.value.ordinal
+        }
+
+        override fun registerCallback(callback: IServiceCallback) {
+            callbacks.register(callback)
+            callback.onStateChanged(_serviceState.value.ordinal)
+        }
+
+        override fun unregisterCallback(callback: IServiceCallback) {
+            callbacks.unregister(callback)
+        }
+    }
+
+    private fun updateState(newState: ServiceState) {
+        _serviceState.value = newState
+        val n = callbacks.beginBroadcast()
+        try {
+            for (i in 0 until n) {
+                callbacks.getBroadcastItem(i).onStateChanged(newState.ordinal)
+            }
+        } finally {
+            callbacks.finishBroadcast()
+        }
+    }
+
     companion object {
         const val CHANNEL_ID = "ComapeoServiceChannel"
         const val NOTIFICATION_ID = 1
-        const val SOCKET_FILENAME = "comapeo.sock"
+        const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
+        const val STATE_SOCKET_FILENAME = "state.sock"
     }
 
     override fun onCreate() {
         super.onCreate()
+        updateState(ServiceState.STARTING)
         nodeJSService = NodeJSService(applicationContext)
         log("The service has been created".uppercase())
     }
@@ -67,13 +108,12 @@ class ComapeoCoreService : Service() {
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
-    }
+    override fun onBind(intent: Intent): IBinder = binder
 
     override fun onDestroy() {
         super.onDestroy()
         nodeJSService.stop()
+        updateState(ServiceState.STOPPED)
         log("The service has been destroyed".uppercase())
         Toast.makeText(this, "Service destroyed", Toast.LENGTH_SHORT).show()
     }
@@ -84,6 +124,10 @@ class ComapeoCoreService : Service() {
         Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
 
         val notification = createNotification(true)
+        GlobalScope.launch {
+            delay(2000)
+            updateState(ServiceState.STARTED)
+        }
         startForeground(NOTIFICATION_ID, notification)
         nodeJSService.start(nodeJSServiceCallback)
 

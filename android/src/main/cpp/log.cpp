@@ -1,6 +1,6 @@
 #include <android/log.h>
 
-const char *ADBTAG = "ComapeoCore";
+const char *ADBTAG = "Comapeo:NodeJS";
 
 void log(const char *message, ...) {
     va_list args;

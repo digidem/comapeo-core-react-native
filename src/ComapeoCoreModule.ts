@@ -3,6 +3,7 @@ import { type JsonValue } from "type-fest";
 import {
   ComapeoCoreModuleEvents,
   type MessageEventPayload,
+  type StateChangeEventPayload,
 } from "./ComapeoCore.types";
 
 declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
@@ -16,6 +17,36 @@ type MessagePortEvents = {
   message: (message: JsonValue) => void;
 };
 
+type StateChangeEvents = {
+  stateChange: (state: string) => void;
+}
+
+class State extends EventEmitter<StateChangeEvents> {
+  getState() {
+    return nativeModule.getState();
+  }
+
+  startObserving<EventName extends keyof ComapeoCoreModuleEvents>(
+    eventName: EventName
+  ): void {
+    // eslint-disable-next-line no-useless-return
+    if (eventName !== "stateChange") return
+    nativeModule.addListener(eventName as "stateChange", this.#handleStateChangeEvent);
+  }
+
+  stopObserving<EventName extends keyof ComapeoCoreModuleEvents>(
+    eventName: EventName
+  ): void {
+    // eslint-disable-next-line no-useless-return
+    if (eventName !== "stateChange") return;
+    nativeModule.removeListener(eventName as "stateChange", this.#handleStateChangeEvent);
+  }
+
+  #handleStateChangeEvent = (event: StateChangeEventPayload) => {
+    this.emit("stateChange", event.state);
+  };
+}
+
 class MessagePort extends EventEmitter<MessagePortEvents> {
   postMessage(value: JsonValue) {
     nativeModule.postMessage(JSON.stringify(value));
@@ -24,8 +55,8 @@ class MessagePort extends EventEmitter<MessagePortEvents> {
     eventName: EventName
   ): void {
     // eslint-disable-next-line no-useless-return
-    if (eventName !== "message") return;
-    nativeModule.addListener(eventName, this.#handleMessageEvent);
+    if (eventName !== "message") return
+    nativeModule.addListener(eventName as "message", this.#handleMessageEvent);
   }
 
   stopObserving<EventName extends keyof ComapeoCoreModuleEvents>(
@@ -33,7 +64,7 @@ class MessagePort extends EventEmitter<MessagePortEvents> {
   ): void {
     // eslint-disable-next-line no-useless-return
     if (eventName !== "message") return;
-    nativeModule.removeListener(eventName, this.#handleMessageEvent);
+    nativeModule.removeListener(eventName as "message", this.#handleMessageEvent);
   }
 
   #handleMessageEvent = (event: MessageEventPayload) => {
@@ -46,4 +77,5 @@ class MessagePort extends EventEmitter<MessagePortEvents> {
   };
 }
 
-export default new MessagePort();
+export const messagePort = new MessagePort();
+export const state = new State();

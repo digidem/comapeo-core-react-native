@@ -1,25 +1,28 @@
 import { useEvent } from 'expo';
-import ComapeoCore from '@comapeo/core-react-native';
+import { messagePort, state } from '@comapeo/core-react-native';
 import { Button, SafeAreaView, ScrollView, Text, View } from 'react-native';
 
 let renderCount = 0;
 
+console.log("initial state:", state.getState());
+
 export default function App() {
-  const onChangePayload = useEvent(ComapeoCore, 'message');
+  const onChangePayload = useEvent(messagePort, 'message');
+  const serverState = useEvent(state, 'stateChange', state.getState());
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView style={styles.container}>
         <Text style={styles.header}>Module API Example</Text>
-        <Group name="Constants">
-          <Text>{ComapeoCore.PI}</Text>
+        <Group name="State">
+          <Text>{serverState}</Text>
         </Group>
         <Group name="Message Server">
           <Button
             title="Send"
             onPress={async () => {
               for (let i = 0; i < 1000; i++) {
-                ComapeoCore.postMessage(`Hello ${i} from React Native!`);
+                messagePort.postMessage(`Hello ${i} from React Native!`);
               }
             }}
           />

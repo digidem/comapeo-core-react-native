@@ -1,26 +1,44 @@
 import net from "node:net";
 import { SocketMessagePort } from "./lib/message-port.js";
+import { once } from "node:events";
+import { createComapeoRpcServer } from "./lib/comapeo-rpc.js";
 
-let count = 0;
+const [comapeoSocketPath, stateSocketPath] = process.argv.slice(2);
 
-const server = net.createServer((socket) => {
-  console.log("Client connected");
+const comapeoRpcServer = createComapeoRpcServer({ path: comapeoSocketPath });
+
+/** @type {Set<import("./lib/message-port.js").MessagePortLike>} */
+const controlClients = new Set();
+
+const stateIpcServer = net.createServer((socket) => {
   const messagePort = new SocketMessagePort(socket);
   messagePort.on("message", (message) => {
-    messagePort.postMessage(`Hello from nodejs ${count++}`);
+    if (
+      !message ||
+      typeof message !== "object" ||
+      !("type" in message) ||
+      message.type !== "shutdown"
+    )
+      return;
+    comapeoRpcServer.close();
+    stateIpcServer.close();
   });
-  messagePort.on("messageerror", (error) => {
-    console.error("Client sent invalid message", error);
-  });
+  controlClients.add(messagePort);
   messagePort.start();
 });
 
-server.listen(process.argv[2], () => {
-  console.log("Server started", server.address());
-});
+stateIpcServer.listen(stateSocketPath);
 
-server.on("error", (err) => {
-  console.error("Server error", err);
+Promise.all([
+  once(stateIpcServer, "listening"),
+  once(comapeoRpcServer, "listening"),
+]).then(() => {
+  console.log(
+    `Node server listening on ${stateSocketPath} and ${comapeoSocketPath}`
+  );
+  for (const client of controlClients) {
+    client.postMessage({ type: "started" });
+  }
 });
 
 process.on("exit", () => {

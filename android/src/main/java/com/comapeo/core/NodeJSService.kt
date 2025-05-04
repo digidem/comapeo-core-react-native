@@ -2,14 +2,14 @@ package com.comapeo.core
 
 import android.content.ContextWrapper
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import java.io.File
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+
+@Serializable
+data class ShutdownMessage(val type: String = "shutdown")
 
 const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
@@ -27,8 +27,10 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
     private val dataDir: String = filesDir.absolutePath
     private val nodeProjectDir: File = File(filesDir, NODEJS_PROJECT_DIRNAME)
     private val jsFile: File = File(nodeProjectDir, NODEJS_PROJECT_INDEX_FILENAME)
-    private val socketFile: File = File(filesDir, ComapeoCoreService.SOCKET_FILENAME)
+    private val comapeoSocketFile: File = File(filesDir, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
+    private val stateSocketFile: File = File(filesDir, ComapeoCoreService.STATE_SOCKET_FILENAME)
     private val sharedPrefsName = packageName + SHARED_PREFS_NAME_POSTFIX
+    private lateinit var ipc : NodeJSIPC
 
     companion object {
 
@@ -49,13 +51,20 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
 
     init {
         initialize(dataDir)
+        serviceScope.launch {
+            withContext(Dispatchers.IO) {
+                deleteSocketFiles()
+            }
+            ipc = NodeJSIPC(stateSocketFile) { message ->
+                log("Received message: ${message.decodeToString()}")
+            }
+        }
     }
 
     fun start(callback: Callback) {
         if (nodeJob != null) {
             throw IllegalStateException("NodeJS service is already running")
         }
-        socketFile.delete()
         log("Starting NodeJS service")
         nodeJob = serviceScope.launch {
             try {
@@ -70,7 +79,8 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                     arrayOf(
                         "node",
                         jsFile.absolutePath,
-                        socketFile.absolutePath
+                        comapeoSocketFile.absolutePath,
+                        stateSocketFile.absolutePath
                     )
                 )
                 log("NodeJS service completed with exit code $exitCode")
@@ -79,16 +89,29 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                 Log.e(TAG, "Error starting node", e)
                 callback.onError(e)
             } finally {
-                stop()
+                onDestroy()
             }
         }
     }
 
     fun stop() {
-        socketFile.delete()
+        if (nodeJob == null) {
+            throw IllegalStateException("NodeJS service is not running")
+        }
+        val message = Json.encodeToString(ShutdownMessage()).toByteArray()
+        ipc.sendMessage(message)
+    }
+
+    private fun onDestroy() {
+        deleteSocketFiles()
         nodeJob?.cancel()
         serviceScope.cancel()
-        log("NodeJS service stopped")
+        log("NodeJS service destroyed")
+    }
+
+    private fun deleteSocketFiles(): Unit {
+        comapeoSocketFile.delete()
+        stateSocketFile.delete()
     }
 
     private fun shouldCopyAssets(): Boolean {
@@ -107,7 +130,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
             .apply()
     }
 
-    private fun copyAssetFolder(srcDirname: String, destDir: File) {
+    private suspend fun copyAssetFolder(srcDirname: String, destDir: File): Unit = coroutineScope {
         assets.list(srcDirname)?.forEach { file ->
             val srcPath = "$srcDirname/$file"
             val destFile = File(destDir, file)
