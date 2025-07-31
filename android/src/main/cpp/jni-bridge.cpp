@@ -90,6 +90,14 @@ int start_redirecting_stdout_stderr() {
     return 0;
 }
 
+void stop_redirecting_stdout_stderr() {
+    // Cleanup stdout and stderr redirection.
+    close(pipe_stdout[0]);
+    close(pipe_stdout[1]);
+    close(pipe_stderr[0]);
+    close(pipe_stderr[1]);
+}
+
 //node's libUV requires all arguments being on contiguous memory.
 extern "C" jint JNICALL
 Java_com_comapeo_core_NodeJSService_startNodeWithArguments(
@@ -146,6 +154,12 @@ Java_com_comapeo_core_NodeJSService_startNodeWithArguments(
 
     //Start node, with argc and argv.
     const int exit_code = node::Start(argument_count, argv);
+
+    // Clean up resources.
     free(args_buffer);
+
+    // Clean up redirection.
+    stop_redirecting_stdout_stderr();
+
     return jint(exit_code);
 }

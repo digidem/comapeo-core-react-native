@@ -30,6 +30,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
     private val comapeoSocketFile: File = File(filesDir, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
     private val stateSocketFile: File = File(filesDir, ComapeoCoreService.STATE_SOCKET_FILENAME)
     private val sharedPrefsName = packageName + SHARED_PREFS_NAME_POSTFIX
+    private val json = Json { encodeDefaults = true }
     private lateinit var ipc : NodeJSIPC
 
     companion object {
@@ -53,7 +54,9 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
         initialize(dataDir)
         serviceScope.launch {
             withContext(Dispatchers.IO) {
+                log("Deleting socket files if they exist")
                 deleteSocketFiles()
+                log("DEleted socket files")
             }
             ipc = NodeJSIPC(stateSocketFile) { message ->
                 log("Received message: ${message.decodeToString()}")
@@ -94,12 +97,19 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
         }
     }
 
-    fun stop() {
+    suspend fun stop() {
         if (nodeJob == null) {
             throw IllegalStateException("NodeJS service is not running")
         }
-        val message = Json.encodeToString(ShutdownMessage()).toByteArray()
-        ipc.sendMessage(message)
+        val message = json.encodeToString(ShutdownMessage())
+        log(message)
+        ipc.sendMessage(message.toByteArray())
+        log("Sent shutdown message to NodeJS service")
+        nodeJob?.join()
+        nodeJob = null
+        log("nodeJob completed")
+        log("Comapeo socket file exists: ${comapeoSocketFile.exists()}")
+        log("State socket file exists: ${stateSocketFile.exists()}")
     }
 
     private fun onDestroy() {

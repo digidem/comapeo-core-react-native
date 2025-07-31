@@ -16,6 +16,10 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import android.os.Process
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 
 enum class ServiceState {
     STOPPED, STARTING, STARTED, STOPPING, ERROR
@@ -29,33 +33,6 @@ class ComapeoCoreService : Service() {
     private val callbacks = RemoteCallbackList<IServiceCallback>()
     private val _serviceState = MutableStateFlow(ServiceState.STOPPED)
 
-    private val binder = object : IService.Stub() {
-        override fun getCurrentState(): Int {
-            return _serviceState.value.ordinal
-        }
-
-        override fun registerCallback(callback: IServiceCallback) {
-            callbacks.register(callback)
-            callback.onStateChanged(_serviceState.value.ordinal)
-        }
-
-        override fun unregisterCallback(callback: IServiceCallback) {
-            callbacks.unregister(callback)
-        }
-    }
-
-    private fun updateState(newState: ServiceState) {
-        _serviceState.value = newState
-        val n = callbacks.beginBroadcast()
-        try {
-            for (i in 0 until n) {
-                callbacks.getBroadcastItem(i).onStateChanged(newState.ordinal)
-            }
-        } finally {
-            callbacks.finishBroadcast()
-        }
-    }
-
     companion object {
         const val CHANNEL_ID = "ComapeoServiceChannel"
         const val NOTIFICATION_ID = 1
@@ -65,7 +42,6 @@ class ComapeoCoreService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        updateState(ServiceState.STARTING)
         nodeJSService = NodeJSService(applicationContext)
         log("The service has been created".uppercase())
     }
@@ -89,11 +65,22 @@ class ComapeoCoreService : Service() {
                 stopService()
             }
 
-            else -> log("This should never happen. No action in the received intent")
+            null -> {
+                // Service restarted by system - check current app state
+                val isAppInForeground = ProcessLifecycleOwner.get()
+                    .lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+
+                log("Service restarted by system - app in foreground: $isAppInForeground")
+
+                startService()
+                updateNotification(isAppInForeground)
+            }
+
+            else -> log("Unknown action in received intent: ${intent.action}")
         }
 
         // by returning this the service is note restarted if the system kills the service
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private val nodeJSServiceCallback = object : NodeJSService.Callback {
@@ -108,14 +95,17 @@ class ComapeoCoreService : Service() {
         }
     }
 
-    override fun onBind(intent: Intent): IBinder = binder
-
     override fun onDestroy() {
         super.onDestroy()
-        nodeJSService.stop()
-        updateState(ServiceState.STOPPED)
+        log("onDestroy")
+        runBlocking {
+            nodeJSService.stop()
+            log("NodeJS service stopped")
+        }
         log("The service has been destroyed".uppercase())
         Toast.makeText(this, "Service destroyed", Toast.LENGTH_SHORT).show()
+
+        Process.killProcess(Process.myPid());
     }
 
     private fun startService() {
@@ -124,10 +114,6 @@ class ComapeoCoreService : Service() {
         Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
 
         val notification = createNotification(true)
-        GlobalScope.launch {
-            delay(2000)
-            updateState(ServiceState.STARTED)
-        }
         startForeground(NOTIFICATION_ID, notification)
         nodeJSService.start(nodeJSServiceCallback)
 
@@ -136,7 +122,7 @@ class ComapeoCoreService : Service() {
 
     private fun stopService() {
         log("Stopping the foreground service")
-        Toast.makeText(this, "Service stopping", Toast.LENGTH_SHORT).show()
+        // Toast.makeText(this, "Service stopping", Toast.LENGTH_SHORT).show()
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -208,5 +194,9 @@ class ComapeoCoreService : Service() {
             "Stop",
             pendingIntent
         )
+    }
+
+    override fun onBind(p0: Intent): IBinder? {
+        return null
     }
 }

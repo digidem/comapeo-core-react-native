@@ -15,35 +15,8 @@ import kotlinx.coroutines.flow.asStateFlow
 class ComapeoCoreModule : Module() {
     private lateinit var ipc: NodeJSIPC
 
-    private val _serviceState = MutableStateFlow(ServiceState.STOPPED)
-    private val serviceState = _serviceState.asStateFlow()
-
-    private var myService: IService? = null
     private val scope = CoroutineScope(Dispatchers.Main + Job())
 
-    private val serviceCallback = object : IServiceCallback.Stub() {
-        override fun onStateChanged(state: Int) {
-            scope.launch(Dispatchers.Main) {
-                _serviceState.value = ServiceState.entries.toTypedArray()[state]
-            }
-        }
-    }
-
-    private val connection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            myService = IService.Stub.asInterface(service)
-            // Get initial state
-            val currentState = myService?.getCurrentState() ?: 0
-            _serviceState.value = ServiceState.entries.toTypedArray()[currentState]
-            myService?.registerCallback(serviceCallback)
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            myService?.unregisterCallback(serviceCallback)
-            myService = null
-            _serviceState.value = ServiceState.STOPPED
-        }
-    }
 
     // Each module class must implement the definition function. The definition consists of components
     // that describes the module's functionality and behavior.
@@ -55,19 +28,14 @@ class ComapeoCoreModule : Module() {
             ipc = NodeJSIPC(socketFile) { message ->
                 sendEvent("message", mapOf("data" to message.decodeToString()))
             }
-            scope.launch {
-                serviceState.collect {
-                    sendEvent("stateChange", mapOf("state" to it.name))
-                }
-            }
-            Intent(appContext.reactContext, ComapeoCoreService::class.java).also { intent ->
-                appContext.reactContext?.bindService(intent, connection, Context.BIND_AUTO_CREATE)
-            }
         }
 
         OnDestroy {
-            appContext.reactContext?.unbindService(connection)
             ipc.disconnect()
+        }
+
+        OnActivityEntersForeground {
+            ipc.connect()
         }
 
 
@@ -85,7 +53,7 @@ class ComapeoCoreModule : Module() {
         }
 
         Function ("getState") {
-            return@Function serviceState.value.name
+            return@Function "STARTED"
         }
     }
 }

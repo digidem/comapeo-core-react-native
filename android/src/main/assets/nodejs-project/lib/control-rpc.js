@@ -1,16 +1,12 @@
 import net from "node:net";
 import { SocketMessagePort } from "./message-port.js";
 
-let count = 0;
-
 /**
  * @param {{path: string}} opts
  */
-export function createComapeoRpcServer({ path }) {
-  const messagePorts = new Set();
-  const comapeoRpcServer = net.createServer((socket) => {
+export function createControlRpcServer({ path }) {
+  const controlRpcServer = net.createServer((socket) => {
     const messagePort = new SocketMessagePort(socket);
-    messagePorts.add(messagePort);
     messagePort.on("message", (message) => {
       messagePort.postMessage(`Hello desde nodejs ${count++}`);
     });
@@ -20,12 +16,6 @@ export function createComapeoRpcServer({ path }) {
     messagePort.start();
   });
 
-  comapeoRpcServer.on("close", () => {
-    for (const messagePort of messagePorts) {
-      messagePort.close();
-    }
-  });
-
-  comapeoRpcServer.listen(path);
-  return comapeoRpcServer;
+  controlRpcServer.listen(path);
+  return controlRpcServer;
 }

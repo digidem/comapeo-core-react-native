@@ -1,7 +1,7 @@
-import {Buffer} from "node:buffer";
+import { Buffer } from "node:buffer";
 import FramedStream from "framed-stream";
 import { TypedEmitter } from "tiny-typed-emitter";
-import ensureError  from "ensure-error";
+import ensureError from "ensure-error";
 
 /**
  * @import {JsonValue} from "type-fest"
@@ -25,34 +25,33 @@ import ensureError  from "ensure-error";
  */
 export class SocketMessagePort extends TypedEmitter {
   /** @type {'idle' | 'active' | 'closed'} */
-  #state = "idle"
-  #framedStream
+  #state = "idle";
+  #framedStream;
 
   /** @param {Buffer} buf */
   #handleData = (buf) => {
-    if (this.#state !== 'active') return // should not happen but just in case
+    if (this.#state !== "active") return; // should not happen but just in case
     try {
-      const message = JSON.parse(buf.toString())
-      this.emit('message', message)
+      const message = JSON.parse(buf.toString());
+      this.emit("message", message);
     } catch (reason) {
-      console.error("Failed to parse message", reason)
-      this.emit('messageerror', ensureError(reason))
+      console.error("Failed to parse message", reason);
+      this.emit("messageerror", ensureError(reason));
     }
-  }
+  };
 
   /**
    * @param {NodeJS.ReadWriteStream} socket
    */
   constructor(socket) {
-    super()
-
+    super();
     this.#framedStream = new FramedStream(socket);
     this.#framedStream.on("close", () => {
-      this.close()
+      this.close();
     });
     this.#framedStream.on("error", (error) => {
-      this.emit('messageerror', ensureError(error))
-    })
+      this.emit("messageerror", ensureError(error));
+    });
   }
 
   /**
@@ -60,18 +59,19 @@ export class SocketMessagePort extends TypedEmitter {
    * @param {JsonValue} message
    */
   postMessage(message) {
-    this.#framedStream.write(Buffer.from(JSON.stringify(message)))
+    this.#framedStream.write(Buffer.from(JSON.stringify(message)));
   }
 
   start() {
-    if (this.#state !== 'idle') return
-    this.#state = 'active'
+    if (this.#state !== "idle") return;
+    this.#state = "active";
     this.#framedStream.on("data", this.#handleData);
   }
 
   close() {
-    if (this.#state === 'closed') return
-    this.#state = 'closed'
+    if (this.#state === "closed") return;
+    this.#state = "closed";
     this.#framedStream.off("data", this.#handleData);
+    this.#framedStream.destroy();
   }
 }

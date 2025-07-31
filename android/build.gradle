@@ -1,3 +1,7 @@
+plugins {
+    id 'org.jetbrains.kotlin.plugin.serialization' version '2.0.21' // ✅ serialization plugin
+}
+
 apply plugin: 'com.android.library'
 
 group = 'com.comapeo.core'
@@ -67,7 +71,30 @@ android {
 }
 
 dependencies {
-    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.2'
-    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.3.2"
-    implementation "androidx.core:core-ktx:1.13.1"
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.7'
+    implementation 'androidx.lifecycle:lifecycle-process:2.9.0'
+
+    // For the kotlinx-serialization-json dependency, it's best to match it with the Kotlin version
+    // Here's a mapping of compatible versions:
+    def getSerializationVersion = { kotlinVersion ->
+        def serializationVersionMap = [
+            "1.9.0": "1.6.0",
+            "1.9.10": "1.6.0",
+            "1.9.20": "1.6.0",
+            "1.9.21": "1.6.1",
+            "1.9.22": "1.6.2",
+            "1.9.23": "1.6.2",
+            "1.9.24": "1.6.3",
+            "2.0.0": "1.6.2",
+            "2.0.10": "1.6.2",
+            "2.0.20": "1.6.3",
+            "2.0.21": "1.6.3",
+        ]
+        return serializationVersionMap[kotlinVersion] ?: "1.6.3" // Default to latest stable
+    }
+
+    // Use the kotlinVersion() function that's defined by the Expo plugin
+    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:${getSerializationVersion(project.ext.kotlinVersion())}"
+
+    implementation "androidx.core:core-ktx:1.16.0"
 }

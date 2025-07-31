@@ -5,12 +5,18 @@ import android.net.LocalSocketAddress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.EOFException
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -23,67 +29,197 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
     private lateinit var socket: LocalSocket
     private var dataOutputStream: DataOutputStream? = null
     private var dataInputStream: DataInputStream? = null
-    private val scope = CoroutineScope(Dispatchers.IO + Job())
-    private var receiveJob: Job? = null
-    private val sendMutex = Mutex()
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var connectJob: Job? = null
+    private val sendChannel = Channel<ByteArray>(Channel.UNLIMITED)
+
+    sealed class State {
+        data object Connecting : State()
+        data object Connected : State()
+        data object Disconnected : State()
+        data object Disconnecting : State()
+        data class Error(val exception: Throwable) : State()
+    }
+
+    private val state = MutableStateFlow<State>(State.Disconnected)
 
     init {
         log("NodeJSIPC initialized with socket file: ${socketFile.absolutePath}")
-        scope.launch {
+        connect()
+    }
+
+    @Throws(Throwable::class)
+    fun connect() {
+        if (state.value is State.Connected || state.value is State.Connecting) {
+            return
+        }
+        val stateSnapshot = state.value
+        if (stateSnapshot is State.Error) {
+            throw stateSnapshot.exception
+        }
+        connectJob = scope.launch {
+            while (isActive) {
+                when (val stateSnapshot = state.value) {
+                    is State.Connecting, is State.Connected -> return@launch
+                    is State.Disconnecting -> {
+                        state.first { it is State.Disconnected }
+                    }
+                    is State.Disconnected -> {
+                        if (state.compareAndSet(State.Disconnected, State.Connecting)) {
+                            break
+                        }
+                        // Loop continues if another thread changed the state before we could set it
+                    }
+                    is State.Error -> {
+                        throw stateSnapshot.exception
+                    }
+                }
+            }
+            waitForFile(socketFile)
+            if (::socket.isInitialized) {
+                try {
+                    socket.close()
+                } catch (e: Exception) {
+                    // Ignore exceptions when closing - socket might already be closed
+                }
+            }
             try {
-                // Wait for the socket file to be created
-                waitForFile(socketFile)
-                onServerReady()
-            } catch (e: IllegalArgumentException) {
-                log("File has no parent directory: ${socketFile.absolutePath}, ${e.message}")
+                socket = connectWithRetry(socketAddress).apply {
+                    dataOutputStream = DataOutputStream(outputStream)
+                    dataInputStream = DataInputStream(inputStream)
+                }
             } catch (e: Exception) {
-                log("Unexpected error: ${e.message}")
+                    log("Failed to connect to socket: ${e.message}")
+                    state.value = State.Error(e)
+                    return@launch
+            }
+
+            state.value = State.Connected
+            val receiveJob = launch {
+                while (isActive) {
+                    try {
+                        receiveMessage()
+                    } catch (e: IOException) {
+                        disconnect()
+                    }
+                }
+            }
+            receiveJob.invokeOnCompletion { cause ->
+                log("Receive job completed with cause: $cause")
+            }
+            val sendJob = launch {
+                for (message in sendChannel) {
+                    try {
+                        sendMessageInternal(message)
+                    } catch (e: IOException) {
+                        // Requeue message
+                        sendChannel.trySend(message)
+                    }
+                }
+            }
+            sendJob.invokeOnCompletion { cause ->
+                log("Send job completed with cause: $cause")
             }
         }
+        connectJob?.invokeOnCompletion { cause ->
+            log("Connect job completed with cause: $cause")
+        }
+    }
+
+    private fun receiveMessage() {
+        val lengthBuffer = ByteArray(4)
+        dataInputStream?.readFully(lengthBuffer)
+        val messageLength =
+            ByteBuffer.wrap(lengthBuffer).order(ByteOrder.LITTLE_ENDIAN).int
+        val message = ByteArray(messageLength)
+        dataInputStream?.readFully(message)
+        onMessage(message)
     }
 
     fun disconnect() {
-        socket.close()
+        if (state.value is State.Disconnecting || state.value is State.Disconnected) {
+            return
+        }
+        val disconnectJob = scope.launch {
+            while (isActive) {
+                when (val stateSnapshot = state.value) {
+                    is State.Disconnecting, is State.Disconnected -> return@launch
+                    is State.Connecting -> {
+                        state.first { it is State.Connected }
+                    }
+                    is State.Connected -> {
+                        if (state.compareAndSet(State.Connected, State.Disconnecting)) {
+                            break
+                        }
+                        // Loop continues if another thread changed the state before we could set it
+                    }
+                    is State.Error -> {
+                        throw stateSnapshot.exception
+                    }
+                }
+            }
+            connectJob?.cancelAndJoin()
+            connectJob = null
+            dataOutputStream?.close()
+            dataInputStream?.close()
+            socket.close()
+        }
+        disconnectJob.invokeOnCompletion { cause ->
+            state.value = when (cause) {
+                null, is EOFException, is IOException, is CancellationException -> State.Disconnected
+                else -> State.Error(cause)
+            }
+        }
+    }
+
+    private suspend fun sendMessageInternal(message: ByteArray) {
+        state.first { it is State.Connected }
+        dataOutputStream?.let { out ->
+            val lengthBuffer =
+                ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(message.size)
+                    .array()
+            out.write(lengthBuffer)
+            out.write(message)
+        } ?: throw IOException("Socket not connected")
     }
 
     fun sendMessage(message: ByteArray) {
-        scope.launch {
-            sendMutex.withLock {
-                dataOutputStream?.let { out ->
-                    val lengthBuffer =
-                        ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(message.size)
-                            .array()
-                    out.write(lengthBuffer)
-                    out.write(message)
-                    out.flush()
-                } ?: throw IllegalStateException("Socket not connected")
+        connect()
+        sendChannel.trySend(message)
+    }
+}
+
+private suspend fun connectWithRetry(
+    socketAddress: LocalSocketAddress,
+    maxRetries: Int = 5,
+    initialDelayMs: Long = 100,
+    maxDelayMs: Long = 5000,
+    backoffMultiplier: Double = 2.0
+): LocalSocket {
+    var currentDelay = initialDelayMs
+    var lastException: IOException? = null
+
+    repeat(maxRetries) { attempt ->
+        try {
+            val socket = LocalSocket()
+            socket.connect(socketAddress)
+            log("Connected on attempt ${attempt + 1}")
+            return socket
+        } catch (e: IOException) {
+            lastException = e
+
+            if (attempt < maxRetries - 1) {
+                delay(currentDelay)
+                currentDelay = minOf(
+                    (currentDelay * backoffMultiplier).toLong(),
+                    maxDelayMs
+                )
             }
         }
     }
 
-    private fun onServerReady() {
-        socket = LocalSocket().apply {
-            connect(socketAddress)
-            dataOutputStream = DataOutputStream(outputStream)
-            dataInputStream = DataInputStream(inputStream)
-        }
-
-        // Start receiving messages
-        receiveJob = scope.launch {
-            try {
-                while (isActive) {
-                    val lengthBuffer = ByteArray(4)
-                    dataInputStream?.readFully(lengthBuffer)
-                    val messageLength =
-                        ByteBuffer.wrap(lengthBuffer).order(ByteOrder.LITTLE_ENDIAN).int
-                    val message = ByteArray(messageLength)
-                    dataInputStream?.readFully(message)
-                    onMessage(message)
-                }
-            } catch (e: IOException) {
-                // Handle disconnect
-            }
-        }
-    }
-
+    throw IOException(
+        "Failed to connect after $maxRetries attempts",
+        lastException
+    )
 }
