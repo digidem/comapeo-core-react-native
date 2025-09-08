@@ -60,7 +60,6 @@ android {
             assets {
                 srcDirs 'src/main/assets', 'src/main/assets/nodejs-project'
             }
-            aidl.srcDirs 'src/main/aidl'
         }
     }
     externalNativeBuild {
