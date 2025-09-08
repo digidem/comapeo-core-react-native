@@ -1,17 +1,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!--  Request notification permission to be able to show the foreground service notification  -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application>
+        <!-- android:name should not change (see http://android-developers.blogspot.com/2011/06/things-that-cannot-change.html) -->
+        <!-- android:process is used to run the service in a separate process -->
+        <!-- android:exported stops other apps from starting this service -->
+        <!-- android:foregroundServiceType see https://developer.android.com/develop/background-work/services/fgs/service-types#data-sync -->
         <service
             android:name=".ComapeoCoreService"
             android:process=":ComapeoCore"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice"/>
+            android:foregroundServiceType="dataSync"/>
     </application>
 </manifest>

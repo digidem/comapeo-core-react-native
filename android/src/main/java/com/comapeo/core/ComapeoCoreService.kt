@@ -6,12 +6,14 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
 import android.os.RemoteCallbackList
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -75,7 +77,11 @@ class ComapeoCoreService : Service() {
             else -> log("Unknown action in received intent: ${intent.action}")
         }
 
-        // by returning this the service is note restarted if the system kills the service
+        // If the system kills the service after onStartCommand() returns,
+        // recreate the service and call onStartCommand(), but do not redeliver
+        // the last intent. Instead, the system calls onStartCommand() with a
+        // null intent unless there are pending intents to start the service. In
+        // that case, those intents are delivered.
         return START_STICKY
     }
 
@@ -110,7 +116,18 @@ class ComapeoCoreService : Service() {
         Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
 
         val notification = createNotification(true)
-        startForeground(NOTIFICATION_ID, notification)
+
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            notification,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            } else {
+                0
+            }
+        )
+
         nodeJSService.start(nodeJSServiceCallback)
 
         isServiceStarted = true
