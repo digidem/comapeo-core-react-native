@@ -82,6 +82,14 @@ android {
     ndkVersion '27.0.12077973'
 }
 
+// Configure asset change detection
+android.libraryVariants.all { variant ->
+    def mergeAssetsTask = tasks.findByName("merge${variant.name.capitalize()}Assets")
+    if (mergeAssetsTask) {
+        mergeAssetsTask.inputs.dir("src/main/assets/nodejs-project")
+    }
+}
+
 dependencies {
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.7'
     implementation 'androidx.lifecycle:lifecycle-process:2.9.0'
