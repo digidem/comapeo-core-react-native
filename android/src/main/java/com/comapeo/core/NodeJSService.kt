@@ -2,11 +2,19 @@ package com.comapeo.core
 
 import android.content.ContextWrapper
 import android.util.Log
-import kotlinx.coroutines.*
-import java.io.File
+import androidx.core.content.edit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.File
 
 @Serializable
 data class ShutdownMessage(val type: String = "shutdown")
@@ -16,6 +24,7 @@ const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
 const val NODEJS_PROJECT_INDEX_FILENAME = "index.js"
 
+@Suppress("KotlinJniMissingFunction")
 class NodeJSService(context: android.content.Context) : ContextWrapper(context) {
     interface Callback {
         fun onComplete(exitCode: Int)
@@ -56,10 +65,10 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
             withContext(Dispatchers.IO) {
                 log("Deleting socket files if they exist")
                 deleteSocketFiles()
-                log("DEleted socket files")
+                log("Deleted socket files")
             }
             ipc = NodeJSIPC(stateSocketFile) { message ->
-                log("Received message: ${message.decodeToString()}")
+                log("Received message: $message")
             }
         }
     }
@@ -103,7 +112,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
         }
         val message = json.encodeToString(ShutdownMessage())
         log(message)
-        ipc.sendMessage(message.toByteArray())
+        ipc.sendMessage(message)
         log("Sent shutdown message to NodeJS service")
         nodeJob?.join()
         nodeJob = null
@@ -119,7 +128,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
         log("NodeJS service destroyed")
     }
 
-    private fun deleteSocketFiles(): Unit {
+    private fun deleteSocketFiles() {
         comapeoSocketFile.delete()
         stateSocketFile.delete()
     }
@@ -135,9 +144,9 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
     private fun updateLastKnownVersion() {
         val currentUpdateTime = packageManager.getPackageInfo(packageName, 0).lastUpdateTime
         getSharedPreferences(sharedPrefsName, MODE_PRIVATE)
-            .edit()
-            .putLong(APK_LAST_UPDATE_TIME_KEY, currentUpdateTime)
-            .apply()
+            .edit {
+                putLong(APK_LAST_UPDATE_TIME_KEY, currentUpdateTime)
+            }
     }
 
     private suspend fun copyAssetFolder(srcDirname: String, destDir: File): Unit = coroutineScope {

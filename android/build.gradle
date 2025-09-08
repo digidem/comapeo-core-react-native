@@ -43,7 +43,12 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags ''
+                arguments "-DANDROID_STL=c++_shared",
+                        "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
             }
+        }
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
         }
     }
     lintOptions {
@@ -66,6 +71,13 @@ android {
     }
     buildFeatures {
         aidl true
+        prefab true
+    }
+    packagingOptions {
+        excludes += [
+        "**/libc++_shared.so",
+        "**/libfbjni.so",
+        ]
     }
     ndkVersion '27.0.12077973'
 }
@@ -97,4 +109,5 @@ dependencies {
     implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:${getSerializationVersion(project.ext.kotlinVersion())}"
 
     implementation "androidx.core:core-ktx:1.16.0"
+    compileOnly "com.facebook.fbjni:fbjni:0.3.0"
 }

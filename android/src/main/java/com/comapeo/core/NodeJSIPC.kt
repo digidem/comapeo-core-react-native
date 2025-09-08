@@ -2,16 +2,16 @@ package com.comapeo.core
 
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.DataInputStream
@@ -23,7 +23,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 
-class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray) -> Unit) {
+class NodeJSIPC(private val socketFile: File, private val onMessage: (String) -> Unit) {
     private val socketAddress =
         LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM)
     private lateinit var socket: LocalSocket
@@ -31,7 +31,12 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
     private var dataInputStream: DataInputStream? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var connectJob: Job? = null
-    private val sendChannel = Channel<ByteArray>(Channel.UNLIMITED)
+    private val sendChannel = Channel<String>(Channel.UNLIMITED)
+
+    // Reusable buffers to reduce GC pressure
+    private val receiveLengthBuffer = ByteArray(4)
+    private val sendLengthBuffer = ByteArray(4)
+    private var receiveMessageBuffer = ByteArray(1024) // Larger messages use temporary buffers
 
     sealed class State {
         data object Connecting : State()
@@ -127,13 +132,20 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
     }
 
     private fun receiveMessage() {
-        val lengthBuffer = ByteArray(4)
-        dataInputStream?.readFully(lengthBuffer)
+        dataInputStream?.readFully(receiveLengthBuffer)
         val messageLength =
-            ByteBuffer.wrap(lengthBuffer).order(ByteOrder.LITTLE_ENDIAN).int
-        val message = ByteArray(messageLength)
-        dataInputStream?.readFully(message)
-        onMessage(message)
+            ByteBuffer.wrap(receiveLengthBuffer).order(ByteOrder.LITTLE_ENDIAN).int
+
+        val buffer = if (messageLength <= receiveMessageBuffer.size) {
+            // Reuse fixed buffer for small messages
+            receiveMessageBuffer
+        } else {
+            // Allocate temporary buffer for large messages
+            ByteArray(messageLength)
+        }
+
+        dataInputStream?.readFully(buffer, 0, messageLength)
+        onMessage(buffer.decodeToString(0, messageLength))
     }
 
     fun disconnect() {
@@ -172,18 +184,18 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (ByteArray)
         }
     }
 
-    private suspend fun sendMessageInternal(message: ByteArray) {
+    private suspend fun sendMessageInternal(message: String) {
+        val messageBytes = message.encodeToByteArray()
         state.first { it is State.Connected }
         dataOutputStream?.let { out ->
-            val lengthBuffer =
-                ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(message.size)
-                    .array()
-            out.write(lengthBuffer)
-            out.write(message)
+            // Reuse sendLengthBuffer for writing length prefix
+            ByteBuffer.wrap(sendLengthBuffer).order(ByteOrder.LITTLE_ENDIAN).putInt(messageBytes.size)
+            out.write(sendLengthBuffer)
+            out.write(messageBytes)
         } ?: throw IOException("Socket not connected")
     }
 
-    fun sendMessage(message: ByteArray) {
+    fun sendMessage(message: String) {
         connect()
         sendChannel.trySend(message)
     }

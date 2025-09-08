@@ -19,27 +19,23 @@ type MessagePortEvents = {
 
 type StateChangeEvents = {
   stateChange: (state: string) => void;
-}
+};
 
 class State extends EventEmitter<StateChangeEvents> {
   getState() {
     return nativeModule.getState();
   }
 
-  startObserving<EventName extends keyof ComapeoCoreModuleEvents>(
-    eventName: EventName
-  ): void {
-    // eslint-disable-next-line no-useless-return
-    if (eventName !== "stateChange") return
-    nativeModule.addListener(eventName as "stateChange", this.#handleStateChangeEvent);
-  }
-
-  stopObserving<EventName extends keyof ComapeoCoreModuleEvents>(
-    eventName: EventName
-  ): void {
+  startObserving(eventName: keyof StateChangeEvents): void {
     // eslint-disable-next-line no-useless-return
     if (eventName !== "stateChange") return;
-    nativeModule.removeListener(eventName as "stateChange", this.#handleStateChangeEvent);
+    nativeModule.addListener(eventName, this.#handleStateChangeEvent);
+  }
+
+  stopObserving(eventName: keyof StateChangeEvents): void {
+    // eslint-disable-next-line no-useless-return
+    if (eventName !== "stateChange") return;
+    nativeModule.removeListener(eventName, this.#handleStateChangeEvent);
   }
 
   #handleStateChangeEvent = (event: StateChangeEventPayload) => {
@@ -55,7 +51,7 @@ class MessagePort extends EventEmitter<MessagePortEvents> {
     eventName: EventName
   ): void {
     // eslint-disable-next-line no-useless-return
-    if (eventName !== "message") return
+    if (eventName !== "message") return;
     nativeModule.addListener(eventName as "message", this.#handleMessageEvent);
   }
 
@@ -64,7 +60,10 @@ class MessagePort extends EventEmitter<MessagePortEvents> {
   ): void {
     // eslint-disable-next-line no-useless-return
     if (eventName !== "message") return;
-    nativeModule.removeListener(eventName as "message", this.#handleMessageEvent);
+    nativeModule.removeListener(
+      eventName as "message",
+      this.#handleMessageEvent
+    );
   }
 
   #handleMessageEvent = (event: MessageEventPayload) => {

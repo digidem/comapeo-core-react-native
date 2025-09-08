@@ -3,20 +3,9 @@ package com.comapeo.core
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.*
-import android.content.ServiceConnection
-import android.content.ComponentName
-import android.content.Context
-import android.content.Intent
-import android.os.IBinder
-import kotlinx.coroutines.flow.asStateFlow
 
 class ComapeoCoreModule : Module() {
     private lateinit var ipc: NodeJSIPC
-
-    private val scope = CoroutineScope(Dispatchers.Main + Job())
-
 
     // Each module class must implement the definition function. The definition consists of components
     // that describes the module's functionality and behavior.
@@ -26,7 +15,7 @@ class ComapeoCoreModule : Module() {
             val socketFile =
                 File(appContext.persistentFilesDirectory, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
             ipc = NodeJSIPC(socketFile) { message ->
-                sendEvent("message", mapOf("data" to message.decodeToString()))
+                sendEvent("message", mapOf("data" to message))
             }
         }
 
@@ -49,7 +38,7 @@ class ComapeoCoreModule : Module() {
 
         // Defines a JavaScript synchronous function that runs the native code on the JavaScript thread.
         Function("postMessage") { message: String ->
-            ipc.sendMessage(message.encodeToByteArray())
+            ipc.sendMessage(message)
         }
 
         Function ("getState") {

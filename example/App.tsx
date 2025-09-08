@@ -1,14 +1,37 @@
-import { useEvent } from 'expo';
-import { messagePort, state } from '@comapeo/core-react-native';
-import { Button, SafeAreaView, ScrollView, Text, View } from 'react-native';
+import { useEvent } from "expo";
+import { messagePort, state } from "@comapeo/core-react-native";
+import { Button, SafeAreaView, ScrollView, Text, View } from "react-native";
+import { faker } from "@faker-js/faker";
+import React from "react";
 
 let renderCount = 0;
+
+const MSG_COUNT = 1000;
+const fixtureStart = Date.now();
+faker.seed("nodejs-mobile-test-messages");
+const MESSAGE_FIXTURES = Array.from({ length: MSG_COUNT }, createRandomUser);
+const fixtureTime = Date.now() - fixtureStart;
 
 console.log("initial state:", state.getState());
 
 export default function App() {
-  const onChangePayload = useEvent(messagePort, 'message');
-  const serverState = useEvent(state, 'stateChange', state.getState());
+  // const onChangePayload = useEvent(messagePort, "message");
+  const serverState = useEvent(state, "stateChange", state.getState());
+  const timerRef = React.useRef(0);
+  const [benchmark, setBenchmark] = React.useState<null | number>(null);
+
+  React.useEffect(() => {
+    const subscription = messagePort.addListener("message", (msg) => {
+      if (msg.id === MSG_COUNT) {
+        const totalTime = Date.now() - timerRef.current;
+        setBenchmark(totalTime);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -21,14 +44,19 @@ export default function App() {
           <Button
             title="Send"
             onPress={async () => {
-              for (let i = 0; i < 1000; i++) {
-                messagePort.postMessage(`Hello ${i} from React Native!`);
+              timerRef.current = Date.now();
+              for (const msg of MESSAGE_FIXTURES) {
+                messagePort.postMessage(msg);
               }
             }}
           />
         </Group>
         <Group name="Received Messages">
-          <Text>{JSON.stringify(onChangePayload)}</Text>
+          {benchmark === null ? null : (
+            <Text>
+              Received {MSG_COUNT} messages in {benchmark}ms
+            </Text>
+          )}
         </Group>
         <Group name="Render count">
           <Text>{renderCount++}</Text>
@@ -58,16 +86,30 @@ const styles = {
   },
   group: {
     margin: 20,
-    backgroundColor: '#fff',
+    backgroundColor: "#fff",
     borderRadius: 10,
     padding: 20,
   },
   container: {
     flex: 1,
-    backgroundColor: '#eee',
+    backgroundColor: "#eee",
   },
   view: {
     flex: 1,
     height: 200,
   },
 };
+
+function createRandomUser(_, i) {
+  return {
+    id: i + 1,
+    uuid: faker.string.uuid(),
+    avatar: faker.image.avatar(),
+    birthday: faker.date.birthdate().toISOString(),
+    email: faker.internet.email(),
+    firstName: faker.person.firstName(),
+    lastName: faker.person.lastName(),
+    sex: faker.person.sexType(),
+    subscriptionTier: faker.helpers.arrayElement(["free", "basic", "business"]),
+  };
+}

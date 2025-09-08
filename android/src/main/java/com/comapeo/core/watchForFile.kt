@@ -1,11 +1,8 @@
 package com.comapeo.core
 
-import android.os.Build
 import android.os.FileObserver
-import androidx.annotation.RequiresApi
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
-import java.nio.file.*
-import kotlinx.coroutines.*
 
 /**
  * A suspendable function that watches for file creation at the specified path.

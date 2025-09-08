@@ -12,7 +12,7 @@ export function createComapeoRpcServer({ path }) {
     const messagePort = new SocketMessagePort(socket);
     messagePorts.add(messagePort);
     messagePort.on("message", (message) => {
-      messagePort.postMessage(`Hello desde nodejs ${count++}`);
+      messagePort.postMessage(message);
     });
     messagePort.on("messageerror", (error) => {
       console.error("Client sent invalid message", error);

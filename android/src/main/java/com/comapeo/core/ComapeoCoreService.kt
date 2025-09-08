@@ -5,21 +5,17 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.Process
 import android.os.RemoteCallbackList
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import android.os.Process
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.runBlocking
 
 enum class ServiceState {
     STOPPED, STARTING, STARTED, STOPPING, ERROR
@@ -105,7 +101,7 @@ class ComapeoCoreService : Service() {
         log("The service has been destroyed".uppercase())
         Toast.makeText(this, "Service destroyed", Toast.LENGTH_SHORT).show()
 
-        Process.killProcess(Process.myPid());
+        Process.killProcess(Process.myPid())
     }
 
     private fun startService() {
@@ -136,7 +132,7 @@ class ComapeoCoreService : Service() {
         // to use a specific method to create the notification
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val notificationManager =
-                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "CoMapeo Service channel",
@@ -172,7 +168,7 @@ class ComapeoCoreService : Service() {
     private fun updateNotification(isForeground: Boolean) {
         val notification = createNotification(isForeground)
         val notificationManager =
-            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID, notification)
     }
 

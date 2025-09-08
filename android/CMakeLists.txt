@@ -46,11 +46,15 @@ add_library( libnode
              # Provides the path to the library you want to import.
              ${CMAKE_SOURCE_DIR}/libnode/bin/${ANDROID_ABI}/libnode.so )
 
+# Find and link fbjni
+find_package(fbjni REQUIRED CONFIG)
+
 # Specifies libraries CMake should link to your target library. You
 # can link libraries from various origins, such as libraries defined in this
 # build script, prebuilt third-party libraries, or Android system libraries.
 target_link_libraries(${CMAKE_PROJECT_NAME}
     # List libraries link to the target library
     libnode
+    fbjni::fbjni
     android
     log)

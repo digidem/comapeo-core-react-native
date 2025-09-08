@@ -1,12 +1,15 @@
-#include <jni.h>
+#include <fbjni/fbjni.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <cstdlib>
 #include <string>
+#include <vector>
 #include <android/log.h>
 
 #include "node.h"
 #include "log.h"
+
+using namespace facebook::jni;
 
 #if defined(__arm__)
 #define CURRENT_ABI_NAME "armeabi-v7a"
@@ -19,22 +22,6 @@
 #else
 #error "Trying to compile for an unknown ABI."
 #endif
-
-extern "C"
-JNIEXPORT jstring JNICALL
-Java_com_comapeo_core_NodeJSService_getCurrentABIName(JNIEnv *env,
-                                                           [[maybe_unused]] jclass clazz) {
-    log("getCurrentABIName: %s", CURRENT_ABI_NAME);
-    return env->NewStringUTF(CURRENT_ABI_NAME);
-}
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_comapeo_core_NodeJSService_initialize(JNIEnv *env, [[maybe_unused]] jclass clazz,
-                                                    jstring dataDir) {
-    const char *nativeDataDir = env->GetStringUTFChars(dataDir, nullptr);
-    log("initialize: %s", nativeDataDir);
-    env->ReleaseStringUTFChars(dataDir, nativeDataDir);
-}
 
 // Start threads to redirect stdout and stderr to logcat.
 int pipe_stdout[2];
@@ -69,12 +56,12 @@ void *thread_stdout_func(void *) {
 }
 
 int start_redirecting_stdout_stderr() {
-    //set stdout as unbuffered.
+    // set stdout as unbuffered.
     setvbuf(stdout, nullptr, _IONBF, 0);
     pipe(pipe_stdout);
     dup2(pipe_stdout[1], STDOUT_FILENO);
 
-    //set stderr as unbuffered.
+    // set stderr as unbuffered.
     setvbuf(stderr, nullptr, _IONBF, 0);
     pipe(pipe_stderr);
     dup2(pipe_stderr[1], STDERR_FILENO);
@@ -98,68 +85,67 @@ void stop_redirecting_stdout_stderr() {
     close(pipe_stderr[1]);
 }
 
-//node's libUV requires all arguments being on contiguous memory.
-extern "C" jint JNICALL
-Java_com_comapeo_core_NodeJSService_startNodeWithArguments(
-        JNIEnv *env,
-        [[maybe_unused]] jclass clazz,
-        jobjectArray arguments) {
+class NodeJSService : public JavaClass<NodeJSService> {
+public:
+    static constexpr auto kJavaDescriptor = "Lcom/comapeo/core/NodeJSService;";
 
-    log("Starting NodeJS with arguments.");
-    //argc
-    jsize argument_count = env->GetArrayLength(arguments);
-
-    //Compute byte size need for all arguments in contiguous memory.
-    int c_arguments_size = 0;
-    for (int i = 0; i < argument_count; i++) {
-        c_arguments_size += static_cast<int>(strlen(
-                env->GetStringUTFChars((jstring) env->GetObjectArrayElement(arguments, i),
-                                       nullptr)));
-        c_arguments_size++; // for '\0'
+    static jstring getCurrentABIName(alias_ref<JClass>) {
+        log("getCurrentABIName: %s", CURRENT_ABI_NAME);
+        return make_jstring(CURRENT_ABI_NAME).release();
     }
 
-    //Stores arguments in contiguous memory.
-    char *args_buffer = (char *) calloc(c_arguments_size, sizeof(char));
-
-    //argv to pass into node.
-    char *argv[argument_count];
-
-    //To iterate through the expected start position of each argument in args_buffer.
-    char *current_args_position = args_buffer;
-
-    //Populate the args_buffer and argv.
-    for (int i = 0; i < argument_count; i++) {
-        const char *current_argument = env->GetStringUTFChars(
-                (jstring) env->GetObjectArrayElement(arguments, i), nullptr);
-
-        //Copy current argument to its expected position in args_buffer
-        strncpy(current_args_position, current_argument, strlen(current_argument));
-
-        //Save current argument start position in argv
-        argv[i] = current_args_position;
-
-        //Increment to the next argument's expected position.
-        current_args_position += strlen(current_args_position) + 1;
+    static void initialize(alias_ref<JClass>, alias_ref<jstring> dataDir) {
+        auto nativeDataDir = dataDir->toStdString();
+        log("initialize: %s", nativeDataDir.c_str());
     }
 
-    log("about to start redirection");
+    static jint startNodeWithArguments(alias_ref<JClass>,
+                                       alias_ref<JArrayClass<jstring>> arguments) {
+        log("Starting NodeJS with arguments.");
 
-    //Start threads to show stdout and stderr in logcat.
-    if (start_redirecting_stdout_stderr() == -1) {
-        __android_log_write(ANDROID_LOG_ERROR, ADBTAG,
-                            "Couldn't start redirecting stdout and stderr to logcat.");
+        // Convert Java string array to char* array for Node.js
+        // node's libUV requires all arguments being on contiguous memory.
+        std::vector<char *> argv;
+        std::vector<std::string> argStrings;
+        size_t size = arguments->size();
+
+        for (size_t i = 0; i < size; i++) {
+            auto jstr = arguments->getElement(i);
+            argStrings.push_back(jstr->toStdString());
+            argv.push_back(const_cast<char *>(argStrings.back().c_str()));
+        }
+
+        log("about to start redirection");
+
+        // Start threads to show stdout and stderr in logcat.
+        if (start_redirecting_stdout_stderr() == -1) {
+            __android_log_write(ANDROID_LOG_ERROR, ADBTAG,
+                                "Couldn't start redirecting stdout and stderr to logcat.");
+        }
+
+        log("about to start node");
+
+        // Start node, with argc and argv.
+        const int exit_code = node::Start(argv.size(), argv.data());
+
+        // Clean up redirection.
+        stop_redirecting_stdout_stderr();
+
+        return exit_code;
     }
 
-    log("about to start node");
+    static void registerNatives() {
+        javaClassStatic()->registerNatives({
+                                                   makeNativeMethod("getCurrentABIName",
+                                                                    NodeJSService::getCurrentABIName),
+                                                   makeNativeMethod("initialize",
+                                                                    NodeJSService::initialize),
+                                                   makeNativeMethod("startNodeWithArguments",
+                                                                    NodeJSService::startNodeWithArguments),
+                                           });
+    }
+};
 
-    //Start node, with argc and argv.
-    const int exit_code = node::Start(argument_count, argv);
-
-    // Clean up resources.
-    free(args_buffer);
-
-    // Clean up redirection.
-    stop_redirecting_stdout_stderr();
-
-    return jint(exit_code);
+extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
+    return facebook::jni::initialize(vm, [] { NodeJSService::registerNatives(); });
 }
