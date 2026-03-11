@@ -10,7 +10,6 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
-import android.os.RemoteCallbackList
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -28,7 +27,6 @@ class ComapeoCoreService : Service() {
     private var isServiceStarted: Boolean = false
     private lateinit var nodeJSService: NodeJSService
 
-    private val callbacks = RemoteCallbackList<IServiceCallback>()
     private val _serviceState = MutableStateFlow(ServiceState.STOPPED)
 
     companion object {

@@ -61,15 +61,6 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Generate Gradle wrapper jar
-        run: |
-          # Generate wrapper in a temp dir to avoid compiling project plugins
-          TMPDIR=$(mktemp -d)
-          cd "$TMPDIR"
-          gradle wrapper --gradle-version 8.13
-          cp gradle/wrapper/gradle-wrapper.jar "$GITHUB_WORKSPACE/example/android/gradle/wrapper/"
-          rm -rf "$TMPDIR"
-
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
@@ -79,25 +70,10 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      - name: Find library module name
-        id: find-module
-        run: |
-          cd example/android
-          # Discover the Expo-autolinked module name for our library
-          MODULE_NAME=$(./gradlew projects --no-daemon 2>&1 | grep -oP "Project ':[^']*comapeo[^']*'" | head -1 | tr -d "'" | sed 's/Project //' || true)
-          if [ -z "$MODULE_NAME" ]; then
-            echo "Could not find comapeo module, listing all projects:"
-            ./gradlew projects --no-daemon 2>&1 | grep "Project '" || true
-            # Fall back to trying common patterns
-            MODULE_NAME=":comapeo-core-react-native"
-          fi
-          echo "module=$MODULE_NAME" >> "$GITHUB_OUTPUT"
-          echo "Found module: $MODULE_NAME"
-
       - name: Run JVM unit tests
         run: |
           cd example/android
-          ./gradlew ${{ steps.find-module.outputs.module }}:testDebugUnitTest --no-daemon
+          ./gradlew :comapeo-core-react-native:testDebugUnitTest --no-daemon
 
       - name: Upload test results
         if: always()
@@ -165,15 +141,6 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Generate Gradle wrapper jar
-        run: |
-          # Generate wrapper in a temp dir to avoid compiling project plugins
-          TMPDIR=$(mktemp -d)
-          cd "$TMPDIR"
-          gradle wrapper --gradle-version 8.13
-          cp gradle/wrapper/gradle-wrapper.jar "$GITHUB_WORKSPACE/example/android/gradle/wrapper/"
-          rm -rf "$TMPDIR"
-
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
@@ -183,24 +150,10 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      - name: Find library module name
-        id: find-module
-        run: |
-          cd example/android
-          MODULE_NAME=$(./gradlew projects --no-daemon 2>&1 | grep -oP "Project ':[^']*comapeo[^']*'" | head -1 | tr -d "'" | sed 's/Project //' || true)
-          if [ -z "$MODULE_NAME" ]; then
-            echo "Could not find comapeo module, listing all projects:"
-            ./gradlew projects --no-daemon 2>&1 | grep "Project '" || true
-            # Fall back to trying common patterns
-            MODULE_NAME=":comapeo-core-react-native"
-          fi
-          echo "module=$MODULE_NAME" >> "$GITHUB_OUTPUT"
-          echo "Found module: $MODULE_NAME"
-
       - name: Build test APKs
         run: |
           cd example/android
-          ./gradlew ${{ steps.find-module.outputs.module }}:assembleDebugAndroidTest :app:assembleDebug --no-daemon
+          ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest --no-daemon
 
       - name: Run instrumented tests
         uses: reactivecircus/android-emulator-runner@v2
@@ -215,7 +168,7 @@ jobs:
           disable-animations: true
           script: |
             cd example/android
-            ./gradlew ${{ steps.find-module.outputs.module }}:connectedDebugAndroidTest --no-daemon
+            ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest --no-daemon
 
       - name: Upload test results
         if: always()
