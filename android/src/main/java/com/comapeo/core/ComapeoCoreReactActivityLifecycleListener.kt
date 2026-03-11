@@ -23,7 +23,7 @@ class ComapeoCoreReactActivityLifecycleListener : ReactActivityLifecycleListener
     override fun onPause(activity: Activity?) {
         super.onPause(activity)
         log("onPause")
-        actionOnService(activity!!, Actions.USER_BACKGROUND)
+        activity?.let { actionOnService(it, Actions.USER_BACKGROUND) }
     }
 
     private fun actionOnService(activity: Activity, action: Actions) {

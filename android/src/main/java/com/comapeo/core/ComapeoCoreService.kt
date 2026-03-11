@@ -15,8 +15,12 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 enum class ServiceState {
     STOPPED, STARTING, STARTED, STOPPING, ERROR
@@ -26,6 +30,7 @@ class ComapeoCoreService : Service() {
 
     private var isServiceStarted: Boolean = false
     private lateinit var nodeJSService: NodeJSService
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private val _serviceState = MutableStateFlow(ServiceState.STOPPED)
 
@@ -98,14 +103,19 @@ class ComapeoCoreService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         log("onDestroy")
-        runBlocking {
-            nodeJSService.stop()
-            log("NodeJS service stopped")
+        isServiceStarted = false
+        serviceScope.launch {
+            try {
+                withTimeout(10_000) {
+                    nodeJSService.stop()
+                }
+                log("NodeJS service stopped")
+            } catch (e: Exception) {
+                log("Error stopping NodeJS service: ${e.message}")
+            }
+            log("The service has been destroyed".uppercase())
+            Process.killProcess(Process.myPid())
         }
-        log("The service has been destroyed".uppercase())
-        Toast.makeText(this, "Service destroyed", Toast.LENGTH_SHORT).show()
-
-        Process.killProcess(Process.myPid())
     }
 
     private fun startService() {
@@ -133,7 +143,7 @@ class ComapeoCoreService : Service() {
 
     private fun stopService() {
         log("Stopping the foreground service")
-        // Toast.makeText(this, "Service stopping", Toast.LENGTH_SHORT).show()
+        isServiceStarted = false
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()

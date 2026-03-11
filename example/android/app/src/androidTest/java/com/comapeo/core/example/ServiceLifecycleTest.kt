@@ -193,6 +193,30 @@ class ServiceLifecycleTest {
         )
     }
 
+    /**
+     * Verifies fix: isServiceStarted was not reset on stop, preventing restart.
+     * Without the fix, the second USER_FOREGROUND would be a no-op because
+     * isServiceStarted was still true after stop.
+     */
+    @Test
+    fun stopThenRestartWorks() {
+        // First start
+        startServiceWithAction(Actions.USER_FOREGROUND)
+        assertTrue("Service should start", waitForServiceRunning())
+        Thread.sleep(5000)
+
+        // Stop
+        startServiceWithAction(Actions.STOP)
+        assertTrue("Service should stop", waitForServiceStopped())
+
+        // Restart — this would fail if isServiceStarted wasn't reset
+        startServiceWithAction(Actions.USER_FOREGROUND)
+        assertTrue(
+            "Service should restart after being stopped",
+            waitForServiceRunning()
+        )
+    }
+
     @Test
     fun notificationExistsWhileRunning() {
         startServiceWithAction(Actions.USER_FOREGROUND)

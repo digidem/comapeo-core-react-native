@@ -1,6 +1,8 @@
 import net from "node:net";
 import { SocketMessagePort } from "./message-port.js";
 
+let count = 0;
+
 /**
  * @param {{path: string}} opts
  */
