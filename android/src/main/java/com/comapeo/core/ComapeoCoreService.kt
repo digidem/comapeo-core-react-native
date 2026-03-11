@@ -136,12 +136,12 @@ class ComapeoCoreService : Service() {
     }
 
     private fun startService() {
-        if (isServiceStarted) return
         log("Starting the foreground service")
-        Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
 
         val notification = createNotification(true)
 
+        // Always call startForeground — Android requires it every time
+        // startForegroundService() is called, even if already in foreground.
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
@@ -153,8 +153,10 @@ class ComapeoCoreService : Service() {
             }
         )
 
-        nodeJSService.start(nodeJSServiceCallback)
+        if (isServiceStarted) return
 
+        Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
+        nodeJSService.start(nodeJSServiceCallback)
         isServiceStarted = true
     }
 
