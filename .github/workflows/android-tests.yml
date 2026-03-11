@@ -157,9 +157,7 @@ jobs:
           ram-size: 4096M
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           disable-animations: true
-          script: |
-            cd example/android
-            ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon
+          script: cd example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon
 
       - name: Upload test results
         if: always()
