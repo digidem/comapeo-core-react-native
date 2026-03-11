@@ -36,12 +36,15 @@ export default function App() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView style={styles.container}>
-        <Text style={styles.header}>Module API Example</Text>
+        <Text style={styles.header} testID="header">
+          Module API Example
+        </Text>
         <Group name="State">
-          <Text>{serverState}</Text>
+          <Text testID="state-value">{serverState}</Text>
         </Group>
         <Group name="Message Server">
           <Button
+            testID="send-button"
             title="Send"
             onPress={async () => {
               timerRef.current = Date.now();
@@ -53,13 +56,13 @@ export default function App() {
         </Group>
         <Group name="Received Messages">
           {benchmark === null ? null : (
-            <Text>
+            <Text testID="benchmark-result">
               Received {MSG_COUNT} messages in {benchmark}ms
             </Text>
           )}
         </Group>
         <Group name="Render count">
-          <Text>{renderCount++}</Text>
+          <Text testID="render-count">{renderCount++}</Text>
         </Group>
       </ScrollView>
     </SafeAreaView>
