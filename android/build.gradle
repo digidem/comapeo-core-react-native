@@ -82,10 +82,21 @@ android {
     ndkVersion '27.0.12077973'
 }
 
-// Configure asset change detection
+// Install Node.js backend dependencies before merging assets
+def nodejsProjectDir = file("src/main/assets/nodejs-project")
+def installNodejsDeps = tasks.register("installNodejsProjectDeps", Exec) {
+    workingDir nodejsProjectDir
+    commandLine "npm", "install", "--omit=dev"
+    inputs.file(new File(nodejsProjectDir, "package.json"))
+    inputs.file(new File(nodejsProjectDir, "package-lock.json"))
+    outputs.dir(new File(nodejsProjectDir, "node_modules"))
+}
+
+// Configure asset change detection and dependency on npm install
 android.libraryVariants.all { variant ->
     def mergeAssetsTask = tasks.findByName("merge${variant.name.capitalize()}Assets")
     if (mergeAssetsTask) {
+        mergeAssetsTask.dependsOn(installNodejsDeps)
         mergeAssetsTask.inputs.dir("src/main/assets/nodejs-project")
     }
 }

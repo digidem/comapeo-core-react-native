@@ -12,7 +12,6 @@ import com.comapeo.core.ComapeoCoreService
 import org.junit.After
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -106,23 +105,22 @@ class ServiceLifecycleTest {
     }
 
     private fun stopServiceAndWait() {
-        // Stop the service. The service's onDestroy calls Process.killProcess which
-        // triggers START_STICKY restart, so we may need to stop multiple times.
-        repeat(3) {
+        // Don't use startServiceWithAction(STOP) here — it starts the service process
+        // and queues a STOP intent that races with subsequent USER_FOREGROUND intents.
+        // Instead, use context.stopService (which doesn't start the process) and
+        // direct process kill. The service's onDestroy calls Process.killProcess which
+        // triggers START_STICKY restart, so we may need to kill multiple times.
+        repeat(5) {
             try {
-                val intent = Intent(context, ComapeoCoreService::class.java)
-                context.stopService(intent)
+                context.stopService(Intent(context, ComapeoCoreService::class.java))
             } catch (_: Exception) {}
-            try {
-                startServiceWithAction(Actions.STOP)
-            } catch (_: Exception) {}
-            if (waitForServiceStopped(3000)) return
+            if (isServiceProcessRunning()) {
+                device.executeShellCommand(
+                    "kill \$(pidof $PACKAGE_NAME$SERVICE_PROCESS) 2>/dev/null"
+                )
+            }
+            if (waitForServiceStopped(2000)) return
         }
-        // Last resort: kill the process directly
-        device.executeShellCommand(
-            "kill \$(pidof $PACKAGE_NAME$SERVICE_PROCESS) 2>/dev/null"
-        )
-        waitForServiceStopped()
     }
 
     // --- Tests ---
@@ -137,7 +135,6 @@ class ServiceLifecycleTest {
         )
     }
 
-    @Ignore("Requires full app bundle — Node.js exits immediately without JS backend")
     @Test
     fun serviceRunsInSeparateProcess() {
         startServiceWithAction(Actions.USER_FOREGROUND)
@@ -149,7 +146,6 @@ class ServiceLifecycleTest {
         )
     }
 
-    @Ignore("Requires full app bundle — Node.js exits immediately without JS backend")
     @Test
     fun stopActionStopsService() {
         startServiceWithAction(Actions.USER_FOREGROUND)
@@ -163,7 +159,6 @@ class ServiceLifecycleTest {
         )
     }
 
-    @Ignore("Requires full app bundle — Node.js exits immediately without JS backend")
     @Test
     fun userBackgroundDoesNotStopService() {
         startServiceWithAction(Actions.USER_FOREGROUND)
@@ -179,7 +174,6 @@ class ServiceLifecycleTest {
         )
     }
 
-    @Ignore("Requires full app bundle — Node.js exits immediately without JS backend")
     @Test
     fun doubleStartIsIdempotent() {
         startServiceWithAction(Actions.USER_FOREGROUND)
@@ -195,7 +189,6 @@ class ServiceLifecycleTest {
         )
     }
 
-    @Ignore("Requires full app bundle — Node.js exits immediately without JS backend")
     @Test
     fun notificationExistsWhileRunning() {
         startServiceWithAction(Actions.USER_FOREGROUND)
