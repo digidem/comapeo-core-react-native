@@ -163,6 +163,8 @@ class ServiceLifecycleTest {
     fun userBackgroundDoesNotStopService() {
         startServiceWithAction(Actions.USER_FOREGROUND)
         assertTrue("Service should start", waitForServiceRunning())
+        // Wait for Node.js to fully initialize (asset extraction + startup)
+        Thread.sleep(5000)
 
         // USER_BACKGROUND should NOT stop the service, only update the notification
         startServiceWithAction(Actions.USER_BACKGROUND)
@@ -178,6 +180,8 @@ class ServiceLifecycleTest {
     fun doubleStartIsIdempotent() {
         startServiceWithAction(Actions.USER_FOREGROUND)
         assertTrue("Service should start", waitForServiceRunning())
+        // Wait for Node.js to fully initialize
+        Thread.sleep(5000)
 
         // Send USER_FOREGROUND again — should be a no-op
         startServiceWithAction(Actions.USER_FOREGROUND)
@@ -193,8 +197,8 @@ class ServiceLifecycleTest {
     fun notificationExistsWhileRunning() {
         startServiceWithAction(Actions.USER_FOREGROUND)
         assertTrue("Service should start", waitForServiceRunning())
-
-        Thread.sleep(2000)
+        // Wait for Node.js to fully initialize
+        Thread.sleep(5000)
         val notifOutput = device.executeShellCommand(
             "dumpsys notification --noredact | grep -A 5 'CoMapeo'"
         )

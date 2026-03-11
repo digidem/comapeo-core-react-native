@@ -120,7 +120,8 @@ class ShutdownPathTest {
     fun stopActionTriggersGracefulShutdown() {
         startServiceWithAction(Actions.USER_FOREGROUND)
         assertTrue("Service should start", waitForServiceRunning())
-        Thread.sleep(3000)
+        // Wait for Node.js to fully initialize (asset extraction + startup)
+        Thread.sleep(5000)
 
         startServiceWithAction(Actions.STOP)
 
@@ -134,6 +135,8 @@ class ShutdownPathTest {
     fun notificationStopActionStopsService() {
         startServiceWithAction(Actions.USER_FOREGROUND)
         assertTrue("Service should start", waitForServiceRunning())
+        // Wait for Node.js to fully initialize
+        Thread.sleep(5000)
 
         // Simulate backgrounding to show the Stop button in notification
         startServiceWithAction(Actions.USER_BACKGROUND)
