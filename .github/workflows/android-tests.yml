@@ -12,6 +12,7 @@ concurrency:
 
 env:
   NODEJS_MOBILE_VERSION: v18.20.4
+  NDK_VERSION: '27.0.12077973'
 
 jobs:
   unit-tests:
@@ -36,7 +37,10 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install NDK
-        run: sdkmanager --install "ndk;27.0.12077973"
+        run: |
+          if [ ! -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]; then
+            sdkmanager --install "ndk;$NDK_VERSION"
+          fi
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
@@ -49,20 +53,11 @@ jobs:
         if: steps.cache-libnode.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
-      - name: Install dependencies
+      - name: Install npm dependencies
         run: npm install --ignore-scripts
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
 
       - name: Run JVM unit tests
         run: |
@@ -85,10 +80,21 @@ jobs:
 
     strategy:
       matrix:
-        api-level: [34]
+        api-level: [30]
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          tool-cache: false
+          swap-storage: false
 
       - uses: actions/setup-node@v4
         with:
@@ -103,8 +109,32 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install NDK
-        run: sdkmanager --install "ndk;27.0.12077973"
+      - name: Install NDK and clean up unused SDK components
+        run: |
+          # Remove pre-installed NDKs we don't need (~1-2GB each)
+          if [ -d "$ANDROID_HOME/ndk" ]; then
+            for dir in "$ANDROID_HOME/ndk"/*/; do
+              ndk_dir=$(basename "$dir")
+              if [ "$ndk_dir" != "$NDK_VERSION" ]; then
+                echo "Removing unused NDK $ndk_dir"
+                rm -rf "$dir"
+              fi
+            done
+          fi
+          # Install the version we need if not already present
+          if [ ! -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]; then
+            sdkmanager --install "ndk;$NDK_VERSION"
+          fi
+          # Remove unused platform versions to save space
+          for dir in "$ANDROID_HOME/platforms"/*/; do
+            plat=$(basename "$dir")
+            case "$plat" in
+              android-34|android-${{ matrix.api-level }}) ;; # keep what we need
+              *) echo "Removing unused platform $plat"; rm -rf "$dir" ;;
+            esac
+          done
+          echo "=== Disk space after cleanup ==="
+          df -h /
 
       - name: Enable KVM
         run: |
@@ -123,20 +153,11 @@ jobs:
         if: steps.cache-libnode.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
-      - name: Install dependencies
+      - name: Install npm dependencies
         run: npm install --ignore-scripts
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
 
       - name: Build test APKs
         run: |
@@ -150,6 +171,7 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_6
+          disk-size: 2048M
           heap-size: 512M
           ram-size: 4096M
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
