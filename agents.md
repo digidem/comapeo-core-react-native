@@ -1,6 +1,25 @@
 # @comapeo/core-react-native
 
-An Expo module that integrates [CoMapeo Core](https://github.com/digidem/comapeo-core) — a local-first library for collaborating on mapping projects — into React Native applications. It runs CoMapeo Core in an embedded Node.js process and communicates with the React Native layer over IPC using Unix domain sockets.
+An Expo module that integrates [CoMapeo Core](https://github.com/digidem/comapeo-core) into React Native applications. It runs CoMapeo Core in an embedded Node.js process and communicates with the React Native layer over IPC using Unix domain sockets.
+
+## What is CoMapeo?
+
+[CoMapeo](https://comapeo.app/) is a local-first, peer-to-peer mapping and territorial monitoring tool built by [Awana Digital](https://awana.digital/) (formerly Digital Democracy) in collaboration with Indigenous partners across the Amazon, East Africa, Southeast Asia, and the Pacific. It is used by frontline environmental defenders in over 90 countries to map, monitor, and protect land and forest.
+
+CoMapeo is the successor to [Mapeo](https://docs.mapeo.app/), rebuilt from scratch with encrypted peer-to-peer data storage, improved project management, GPS tracks, and a more maintainable architecture.
+
+### CoMapeo ecosystem
+
+| Package | Role |
+|---|---|
+| [`@comapeo/core`](https://github.com/digidem/comapeo-core) | Core library (Node.js) — `MapeoManager` API for projects, observations, sync |
+| [`@comapeo/ipc`](https://github.com/digidem/comapeo-ipc) | IPC wrappers (`createMapeoServer` / `createMapeoClient`) for cross-context communication |
+| **`@comapeo/core-react-native`** (this repo) | Expo module — runs `@comapeo/core` in an embedded Node.js thread |
+| [`comapeo-mobile`](https://github.com/digidem/comapeo-mobile) | React Native mobile app |
+| [`comapeo-desktop`](https://github.com/digidem/comapeo-desktop) | Electron desktop app |
+| [`comapeo-cloud`](https://github.com/digidem/comapeo-cloud) | Self-hosted cloud server |
+
+This module is the bridge that lets `comapeo-mobile` use `@comapeo/core` (a Node.js library) from within React Native. In production, the Node.js entry point would initialize a `MapeoManager` and wrap it with `createMapeoServer` from `@comapeo/ipc`, while the React Native side would use `createMapeoClient` over the `messagePort` exported by this module. Currently, the embedded Node.js project contains a test scaffold that echoes messages back.
 
 ## Architecture overview
 
