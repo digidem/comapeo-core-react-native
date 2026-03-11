@@ -205,9 +205,8 @@ class ServiceLifecycleTest {
         assertTrue("Service should start", waitForServiceRunning())
         Thread.sleep(5000)
 
-        // Stop
-        startServiceWithAction(Actions.STOP)
-        assertTrue("Service should stop", waitForServiceStopped())
+        // Stop and wait for the process to fully die
+        stopServiceAndWait()
 
         // Restart — this would fail if isServiceStarted wasn't reset
         startServiceWithAction(Actions.USER_FOREGROUND)

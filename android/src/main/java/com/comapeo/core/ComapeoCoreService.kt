@@ -39,10 +39,19 @@ class ComapeoCoreService : Service() {
         const val NOTIFICATION_ID = 1
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
         const val STATE_SOCKET_FILENAME = "state.sock"
+        /**
+         * Tracks the number of active service instances in this process.
+         * Used to prevent Process.killProcess() in onDestroy from killing a
+         * process that has already created a new service instance (e.g. during
+         * a stop→restart cycle where Android reuses the same process).
+         */
+        @Volatile
+        private var activeInstanceCount = 0
     }
 
     override fun onCreate() {
         super.onCreate()
+        activeInstanceCount++
         nodeJSService = NodeJSService(applicationContext)
         log("The service has been created".uppercase())
     }
@@ -104,6 +113,7 @@ class ComapeoCoreService : Service() {
         super.onDestroy()
         log("onDestroy")
         isServiceStarted = false
+        activeInstanceCount--
         serviceScope.launch {
             try {
                 withTimeout(10_000) {
@@ -114,7 +124,14 @@ class ComapeoCoreService : Service() {
                 log("Error stopping NodeJS service: ${e.message}")
             }
             log("The service has been destroyed".uppercase())
-            Process.killProcess(Process.myPid())
+            // Only kill the process if no new service instance has started.
+            // During a stop→restart cycle, Android may create a new instance
+            // in the same process before this coroutine completes.
+            if (activeInstanceCount <= 0) {
+                Process.killProcess(Process.myPid())
+            } else {
+                log("Skipping process kill — new service instance is active")
+            }
         }
     }
 
