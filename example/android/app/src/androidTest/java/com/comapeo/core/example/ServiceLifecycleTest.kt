@@ -137,6 +137,7 @@ class ServiceLifecycleTest {
         )
     }
 
+    @Ignore("Requires full app bundle — Node.js exits immediately without JS backend")
     @Test
     fun serviceRunsInSeparateProcess() {
         startServiceWithAction(Actions.USER_FOREGROUND)
@@ -148,6 +149,7 @@ class ServiceLifecycleTest {
         )
     }
 
+    @Ignore("Requires full app bundle — Node.js exits immediately without JS backend")
     @Test
     fun stopActionStopsService() {
         startServiceWithAction(Actions.USER_FOREGROUND)
