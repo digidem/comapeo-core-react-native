@@ -12,7 +12,6 @@ concurrency:
 
 env:
   NODEJS_MOBILE_VERSION: v18.20.4
-  NDK_VERSION: '27.0.12077973'
 
 jobs:
   unit-tests:
@@ -35,12 +34,6 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Install NDK
-        run: |
-          if [ ! -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]; then
-            sdkmanager --install "ndk;$NDK_VERSION"
-          fi
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
@@ -109,23 +102,11 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install NDK and clean up unused SDK components
+      - name: Clean up unused SDK components
         run: |
-          # Remove pre-installed NDKs we don't need (~1-2GB each)
-          if [ -d "$ANDROID_HOME/ndk" ]; then
-            for dir in "$ANDROID_HOME/ndk"/*/; do
-              ndk_dir=$(basename "$dir")
-              if [ "$ndk_dir" != "$NDK_VERSION" ]; then
-                echo "Removing unused NDK $ndk_dir"
-                rm -rf "$dir"
-              fi
-            done
-          fi
-          # Install the version we need if not already present
-          if [ ! -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]; then
-            sdkmanager --install "ndk;$NDK_VERSION"
-          fi
-          # Remove unused platform versions to save space
+          # Remove pre-installed NDKs (~1-2GB each) — Gradle auto-installs what it needs
+          rm -rf "$ANDROID_HOME/ndk"
+          # Remove unused platform versions
           for dir in "$ANDROID_HOME/platforms"/*/; do
             plat=$(basename "$dir")
             case "$plat" in
