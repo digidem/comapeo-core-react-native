@@ -72,10 +72,10 @@ jobs:
         run: |
           cd example/android
           # Discover the Expo-autolinked module name for our library
-          MODULE_NAME=$(./gradlew projects --no-daemon 2>&1 | grep -oP "Project ':[^']*comapeo[^']*'" | head -1 | tr -d "'" | sed 's/Project //')
+          MODULE_NAME=$(./gradlew projects --no-daemon 2>&1 | grep -oP "Project ':[^']*comapeo[^']*'" | head -1 | tr -d "'" | sed 's/Project //' || true)
           if [ -z "$MODULE_NAME" ]; then
             echo "Could not find comapeo module, listing all projects:"
-            ./gradlew projects --no-daemon 2>&1 | grep "Project '"
+            ./gradlew projects --no-daemon 2>&1 | grep "Project '" || true
             # Fall back to trying common patterns
             MODULE_NAME=":comapeo-core-react-native"
           fi
@@ -163,10 +163,11 @@ jobs:
         id: find-module
         run: |
           cd example/android
-          MODULE_NAME=$(./gradlew projects --no-daemon 2>&1 | grep -oP "Project ':[^']*comapeo[^']*'" | head -1 | tr -d "'" | sed 's/Project //')
+          MODULE_NAME=$(./gradlew projects --no-daemon 2>&1 | grep -oP "Project ':[^']*comapeo[^']*'" | head -1 | tr -d "'" | sed 's/Project //' || true)
           if [ -z "$MODULE_NAME" ]; then
             echo "Could not find comapeo module, listing all projects:"
-            ./gradlew projects --no-daemon 2>&1 | grep "Project '"
+            ./gradlew projects --no-daemon 2>&1 | grep "Project '" || true
+            # Fall back to trying common patterns
             MODULE_NAME=":comapeo-core-react-native"
           fi
           echo "module=$MODULE_NAME" >> "$GITHUB_OUTPUT"
