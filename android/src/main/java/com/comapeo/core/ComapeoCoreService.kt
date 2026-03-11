@@ -28,14 +28,13 @@ class ComapeoCoreService : Service() {
     private var isServiceStarted: Boolean = false
     private lateinit var nodeJSService: NodeJSService
 
-    private val callbacks = RemoteCallbackList<IServiceCallback>()
     private val _serviceState = MutableStateFlow(ServiceState.STOPPED)
 
     companion object {
         const val CHANNEL_ID = "ComapeoServiceChannel"
         const val NOTIFICATION_ID = 1
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
-        const val STATE_SOCKET_FILENAME = "state.sock"
+        const val CONTROL_SOCKET_FILENAME = "control.sock"
     }
 
     override fun onCreate() {

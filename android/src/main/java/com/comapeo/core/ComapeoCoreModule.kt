@@ -34,15 +34,11 @@ class ComapeoCoreModule : Module() {
         Name("ComapeoCore")
 
         // Defines event names that the module can send to JavaScript.
-        Events("message", "stateChange")
+        Events("message")
 
         // Defines a JavaScript synchronous function that runs the native code on the JavaScript thread.
         Function("postMessage") { message: String ->
             ipc.sendMessage(message)
-        }
-
-        Function ("getState") {
-            return@Function "STARTED"
         }
     }
 }

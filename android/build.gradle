@@ -69,7 +69,6 @@ android {
         }
     }
     buildFeatures {
-        aidl true
         prefab true
     }
     packagingOptions {

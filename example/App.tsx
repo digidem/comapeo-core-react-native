@@ -1,63 +1,20 @@
 import { useEvent } from "expo";
-import { messagePort, state } from "@comapeo/core-react-native";
+import { comapeo } from "@comapeo/core-react-native";
 import { Button, SafeAreaView, ScrollView, Text, View } from "react-native";
 import { faker } from "@faker-js/faker";
 import React from "react";
 
 let renderCount = 0;
 
-const MSG_COUNT = 1000;
-const fixtureStart = Date.now();
-faker.seed("nodejs-mobile-test-messages");
-const MESSAGE_FIXTURES = Array.from({ length: MSG_COUNT }, createRandomUser);
-const fixtureTime = Date.now() - fixtureStart;
-
-console.log("initial state:", state.getState());
-
 export default function App() {
-  // const onChangePayload = useEvent(messagePort, "message");
-  const serverState = useEvent(state, "stateChange", state.getState());
-  const timerRef = React.useRef(0);
-  const [benchmark, setBenchmark] = React.useState<null | number>(null);
-
-  React.useEffect(() => {
-    const subscription = messagePort.addListener("message", (msg) => {
-      if (msg.id === MSG_COUNT) {
-        const totalTime = Date.now() - timerRef.current;
-        setBenchmark(totalTime);
-      }
-    });
-
-    return () => {
-      subscription.remove();
-    };
-  }, []);
-
+  const projects = React.use(comapeo.listProjects());
+  console.log("Projects", projects);
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView style={styles.container}>
         <Text style={styles.header}>Module API Example</Text>
-        <Group name="State">
-          <Text>{serverState}</Text>
-        </Group>
-        <Group name="Message Server">
-          <Button
-            title="Send"
-            onPress={async () => {
-              timerRef.current = Date.now();
-              for (const msg of MESSAGE_FIXTURES) {
-                messagePort.postMessage(msg);
-              }
-            }}
-          />
-        </Group>
-        <Group name="Received Messages">
-          {benchmark === null ? null : (
-            <Text>
-              Received {MSG_COUNT} messages in {benchmark}ms
-            </Text>
-          )}
-        </Group>
+
+        <Group name="Received Messages">{projects.length}</Group>
         <Group name="Render count">
           <Text>{renderCount++}</Text>
         </Group>
@@ -100,7 +57,7 @@ const styles = {
   },
 };
 
-function createRandomUser(_, i) {
+function createRandomUser(_: any, i: number) {
   return {
     id: i + 1,
     uuid: faker.string.uuid(),

@@ -1,0 +1,42 @@
+{
+  "name": "nodejs-project",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "rollup -c"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@comapeo/core": "^4.3.0",
+    "@comapeo/ipc": "^5.0.0",
+    "ensure-error": "^4.0.0",
+    "fastify": "^4.29.1",
+    "framed-stream": "^1.0.1",
+    "fs-native-extensions": "1.4.3",
+    "tiny-typed-emitter": "^2.1.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-alias": "^5.1.1",
+    "@rollup/plugin-commonjs": "^28.0.6",
+    "@rollup/plugin-esm-shim": "^0.1.8",
+    "@rollup/plugin-json": "^6.1.0",
+    "@rollup/plugin-node-resolve": "^16.0.1",
+    "@rollup/plugin-replace": "^6.0.2",
+    "@tsconfig/node18": "^18.2.4",
+    "@types/streamx": "^2.9.5",
+    "@types/tar-stream": "^3.1.4",
+    "rollup": "^4.52.2",
+    "tar-stream": "^3.1.7",
+    "type-fest": "^4.33.0",
+    "typescript": "^5.9.2"
+  },
+  "overrides": {
+    "fs-native-extensions": "1.4.3",
+    "@hyperswarm/secret-stream": "6.6.4"
+  }
+}

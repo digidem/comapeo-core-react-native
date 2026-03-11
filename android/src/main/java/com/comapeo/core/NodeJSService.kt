@@ -37,7 +37,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
     private val nodeProjectDir: File = File(filesDir, NODEJS_PROJECT_DIRNAME)
     private val jsFile: File = File(nodeProjectDir, NODEJS_PROJECT_INDEX_FILENAME)
     private val comapeoSocketFile: File = File(filesDir, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
-    private val stateSocketFile: File = File(filesDir, ComapeoCoreService.STATE_SOCKET_FILENAME)
+    private val controlSocketFile: File = File(filesDir, ComapeoCoreService.CONTROL_SOCKET_FILENAME)
     private val sharedPrefsName = packageName + SHARED_PREFS_NAME_POSTFIX
     private val json = Json { encodeDefaults = true }
     private lateinit var ipc : NodeJSIPC
@@ -67,7 +67,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                 deleteSocketFiles()
                 log("Deleted socket files")
             }
-            ipc = NodeJSIPC(stateSocketFile) { message ->
+            ipc = NodeJSIPC(controlSocketFile) { message ->
                 log("Received message: $message")
             }
         }
@@ -92,7 +92,8 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                         "node",
                         jsFile.absolutePath,
                         comapeoSocketFile.absolutePath,
-                        stateSocketFile.absolutePath
+                        controlSocketFile.absolutePath,
+                        dataDir,
                     )
                 )
                 log("NodeJS service completed with exit code $exitCode")
@@ -118,7 +119,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
         nodeJob = null
         log("nodeJob completed")
         log("Comapeo socket file exists: ${comapeoSocketFile.exists()}")
-        log("State socket file exists: ${stateSocketFile.exists()}")
+        log("State socket file exists: ${controlSocketFile.exists()}")
     }
 
     private fun onDestroy() {
@@ -130,7 +131,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
 
     private fun deleteSocketFiles() {
         comapeoSocketFile.delete()
-        stateSocketFile.delete()
+        controlSocketFile.delete()
     }
 
     private fun shouldCopyAssets(): Boolean {
