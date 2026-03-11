@@ -49,14 +49,8 @@ jobs:
         if: steps.cache-libnode.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
-      - name: Install root dependencies
+      - name: Install dependencies
         run: npm install --ignore-scripts
-
-      - name: Install example dependencies
-        run: cd example && npm install --ignore-scripts
-
-      - name: Generate Android project (expo prebuild)
-        run: cd example && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -129,14 +123,8 @@ jobs:
         if: steps.cache-libnode.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
-      - name: Install root dependencies
+      - name: Install dependencies
         run: npm install --ignore-scripts
-
-      - name: Install example dependencies
-        run: cd example && npm install --ignore-scripts
-
-      - name: Generate Android project (expo prebuild)
-        run: cd example && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -153,7 +141,7 @@ jobs:
       - name: Build test APKs
         run: |
           cd example/android
-          ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest --no-daemon
+          ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest :app:assembleDebugAndroidTest --no-daemon
 
       - name: Run instrumented tests
         uses: reactivecircus/android-emulator-runner@v2
@@ -168,7 +156,7 @@ jobs:
           disable-animations: true
           script: |
             cd example/android
-            ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest --no-daemon
+            ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon
 
       - name: Upload test results
         if: always()
@@ -178,3 +166,5 @@ jobs:
           path: |
             android/build/reports/androidTests/
             android/build/outputs/androidTest-results/
+            example/android/app/build/reports/androidTests/
+            example/android/app/build/outputs/androidTest-results/
