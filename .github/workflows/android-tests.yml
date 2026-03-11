@@ -58,6 +58,14 @@ jobs:
       - name: Generate Android project (expo prebuild)
         run: cd example && npx expo prebuild --platform android --no-install
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Generate Gradle wrapper jar
+        run: |
+          cd example/android
+          gradle wrapper --gradle-version 8.13
+
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
@@ -149,6 +157,14 @@ jobs:
 
       - name: Generate Android project (expo prebuild)
         run: cd example && npx expo prebuild --platform android --no-install
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Generate Gradle wrapper jar
+        run: |
+          cd example/android
+          gradle wrapper --gradle-version 8.13
 
       - name: Cache Gradle packages
         uses: actions/cache@v4
