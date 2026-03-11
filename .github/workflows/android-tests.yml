@@ -63,8 +63,12 @@ jobs:
 
       - name: Generate Gradle wrapper jar
         run: |
-          cd example/android
+          # Generate wrapper in a temp dir to avoid compiling project plugins
+          TMPDIR=$(mktemp -d)
+          cd "$TMPDIR"
           gradle wrapper --gradle-version 8.13
+          cp gradle/wrapper/gradle-wrapper.jar "$GITHUB_WORKSPACE/example/android/gradle/wrapper/"
+          rm -rf "$TMPDIR"
 
       - name: Cache Gradle packages
         uses: actions/cache@v4
@@ -163,8 +167,12 @@ jobs:
 
       - name: Generate Gradle wrapper jar
         run: |
-          cd example/android
+          # Generate wrapper in a temp dir to avoid compiling project plugins
+          TMPDIR=$(mktemp -d)
+          cd "$TMPDIR"
           gradle wrapper --gradle-version 8.13
+          cp gradle/wrapper/gradle-wrapper.jar "$GITHUB_WORKSPACE/example/android/gradle/wrapper/"
+          rm -rf "$TMPDIR"
 
       - name: Cache Gradle packages
         uses: actions/cache@v4
