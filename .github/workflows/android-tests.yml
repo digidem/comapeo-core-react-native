@@ -55,7 +55,7 @@ jobs:
       - name: Run JVM unit tests
         run: |
           cd example/android
-          ./gradlew :comapeo-core-react-native:testDebugUnitTest --no-daemon
+          ./gradlew :comapeo-core-react-native:testDebugUnitTest --no-daemon -PreactNativeArchitectures=x86_64
 
       - name: Upload test results
         if: always()
@@ -143,7 +143,7 @@ jobs:
       - name: Build test APKs
         run: |
           cd example/android
-          ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest :app:assembleDebugAndroidTest --no-daemon
+          ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest :app:assembleDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
 
       - name: Cache AVD snapshot
         uses: actions/cache@v4
@@ -177,7 +177,7 @@ jobs:
           ram-size: 4096M
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           disable-animations: true
-          script: cd example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon
+          script: cd example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
 
       - name: Upload test results
         if: always()
