@@ -62,3 +62,6 @@ ios/NodeMobile.xcframework/**/NodeMobile
 
 # Node headers
 android/libnode/include/
+
+# nodejs-mobile version marker
+android/libnode/.version

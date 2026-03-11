@@ -35,5 +35,6 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-android
-ios
+# Expo CNG generates these, but we check them in for native testing
+# android
+# ios

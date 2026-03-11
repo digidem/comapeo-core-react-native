@@ -12,11 +12,13 @@ export default function App() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView style={styles.container}>
-        <Text style={styles.header}>Module API Example</Text>
+        <Text style={styles.header} testID="header">
+          Module API Example
+        </Text>
 
         <Group name="Received Messages">{projects.length}</Group>
         <Group name="Render count">
-          <Text>{renderCount++}</Text>
+          <Text testID="render-count">{renderCount++}</Text>
         </Group>
       </ScrollView>
     </SafeAreaView>

@@ -40,6 +40,7 @@ android {
     defaultConfig {
         versionCode 1
         versionName "0.1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
                 cppFlags ''
@@ -80,10 +81,21 @@ android {
     ndkVersion '27.0.12077973'
 }
 
-// Configure asset change detection
+// Install Node.js backend dependencies before merging assets
+def nodejsProjectDir = file("src/main/assets/nodejs-project")
+def installNodejsDeps = tasks.register("installNodejsProjectDeps", Exec) {
+    workingDir nodejsProjectDir
+    commandLine "npm", "install", "--omit=dev"
+    inputs.file(new File(nodejsProjectDir, "package.json"))
+    inputs.file(new File(nodejsProjectDir, "package-lock.json"))
+    outputs.dir(new File(nodejsProjectDir, "node_modules"))
+}
+
+// Configure asset change detection and dependency on npm install
 android.libraryVariants.all { variant ->
     def mergeAssetsTask = tasks.findByName("merge${variant.name.capitalize()}Assets")
     if (mergeAssetsTask) {
+        mergeAssetsTask.dependsOn(installNodejsDeps)
         mergeAssetsTask.inputs.dir("src/main/assets/nodejs-project")
     }
 }
@@ -116,4 +128,15 @@ dependencies {
 
     implementation "androidx.core:core-ktx:1.16.0"
     compileOnly "com.facebook.fbjni:fbjni:0.3.0"
+
+    // JVM unit test dependencies
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0'
+
+    // Instrumented test dependencies
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test:rules:1.6.1'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test.uiautomator:uiautomator:2.3.0'
+    androidTestImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0'
 }

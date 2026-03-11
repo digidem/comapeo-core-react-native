@@ -3,6 +3,7 @@ package com.comapeo.core
 import android.content.ContextWrapper
 import android.util.Log
 import androidx.core.content.edit
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -40,7 +41,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
     private val controlSocketFile: File = File(filesDir, ComapeoCoreService.CONTROL_SOCKET_FILENAME)
     private val sharedPrefsName = packageName + SHARED_PREFS_NAME_POSTFIX
     private val json = Json { encodeDefaults = true }
-    private lateinit var ipc : NodeJSIPC
+    private val ipcDeferred = CompletableDeferred<NodeJSIPC>()
 
     companion object {
 
@@ -67,9 +68,9 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                 deleteSocketFiles()
                 log("Deleted socket files")
             }
-            ipc = NodeJSIPC(controlSocketFile) { message ->
+            ipcDeferred.complete(NodeJSIPC(controlSocketFile) { message ->
                 log("Received message: $message")
-            }
+            })
         }
     }
 
@@ -102,27 +103,36 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                 Log.e(TAG, "Error starting node", e)
                 callback.onError(e)
             } finally {
-                onDestroy()
+                deleteSocketFiles()
             }
         }
     }
 
     suspend fun stop() {
         if (nodeJob == null) {
-            throw IllegalStateException("NodeJS service is not running")
+            log("NodeJS service is not running, nothing to stop")
+            return
         }
-        val message = json.encodeToString(ShutdownMessage())
-        log(message)
-        ipc.sendMessage(message)
-        log("Sent shutdown message to NodeJS service")
-        nodeJob?.join()
-        nodeJob = null
-        log("nodeJob completed")
-        log("Comapeo socket file exists: ${comapeoSocketFile.exists()}")
-        log("State socket file exists: ${controlSocketFile.exists()}")
+        try {
+            val message = json.encodeToString(ShutdownMessage())
+            log(message)
+            val ipc = ipcDeferred.await()
+            ipc.sendMessage(message)
+            log("Sent shutdown message to NodeJS service")
+            nodeJob?.join()
+            log("nodeJob completed")
+        } catch (e: Exception) {
+            log("Error during stop: ${e.message}")
+            nodeJob?.cancel()
+        } finally {
+            nodeJob = null
+            if (ipcDeferred.isCompleted) {
+                ipcDeferred.await().disconnect()
+            }
+        }
     }
 
-    private fun onDestroy() {
+    fun destroy() {
         deleteSocketFiles()
         nodeJob?.cancel()
         serviceScope.cancel()

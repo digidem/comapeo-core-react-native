@@ -3,6 +3,7 @@ package com.comapeo.core
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,6 +24,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class NodeJSIPC(private val socketFile: File, private val onMessage: (String) -> Unit) {
     private val socketAddress =
         LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM)
@@ -31,7 +33,7 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (String) ->
     private var dataInputStream: DataInputStream? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var connectJob: Job? = null
-    private val sendChannel = Channel<String>(Channel.UNLIMITED)
+    private var sendChannel = Channel<String>(Channel.UNLIMITED)
 
     // Reusable buffers to reduce GC pressure
     private val receiveLengthBuffer = ByteArray(4)
@@ -47,24 +49,28 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (String) ->
     }
 
     private val state = MutableStateFlow<State>(State.Disconnected)
+    val connectionState: State get() = state.value
 
     init {
         log("NodeJSIPC initialized with socket file: ${socketFile.absolutePath}")
         connect()
     }
 
-    @Throws(Throwable::class)
     fun connect() {
         if (state.value is State.Connected || state.value is State.Connecting) {
             return
         }
-        val stateSnapshot = state.value
-        if (stateSnapshot is State.Error) {
-            throw stateSnapshot.exception
+        // Allow reconnection from error state
+        if (state.value is State.Error) {
+            state.value = State.Disconnected
+        }
+        // Create fresh send channel if previous was closed
+        if (sendChannel.isClosedForSend) {
+            sendChannel = Channel(Channel.UNLIMITED)
         }
         connectJob = scope.launch {
             while (isActive) {
-                when (val stateSnapshot = state.value) {
+                when (state.value) {
                     is State.Connecting, is State.Connected -> return@launch
                     is State.Disconnecting -> {
                         state.first { it is State.Disconnected }
@@ -76,7 +82,8 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (String) ->
                         // Loop continues if another thread changed the state before we could set it
                     }
                     is State.Error -> {
-                        throw stateSnapshot.exception
+                        // Reset to disconnected to allow reconnection
+                        state.value = State.Disconnected
                     }
                 }
             }
@@ -117,8 +124,9 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (String) ->
                     try {
                         sendMessageInternal(message)
                     } catch (e: IOException) {
-                        // Requeue message
-                        sendChannel.trySend(message)
+                        log("Send failed, disconnecting: ${e.message}")
+                        disconnect()
+                        break
                     }
                 }
             }
@@ -152,29 +160,30 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (String) ->
         if (state.value is State.Disconnecting || state.value is State.Disconnected) {
             return
         }
+        sendChannel.close()
         val disconnectJob = scope.launch {
             while (isActive) {
-                when (val stateSnapshot = state.value) {
+                when (state.value) {
                     is State.Disconnecting, is State.Disconnected -> return@launch
                     is State.Connecting -> {
-                        state.first { it is State.Connected }
+                        state.first { it is State.Connected || it is State.Error }
                     }
                     is State.Connected -> {
                         if (state.compareAndSet(State.Connected, State.Disconnecting)) {
                             break
                         }
-                        // Loop continues if another thread changed the state before we could set it
                     }
                     is State.Error -> {
-                        throw stateSnapshot.exception
+                        state.value = State.Disconnected
+                        return@launch
                     }
                 }
             }
             connectJob?.cancelAndJoin()
             connectJob = null
-            dataOutputStream?.close()
-            dataInputStream?.close()
-            socket.close()
+            try { dataOutputStream?.close() } catch (_: Exception) {}
+            try { dataInputStream?.close() } catch (_: Exception) {}
+            try { socket.close() } catch (_: Exception) {}
         }
         disconnectJob.invokeOnCompletion { cause ->
             state.value = when (cause) {

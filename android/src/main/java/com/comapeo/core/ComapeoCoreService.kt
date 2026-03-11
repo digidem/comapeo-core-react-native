@@ -10,14 +10,17 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
-import android.os.RemoteCallbackList
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 enum class ServiceState {
     STOPPED, STARTING, STARTED, STOPPING, ERROR
@@ -27,6 +30,7 @@ class ComapeoCoreService : Service() {
 
     private var isServiceStarted: Boolean = false
     private lateinit var nodeJSService: NodeJSService
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private val _serviceState = MutableStateFlow(ServiceState.STOPPED)
 
@@ -35,10 +39,19 @@ class ComapeoCoreService : Service() {
         const val NOTIFICATION_ID = 1
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
         const val CONTROL_SOCKET_FILENAME = "control.sock"
+        /**
+         * Tracks the number of active service instances in this process.
+         * Used to prevent Process.killProcess() in onDestroy from killing a
+         * process that has already created a new service instance (e.g. during
+         * a stop→restart cycle where Android reuses the same process).
+         */
+        @Volatile
+        private var activeInstanceCount = 0
     }
 
     override fun onCreate() {
         super.onCreate()
+        activeInstanceCount++
         nodeJSService = NodeJSService(applicationContext)
         log("The service has been created".uppercase())
     }
@@ -99,23 +112,36 @@ class ComapeoCoreService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         log("onDestroy")
-        runBlocking {
-            nodeJSService.stop()
-            log("NodeJS service stopped")
+        isServiceStarted = false
+        activeInstanceCount--
+        serviceScope.launch {
+            try {
+                withTimeout(10_000) {
+                    nodeJSService.stop()
+                }
+                log("NodeJS service stopped")
+            } catch (e: Exception) {
+                log("Error stopping NodeJS service: ${e.message}")
+            }
+            log("The service has been destroyed".uppercase())
+            // Only kill the process if no new service instance has started.
+            // During a stop→restart cycle, Android may create a new instance
+            // in the same process before this coroutine completes.
+            if (activeInstanceCount <= 0) {
+                Process.killProcess(Process.myPid())
+            } else {
+                log("Skipping process kill — new service instance is active")
+            }
         }
-        log("The service has been destroyed".uppercase())
-        Toast.makeText(this, "Service destroyed", Toast.LENGTH_SHORT).show()
-
-        Process.killProcess(Process.myPid())
     }
 
     private fun startService() {
-        if (isServiceStarted) return
         log("Starting the foreground service")
-        Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
 
         val notification = createNotification(true)
 
+        // Always call startForeground — Android requires it every time
+        // startForegroundService() is called, even if already in foreground.
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
@@ -127,14 +153,16 @@ class ComapeoCoreService : Service() {
             }
         )
 
-        nodeJSService.start(nodeJSServiceCallback)
+        if (isServiceStarted) return
 
+        Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
+        nodeJSService.start(nodeJSServiceCallback)
         isServiceStarted = true
     }
 
     private fun stopService() {
         log("Stopping the foreground service")
-        // Toast.makeText(this, "Service stopping", Toast.LENGTH_SHORT).show()
+        isServiceStarted = false
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
