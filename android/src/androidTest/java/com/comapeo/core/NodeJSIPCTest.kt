@@ -8,7 +8,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -25,7 +24,8 @@ import java.util.concurrent.TimeUnit
 /**
  * Instrumented tests for [NodeJSIPC].
  *
- * These tests create a local mock server socket to test the IPC protocol
+ * These tests create a local mock server socket bound to the FILESYSTEM
+ * namespace (matching how NodeJSIPC connects) to test the IPC protocol
  * in isolation, without needing a real Node.js process.
  */
 @RunWith(AndroidJUnit4::class)
@@ -33,6 +33,7 @@ class NodeJSIPCTest {
 
     private lateinit var socketFile: File
     private var serverSocket: LocalServerSocket? = null
+    private var boundSocket: LocalSocket? = null
     private val receivedMessages = CopyOnWriteArrayList<String>()
 
     @Before
@@ -46,18 +47,27 @@ class NodeJSIPCTest {
     @After
     fun tearDown() {
         serverSocket?.close()
+        boundSocket?.close()
         socketFile.delete()
     }
 
     // --- Helpers ---
 
     /**
-     * Creates a [LocalServerSocket] that accepts one connection and provides
-     * DataInputStream/DataOutputStream for the length-prefixed protocol.
+     * Creates a server socket bound to the FILESYSTEM namespace at [socketFile].
+     *
+     * [LocalServerSocket(String)] only supports the abstract namespace, but
+     * [NodeJSIPC] connects using [LocalSocketAddress.Namespace.FILESYSTEM].
+     * To match, we bind a [LocalSocket] to the filesystem address and pass
+     * its file descriptor to [LocalServerSocket].
      */
     private fun startMockServer(onConnection: (DataInputStream, DataOutputStream) -> Unit) {
-        // LocalServerSocket requires the filesystem namespace for file-based addresses
-        serverSocket = LocalServerSocket(socketFile.absolutePath)
+        val bindSocket = LocalSocket(LocalSocket.SOCKET_STREAM)
+        val address = LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM)
+        bindSocket.bind(address)
+        boundSocket = bindSocket
+        serverSocket = LocalServerSocket(bindSocket.fileDescriptor)
+
         Thread {
             try {
                 val client = serverSocket!!.accept()
@@ -105,8 +115,6 @@ class NodeJSIPCTest {
             Thread.sleep(2000)
         }
 
-        // Create socket file so waitForFile returns immediately
-        // (the LocalServerSocket already creates the file)
         val ipc = NodeJSIPC(socketFile) { msg -> receivedMessages.add(msg) }
 
         assertTrue("Should connect within 10s", connected.await(10, TimeUnit.SECONDS))
@@ -276,9 +284,8 @@ class NodeJSIPCTest {
         // Disconnect should not throw
         ipc.disconnect()
 
-        // Sending after disconnect should not crash (message queued but not sent)
-        // This tests that sendMessage handles the disconnected state gracefully
-        Thread.sleep(500) // Let disconnect complete
+        // Let disconnect complete
+        Thread.sleep(500)
     }
 
     @Test
