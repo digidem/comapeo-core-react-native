@@ -14,9 +14,9 @@ let package = Package(
                 "Package.swift",
                 "ComapeoCoreModule.swift",
                 "AppLifecycleDelegate.swift",
-                "NodeJSService.swift",
+                "NodeJSService+BackgroundTask.swift",
             ],
-            sources: ["NodeJSIPC.swift", "Log.swift"]
+            sources: ["NodeJSIPC.swift", "NodeJSService.swift", "Log.swift"]
         ),
         .testTarget(
             name: "ComapeoCoreTests",

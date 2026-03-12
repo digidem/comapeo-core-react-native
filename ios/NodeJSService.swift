@@ -1,12 +1,11 @@
 import Foundation
-import UIKit
 
 /// Manages the lifecycle of an embedded Node.js process on iOS.
 ///
 /// Unlike Android (which uses a foreground service in a separate process), iOS runs
 /// Node.js in-process. Graceful shutdown is triggered when the app enters background
-/// or is about to be terminated, using `UIApplication.beginBackgroundTask` to request
-/// additional execution time from the system.
+/// or is about to be terminated. The UIKit-specific background task handling lives in
+/// `NodeJSService+BackgroundTask.swift`.
 class NodeJSService {
     enum State: String {
         case stopped = "STOPPED"
@@ -20,11 +19,11 @@ class NodeJSService {
     static let stateSocketFilename = "state.sock"
 
     private let filesDir: String
-    private let comapeoSocketPath: String
-    private let stateSocketPath: String
+    let comapeoSocketPath: String
+    let stateSocketPath: String
     private var stateIPC: NodeJSIPC?
     private var nodeThread: Thread?
-    private let lock = NSLock()
+    let lock = NSLock()
     private var shutdownSemaphore: DispatchSemaphore?
 
     var onStateChange: ((State) -> Void)?
@@ -38,11 +37,18 @@ class NodeJSService {
         }
     }
 
-    init() {
+    /// Creates a NodeJSService using the app's Documents directory.
+    convenience init() {
         let documentsDir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
-        self.filesDir = documentsDir
-        self.comapeoSocketPath = (documentsDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
-        self.stateSocketPath = (documentsDir as NSString).appendingPathComponent(NodeJSService.stateSocketFilename)
+        self.init(filesDir: documentsDir)
+    }
+
+    /// Creates a NodeJSService with a custom directory (used for testing).
+    init(filesDir: String) {
+        self.filesDir = filesDir
+        self.comapeoSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
+        self.stateSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.stateSocketFilename)
+        try? FileManager.default.createDirectory(atPath: filesDir, withIntermediateDirectories: true)
         deleteSocketFiles()
     }
 
@@ -108,30 +114,6 @@ class NodeJSService {
         cleanup()
     }
 
-    /// Stops the Node.js process within a background task, requesting additional
-    /// execution time from iOS.
-    func stopWithBackgroundTask(timeout: TimeInterval = 10) {
-        var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
-
-        backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "ComapeoGracefulShutdown") {
-            // Expiration handler — system is about to kill us
-            log("Background task expiring, forcing cleanup")
-            self.cleanup()
-            if backgroundTaskID != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTaskID)
-                backgroundTaskID = .invalid
-            }
-        }
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.stop(timeout: timeout)
-            if backgroundTaskID != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTaskID)
-                backgroundTaskID = .invalid
-            }
-        }
-    }
-
     private func runNode() {
         // TODO: Integrate with nodejs-mobile-ios to actually start Node.js.
         // This would call something like:
@@ -160,7 +142,7 @@ class NodeJSService {
         lock.unlock()
     }
 
-    private func cleanup() {
+    func cleanup() {
         stateIPC?.disconnect()
         stateIPC = nil
         deleteSocketFiles()
