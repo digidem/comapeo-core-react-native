@@ -10,7 +10,12 @@ import UIKit
 /// When the app returns to foreground, we restart the service.
 public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     static let shared = AppLifecycleDelegate()
-    let nodeService = NodeJSService(
+
+    /// Single shared NodeJSService used by all AppLifecycleDelegate instances.
+    /// Expo's module system creates its own instance while tests access `shared`,
+    /// so the service must be static to avoid dual-instance conflicts
+    /// (NodeMobileStartNode can only be called once per process).
+    private static let _nodeService = NodeJSService(
         filesDir: NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!,
         nodeEntryPoint: { arguments in
             let cStrings = arguments.map { strdup($0)! }
@@ -25,6 +30,8 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             Bundle.main.path(forResource: "index", ofType: "js", inDirectory: "nodejs-project")
         }
     )
+
+    var nodeService: NodeJSService { Self._nodeService }
 
     public func applicationDidBecomeActive(_ application: UIApplication) {
         log("applicationDidBecomeActive")
