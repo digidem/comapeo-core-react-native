@@ -51,7 +51,7 @@ jobs:
           set -o pipefail
           cd ios
           xcodebuild test \
-            -scheme ComapeoCore \
+            -scheme ComapeoCore-Package \
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
             CODE_SIGNING_ALLOWED='NO' \
