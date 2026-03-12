@@ -16,12 +16,9 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             let cStrings = arguments.map { strdup($0)! }
             defer { cStrings.forEach { free($0) } }
 
-            var argv = cStrings.map { UnsafePointer($0) }
+            var argv: [UnsafePointer<CChar>?] = cStrings.map { UnsafePointer($0) }
             return argv.withUnsafeMutableBufferPointer { buffer -> Int32 in
-                let baseAddress = buffer.baseAddress!
-                return baseAddress.withMemoryRebound(to: UnsafePointer<CChar>.self, capacity: buffer.count) { ptr in
-                    return NodeMobileStartNode(Int32(arguments.count), ptr)
-                }
+                return NodeMobileStartNode(Int32(arguments.count), buffer.baseAddress!)
             }
         },
         resolveJSEntryPoint: {
