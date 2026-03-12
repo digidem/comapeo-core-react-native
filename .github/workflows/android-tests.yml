@@ -1,0 +1,191 @@
+name: Android Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODEJS_MOBILE_VERSION: v18.20.4
+
+jobs:
+  unit-tests:
+    name: JVM Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache nodejs-mobile binaries
+        id: cache-libnode
+        uses: actions/cache@v4
+        with:
+          path: android/libnode
+          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android
+
+      - name: Download nodejs-mobile binaries
+        if: steps.cache-libnode.outputs.cache-hit != 'true'
+        run: ./scripts/download-nodejs-mobile.sh
+
+      - name: Install npm dependencies
+        run: npm install --ignore-scripts
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run JVM unit tests
+        run: |
+          cd example/android
+          ./gradlew :comapeo-core-react-native:testDebugUnitTest --no-daemon -PreactNativeArchitectures=x86_64
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: |
+            android/build/reports/tests/
+            android/build/test-results/
+
+  instrumented-tests:
+    name: Instrumented Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      matrix:
+        api-level: [30]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          tool-cache: false
+          swap-storage: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Clean up unused SDK components
+        run: |
+          # Remove pre-installed NDKs (~1-2GB each) — Gradle auto-installs what it needs
+          rm -rf "$ANDROID_HOME/ndk"
+          # Remove unused platform versions
+          for dir in "$ANDROID_HOME/platforms"/*/; do
+            plat=$(basename "$dir")
+            case "$plat" in
+              android-34|android-${{ matrix.api-level }}) ;; # keep what we need
+              *) echo "Removing unused platform $plat"; rm -rf "$dir" ;;
+            esac
+          done
+          echo "=== Disk space after cleanup ==="
+          df -h /
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Cache nodejs-mobile binaries
+        id: cache-libnode
+        uses: actions/cache@v4
+        with:
+          path: android/libnode
+          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android
+
+      - name: Download nodejs-mobile binaries
+        if: steps.cache-libnode.outputs.cache-hit != 'true'
+        run: ./scripts/download-nodejs-mobile.sh
+
+      - name: Install npm dependencies
+        run: npm install --ignore-scripts
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build test APKs
+        run: |
+          cd example/android
+          ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest :app:assembleDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
+
+      - name: Cache AVD snapshot
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-api${{ matrix.api-level }}-google_atd-x86_64
+
+      - name: Create AVD and generate snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_atd
+          arch: x86_64
+          force-avd-creation: false
+          ram-size: 4096M
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+          script: echo "Generated AVD snapshot for caching"
+
+      - name: Run instrumented tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_atd
+          arch: x86_64
+          force-avd-creation: false
+          ram-size: 4096M
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+          script: cd example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrumented-test-results-api${{ matrix.api-level }}
+          path: |
+            android/build/reports/androidTests/
+            android/build/outputs/androidTest-results/
+            example/android/app/build/reports/androidTests/
+            example/android/app/build/outputs/androidTest-results/

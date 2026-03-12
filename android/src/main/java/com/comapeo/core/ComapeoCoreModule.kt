@@ -42,7 +42,13 @@ class ComapeoCoreModule : Module() {
         }
 
         Function ("getState") {
-            return@Function "STARTED"
+            return@Function when (ipc.connectionState) {
+                is NodeJSIPC.State.Connected -> "STARTED"
+                is NodeJSIPC.State.Connecting -> "STARTING"
+                is NodeJSIPC.State.Disconnected -> "STOPPED"
+                is NodeJSIPC.State.Disconnecting -> "STOPPING"
+                is NodeJSIPC.State.Error -> "ERROR"
+            }
         }
     }
 }
