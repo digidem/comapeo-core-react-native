@@ -50,30 +50,22 @@ class NodeJSService {
         }
     }
 
-    /// Creates a NodeJSService using the app's Documents directory and real Node.js runtime.
-    convenience init() {
-        let documentsDir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
-        self.init(filesDir: documentsDir)
-    }
-
     /// Creates a NodeJSService with a custom directory.
     /// - Parameters:
     ///   - filesDir: Directory for socket files and working data.
-    ///   - nodeEntryPoint: Blocking function that runs Node.js. Defaults to `NodeMobileStartNode`.
-    ///   - resolveJSEntryPoint: Returns the path to the JS entry file. Defaults to Bundle lookup.
+    ///   - nodeEntryPoint: Blocking function that runs Node.js.
+    ///   - resolveJSEntryPoint: Returns the path to the JS entry file.
     init(
         filesDir: String,
-        nodeEntryPoint: NodeEntryPoint? = nil,
-        resolveJSEntryPoint: (() -> String?)? = nil
+        nodeEntryPoint: @escaping NodeEntryPoint,
+        resolveJSEntryPoint: @escaping () -> String?
     ) {
         self.filesDir = filesDir
         self.comapeoSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
         self.stateSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.stateSocketFilename)
 
-        self.nodeEntryPoint = nodeEntryPoint ?? NodeJSService.defaultNodeEntryPoint
-        self.resolveJSEntryPoint = resolveJSEntryPoint ?? {
-            Bundle.main.path(forResource: "index", ofType: "js", inDirectory: "nodejs-project")
-        }
+        self.nodeEntryPoint = nodeEntryPoint
+        self.resolveJSEntryPoint = resolveJSEntryPoint
 
         try? FileManager.default.createDirectory(atPath: filesDir, withIntermediateDirectories: true)
         deleteSocketFiles()
@@ -185,26 +177,4 @@ class NodeJSService {
         try? fm.removeItem(atPath: stateSocketPath)
     }
 
-    // MARK: - Default Node Entry Point
-
-    /// Default entry point that calls the NodeMobile C API.
-    /// Only available when built with CocoaPods (which sets NODE_MOBILE_AVAILABLE).
-    /// In SPM test builds, callers must provide their own nodeEntryPoint.
-    private static let defaultNodeEntryPoint: NodeEntryPoint = { arguments in
-        #if NODE_MOBILE_AVAILABLE
-        let cStrings = arguments.map { strdup($0)! }
-        defer { cStrings.forEach { free($0) } }
-
-        var argv = cStrings.map { UnsafePointer($0) }
-        return argv.withUnsafeMutableBufferPointer { buffer -> Int32 in
-            let baseAddress = buffer.baseAddress!
-            return baseAddress.withMemoryRebound(to: UnsafePointer<CChar>.self, capacity: buffer.count) { ptr in
-                return NodeMobileStartNode(Int32(arguments.count), ptr)
-            }
-        }
-        #else
-        log("NodeMobile framework not available — cannot start Node.js")
-        return -1
-        #endif
-    }
 }

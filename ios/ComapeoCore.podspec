@@ -27,7 +27,6 @@ Pod::Spec.new do |s|
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'ENABLE_BITCODE' => 'NO',
-    'OTHER_SWIFT_FLAGS' => '-DNODE_MOBILE_AVAILABLE',
   }
 
   s.source_files = "*.{h,m,mm,swift,hpp,cpp}"

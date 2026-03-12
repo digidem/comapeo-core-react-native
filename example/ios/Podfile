@@ -44,6 +44,10 @@ target 'corereactnativeexample' do
     :privacy_file_aggregation_enabled => podfile_properties['apple.privacyManifestAggregationEnabled'] != 'false',
   )
 
+  target 'corereactnativeexampleTests' do
+    inherit! :search_paths
+  end
+
   post_install do |installer|
     react_native_post_install(
       installer,

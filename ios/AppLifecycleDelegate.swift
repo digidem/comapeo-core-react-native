@@ -10,7 +10,24 @@ import UIKit
 /// When the app returns to foreground, we restart the service.
 public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     static let shared = AppLifecycleDelegate()
-    let nodeService = NodeJSService()
+    let nodeService = NodeJSService(
+        filesDir: NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!,
+        nodeEntryPoint: { arguments in
+            let cStrings = arguments.map { strdup($0)! }
+            defer { cStrings.forEach { free($0) } }
+
+            var argv = cStrings.map { UnsafePointer($0) }
+            return argv.withUnsafeMutableBufferPointer { buffer -> Int32 in
+                let baseAddress = buffer.baseAddress!
+                return baseAddress.withMemoryRebound(to: UnsafePointer<CChar>.self, capacity: buffer.count) { ptr in
+                    return NodeMobileStartNode(Int32(arguments.count), ptr)
+                }
+            }
+        },
+        resolveJSEntryPoint: {
+            Bundle.main.path(forResource: "index", ofType: "js", inDirectory: "nodejs-project")
+        }
+    )
 
     public func applicationDidBecomeActive(_ application: UIApplication) {
         log("applicationDidBecomeActive")
