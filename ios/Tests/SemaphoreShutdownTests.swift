@@ -71,7 +71,7 @@ final class SemaphoreShutdownTests: XCTestCase {
 
     func testStopWithNilServiceReturnsEarly() {
         // Simulates NodeJSService.stop() when state is .stopped
-        var nodeService: String? = nil
+        let nodeService: String? = nil
         var stopReachedShutdown = false
 
         // Mirrors the guard: guard state == .started else { return }
