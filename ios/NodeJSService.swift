@@ -61,19 +61,13 @@ class NodeJSService {
         resolveJSEntryPoint: @escaping () -> String?
     ) {
         self.filesDir = filesDir
-
-        // Unix domain sockets have a hard 104-byte path limit (sockaddr_un.sun_path).
-        // The app's Documents/tmp directory can exceed this on iOS simulators, so we
-        // always place socket files under /tmp with a short prefix.
-        let socketDir = "/tmp/comapeo-\(ProcessInfo.processInfo.processIdentifier)"
-        self.comapeoSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
-        self.stateSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.stateSocketFilename)
+        self.comapeoSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
+        self.stateSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.stateSocketFilename)
 
         self.nodeEntryPoint = nodeEntryPoint
         self.resolveJSEntryPoint = resolveJSEntryPoint
 
         try? FileManager.default.createDirectory(atPath: filesDir, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(atPath: socketDir, withIntermediateDirectories: true)
         deleteSocketFiles()
     }
 

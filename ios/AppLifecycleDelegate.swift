@@ -15,8 +15,11 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// Expo's module system creates its own instance while tests access `shared`,
     /// so the service must be static to avoid dual-instance conflicts
     /// (NodeMobileStartNode can only be called once per process).
+    // Use /tmp for socket files to stay within the 104-byte sockaddr_un.sun_path
+    // limit. The app's Documents/tmp directory can exceed this on iOS simulators.
+    // On real iOS devices, /tmp is sandboxed to the app's container.
     private static let _nodeService = NodeJSService(
-        filesDir: NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!,
+        filesDir: "/tmp/comapeo",
         nodeEntryPoint: { arguments in
             let cStrings = arguments.map { strdup($0)! }
             defer { cStrings.forEach { free($0) } }
