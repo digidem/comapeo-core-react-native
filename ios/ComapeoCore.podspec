@@ -32,8 +32,13 @@ Pod::Spec.new do |s|
   s.source_files = "*.{h,m,mm,swift,hpp,cpp}"
   s.exclude_files = "Tests/**", "Package.swift"
 
-  # Bundle the Node.js project files into the app bundle
-  s.resources = 'nodejs-project/**/*'
+  # Bundle the Node.js project directory into the app bundle.
+  # Using the directory name (not a **/* glob) so that rsync preserves the
+  # nodejs-project/ wrapper directory.  resolveJSEntryPoint expects files
+  # inside Bundle.main/nodejs-project/.  Because the "Install Node.js
+  # Project Dependencies" script phase runs before resource copying,
+  # node_modules will be included automatically.
+  s.resources = 'nodejs-project'
 
   # Install Node.js project npm dependencies before compilation
   s.script_phase = {
