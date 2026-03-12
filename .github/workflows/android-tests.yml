@@ -168,6 +168,7 @@ jobs:
           script: echo "Generated AVD snapshot for caching"
 
       - name: Run instrumented tests
+        timeout-minutes: 15
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
@@ -176,8 +177,15 @@ jobs:
           force-avd-creation: false
           ram-size: 4096M
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
-          disable-animations: true
-          script: cd example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
+          disable-animations: false
+          script: |
+            # Wait for system services after snapshot restore
+            adb wait-for-device shell 'while [[ -z $(getprop sys.boot_completed) ]]; do sleep 1; done'
+            # Disable animations via settings (more reliable than input keyevent)
+            adb shell settings put global window_animation_scale 0.0
+            adb shell settings put global transition_animation_scale 0.0
+            adb shell settings put global animator_duration_scale 0.0
+            cd example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
 
       - name: Upload test results
         if: always()
