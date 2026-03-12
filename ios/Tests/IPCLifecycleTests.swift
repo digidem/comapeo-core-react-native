@@ -16,6 +16,19 @@ import XCTest
 final class IPCLifecycleTests: XCTestCase {
 
     private var testDir: String!
+    /// Signals to unblock the mock node entry point
+    private var signalNodeExit: (() -> Void)!
+
+    /// Creates a NodeJSService with a mock entry point that blocks until signaled.
+    private func makeTestService() -> NodeJSService {
+        let semaphore = DispatchSemaphore(value: 0)
+        signalNodeExit = { semaphore.signal() }
+        return NodeJSService(
+            filesDir: testDir,
+            nodeEntryPoint: { _ in semaphore.wait(); return 0 },
+            resolveJSEntryPoint: { "/fake/index.js" }
+        )
+    }
 
     override func setUp() {
         super.setUp()
@@ -29,6 +42,9 @@ final class IPCLifecycleTests: XCTestCase {
     }
 
     override func tearDown() {
+        // Ensure the mock node thread isn't left blocking
+        signalNodeExit?()
+        signalNodeExit = nil
         try? FileManager.default.removeItem(atPath: testDir)
         super.tearDown()
     }
@@ -36,7 +52,7 @@ final class IPCLifecycleTests: XCTestCase {
     /// Tests a complete message round trip: app sends a request through the
     /// comapeo IPC, mock server receives it and sends a response back.
     func testFullMessageRoundTrip() throws {
-        let service = NodeJSService(filesDir: testDir)
+        let service = makeTestService()
 
         // Start service first — its start() calls deleteSocketFiles(), so mock
         // servers must be created afterwards or their socket files get removed.
@@ -94,13 +110,14 @@ final class IPCLifecycleTests: XCTestCase {
 
         // Cleanup
         appIPC.disconnect()
+        signalNodeExit()
         service.cleanup()
     }
 
     /// Tests that shutdown sends the correct message through the state IPC
     /// and transitions to stopped — exercising the full stop flow end-to-end.
     func testGracefulShutdownFlow() throws {
-        let service = NodeJSService(filesDir: testDir)
+        let service = makeTestService()
 
         // Start service first so deleteSocketFiles() runs before servers are created
         let started = expectation(description: "Service started")
@@ -130,6 +147,9 @@ final class IPCLifecycleTests: XCTestCase {
         let shutdownMsg = MockNodeServer.receiveFramedMessage(fd: stateClientFd)
         XCTAssertEqual(shutdownMsg, #"{"type":"shutdown"}"#, "Should receive shutdown message")
 
+        // Signal mock node to exit so stop() can complete
+        signalNodeExit()
+
         waitForExpectations(timeout: 5)
         XCTAssertEqual(service.state, .stopped)
     }
@@ -137,7 +157,7 @@ final class IPCLifecycleTests: XCTestCase {
     /// Tests multiple message exchanges followed by graceful shutdown —
     /// verifying the IPC layer handles sustained traffic before cleanup.
     func testMultipleMessagesBeforeShutdown() throws {
-        let service = NodeJSService(filesDir: testDir)
+        let service = makeTestService()
 
         // Start service first so deleteSocketFiles() runs before servers are created
         let started = expectation(description: "Service started")
@@ -201,15 +221,16 @@ final class IPCLifecycleTests: XCTestCase {
 
         // Now shut down
         appIPC.disconnect()
+        signalNodeExit()
         service.stop(timeout: 2)
         XCTAssertEqual(service.state, .stopped)
     }
 
     /// Tests that the service can complete a full start → message → stop → restart cycle.
     func testStartStopRestartCycle() throws {
-        let service = NodeJSService(filesDir: testDir)
-
         for cycle in 1...2 {
+            let service = makeTestService()
+
             let started = expectation(description: "Started cycle \(cycle)")
             service.onStateChange = { if $0 == .started { started.fulfill() } }
             service.start()
@@ -240,6 +261,7 @@ final class IPCLifecycleTests: XCTestCase {
             appIPC.disconnect()
             close(clientFd)
             comapeoServer.stop()
+            signalNodeExit()
             service.stop(timeout: 1)
 
             XCTAssertEqual(service.state, .stopped, "Cycle \(cycle) should end stopped")

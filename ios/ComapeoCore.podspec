@@ -20,11 +20,26 @@ Pod::Spec.new do |s|
 
   s.dependency 'ExpoModulesCore'
 
+  # NodeMobile.xcframework provides the embedded Node.js runtime
+  s.vendored_frameworks = 'NodeMobile.xcframework'
+
   # Swift/Objective-C compatibility
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
+    'ENABLE_BITCODE' => 'NO',
+    'OTHER_SWIFT_FLAGS' => '-DNODE_MOBILE_AVAILABLE',
   }
 
   s.source_files = "*.{h,m,mm,swift,hpp,cpp}"
   s.exclude_files = "Tests/**", "Package.swift"
+
+  # Bundle the Node.js project files into the app bundle
+  s.resources = 'nodejs-project/**/*'
+
+  # Install Node.js project npm dependencies before compilation
+  s.script_phase = {
+    :name => 'Install Node.js Project Dependencies',
+    :script => 'if [ -f "${PODS_TARGET_SRCROOT}/nodejs-project/package.json" ]; then cd "${PODS_TARGET_SRCROOT}/nodejs-project" && npm install --omit=dev; fi',
+    :execution_position => :before_compile
+  }
 end

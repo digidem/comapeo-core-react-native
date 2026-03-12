@@ -15,6 +15,11 @@ class NodeJSService {
         case error = "ERROR"
     }
 
+    /// A blocking function that runs the Node.js runtime.
+    /// Takes an array of arguments (e.g. ["node", jsPath, ...]) and blocks until Node exits.
+    /// Returns the exit code.
+    typealias NodeEntryPoint = (_ arguments: [String]) -> Int32
+
     static let comapeoSocketFilename = "comapeo.sock"
     static let stateSocketFilename = "state.sock"
 
@@ -25,10 +30,14 @@ class NodeJSService {
     private var nodeThread: Thread?
     private let lock = NSLock()
 
-    /// Signaled by stop() to tell the node thread to exit.
-    private var nodeShutdownSemaphore: DispatchSemaphore?
     /// Signaled by the node thread when it has finished exiting.
     private var nodeCompletionSemaphore: DispatchSemaphore?
+
+    /// The function used to start Node.js. Can be replaced for testing.
+    private let nodeEntryPoint: NodeEntryPoint
+
+    /// How to locate the bundled JS entry point. Can be replaced for testing.
+    private let resolveJSEntryPoint: () -> String?
 
     var onStateChange: ((State) -> Void)?
 
@@ -41,17 +50,31 @@ class NodeJSService {
         }
     }
 
-    /// Creates a NodeJSService using the app's Documents directory.
+    /// Creates a NodeJSService using the app's Documents directory and real Node.js runtime.
     convenience init() {
         let documentsDir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
         self.init(filesDir: documentsDir)
     }
 
-    /// Creates a NodeJSService with a custom directory (used for testing).
-    init(filesDir: String) {
+    /// Creates a NodeJSService with a custom directory.
+    /// - Parameters:
+    ///   - filesDir: Directory for socket files and working data.
+    ///   - nodeEntryPoint: Blocking function that runs Node.js. Defaults to `NodeMobileStartNode`.
+    ///   - resolveJSEntryPoint: Returns the path to the JS entry file. Defaults to Bundle lookup.
+    init(
+        filesDir: String,
+        nodeEntryPoint: NodeEntryPoint? = nil,
+        resolveJSEntryPoint: (() -> String?)? = nil
+    ) {
         self.filesDir = filesDir
         self.comapeoSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
         self.stateSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.stateSocketFilename)
+
+        self.nodeEntryPoint = nodeEntryPoint ?? NodeJSService.defaultNodeEntryPoint
+        self.resolveJSEntryPoint = resolveJSEntryPoint ?? {
+            Bundle.main.path(forResource: "index", ofType: "js", inDirectory: "nodejs-project")
+        }
+
         try? FileManager.default.createDirectory(atPath: filesDir, withIntermediateDirectories: true)
         deleteSocketFiles()
     }
@@ -64,7 +87,6 @@ class NodeJSService {
             return
         }
         state = .starting
-        nodeShutdownSemaphore = DispatchSemaphore(value: 0)
         nodeCompletionSemaphore = DispatchSemaphore(value: 0)
         lock.unlock()
 
@@ -82,6 +104,7 @@ class NodeJSService {
         }
         thread.name = "com.comapeo.core.nodejs"
         thread.qualityOfService = .userInitiated
+        thread.stackSize = 2 * 1024 * 1024 // 2MB stack required by nodejs-mobile
         nodeThread = thread
         thread.start()
     }
@@ -97,21 +120,18 @@ class NodeJSService {
             return
         }
         state = .stopping
-        let shutdownSem = nodeShutdownSemaphore
         let completionSem = nodeCompletionSemaphore
         lock.unlock()
 
-        // Send shutdown message
+        // Send shutdown message — this causes Node.js JS code to exit,
+        // which unblocks node_start() in runNode()
         let shutdownMessage = "{\"type\":\"shutdown\"}"
         if let ipc = stateIPC {
             ipc.sendMessageSync(shutdownMessage)
             log("Sent shutdown message to Node.js")
         }
 
-        // Signal the node thread to exit
-        shutdownSem?.signal()
-
-        // Wait for node thread to complete
+        // Wait for node thread to complete (node_start blocks until exit)
         let result = completionSem?.wait(timeout: .now() + timeout)
         if result == .timedOut {
             log("Graceful shutdown timed out after \(timeout)s")
@@ -121,21 +141,23 @@ class NodeJSService {
     }
 
     private func runNode() {
-        // TODO: Integrate with nodejs-mobile-ios to actually start Node.js.
-        // This would call something like:
-        //   NodeRunner.startEngine(withArguments: ["node", jsFilePath, comapeoSocketPath, stateSocketPath])
-        //
-        // For now, update state to started once the socket files appear.
+        guard let jsPath = resolveJSEntryPoint() else {
+            log("Error: Could not find nodejs-project/index.js in app bundle")
+            lock.lock()
+            state = .error
+            lock.unlock()
+            nodeCompletionSemaphore?.signal()
+            return
+        }
 
         lock.lock()
         state = .started
-        let shutdownSem = nodeShutdownSemaphore
         let completionSem = nodeCompletionSemaphore
         lock.unlock()
 
-        // In a real implementation, this thread would be blocked by the Node.js event loop.
-        // The semaphore simulates that blocking behavior for the shutdown flow.
-        shutdownSem?.wait()
+        let args = ["node", jsPath, comapeoSocketPath, stateSocketPath]
+        let exitCode = nodeEntryPoint(args)
+        log("Node.js exited with code \(exitCode)")
 
         // Signal that the node thread has finished
         completionSem?.signal()
@@ -148,9 +170,7 @@ class NodeJSService {
 
         lock.lock()
         // Signal in case cleanup is called directly (e.g., from background task expiration)
-        nodeShutdownSemaphore?.signal()
         nodeCompletionSemaphore?.signal()
-        nodeShutdownSemaphore = nil
         nodeCompletionSemaphore = nil
         nodeThread = nil
         if state != .stopped {
@@ -163,5 +183,28 @@ class NodeJSService {
         let fm = FileManager.default
         try? fm.removeItem(atPath: comapeoSocketPath)
         try? fm.removeItem(atPath: stateSocketPath)
+    }
+
+    // MARK: - Default Node Entry Point
+
+    /// Default entry point that calls the NodeMobile C API.
+    /// Only available when built with CocoaPods (which sets NODE_MOBILE_AVAILABLE).
+    /// In SPM test builds, callers must provide their own nodeEntryPoint.
+    private static let defaultNodeEntryPoint: NodeEntryPoint = { arguments in
+        #if NODE_MOBILE_AVAILABLE
+        let cStrings = arguments.map { strdup($0)! }
+        defer { cStrings.forEach { free($0) } }
+
+        var argv = cStrings.map { UnsafePointer($0) }
+        return argv.withUnsafeMutableBufferPointer { buffer -> Int32 in
+            let baseAddress = buffer.baseAddress!
+            return baseAddress.withMemoryRebound(to: UnsafePointer<CChar>.self, capacity: buffer.count) { ptr in
+                return NodeMobileStartNode(Int32(arguments.count), ptr)
+            }
+        }
+        #else
+        log("NodeMobile framework not available — cannot start Node.js")
+        return -1
+        #endif
     }
 }

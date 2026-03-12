@@ -3,8 +3,8 @@ import XCTest
 
 /// Behavioral tests for NodeJSService startup and graceful shutdown.
 ///
-/// These tests use a mock Unix domain socket server (via `MockNodeServer`)
-/// to simulate the Node.js process, verifying that:
+/// These tests use a mock node entry point (a blocking semaphore) to simulate
+/// the Node.js process, verifying that:
 /// - The service transitions through the correct states
 /// - Shutdown sends a `{"type":"shutdown"}` message over the state IPC socket
 /// - The service can be restarted after shutdown
@@ -16,6 +16,26 @@ import XCTest
 final class NodeJSServiceTests: XCTestCase {
 
     private var testDir: String!
+
+    /// A mock node entry point that blocks until signaled, simulating node_start().
+    private func makeMockNodeEntryPoint() -> (entryPoint: NodeJSService.NodeEntryPoint, signal: () -> Void) {
+        let semaphore = DispatchSemaphore(value: 0)
+        let entryPoint: NodeJSService.NodeEntryPoint = { _ in
+            semaphore.wait()
+            return 0
+        }
+        return (entryPoint, { semaphore.signal() })
+    }
+
+    private func makeTestService() -> (service: NodeJSService, signalExit: () -> Void) {
+        let (entryPoint, signal) = makeMockNodeEntryPoint()
+        let service = NodeJSService(
+            filesDir: testDir,
+            nodeEntryPoint: entryPoint,
+            resolveJSEntryPoint: { "/fake/index.js" }
+        )
+        return (service, signal)
+    }
 
     override func setUp() {
         super.setUp()
@@ -33,7 +53,7 @@ final class NodeJSServiceTests: XCTestCase {
     // MARK: - Startup Tests
 
     func testStartTransitionsToStarted() {
-        let service = NodeJSService(filesDir: testDir)
+        let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "State reached STARTED")
 
         service.onStateChange = { state in
@@ -46,11 +66,12 @@ final class NodeJSServiceTests: XCTestCase {
         waitForExpectations(timeout: 5)
 
         XCTAssertEqual(service.state, .started)
+        signalExit()
         service.cleanup()
     }
 
     func testStartFromNonStoppedStateIsIgnored() {
-        let service = NodeJSService(filesDir: testDir)
+        let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "State reached STARTED")
 
         service.onStateChange = { state in
@@ -73,13 +94,14 @@ final class NodeJSServiceTests: XCTestCase {
 
         XCTAssertTrue(stateChanges.isEmpty, "No state changes should occur on duplicate start")
         XCTAssertEqual(service.state, .started)
+        signalExit()
         service.cleanup()
     }
 
     // MARK: - Shutdown Tests
 
     func testStopSendsShutdownMessageOverIPC() throws {
-        let service = NodeJSService(filesDir: testDir)
+        let (service, signalExit) = makeTestService()
 
         let startedExpectation = expectation(description: "State reached STARTED")
         service.onStateChange = { state in
@@ -115,6 +137,9 @@ final class NodeJSServiceTests: XCTestCase {
         let message = MockNodeServer.receiveFramedMessage(fd: clientFd)
         XCTAssertEqual(message, #"{"type":"shutdown"}"#, "Should receive shutdown message")
 
+        // Signal the mock node process to exit
+        signalExit()
+
         // Give stop() time to complete
         Thread.sleep(forTimeInterval: 1)
 
@@ -122,7 +147,7 @@ final class NodeJSServiceTests: XCTestCase {
     }
 
     func testStopTransitionsToStopped() {
-        let service = NodeJSService(filesDir: testDir)
+        let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
         service.onStateChange = { state in
@@ -137,6 +162,8 @@ final class NodeJSServiceTests: XCTestCase {
             stateSequence.append(state)
         }
 
+        // Signal exit so stop() completes when it sends shutdown
+        signalExit()
         service.stop(timeout: 1)
 
         XCTAssertEqual(service.state, .stopped)
@@ -145,7 +172,7 @@ final class NodeJSServiceTests: XCTestCase {
     }
 
     func testStopWhenAlreadyStoppedIsIgnored() {
-        let service = NodeJSService(filesDir: testDir)
+        let (service, _) = makeTestService()
         XCTAssertEqual(service.state, .stopped)
 
         var stateChanges = [NodeJSService.State]()
@@ -158,7 +185,7 @@ final class NodeJSServiceTests: XCTestCase {
     }
 
     func testStopCompletesQuicklyWhenNodeResponds() {
-        let service = NodeJSService(filesDir: testDir)
+        let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
         service.onStateChange = { state in
@@ -168,8 +195,9 @@ final class NodeJSServiceTests: XCTestCase {
         service.start()
         waitForExpectations(timeout: 5)
 
-        // With the two-semaphore design, stop() signals the node thread
-        // which responds immediately, so stop completes quickly
+        // Signal exit immediately so stop() completes quickly
+        signalExit()
+
         let startTime = Date()
         service.stop(timeout: 5)
         let elapsed = Date().timeIntervalSince(startTime)
@@ -179,7 +207,7 @@ final class NodeJSServiceTests: XCTestCase {
     }
 
     func testSocketFilesDeletedAfterStop() {
-        let service = NodeJSService(filesDir: testDir)
+        let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
         service.onStateChange = { state in
@@ -189,6 +217,7 @@ final class NodeJSServiceTests: XCTestCase {
         service.start()
         waitForExpectations(timeout: 5)
 
+        signalExit()
         service.stop(timeout: 1)
 
         let fm = FileManager.default
@@ -199,7 +228,7 @@ final class NodeJSServiceTests: XCTestCase {
     // MARK: - Cleanup Tests
 
     func testCleanupIsIdempotent() {
-        let service = NodeJSService(filesDir: testDir)
+        let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
         service.onStateChange = { state in
@@ -208,6 +237,8 @@ final class NodeJSServiceTests: XCTestCase {
 
         service.start()
         waitForExpectations(timeout: 5)
+
+        signalExit()
 
         // Call cleanup twice — should not crash or cause issues
         service.cleanup()
@@ -218,7 +249,7 @@ final class NodeJSServiceTests: XCTestCase {
 
     func testCleanupDirectlyFromStarted() {
         // Simulates background task expiration calling cleanup() directly
-        let service = NodeJSService(filesDir: testDir)
+        let (service, _) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
         service.onStateChange = { state in
@@ -237,33 +268,42 @@ final class NodeJSServiceTests: XCTestCase {
     // MARK: - Restart Tests
 
     func testCanRestartAfterStop() {
-        let service = NodeJSService(filesDir: testDir)
+        let (service1, signalExit1) = makeTestService()
 
         // First cycle
         let started1 = expectation(description: "Started first time")
-        service.onStateChange = { state in
+        service1.onStateChange = { state in
             if state == .started { started1.fulfill() }
         }
-        service.start()
+        service1.start()
         waitForExpectations(timeout: 5)
-        service.stop(timeout: 1)
-        XCTAssertEqual(service.state, .stopped)
+        signalExit1()
+        service1.stop(timeout: 1)
+        XCTAssertEqual(service1.state, .stopped)
 
-        // Second cycle
+        // Second cycle — need a new service since node can only start once per process
+        // (but in tests with mocks, we can reuse)
+        let (entryPoint2, signalExit2) = makeMockNodeEntryPoint()
+        let service2 = NodeJSService(
+            filesDir: testDir,
+            nodeEntryPoint: entryPoint2,
+            resolveJSEntryPoint: { "/fake/index.js" }
+        )
         let started2 = expectation(description: "Started second time")
-        service.onStateChange = { state in
+        service2.onStateChange = { state in
             if state == .started { started2.fulfill() }
         }
-        service.start()
+        service2.start()
         waitForExpectations(timeout: 5)
-        XCTAssertEqual(service.state, .started)
-        service.cleanup()
+        XCTAssertEqual(service2.state, .started)
+        signalExit2()
+        service2.cleanup()
     }
 
     // MARK: - Concurrency Tests
 
     func testConcurrentStopCallsAreSafe() {
-        let service = NodeJSService(filesDir: testDir)
+        let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
         service.onStateChange = { state in
@@ -272,6 +312,9 @@ final class NodeJSServiceTests: XCTestCase {
 
         service.start()
         waitForExpectations(timeout: 5)
+
+        // Signal exit so stop() calls can complete
+        signalExit()
 
         let group = DispatchGroup()
 
@@ -292,7 +335,7 @@ final class NodeJSServiceTests: XCTestCase {
     // MARK: - State Transition Order Tests
 
     func testFullLifecycleStateTransitions() {
-        let service = NodeJSService(filesDir: testDir)
+        let (service, signalExit) = makeTestService()
         var transitions = [NodeJSService.State]()
         let lock = NSLock()
 
@@ -309,6 +352,7 @@ final class NodeJSServiceTests: XCTestCase {
         waitForExpectations(timeout: 5)
 
         // Stop
+        signalExit()
         service.stop(timeout: 1)
 
         lock.lock()
