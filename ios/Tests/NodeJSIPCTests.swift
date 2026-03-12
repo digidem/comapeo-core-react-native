@@ -12,9 +12,12 @@ final class NodeJSIPCTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        testDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(
-            "comapeo-ipc-test-\(UUID().uuidString)"
-        )
+        // Use /tmp with a short prefix to stay within sockaddr_un.sun_path's 104-byte limit.
+        // NSTemporaryDirectory() returns a long path (e.g. /var/folders/.../T/) that,
+        // combined with UUID and socket filenames, can exceed 104 bytes and cause
+        // silent truncation leading to bind() EADDRINUSE failures.
+        let shortID = UUID().uuidString.prefix(8)
+        testDir = "/tmp/cmt-\(shortID)"
         try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
     }
 

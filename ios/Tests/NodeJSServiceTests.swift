@@ -19,9 +19,9 @@ final class NodeJSServiceTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        testDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(
-            "comapeo-service-test-\(UUID().uuidString)"
-        )
+        // Use /tmp with a short prefix to stay within sockaddr_un.sun_path's 104-byte limit.
+        let shortID = UUID().uuidString.prefix(8)
+        testDir = "/tmp/cms-\(shortID)"
         try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
     }
 
@@ -81,11 +81,6 @@ final class NodeJSServiceTests: XCTestCase {
     func testStopSendsShutdownMessageOverIPC() throws {
         let service = NodeJSService(filesDir: testDir)
 
-        // Create mock state socket server BEFORE starting the service
-        let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
-        try stateServer.start()
-        defer { stateServer.stop() }
-
         let startedExpectation = expectation(description: "State reached STARTED")
         service.onStateChange = { state in
             if state == .started {
@@ -95,6 +90,13 @@ final class NodeJSServiceTests: XCTestCase {
 
         service.start()
         waitForExpectations(timeout: 5)
+
+        // Create mock state server AFTER start() so deleteSocketFiles() doesn't remove it.
+        // The stateIPC is already polling via waitForFile() and will connect once
+        // the server creates the socket file.
+        let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
+        try stateServer.start()
+        defer { stateServer.stop() }
 
         // Accept the IPC client connection from the service
         let clientFd = stateServer.acceptClient()

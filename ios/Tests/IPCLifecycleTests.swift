@@ -19,9 +19,12 @@ final class IPCLifecycleTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        testDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(
-            "comapeo-lifecycle-test-\(UUID().uuidString)"
-        )
+        // Use /tmp with a short prefix to stay within sockaddr_un.sun_path's 104-byte limit.
+        // NSTemporaryDirectory() returns a long path (e.g. /var/folders/.../T/) that,
+        // combined with UUID and socket filenames, can exceed 104 bytes and cause
+        // silent truncation leading to bind() EADDRINUSE failures.
+        let shortID = UUID().uuidString.prefix(8)
+        testDir = "/tmp/cml-\(shortID)"
         try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
     }
 
@@ -35,7 +38,16 @@ final class IPCLifecycleTests: XCTestCase {
     func testFullMessageRoundTrip() throws {
         let service = NodeJSService(filesDir: testDir)
 
-        // Create mock servers for both sockets (simulating Node.js)
+        // Start service first — its start() calls deleteSocketFiles(), so mock
+        // servers must be created afterwards or their socket files get removed.
+        let started = expectation(description: "Service started")
+        service.onStateChange = { if $0 == .started { started.fulfill() } }
+        service.start()
+        waitForExpectations(timeout: 5)
+
+        // Create mock servers after start() so deleteSocketFiles() doesn't remove them.
+        // The stateIPC is already polling via waitForFile(), so it will connect once
+        // the server creates the socket file.
         let comapeoServer = MockNodeServer(socketPath: service.comapeoSocketPath)
         let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
         try comapeoServer.start()
@@ -44,12 +56,6 @@ final class IPCLifecycleTests: XCTestCase {
             comapeoServer.stop()
             stateServer.stop()
         }
-
-        // Start service
-        let started = expectation(description: "Service started")
-        service.onStateChange = { if $0 == .started { started.fulfill() } }
-        service.start()
-        waitForExpectations(timeout: 5)
 
         // Accept state IPC connection (service connects to this on start)
         let stateClientFd = stateServer.acceptClient()
@@ -96,15 +102,15 @@ final class IPCLifecycleTests: XCTestCase {
     func testGracefulShutdownFlow() throws {
         let service = NodeJSService(filesDir: testDir)
 
-        let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
-        try stateServer.start()
-        defer { stateServer.stop() }
-
-        // Start service
+        // Start service first so deleteSocketFiles() runs before servers are created
         let started = expectation(description: "Service started")
         service.onStateChange = { if $0 == .started { started.fulfill() } }
         service.start()
         waitForExpectations(timeout: 5)
+
+        let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
+        try stateServer.start()
+        defer { stateServer.stop() }
 
         // Accept state IPC connection
         let stateClientFd = stateServer.acceptClient()
@@ -133,6 +139,12 @@ final class IPCLifecycleTests: XCTestCase {
     func testMultipleMessagesBeforeShutdown() throws {
         let service = NodeJSService(filesDir: testDir)
 
+        // Start service first so deleteSocketFiles() runs before servers are created
+        let started = expectation(description: "Service started")
+        service.onStateChange = { if $0 == .started { started.fulfill() } }
+        service.start()
+        waitForExpectations(timeout: 5)
+
         let comapeoServer = MockNodeServer(socketPath: service.comapeoSocketPath)
         let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
         try comapeoServer.start()
@@ -141,12 +153,6 @@ final class IPCLifecycleTests: XCTestCase {
             comapeoServer.stop()
             stateServer.stop()
         }
-
-        // Start service
-        let started = expectation(description: "Service started")
-        service.onStateChange = { if $0 == .started { started.fulfill() } }
-        service.start()
-        waitForExpectations(timeout: 5)
 
         // Accept connections
         let stateClientFd = stateServer.acceptClient()
@@ -204,13 +210,14 @@ final class IPCLifecycleTests: XCTestCase {
         let service = NodeJSService(filesDir: testDir)
 
         for cycle in 1...2 {
-            let comapeoServer = MockNodeServer(socketPath: service.comapeoSocketPath)
-            try comapeoServer.start()
-
             let started = expectation(description: "Started cycle \(cycle)")
             service.onStateChange = { if $0 == .started { started.fulfill() } }
             service.start()
             waitForExpectations(timeout: 5)
+
+            // Create mock server after start() so deleteSocketFiles() doesn't remove it
+            let comapeoServer = MockNodeServer(socketPath: service.comapeoSocketPath)
+            try comapeoServer.start()
 
             // Send a message through comapeo IPC
             let messageReceived = expectation(description: "Message received cycle \(cycle)")

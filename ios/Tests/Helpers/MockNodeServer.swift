@@ -20,6 +20,14 @@ class MockNodeServer {
 
     /// Creates and binds the server socket, ready to accept connections.
     func start() throws {
+        // sockaddr_un.sun_path is 104 bytes on macOS — validate early.
+        let sunPathSize = 104
+        guard socketPath.utf8.count < sunPathSize else {
+            throw MockServerError.system(
+                "Socket path too long (\(socketPath.utf8.count) bytes, max \(sunPathSize - 1)): \(socketPath)"
+            )
+        }
+
         unlink(socketPath)
 
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
@@ -30,7 +38,6 @@ class MockNodeServer {
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = socketPath.utf8CString
-        let sunPathSize = MemoryLayout.size(ofValue: addr.sun_path)
         withUnsafeMutableBytes(of: &addr.sun_path) { rawBuf in
             let ptr = rawBuf.baseAddress!.assumingMemoryBound(to: CChar.self)
             for (i, byte) in pathBytes.enumerated() where i < sunPathSize {
@@ -45,12 +52,14 @@ class MockNodeServer {
             }
         }
         guard bindResult == 0 else {
+            let err = errno
             close(fd)
-            throw MockServerError.system("bind() failed: \(errno)")
+            throw MockServerError.system("bind() failed: \(err)")
         }
         guard Darwin.listen(fd, 5) == 0 else {
+            let err = errno
             close(fd)
-            throw MockServerError.system("listen() failed: \(errno)")
+            throw MockServerError.system("listen() failed: \(err)")
         }
 
         serverFd = fd
