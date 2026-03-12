@@ -32,7 +32,7 @@
             skipped = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "00E356ED1AD99517003FC87E"
+               BlueprintIdentifier = "BD2B1370CFE69F9E1CE60743"
                BuildableName = "corereactnativeexampleTests.xctest"
                BlueprintName = "corereactnativeexampleTests"
                ReferencedContainer = "container:corereactnativeexample.xcodeproj">
