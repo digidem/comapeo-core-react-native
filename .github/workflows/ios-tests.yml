@@ -55,8 +55,7 @@ jobs:
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
             CODE_SIGNING_ALLOWED='NO' \
-            ENABLE_TESTABILITY='YES' \
-            2>&1 | tail -100
+            ENABLE_TESTABILITY='YES'
 
       - name: Upload test results
         if: always()
