@@ -41,16 +41,22 @@ jobs:
       - name: List available simulators
         run: xcrun simctl list devices available
 
-      - name: Run tests on iOS Simulator
+      - name: Discover xcodebuild schemes
         run: |
           cd ios
+          xcodebuild -list
+
+      - name: Run tests on iOS Simulator
+        run: |
+          set -o pipefail
+          cd ios
           xcodebuild test \
-            -scheme ComapeoCoreTests \
+            -scheme ComapeoCore \
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
             CODE_SIGNING_ALLOWED='NO' \
             ENABLE_TESTABILITY='YES' \
-            2>&1 | tail -50
+            2>&1 | tail -100
 
       - name: Upload test results
         if: always()

@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "ComapeoCoreTests",
+    name: "ComapeoCore",
     platforms: [.macOS(.v13), .iOS(.v15)],
     targets: [
         .target(
