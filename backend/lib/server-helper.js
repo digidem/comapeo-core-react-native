@@ -25,7 +25,7 @@ export class ServerHelper extends TypedEmitter {
   constructor(connectionListener) {
     super();
     this.#server = net.createServer(connectionListener);
-    this.#server.on("connection", this.#handleConnection);
+    this.#server.on("connection", (socket) => this.#handleConnection(socket));
   }
 
   /**
@@ -46,9 +46,7 @@ export class ServerHelper extends TypedEmitter {
   listen(path) {
     let tries = 0;
     this.#state = "starting";
-    return;
-    /** @type {Promise<void>} */
-    (
+    return /** @type {Promise<void>} */ (
       new Promise((resolve, reject) => {
         /** @param {Error} error */
         const onError = (error) => {
@@ -71,6 +69,7 @@ export class ServerHelper extends TypedEmitter {
         try {
           this.#server.listen(path, () => {
             this.#server.off("error", onError);
+            this.#state = "started";
             resolve();
           });
         } catch (reason) {
@@ -101,5 +100,6 @@ export class ServerHelper extends TypedEmitter {
     }
     this.#server.close();
     await Promise.all(closePromises);
+    this.#state = "closed";
   }
 }

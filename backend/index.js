@@ -17,12 +17,13 @@ const comapeo = createComapeo({
 
 const comapeoRpcServer = new ComapeoRpcServer(comapeo);
 const controlIpcServer = new SimpleRpcServer({
-  shutdown: () => {
-    return Promise.all([
+  shutdown: async () => {
+    await Promise.all([
       comapeoRpcServer.close(),
       controlIpcServer.close(),
       fastify.close(),
     ]);
+    await comapeo.close();
   },
 });
 

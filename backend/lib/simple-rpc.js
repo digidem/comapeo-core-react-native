@@ -13,7 +13,7 @@ export class SimpleRpcServer extends ServerHelper {
   constructor(methods) {
     super((socket) => {
       const messagePort = new SocketMessagePort(socket);
-      messagePort.on("message", this.#handleMessage);
+      messagePort.on("message", (msg) => this.#handleMessage(msg));
       messagePort.on("messageerror", (error) => {
         console.error("Client sent invalid message", error);
       });

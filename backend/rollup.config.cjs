@@ -49,7 +49,7 @@ const config = {
     dir: path.join(__dirname, "dist"),
     format: "esm",
     sourcemap: true,
-    entryFileNames: "[name].js",
+    entryFileNames: "[name].mjs",
   },
   plugins,
 };

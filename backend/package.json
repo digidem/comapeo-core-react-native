@@ -12,8 +12,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@comapeo/core": "^4.3.0",
-    "@comapeo/ipc": "^5.0.0",
+    "@comapeo/core": "^6.0.2",
+    "@comapeo/ipc": "^7.0.0",
     "ensure-error": "^4.0.0",
     "fastify": "^4.29.1",
     "framed-stream": "^1.0.1",

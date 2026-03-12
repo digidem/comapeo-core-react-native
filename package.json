@@ -44,6 +44,6 @@
     "react-native": "*"
   },
   "dependencies": {
-    "@comapeo/ipc": "^5.0.0"
+    "@comapeo/ipc": "^7.0.0"
   }
 }

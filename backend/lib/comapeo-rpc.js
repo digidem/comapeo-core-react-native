@@ -7,12 +7,15 @@ export class ComapeoRpcServer extends ServerHelper {
   /** @param {MapeoManager} manager */
   constructor(manager) {
     super((socket) => {
-      const messagePort =
+      const messagePort = new SocketMessagePort(socket);
+      messagePort.start();
+      const server = createMapeoServer(
+        manager,
         /** @type {Pick<MessagePort, 'postMessage' | 'addEventListener' | 'removeEventListener'>} */ (
-          new SocketMessagePort(socket)
-        );
-      createMapeoServer(manager, messagePort);
-      // TODO: Closing and cleanup
+          messagePort
+        ),
+      );
+      messagePort.on("close", () => server.close());
     });
   }
 }

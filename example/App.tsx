@@ -1,14 +1,16 @@
-import { useEvent } from "expo";
 import { comapeo } from "@comapeo/core-react-native";
-import { Button, SafeAreaView, ScrollView, Text, View } from "react-native";
-import { faker } from "@faker-js/faker";
-import React from "react";
+import { SafeAreaView, ScrollView, Text, View } from "react-native";
+import React, { useEffect, useState } from "react";
 
 let renderCount = 0;
 
 export default function App() {
-  const projects = React.use(comapeo.listProjects());
-  console.log("Projects", projects);
+  const [projects, setProjects] = useState<unknown[]>([]);
+
+  useEffect(() => {
+    comapeo.listProjects().then(setProjects);
+  }, []);
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView style={styles.container}>
@@ -16,7 +18,7 @@ export default function App() {
           Module API Example
         </Text>
 
-        <Group name="Received Messages">{projects.length}</Group>
+        <Group name="Projects">{projects.length}</Group>
         <Group name="Render count">
           <Text testID="render-count">{renderCount++}</Text>
         </Group>
@@ -58,17 +60,3 @@ const styles = {
     height: 200,
   },
 };
-
-function createRandomUser(_: any, i: number) {
-  return {
-    id: i + 1,
-    uuid: faker.string.uuid(),
-    avatar: faker.image.avatar(),
-    birthday: faker.date.birthdate().toISOString(),
-    email: faker.internet.email(),
-    firstName: faker.person.firstName(),
-    lastName: faker.person.lastName(),
-    sex: faker.person.sexType(),
-    subscriptionTier: faker.helpers.arrayElement(["free", "basic", "business"]),
-  };
-}
