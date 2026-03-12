@@ -91,4 +91,11 @@ jobs:
         run: cd example/ios && pod install
 
       - name: Run integration tests
-        run: cd example && npm run test:ios
+        run: |
+          cd example/ios
+          xcodebuild test \
+            -workspace corereactnativeexample.xcworkspace \
+            -scheme corereactnativeexample \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            CODE_SIGNING_ALLOWED='NO'
