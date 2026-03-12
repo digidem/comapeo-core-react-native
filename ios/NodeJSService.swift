@@ -23,8 +23,12 @@ class NodeJSService {
     let stateSocketPath: String
     private var stateIPC: NodeJSIPC?
     private var nodeThread: Thread?
-    let lock = NSLock()
-    private var shutdownSemaphore: DispatchSemaphore?
+    private let lock = NSLock()
+
+    /// Signaled by stop() to tell the node thread to exit.
+    private var nodeShutdownSemaphore: DispatchSemaphore?
+    /// Signaled by the node thread when it has finished exiting.
+    private var nodeCompletionSemaphore: DispatchSemaphore?
 
     var onStateChange: ((State) -> Void)?
 
@@ -60,6 +64,8 @@ class NodeJSService {
             return
         }
         state = .starting
+        nodeShutdownSemaphore = DispatchSemaphore(value: 0)
+        nodeCompletionSemaphore = DispatchSemaphore(value: 0)
         lock.unlock()
 
         deleteSocketFiles()
@@ -91,6 +97,8 @@ class NodeJSService {
             return
         }
         state = .stopping
+        let shutdownSem = nodeShutdownSemaphore
+        let completionSem = nodeCompletionSemaphore
         lock.unlock()
 
         // Send shutdown message
@@ -100,13 +108,11 @@ class NodeJSService {
             log("Sent shutdown message to Node.js")
         }
 
-        // Wait for Node.js thread to complete
-        let semaphore = DispatchSemaphore(value: 0)
-        lock.lock()
-        shutdownSemaphore = semaphore
-        lock.unlock()
+        // Signal the node thread to exit
+        shutdownSem?.signal()
 
-        let result = semaphore.wait(timeout: .now() + timeout)
+        // Wait for node thread to complete
+        let result = completionSem?.wait(timeout: .now() + timeout)
         if result == .timedOut {
             log("Graceful shutdown timed out after \(timeout)s")
         }
@@ -123,23 +129,16 @@ class NodeJSService {
 
         lock.lock()
         state = .started
-        lock.unlock()
-
-        // Block this thread until shutdown is requested
-        let semaphore = DispatchSemaphore(value: 0)
-        lock.lock()
-        shutdownSemaphore = semaphore
+        let shutdownSem = nodeShutdownSemaphore
+        let completionSem = nodeCompletionSemaphore
         lock.unlock()
 
         // In a real implementation, this thread would be blocked by the Node.js event loop.
         // The semaphore simulates that blocking behavior for the shutdown flow.
-        semaphore.wait()
+        shutdownSem?.wait()
 
-        lock.lock()
-        state = .stopped
-        // Signal any waiters in stop()
-        shutdownSemaphore?.signal()
-        lock.unlock()
+        // Signal that the node thread has finished
+        completionSem?.signal()
     }
 
     func cleanup() {
@@ -148,7 +147,11 @@ class NodeJSService {
         deleteSocketFiles()
 
         lock.lock()
-        shutdownSemaphore?.signal()
+        // Signal in case cleanup is called directly (e.g., from background task expiration)
+        nodeShutdownSemaphore?.signal()
+        nodeCompletionSemaphore?.signal()
+        nodeShutdownSemaphore = nil
+        nodeCompletionSemaphore = nil
         nodeThread = nil
         if state != .stopped {
             state = .stopped

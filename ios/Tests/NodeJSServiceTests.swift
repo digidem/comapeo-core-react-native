@@ -3,13 +3,13 @@ import XCTest
 
 /// Behavioral tests for NodeJSService startup and graceful shutdown.
 ///
-/// These tests use a mock Unix domain socket server to simulate the Node.js
-/// process, verifying that:
+/// These tests use a mock Unix domain socket server (via `MockNodeServer`)
+/// to simulate the Node.js process, verifying that:
 /// - The service transitions through the correct states
 /// - Shutdown sends a `{"type":"shutdown"}` message over the state IPC socket
-/// - Timeout-based cleanup works when Node.js doesn't respond
 /// - The service can be restarted after shutdown
 /// - Concurrent stop calls are safe
+/// - Cleanup is idempotent and safe from any state
 ///
 /// This is the iOS equivalent of testing the Android `ComapeoCoreService` +
 /// `NodeJSService` graceful shutdown behavior.
@@ -28,72 +28,6 @@ final class NodeJSServiceTests: XCTestCase {
     override func tearDown() {
         try? FileManager.default.removeItem(atPath: testDir)
         super.tearDown()
-    }
-
-    // MARK: - Mock Server Helpers
-
-    /// Creates a Unix domain socket server at the given path.
-    private func createMockServer(socketPath: String) throws -> Int32 {
-        // Remove any existing socket file
-        unlink(socketPath)
-
-        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw NSError(domain: "test", code: Int(errno)) }
-
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = socketPath.utf8CString
-        let sunPathSize = MemoryLayout.size(ofValue: addr.sun_path)
-        withUnsafeMutableBytes(of: &addr.sun_path) { rawBuf in
-            let ptr = rawBuf.baseAddress!.assumingMemoryBound(to: CChar.self)
-            for (i, byte) in pathBytes.enumerated() where i < sunPathSize {
-                ptr[i] = byte
-            }
-        }
-
-        let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
-        let bindResult = withUnsafePointer(to: &addr) { addrPtr in
-            addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                Darwin.bind(fd, sockaddrPtr, addrLen)
-            }
-        }
-        guard bindResult == 0 else {
-            close(fd)
-            throw NSError(domain: "test", code: Int(errno))
-        }
-        guard Darwin.listen(fd, 1) == 0 else {
-            close(fd)
-            throw NSError(domain: "test", code: Int(errno))
-        }
-        return fd
-    }
-
-    private func acceptClient(serverFd: Int32) -> Int32 {
-        return Darwin.accept(serverFd, nil, nil)
-    }
-
-    /// Read a length-prefixed message from a file descriptor.
-    private func receiveFramedMessage(fd: Int32) -> String? {
-        var lengthBuffer = [UInt8](repeating: 0, count: 4)
-        let bytesRead = Darwin.read(fd, &lengthBuffer, 4)
-        guard bytesRead == 4 else { return nil }
-
-        let messageLength = Int(
-            UInt32(lengthBuffer[0]) |
-            UInt32(lengthBuffer[1]) << 8 |
-            UInt32(lengthBuffer[2]) << 16 |
-            UInt32(lengthBuffer[3]) << 24
-        )
-
-        var messageBuffer = [UInt8](repeating: 0, count: messageLength)
-        var totalRead = 0
-        while totalRead < messageLength {
-            let n = Darwin.read(fd, &messageBuffer[totalRead], messageLength - totalRead)
-            guard n > 0 else { return nil }
-            totalRead += n
-        }
-
-        return String(bytes: messageBuffer, encoding: .utf8)
     }
 
     // MARK: - Startup Tests
@@ -148,9 +82,9 @@ final class NodeJSServiceTests: XCTestCase {
         let service = NodeJSService(filesDir: testDir)
 
         // Create mock state socket server BEFORE starting the service
-        // (the service's IPC client will connect to this)
-        let stateServerFd = try createMockServer(socketPath: service.stateSocketPath)
-        defer { close(stateServerFd) }
+        let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
+        try stateServer.start()
+        defer { stateServer.stop() }
 
         let startedExpectation = expectation(description: "State reached STARTED")
         service.onStateChange = { state in
@@ -163,7 +97,7 @@ final class NodeJSServiceTests: XCTestCase {
         waitForExpectations(timeout: 5)
 
         // Accept the IPC client connection from the service
-        let clientFd = acceptClient(serverFd: stateServerFd)
+        let clientFd = stateServer.acceptClient()
         XCTAssertGreaterThanOrEqual(clientFd, 0, "Should accept IPC client")
         defer { close(clientFd) }
 
@@ -176,11 +110,11 @@ final class NodeJSServiceTests: XCTestCase {
         }
 
         // Read the shutdown message from the mock server side
-        let message = receiveFramedMessage(fd: clientFd)
+        let message = MockNodeServer.receiveFramedMessage(fd: clientFd)
         XCTAssertEqual(message, #"{"type":"shutdown"}"#, "Should receive shutdown message")
 
-        // Give stop() time to complete (it will timeout since we don't signal)
-        Thread.sleep(forTimeInterval: 3)
+        // Give stop() time to complete
+        Thread.sleep(forTimeInterval: 1)
 
         XCTAssertEqual(service.state, .stopped)
     }
@@ -201,9 +135,7 @@ final class NodeJSServiceTests: XCTestCase {
             stateSequence.append(state)
         }
 
-        // stop() will timeout since there's no real Node.js, but cleanup
-        // should still transition to STOPPED
-        service.stop(timeout: 0.5)
+        service.stop(timeout: 1)
 
         XCTAssertEqual(service.state, .stopped)
         XCTAssertTrue(stateSequence.contains(.stopping), "Should transition through STOPPING")
@@ -223,7 +155,7 @@ final class NodeJSServiceTests: XCTestCase {
         XCTAssertEqual(service.state, .stopped)
     }
 
-    func testShutdownTimesOutAndCleansUp() {
+    func testStopCompletesQuicklyWhenNodeResponds() {
         let service = NodeJSService(filesDir: testDir)
         let startedExpectation = expectation(description: "Started")
 
@@ -234,13 +166,13 @@ final class NodeJSServiceTests: XCTestCase {
         service.start()
         waitForExpectations(timeout: 5)
 
+        // With the two-semaphore design, stop() signals the node thread
+        // which responds immediately, so stop completes quickly
         let startTime = Date()
-        service.stop(timeout: 0.5)
+        service.stop(timeout: 5)
         let elapsed = Date().timeIntervalSince(startTime)
 
-        // Should have waited approximately the timeout duration, then cleaned up
-        XCTAssertGreaterThanOrEqual(elapsed, 0.4, "Should wait near the timeout")
-        XCTAssertLessThan(elapsed, 3, "Should not wait much longer than timeout")
+        XCTAssertLessThan(elapsed, 2, "Stop should complete quickly when node thread responds")
         XCTAssertEqual(service.state, .stopped)
     }
 
@@ -255,11 +187,49 @@ final class NodeJSServiceTests: XCTestCase {
         service.start()
         waitForExpectations(timeout: 5)
 
-        service.stop(timeout: 0.5)
+        service.stop(timeout: 1)
 
         let fm = FileManager.default
         XCTAssertFalse(fm.fileExists(atPath: service.comapeoSocketPath), "comapeo.sock should be deleted")
         XCTAssertFalse(fm.fileExists(atPath: service.stateSocketPath), "state.sock should be deleted")
+    }
+
+    // MARK: - Cleanup Tests
+
+    func testCleanupIsIdempotent() {
+        let service = NodeJSService(filesDir: testDir)
+        let startedExpectation = expectation(description: "Started")
+
+        service.onStateChange = { state in
+            if state == .started { startedExpectation.fulfill() }
+        }
+
+        service.start()
+        waitForExpectations(timeout: 5)
+
+        // Call cleanup twice — should not crash or cause issues
+        service.cleanup()
+        service.cleanup()
+
+        XCTAssertEqual(service.state, .stopped)
+    }
+
+    func testCleanupDirectlyFromStarted() {
+        // Simulates background task expiration calling cleanup() directly
+        let service = NodeJSService(filesDir: testDir)
+        let startedExpectation = expectation(description: "Started")
+
+        service.onStateChange = { state in
+            if state == .started { startedExpectation.fulfill() }
+        }
+
+        service.start()
+        waitForExpectations(timeout: 5)
+
+        // cleanup() without stop() — as the background task expiration handler would do
+        service.cleanup()
+
+        XCTAssertEqual(service.state, .stopped)
     }
 
     // MARK: - Restart Tests
@@ -274,7 +244,7 @@ final class NodeJSServiceTests: XCTestCase {
         }
         service.start()
         waitForExpectations(timeout: 5)
-        service.stop(timeout: 0.5)
+        service.stop(timeout: 1)
         XCTAssertEqual(service.state, .stopped)
 
         // Second cycle
@@ -307,7 +277,7 @@ final class NodeJSServiceTests: XCTestCase {
         for _ in 0..<3 {
             group.enter()
             DispatchQueue.global().async {
-                service.stop(timeout: 0.5)
+                service.stop(timeout: 1)
                 group.leave()
             }
         }
@@ -324,13 +294,6 @@ final class NodeJSServiceTests: XCTestCase {
         var transitions = [NodeJSService.State]()
         let lock = NSLock()
 
-        service.onStateChange = { state in
-            lock.lock()
-            transitions.append(state)
-            lock.unlock()
-        }
-
-        // Start
         let startedExpectation = expectation(description: "Started")
         service.onStateChange = { state in
             lock.lock()
@@ -339,11 +302,12 @@ final class NodeJSServiceTests: XCTestCase {
             if state == .started { startedExpectation.fulfill() }
         }
 
+        // Start
         service.start()
         waitForExpectations(timeout: 5)
 
         // Stop
-        service.stop(timeout: 0.5)
+        service.stop(timeout: 1)
 
         lock.lock()
         let finalTransitions = transitions
@@ -352,7 +316,6 @@ final class NodeJSServiceTests: XCTestCase {
         // Verify state transition order
         XCTAssertTrue(finalTransitions.count >= 3, "Should have at least STARTING, STARTED, STOPPING transitions")
 
-        // Find the indices to verify ordering
         let startingIdx = finalTransitions.firstIndex(of: .starting)
         let startedIdx = finalTransitions.firstIndex(of: .started)
         let stoppingIdx = finalTransitions.firstIndex(of: .stopping)

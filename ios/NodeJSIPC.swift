@@ -37,13 +37,6 @@ class NodeJSIPC {
     private var connectQueue = DispatchQueue(label: "com.comapeo.core.ipc.connect")
     private var receiveWorkItem: DispatchWorkItem?
 
-    /// Reusable buffer for receiving the 4-byte length prefix.
-    private var receiveLengthBuffer = Data(count: 4)
-    /// Reusable buffer for sending the 4-byte length prefix.
-    private var sendLengthBuffer = Data(count: 4)
-    /// Reusable buffer for small received messages (<=1024 bytes).
-    private var receiveMessageBuffer = Data(count: 1024)
-
     private(set) var state: State = .disconnected {
         didSet {
             log("IPC state changed: \(oldValue) -> \(state)")
@@ -251,7 +244,7 @@ class NodeJSIPC {
 
 // MARK: - Connection helpers
 
-private func connectWithRetry(
+func connectWithRetry(
     socketPath: String,
     maxRetries: Int = 5,
     initialDelayMs: UInt32 = 100,
@@ -279,7 +272,7 @@ private func connectWithRetry(
     )
 }
 
-private func connectSocket(path: String) throws -> Int32 {
+func connectSocket(path: String) throws -> Int32 {
     let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else {
         throw NodeJSIPC.IPCError.connectionFailed("socket() failed: \(errno)")
@@ -320,9 +313,8 @@ private func connectSocket(path: String) throws -> Int32 {
 
 // MARK: - File watching
 
-/// Waits for a file to appear at the given path, polling with short intervals.
-/// Uses `DispatchSource.makeFileSystemObjectSource` on the parent directory.
-private func waitForFile(atPath path: String, timeoutSeconds: Int = 30) {
+/// Waits for a file to appear at the given path, polling at 50ms intervals.
+func waitForFile(atPath path: String, timeoutSeconds: TimeInterval = 30) {
     let fileManager = FileManager.default
     if fileManager.fileExists(atPath: path) {
         return
@@ -332,7 +324,7 @@ private func waitForFile(atPath path: String, timeoutSeconds: Int = 30) {
     // Ensure parent directory exists
     try? fileManager.createDirectory(atPath: parentDir, withIntermediateDirectories: true)
 
-    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
     let pollInterval: useconds_t = 50_000 // 50ms
 
     while !fileManager.fileExists(atPath: path) {

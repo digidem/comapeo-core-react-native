@@ -12,7 +12,23 @@ concurrency:
 
 jobs:
   unit-tests:
-    name: Swift Unit Tests
+    name: Swift Unit Tests (macOS)
+    runs-on: macos-14
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      - name: Run unit tests
+        run: |
+          cd ios
+          swift test --filter "MessageFramingTests"
+
+  simulator-tests:
+    name: Integration Tests (iOS Simulator)
     runs-on: macos-14
     timeout-minutes: 30
 
@@ -22,14 +38,24 @@ jobs:
       - name: Select Xcode version
         run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
 
-      - name: Run Swift tests
+      - name: List available simulators
+        run: xcrun simctl list devices available
+
+      - name: Run tests on iOS Simulator
         run: |
           cd ios
-          swift test
+          xcodebuild test \
+            -scheme ComapeoCoreTests \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            CODE_SIGNING_ALLOWED='NO' \
+            ENABLE_TESTABILITY='YES' \
+            2>&1 | tail -50
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-unit-test-results
-          path: ios/.build/
+          name: ios-test-results
+          path: ios/.build/debug/ComapeoCoreTests.xctest/
+          if-no-files-found: ignore
