@@ -1,48 +1,48 @@
 import ExpoModulesCore
 
 public class ComapeoCoreModule: Module {
-  // Each module class must implement the definition function. The definition consists of components
-  // that describes the module's functionality and behavior.
-  // See https://docs.expo.dev/modules/module-api for more details about available components.
-  public func definition() -> ModuleDefinition {
-    // Sets the name of the module that JavaScript code will use to refer to the module. Takes a string as an argument.
-    // Can be inferred from module's class name, but it's recommended to set it explicitly for clarity.
-    // The module will be accessible from `requireNativeModule('ComapeoCore')` in JavaScript.
-    Name("ComapeoCore")
+    private var ipc: NodeJSIPC?
 
-    // Sets constant properties on the module. Can take a dictionary or a closure that returns a dictionary.
-    Constants([
-      "PI": Double.pi
-    ])
+    public func definition() -> ModuleDefinition {
+        Name("ComapeoCore")
 
-    // Defines event names that the module can send to JavaScript.
-    Events("onChange")
+        Events("message", "stateChange")
 
-    // Defines a JavaScript synchronous function that runs the native code on the JavaScript thread.
-    Function("hello") {
-      return "Hello world! 👋"
-    }
+        OnCreate {
+            let documentsDir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
+            let socketPath = (documentsDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
+            self.ipc = NodeJSIPC(socketPath: socketPath) { [weak self] message in
+                self?.sendEvent("message", ["data": message])
+            }
 
-    // Defines a JavaScript function that always returns a Promise and whose native code
-    // is by default dispatched on the different thread than the JavaScript runtime runs on.
-    AsyncFunction("setValueAsync") { (value: String) in
-      // Send an event to JavaScript.
-      self.sendEvent("onChange", [
-        "value": value
-      ])
-    }
-
-    // Enables the module to be used as a native view. Definition components that are accepted as part of the
-    // view definition: Prop, Events.
-    View(ComapeoCoreView.self) {
-      // Defines a setter for the `url` prop.
-      Prop("url") { (view: ComapeoCoreView, url: URL) in
-        if view.webView.url != url {
-          view.webView.load(URLRequest(url: url))
+            // Observe service state changes
+            AppLifecycleDelegate.shared.nodeService.onStateChange = { [weak self] state in
+                self?.sendEvent("stateChange", ["state": state.rawValue])
+            }
         }
-      }
 
-      Events("onLoad")
+        OnDestroy {
+            self.ipc?.disconnect()
+            self.ipc = nil
+        }
+
+        OnAppEntersForeground {
+            self.ipc?.connect()
+        }
+
+        Function("postMessage") { (message: String) in
+            self.ipc?.sendMessage(message)
+        }
+
+        Function("getState") { () -> String in
+            guard let ipc = self.ipc else { return "STOPPED" }
+            switch ipc.state {
+            case .connected: return "STARTED"
+            case .connecting: return "STARTING"
+            case .disconnected: return "STOPPED"
+            case .disconnecting: return "STOPPING"
+            case .error: return "ERROR"
+            }
+        }
     }
-  }
 }
