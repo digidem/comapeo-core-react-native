@@ -294,11 +294,11 @@ private func connectSocket(path: String) throws -> Int32 {
         throw NodeJSIPC.IPCError.connectionFailed("Socket path too long")
     }
 
-    withUnsafeMutablePointer(to: &addr.sun_path) { sunPathPtr in
-        sunPathPtr.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: addr.sun_path)) { ptr in
-            for (i, byte) in pathBytes.enumerated() {
-                ptr[i] = byte
-            }
+    let sunPathSize = MemoryLayout.size(ofValue: addr.sun_path)
+    withUnsafeMutableBytes(of: &addr.sun_path) { rawBuf in
+        let ptr = rawBuf.baseAddress!.assumingMemoryBound(to: CChar.self)
+        for (i, byte) in pathBytes.enumerated() where i < sunPathSize {
+            ptr[i] = byte
         }
     }
 

@@ -8,7 +8,14 @@ let package = Package(
         .target(
             name: "ComapeoCore",
             path: ".",
-            exclude: ["Tests", "ComapeoCore.podspec", "Package.swift"],
+            exclude: [
+                "Tests",
+                "ComapeoCore.podspec",
+                "Package.swift",
+                "ComapeoCoreModule.swift",
+                "AppLifecycleDelegate.swift",
+                "NodeJSService.swift",
+            ],
             sources: ["NodeJSIPC.swift", "Log.swift"]
         ),
         .testTarget(
