@@ -383,16 +383,7 @@
 			);
 			inputPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-corereactnativeexample/Pods-corereactnativeexample-resources.sh",
-				"${PODS_ROOT}/../../../ios/nodejs-project/index.js",
-				"${PODS_ROOT}/../../../ios/nodejs-project/lib/comapeo-rpc.js",
-				"${PODS_ROOT}/../../../ios/nodejs-project/lib/connection-manager.js",
-				"${PODS_ROOT}/../../../ios/nodejs-project/lib/message-port.js",
-				"${PODS_ROOT}/../../../ios/nodejs-project/package-lock.json",
-				"${PODS_ROOT}/../../../ios/nodejs-project/package.json",
-				"${PODS_ROOT}/../../../ios/nodejs-project/tsconfig.json",
-				"${PODS_ROOT}/../../../ios/nodejs-project/types/framed-stream.d.ts",
-				"${PODS_ROOT}/../../../ios/nodejs-project/lib",
-				"${PODS_ROOT}/../../../ios/nodejs-project/types",
+				"${PODS_ROOT}/../../../ios/nodejs-project",
 				"${PODS_CONFIGURATION_BUILD_DIR}/EXConstants/EXConstants.bundle",
 				"${PODS_CONFIGURATION_BUILD_DIR}/EXConstants/ExpoConstants_privacy.bundle",
 				"${PODS_CONFIGURATION_BUILD_DIR}/ExpoFileSystem/ExpoFileSystem_privacy.bundle",
@@ -404,16 +395,7 @@
 			);
 			name = "[CP] Copy Pods Resources";
 			outputPaths = (
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/index.js",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/comapeo-rpc.js",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/connection-manager.js",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/message-port.js",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/package-lock.json",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/package.json",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/tsconfig.json",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/framed-stream.d.ts",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/lib",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/types",
+				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/nodejs-project",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/EXConstants.bundle",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoConstants_privacy.bundle",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoFileSystem_privacy.bundle",

@@ -33,14 +33,15 @@ Pod::Spec.new do |s|
   s.exclude_files = "Tests/**", "Package.swift"
 
   # Bundle the Node.js project directory into the app bundle.
-  # Using the directory name (not a **/* glob) so that rsync preserves the
-  # nodejs-project/ wrapper directory.  resolveJSEntryPoint expects files
-  # inside Bundle.main/nodejs-project/.  Because the "Install Node.js
-  # Project Dependencies" script phase runs before resource copying,
-  # node_modules will be included automatically.
+  # IMPORTANT: node_modules must exist before `pod install` runs, otherwise
+  # CocoaPods enumerates individual files and copies them flat (losing the
+  # directory structure). When node_modules exists, CocoaPods treats
+  # nodejs-project as a single directory resource and preserves the structure.
+  # Run `cd ios/nodejs-project && npm install --omit=dev` before `pod install`.
   s.resources = 'nodejs-project'
 
-  # Install Node.js project npm dependencies before compilation
+  # Install Node.js project npm dependencies before compilation.
+  # This also ensures node_modules exists for subsequent `pod install` runs.
   s.script_phase = {
     :name => 'Install Node.js Project Dependencies',
     :script => 'if [ -f "${PODS_TARGET_SRCROOT}/nodejs-project/package.json" ]; then cd "${PODS_TARGET_SRCROOT}/nodejs-project" && npm install --omit=dev; fi',

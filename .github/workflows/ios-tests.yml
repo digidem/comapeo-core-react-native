@@ -87,6 +87,9 @@ jobs:
       - name: Download NodeMobile
         run: npm run download:nodejs-mobile -- --platform ios
 
+      - name: Install Node.js project dependencies
+        run: cd ios/nodejs-project && npm install --omit=dev
+
       - name: Pod install
         run: cd example/ios && pod install
 
