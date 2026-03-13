@@ -14,7 +14,6 @@
 		1C68695E08156B2AF5A43C34 /* libPods-corereactnativeexampleTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A8091271574DA365AAE2A77C /* libPods-corereactnativeexampleTests.a */; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
 		44153B0E3B801A3C54D3C418 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E1818DA6DBA83311E6C63D19 /* PrivacyInfo.xcprivacy */; };
-		76A239D50983B8AE44D13594 /* IPCIntegrationTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64F6E36F46C919992883E516 /* IPCIntegrationTest.swift */; };
 		96905EF65AED1B983A6B3ABC /* libPods-corereactnativeexample.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 58EEBF8E8E6FB1BC6CAF49B5 /* libPods-corereactnativeexample.a */; };
 		B18059E884C0ABDD17F3DC3D /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAC715A2D49A985799AEE119 /* ExpoModulesProvider.swift */; };
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
@@ -43,7 +42,6 @@
 		2B8E0E2FEB8242039EACEE2C /* corereactnativeexample-Bridging-Header.h */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.c.h; name = "corereactnativeexample-Bridging-Header.h"; path = "corereactnativeexample/corereactnativeexample-Bridging-Header.h"; sourceTree = "<group>"; };
 		2DA9788AEED08DC5F081D490 /* corereactnativeexampleTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = corereactnativeexampleTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		58EEBF8E8E6FB1BC6CAF49B5 /* libPods-corereactnativeexample.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-corereactnativeexample.a"; sourceTree = BUILT_PRODUCTS_DIR; };
-		64F6E36F46C919992883E516 /* IPCIntegrationTest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPCIntegrationTest.swift; sourceTree = "<group>"; };
 		6C2E3173556A471DD304B334 /* Pods-corereactnativeexample.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-corereactnativeexample.debug.xcconfig"; path = "Target Support Files/Pods-corereactnativeexample/Pods-corereactnativeexample.debug.xcconfig"; sourceTree = "<group>"; };
 		76AF797BA428486188F2CEA2 /* noop-file.swift */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.swift; name = "noop-file.swift"; path = "corereactnativeexample/noop-file.swift"; sourceTree = "<group>"; };
 		77D19EACA0D55020C43D999E /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-corereactnativeexampleTests/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
@@ -198,7 +196,6 @@
 			isa = PBXGroup;
 			children = (
 				7C68FAB4B22EF5C7B77BDBF8 /* ServiceLifecycleTest.swift */,
-				64F6E36F46C919992883E516 /* IPCIntegrationTest.swift */,
 			);
 			name = corereactnativeexampleTests;
 			path = corereactnativeexampleTests;
@@ -480,7 +477,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				13BE4309DC6548ECCEAA05C4 /* ServiceLifecycleTest.swift in Sources */,
-				76A239D50983B8AE44D13594 /* IPCIntegrationTest.swift in Sources */,
 				C3AEE783E6EF6378D6C3E33A /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

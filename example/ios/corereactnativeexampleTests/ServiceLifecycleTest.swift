@@ -1,68 +1,67 @@
 import XCTest
 @testable import ComapeoCore
 
-/// Integration tests for NodeJSService lifecycle using the real JS runtime.
-/// These tests verify behavior (start/stop/IPC) not implementation details,
-/// so they remain valid if the JS runtime is swapped (e.g. to Hermes or BareJS).
-final class ServiceLifecycleTest: XCTestCase {
-    private var service: NodeJSService!
-
-    override func setUp() {
-        super.setUp()
-        service = AppLifecycleDelegate.shared.nodeService
-        if service.state != .stopped {
-            service.stop(timeout: 10)
-        }
+/// Integration tests for NodeJSService using the real Node.js runtime.
+///
+/// IMPORTANT: NodeMobileStartNode can only be called once per process,
+/// so these tests must NOT stop and restart Node. Tests run alphabetically;
+/// the shutdown test is prefixed "test99" to ensure it runs last.
+///
+/// applicationDidBecomeActive starts Node automatically when the app launches.
+/// Tests wait for the service to reach .started state before asserting.
+final class ServiceIntegrationTest: XCTestCase {
+    private var service: NodeJSService {
+        AppLifecycleDelegate.shared.nodeService
     }
 
-    override func tearDown() {
-        if service.state != .stopped {
-            service.stop(timeout: 10)
+    /// Waits for the service to reach .started state.
+    /// Node may already be started (via applicationDidBecomeActive) or still starting.
+    private func waitForStarted() {
+        if service.state == .started { return }
+
+        let started = expectation(description: "service started")
+        service.onStateChange = { state in
+            if state == .started { started.fulfill() }
         }
-        super.tearDown()
+        // If it's stopped (e.g. first test in a fresh process where lifecycle hasn't fired),
+        // start it now.
+        if service.state == .stopped {
+            service.start()
+        }
+        waitForExpectations(timeout: 30)
     }
 
-    func testServiceStartsAndReachesStartedState() {
-        let started = expectation(description: "started")
-        service.onStateChange = { if $0 == .started { started.fulfill() } }
-        service.start()
-        waitForExpectations(timeout: 15)
+    // MARK: - Tests (run in alphabetical order)
+
+    func test01_ServiceReachesStartedState() {
+        waitForStarted()
         XCTAssertEqual(service.state, .started)
     }
 
-    func testServiceStopsGracefully() {
-        let started = expectation(description: "started")
-        service.onStateChange = { if $0 == .started { started.fulfill() } }
-        service.start()
-        waitForExpectations(timeout: 15)
-
-        service.stop(timeout: 10)
-        XCTAssertEqual(service.state, .stopped)
-    }
-
-    func testStopThenRestartWorks() {
-        let started1 = expectation(description: "started1")
-        service.onStateChange = { if $0 == .started { started1.fulfill() } }
-        service.start()
-        waitForExpectations(timeout: 15)
-        service.stop(timeout: 10)
-        XCTAssertEqual(service.state, .stopped)
-
-        let started2 = expectation(description: "started2")
-        service.onStateChange = { if $0 == .started { started2.fulfill() } }
-        service.start()
-        waitForExpectations(timeout: 15)
-        XCTAssertEqual(service.state, .started)
-    }
-
-    func testDoubleStartIsIdempotent() {
-        let started = expectation(description: "started")
-        service.onStateChange = { if $0 == .started { started.fulfill() } }
-        service.start()
-        waitForExpectations(timeout: 15)
-
-        service.start()
+    func test02_DoubleStartIsIdempotent() {
+        waitForStarted()
+        service.start() // should be a no-op
         Thread.sleep(forTimeInterval: 2)
         XCTAssertEqual(service.state, .started)
+    }
+
+    func test03_StateIPCReceivesMessages() {
+        waitForStarted()
+
+        let messageReceived = expectation(description: "message received")
+        let ipc = NodeJSIPC(socketPath: service.stateSocketPath) { _ in
+            messageReceived.fulfill()
+        }
+        defer { ipc.disconnect() }
+
+        waitForExpectations(timeout: 10)
+    }
+
+    /// Shutdown test — MUST run last. After this, Node cannot be restarted.
+    func test99_GracefulShutdownStopsService() {
+        waitForStarted()
+        XCTAssertEqual(service.state, .started)
+        service.stop(timeout: 10)
+        XCTAssertEqual(service.state, .stopped)
     }
 }
