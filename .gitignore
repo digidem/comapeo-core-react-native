@@ -65,3 +65,7 @@ android/libnode/include/
 
 # nodejs-mobile version marker
 android/libnode/.version
+
+# Backend-related artifacts
+backend/dist
+nodejs-assets

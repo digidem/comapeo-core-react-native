@@ -31,10 +31,12 @@
   "license": "MIT",
   "homepage": "https://github.com/digidem/comapeo-core-react-native#readme",
   "devDependencies": {
+    "@types/node": "24.12.2",
     "@types/react": "~19.0.0",
     "execa": "^9.6.0",
     "expo": "~53.0.0",
     "expo-module-scripts": "^4.1.6",
+    "prettier": "3.8.3",
     "react-native": "0.79.1",
     "type-fest": "^4.33.0"
   },
