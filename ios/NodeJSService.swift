@@ -125,11 +125,12 @@ class NodeJSService {
 
         // Wait for node thread to complete (node_start blocks until exit)
         let result = completionSem?.wait(timeout: .now() + timeout)
-        if result == .timedOut {
-            log("Graceful shutdown timed out after \(timeout)s")
+        let threadExited = (result != .timedOut)
+        if !threadExited {
+            log("Graceful shutdown timed out after \(timeout)s — node thread still alive")
         }
 
-        cleanup()
+        cleanup(threadExited: threadExited)
     }
 
     private func runNode() {
@@ -155,7 +156,16 @@ class NodeJSService {
         completionSem?.signal()
     }
 
-    func cleanup() {
+    /// Releases IPC and socket-file resources.
+    ///
+    /// - Parameter threadExited: Whether the node runtime thread has actually
+    ///   exited. When `false` (e.g. a timed-out graceful shutdown or a
+    ///   background-task expiration that cut the wait short), the node
+    ///   thread is still alive; the service transitions to `.error` so
+    ///   `start()` cannot be called again and violate the once-per-process
+    ///   constraint of `NodeMobileStartNode`. When `true`, the service is
+    ///   fully stopped and transitions to `.stopped`.
+    func cleanup(threadExited: Bool = true) {
         stateIPC?.disconnect()
         stateIPC = nil
         deleteSocketFiles()
@@ -165,8 +175,9 @@ class NodeJSService {
         nodeCompletionSemaphore?.signal()
         nodeCompletionSemaphore = nil
         nodeThread = nil
-        if state != .stopped {
-            state = .stopped
+        let targetState: State = threadExited ? .stopped : .error
+        if state != targetState {
+            state = targetState
         }
         lock.unlock()
     }

@@ -14,7 +14,6 @@ let package = Package(
                 "Package.swift",
                 "ComapeoCoreModule.swift",
                 "AppLifecycleDelegate.swift",
-                "NodeJSService+BackgroundTask.swift",
             ],
             sources: ["NodeJSIPC.swift", "NodeJSService.swift", "Log.swift"]
         ),

@@ -4,10 +4,12 @@ import UIKit
 /// Expo lifecycle delegate that manages the Node.js service in response to
 /// iOS application lifecycle events.
 ///
-/// iOS does not support foreground services like Android. Instead, when the app
-/// enters background, we use `UIApplication.beginBackgroundTask` to request
-/// additional execution time and gracefully shut down the Node.js process.
-/// When the app returns to foreground, we restart the service.
+/// `NodeMobileStartNode` can only be called once per process, so the service
+/// cannot be stopped on background and then restarted on foreground. Instead,
+/// Node.js keeps running across background/foreground transitions; iOS may
+/// suspend or kill the process during long background windows, at which point
+/// the next foreground is a fresh process with a fresh single-use slot. The
+/// only graceful-shutdown hook is `applicationWillTerminate`.
 public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     static let shared = AppLifecycleDelegate()
 
@@ -38,6 +40,8 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
 
     public func applicationDidBecomeActive(_ application: UIApplication) {
         log("applicationDidBecomeActive")
+        // Start is guarded by `state == .stopped`, so subsequent foreground
+        // transitions in the same process are no-ops.
         nodeService.start()
     }
 
@@ -46,13 +50,18 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     }
 
     public func applicationDidEnterBackground(_ application: UIApplication) {
-        log("applicationDidEnterBackground — initiating graceful shutdown")
-        nodeService.stopWithBackgroundTask(timeout: 10)
+        log("applicationDidEnterBackground — Node.js continues running")
+        // Deliberately do NOT stop Node on background: NodeMobileStartNode
+        // is once-per-process, so stopping here would permanently break the
+        // app on the next foreground. iOS may suspend or terminate the
+        // process during long background windows; when that happens the
+        // next launch is a fresh process.
     }
 
     public func applicationWillTerminate(_ application: UIApplication) {
         log("applicationWillTerminate — stopping Node.js")
-        // Synchronous stop with short timeout since termination is imminent
+        // Final graceful-shutdown hook. Synchronous with a short timeout
+        // since termination is imminent.
         nodeService.stop(timeout: 5)
     }
 }

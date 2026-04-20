@@ -248,7 +248,8 @@ final class NodeJSServiceTests: XCTestCase {
     }
 
     func testCleanupDirectlyFromStarted() {
-        // Simulates background task expiration calling cleanup() directly
+        // cleanup() with the default threadExited: true argument represents a
+        // caller that knows the node thread has finished. State lands in .stopped.
         let (service, _) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
