@@ -44,7 +44,18 @@ Pod::Spec.new do |s|
   # This also ensures node_modules exists for subsequent `pod install` runs.
   s.script_phase = {
     :name => 'Install Node.js Project Dependencies',
-    :script => 'if [ -f "${PODS_TARGET_SRCROOT}/nodejs-project/package.json" ]; then cd "${PODS_TARGET_SRCROOT}/nodejs-project" && npm install --omit=dev; fi',
+    :script => <<~SCRIPT,
+      if [ -f "${PODS_TARGET_SRCROOT}/nodejs-project/package.json" ]; then
+        # Resolve NODE_BINARY using the same .xcode.env mechanism as React Native / Expo.
+        if [ -f "${PODS_ROOT}/../.xcode.env" ]; then source "${PODS_ROOT}/../.xcode.env"; fi
+        if [ -f "${PODS_ROOT}/../.xcode.env.local" ]; then source "${PODS_ROOT}/../.xcode.env.local"; fi
+        if [ -z "$NODE_BINARY" ]; then NODE_BINARY="$(command -v node)"; fi
+        # Add node's bin dir to PATH so npm's #!/usr/bin/env node shebang resolves correctly.
+        export PATH="$(dirname "$NODE_BINARY"):$PATH"
+        NPM_BINARY="$(dirname "$NODE_BINARY")/npm"
+        cd "${PODS_TARGET_SRCROOT}/nodejs-project" && "$NPM_BINARY" install --omit=dev
+      fi
+    SCRIPT
     :execution_position => :before_compile
   }
 end
