@@ -78,6 +78,10 @@ final class ServiceIntegrationTest: XCTestCase {
         Thread.sleep(forTimeInterval: 2)
 
         let received = expectation(description: "state IPC received a started/ready notification")
+        // A late-connecting client gets both `started` and `ready` replayed
+        // in quick succession by the Node-side fix, so the expectation can
+        // be fulfilled more than once. Don't treat that as a failure.
+        received.assertForOverFulfill = false
         var messages: [String] = []
         let messagesLock = NSLock()
 
