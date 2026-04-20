@@ -81,18 +81,9 @@ android {
     ndkVersion '27.0.12077973'
 }
 
-// Copy the pre-built backend bundle into the Android assets directory
-def nodejsProjectDir = file("src/main/assets/nodejs-project")
-def copyBackendBundle = tasks.register("copyBackendBundle", Copy) {
-    from "${project.projectDir}/../backend/dist"
-    into nodejsProjectDir
-    include "index.mjs", "index.mjs.map"
-}
-
 android.libraryVariants.all { variant ->
     def mergeAssetsTask = tasks.findByName("merge${variant.name.capitalize()}Assets")
     if (mergeAssetsTask) {
-        mergeAssetsTask.dependsOn(copyBackendBundle)
         mergeAssetsTask.inputs.dir("src/main/assets/nodejs-project")
     }
 }
