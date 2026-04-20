@@ -31,7 +31,10 @@ class NodeJSIPC {
     private let socketPath: String
     private let onMessage: (String) -> Void
     private let lock = NSLock()
-    private var socket: Int32 = -1
+    /// Unix socket file descriptor. Internal (rather than private) so that
+    /// tests using `@testable import` can tune kernel buffer options
+    /// (e.g. `SO_SNDBUF`, `O_NONBLOCK`) to force partial-write conditions.
+    var socket: Int32 = -1
     private var sendQueue = DispatchQueue(label: "com.comapeo.core.ipc.send")
     private var receiveQueue = DispatchQueue(label: "com.comapeo.core.ipc.receive")
     private var connectQueue = DispatchQueue(label: "com.comapeo.core.ipc.connect")

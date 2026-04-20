@@ -11,6 +11,7 @@
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		13B07FC11A68108700A75B9A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
 		13BE4309DC6548ECCEAA05C4 /* ServiceLifecycleTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C68FAB4B22EF5C7B77BDBF8 /* ServiceLifecycleTest.swift */; };
+		2B8F91C7A36D4E58B9D1F02A /* ComapeoCoreModuleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D73D42E5D8C4A91B8C2E9F1 /* ComapeoCoreModuleTests.swift */; };
 		1C68695E08156B2AF5A43C34 /* libPods-corereactnativeexampleTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A8091271574DA365AAE2A77C /* libPods-corereactnativeexampleTests.a */; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
 		44153B0E3B801A3C54D3C418 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E1818DA6DBA83311E6C63D19 /* PrivacyInfo.xcprivacy */; };
@@ -47,6 +48,7 @@
 		77D19EACA0D55020C43D999E /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-corereactnativeexampleTests/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 		7A4D352CD337FB3A3BF06240 /* Pods-corereactnativeexample.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-corereactnativeexample.release.xcconfig"; path = "Target Support Files/Pods-corereactnativeexample/Pods-corereactnativeexample.release.xcconfig"; sourceTree = "<group>"; };
 		7C68FAB4B22EF5C7B77BDBF8 /* ServiceLifecycleTest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ServiceLifecycleTest.swift; sourceTree = "<group>"; };
+		7D73D42E5D8C4A91B8C2E9F1 /* ComapeoCoreModuleTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ComapeoCoreModuleTests.swift; sourceTree = "<group>"; };
 		8E6D84AF2E84DBA9BB397B3B /* Pods-corereactnativeexampleTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-corereactnativeexampleTests.release.xcconfig"; path = "Target Support Files/Pods-corereactnativeexampleTests/Pods-corereactnativeexampleTests.release.xcconfig"; sourceTree = "<group>"; };
 		923E31E4A1449E78B24E4C14 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		A8091271574DA365AAE2A77C /* libPods-corereactnativeexampleTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-corereactnativeexampleTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -196,6 +198,7 @@
 			isa = PBXGroup;
 			children = (
 				7C68FAB4B22EF5C7B77BDBF8 /* ServiceLifecycleTest.swift */,
+				7D73D42E5D8C4A91B8C2E9F1 /* ComapeoCoreModuleTests.swift */,
 			);
 			name = corereactnativeexampleTests;
 			path = corereactnativeexampleTests;
@@ -459,6 +462,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				13BE4309DC6548ECCEAA05C4 /* ServiceLifecycleTest.swift in Sources */,
+				2B8F91C7A36D4E58B9D1F02A /* ComapeoCoreModuleTests.swift in Sources */,
 				C3AEE783E6EF6378D6C3E33A /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

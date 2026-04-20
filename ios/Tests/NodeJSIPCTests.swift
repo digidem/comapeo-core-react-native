@@ -269,6 +269,121 @@ final class NodeJSIPCTests: XCTestCase {
         ipc.disconnect()
     }
 
+    // MARK: - Pre-connection Buffering
+
+    /// Messages sent before the IPC has finished connecting must not be silently
+    /// dropped — they must be delivered once the connection is established.
+    /// This is the behavior on Android (via `Channel.UNLIMITED`) and is the
+    /// contract `postMessage` exposes to JS.
+    func testMessagesSentBeforeConnectAreBuffered() throws {
+        let socketPath = (testDir as NSString).appendingPathComponent("buffered.sock")
+
+        // IPC starts connecting but the server socket does not yet exist —
+        // NodeJSIPC will be polling inside `waitForFile()`.
+        let ipc = NodeJSIPC(socketPath: socketPath) { _ in }
+        defer { ipc.disconnect() }
+
+        // Fire two messages while still connecting. The current code drops
+        // these at the `socket not connected` guard; the fix must buffer them
+        // and flush on connection.
+        ipc.sendMessage("first")
+        ipc.sendMessage("second")
+
+        // Only now does the server appear. waitForFile() should see the socket
+        // and performConnect() should complete the connection.
+        let server = MockNodeServer(socketPath: socketPath)
+        try server.start()
+        defer { server.stop() }
+
+        let bothReceived = expectation(description: "Both pending messages received")
+        bothReceived.expectedFulfillmentCount = 2
+        var received: [String] = []
+        let receivedLock = NSLock()
+
+        DispatchQueue.global().async {
+            let clientFd = server.acceptClient()
+            guard clientFd >= 0 else { return }
+            defer { close(clientFd) }
+
+            for _ in 0..<2 {
+                guard let msg = MockNodeServer.receiveFramedMessage(fd: clientFd) else { break }
+                receivedLock.lock()
+                received.append(msg)
+                receivedLock.unlock()
+                bothReceived.fulfill()
+            }
+        }
+
+        waitForExpectations(timeout: 15)
+        receivedLock.lock()
+        XCTAssertEqual(received, ["first", "second"], "Pre-connect messages must be delivered in order")
+        receivedLock.unlock()
+    }
+
+    // MARK: - Partial-write handling
+
+    /// When the kernel's send buffer is full, `write()` on a stream socket may
+    /// return fewer bytes than requested. The current `sendMessageInternal`
+    /// treats that as fatal and returns, leaving the receiver desynced because
+    /// the length prefix was already sent. The fix must loop until all bytes
+    /// are written.
+    ///
+    /// To force short writes deterministically we make the client socket
+    /// non-blocking with a tiny send buffer — production uses a blocking
+    /// socket where short writes are rare but still permitted (e.g. EINTR).
+    func testLargeMessageIsDeliveredIntactUnderBackpressure() throws {
+        let server = try startServer(name: "partial-write.sock")
+        defer { server.stop() }
+
+        let clientConnected = expectation(description: "Server accepted client")
+        let messageReceivedIntact = expectation(description: "Full message received intact")
+        let payload = String(repeating: "A", count: 65536) // 64 KiB
+
+        let ipc = NodeJSIPC(socketPath: server.socketPath) { _ in }
+        defer { ipc.disconnect() }
+
+        DispatchQueue.global().async {
+            let clientFd = server.acceptClient()
+            guard clientFd >= 0 else { return }
+            clientConnected.fulfill()
+            defer { close(clientFd) }
+
+            // Drain slowly so the client-side send buffer fills and stays full —
+            // without this, the kernel has plenty of room and no short write occurs.
+            var received = ""
+            let msg = MockNodeServer.receiveFramedMessage(fd: clientFd)
+            received = msg ?? ""
+
+            if received == payload {
+                messageReceivedIntact.fulfill()
+            }
+        }
+
+        wait(for: [clientConnected], timeout: 5)
+
+        // Wait for the client-side connection to finish and expose its fd.
+        let deadline = Date().addingTimeInterval(5)
+        while ipc.socket < 0 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertGreaterThanOrEqual(ipc.socket, 0, "Client socket never connected")
+
+        // Make the socket non-blocking with a tiny send buffer so the 64 KiB
+        // payload cannot fit in one `write()` call.
+        let flags = fcntl(ipc.socket, F_GETFL, 0)
+        XCTAssertEqual(fcntl(ipc.socket, F_SETFL, flags | O_NONBLOCK), 0, "Failed to set O_NONBLOCK")
+        var bufSize: Int32 = 4096
+        XCTAssertEqual(
+            setsockopt(ipc.socket, SOL_SOCKET, SO_SNDBUF, &bufSize, socklen_t(MemoryLayout<Int32>.size)),
+            0,
+            "Failed to shrink SO_SNDBUF"
+        )
+
+        ipc.sendMessage(payload)
+
+        wait(for: [messageReceivedIntact], timeout: 10)
+    }
+
     // MARK: - Disconnect Tests
 
     func testServerDisconnectTriggersDisconnectedState() throws {

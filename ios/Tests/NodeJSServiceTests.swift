@@ -332,6 +332,58 @@ final class NodeJSServiceTests: XCTestCase {
         XCTAssertEqual(service.state, .stopped)
     }
 
+    // MARK: - Timeout & Error-state Tests
+
+    /// When `stop(timeout:)` times out, the node thread is still alive. Transitioning
+    /// state to `.stopped` would allow `start()` to be called again, violating
+    /// nodejs-mobile's once-per-process constraint. The service must transition to
+    /// `.error` instead.
+    func testStopTimeoutTransitionsToErrorNotStopped() {
+        let (service, _) = makeTestService()
+        let startedExpectation = expectation(description: "Started")
+        service.onStateChange = { if $0 == .started { startedExpectation.fulfill() } }
+
+        service.start()
+        waitForExpectations(timeout: 5)
+
+        // The mock entry blocks forever (we never call signalExit). stop() sends
+        // a shutdown message that no one reads, so the completion semaphore times out.
+        service.stop(timeout: 0.1)
+
+        XCTAssertEqual(
+            service.state, .error,
+            "A timed-out stop must transition to .error, not .stopped — the node thread is still alive"
+        )
+    }
+
+    /// After a timed-out stop has pushed the service into `.error`, subsequent
+    /// `start()` calls must be rejected. Allowing a restart would invoke
+    /// `NodeMobileStartNode` a second time in the same process.
+    func testStartFromErrorStateIsRejected() {
+        let (service, _) = makeTestService()
+        let startedExpectation = expectation(description: "Started")
+        service.onStateChange = { if $0 == .started { startedExpectation.fulfill() } }
+
+        service.start()
+        waitForExpectations(timeout: 5)
+
+        // Force transition to .error via timeout path.
+        service.stop(timeout: 0.1)
+        XCTAssertEqual(service.state, .error, "precondition: timed-out stop must land in .error")
+
+        var stateChangesAfterError = [NodeJSService.State]()
+        service.onStateChange = { stateChangesAfterError.append($0) }
+
+        service.start()
+        Thread.sleep(forTimeInterval: 0.2)
+
+        XCTAssertEqual(service.state, .error, "start() from .error must not transition state")
+        XCTAssertTrue(
+            stateChangesAfterError.isEmpty,
+            "start() from .error must not emit any state changes; got: \(stateChangesAfterError)"
+        )
+    }
+
     // MARK: - State Transition Order Tests
 
     func testFullLifecycleStateTransitions() {
