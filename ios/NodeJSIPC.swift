@@ -39,6 +39,9 @@ class NodeJSIPC {
     private var receiveQueue = DispatchQueue(label: "com.comapeo.core.ipc.receive")
     private var connectQueue = DispatchQueue(label: "com.comapeo.core.ipc.connect")
     private var receiveWorkItem: DispatchWorkItem?
+    /// Messages enqueued by `sendMessage` before the socket is connected.
+    /// Flushed in connect order when the connection completes. Guarded by `lock`.
+    private var pendingMessages: [String] = []
 
     private(set) var state: State = .disconnected {
         didSet {
@@ -77,11 +80,21 @@ class NodeJSIPC {
         // Connect with retry
         do {
             let fd = try connectWithRetry(socketPath: socketPath)
+            let messagesToFlush: [String]
             lock.lock()
             self.socket = fd
             state = .connected
+            messagesToFlush = pendingMessages
+            pendingMessages.removeAll()
             lock.unlock()
             startReceiving()
+
+            // Flush any messages enqueued while connecting.
+            for message in messagesToFlush {
+                sendQueue.async { [weak self] in
+                    self?.sendMessageInternal(message)
+                }
+            }
         } catch {
             lock.lock()
             state = .error(error.localizedDescription)
@@ -129,11 +142,22 @@ class NodeJSIPC {
     private func sendMessageInternal(_ message: String) {
         lock.lock()
         let fd = socket
+        let currentState = state
         lock.unlock()
 
-        guard fd >= 0 else {
-            log("Cannot send: socket not connected")
-            return
+        if fd < 0 {
+            switch currentState {
+            case .connecting, .disconnected:
+                // Defer until connection completes. performConnect() will
+                // flush the pending list in order on success.
+                lock.lock()
+                pendingMessages.append(message)
+                lock.unlock()
+                return
+            default:
+                log("Cannot send: socket not connected (state: \(currentState))")
+                return
+            }
         }
 
         guard let messageBytes = message.data(using: .utf8) else {
@@ -141,24 +165,45 @@ class NodeJSIPC {
             return
         }
 
-        // Write 4-byte little-endian length prefix
-        var length = UInt32(messageBytes.count).littleEndian
-        let lengthData = Data(bytes: &length, count: 4)
+        do {
+            var length = UInt32(messageBytes.count).littleEndian
+            try withUnsafeBytes(of: &length) { prefixPtr in
+                try writeFully(fd: fd, buffer: prefixPtr.baseAddress!, count: 4)
+            }
+            try messageBytes.withUnsafeBytes { bodyPtr in
+                try writeFully(fd: fd, buffer: bodyPtr.baseAddress!, count: messageBytes.count)
+            }
+        } catch {
+            log("Failed to send message: \(error.localizedDescription)")
+        }
+    }
 
-        let written1 = lengthData.withUnsafeBytes { ptr in
-            Darwin.write(fd, ptr.baseAddress!, 4)
-        }
-        guard written1 == 4 else {
-            log("Failed to write length prefix")
-            return
-        }
-
-        let written2 = messageBytes.withUnsafeBytes { ptr in
-            Darwin.write(fd, ptr.baseAddress!, messageBytes.count)
-        }
-        guard written2 == messageBytes.count else {
-            log("Failed to write message body")
-            return
+    /// Writes exactly `count` bytes from `buffer`, looping over partial
+    /// writes. Handles `EINTR` and `EAGAIN`/`EWOULDBLOCK` (the latter via
+    /// `poll`). POSIX `write(2)` on a stream socket is permitted to return
+    /// fewer bytes than requested; treating that as fatal desyncs the framed
+    /// protocol because the length prefix has already been sent.
+    private func writeFully(fd: Int32, buffer: UnsafeRawPointer, count: Int) throws {
+        var written = 0
+        while written < count {
+            let n = Darwin.write(fd, buffer.advanced(by: written), count - written)
+            if n > 0 {
+                written += n
+                continue
+            }
+            if n < 0 {
+                switch errno {
+                case EINTR: continue
+                case EAGAIN, EWOULDBLOCK:
+                    var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                    _ = Darwin.poll(&pfd, 1, 5000)
+                    continue
+                default:
+                    throw IPCError.writeError(errno)
+                }
+            }
+            // n == 0 on a stream socket means the peer closed.
+            throw IPCError.connectionClosed
         }
     }
 
@@ -216,13 +261,23 @@ class NodeJSIPC {
         var totalRead = 0
         while totalRead < count {
             let bytesRead = Darwin.read(fd, &buffer[totalRead], count - totalRead)
-            if bytesRead <= 0 {
-                if bytesRead == 0 {
-                    throw IPCError.connectionClosed
-                }
-                throw IPCError.readError(errno)
+            if bytesRead > 0 {
+                totalRead += bytesRead
+                continue
             }
-            totalRead += bytesRead
+            if bytesRead < 0 {
+                switch errno {
+                case EINTR: continue
+                case EAGAIN, EWOULDBLOCK:
+                    var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                    _ = Darwin.poll(&pfd, 1, 5000)
+                    continue
+                default:
+                    throw IPCError.readError(errno)
+                }
+            }
+            // bytesRead == 0 → peer closed the connection.
+            throw IPCError.connectionClosed
         }
     }
 
@@ -230,6 +285,7 @@ class NodeJSIPC {
         case connectionFailed(String)
         case connectionClosed
         case readError(Int32)
+        case writeError(Int32)
         case invalidUTF8
         case timeout
 
@@ -238,6 +294,7 @@ class NodeJSIPC {
             case .connectionFailed(let msg): return "Connection failed: \(msg)"
             case .connectionClosed: return "Connection closed by peer"
             case .readError(let code): return "Read error: \(code)"
+            case .writeError(let code): return "Write error: \(code)"
             case .invalidUTF8: return "Invalid UTF-8 data"
             case .timeout: return "Connection timed out"
             }
