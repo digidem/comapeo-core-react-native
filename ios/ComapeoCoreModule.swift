@@ -8,24 +8,16 @@ public class ComapeoCoreModule: Module {
     // These helpers exist so tests can verify two invariants:
     //   1. The module's IPC client path must equal the path NodeJSService binds to.
     //   2. getState() must return the same source as the stateChange event (service state).
-    //
-    // The current implementations reproduce the (buggy) production behavior so that
-    // the failing tests fail for the right reason. They will be fixed in a follow-up.
 
     static func resolveSocketPath() -> String {
-        let documentsDir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
-        return (documentsDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
+        return AppLifecycleDelegate.shared.nodeService.comapeoSocketPath
     }
 
     static func stateString(for service: NodeJSService, ipc: NodeJSIPC?) -> String {
-        guard let ipc = ipc else { return "STOPPED" }
-        switch ipc.state {
-        case .connected: return "STARTED"
-        case .connecting: return "STARTING"
-        case .disconnected: return "STOPPED"
-        case .disconnecting: return "STOPPING"
-        case .error: return "ERROR"
-        }
+        // The service owns the authoritative lifecycle state; the IPC socket's
+        // connection state is a downstream concern and may transiently diverge
+        // (see bug: late socket file creation, mid-session reconnects, etc.).
+        return service.state.rawValue
     }
 
     public func definition() -> ModuleDefinition {
