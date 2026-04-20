@@ -23,7 +23,10 @@ This module is the bridge that lets `comapeo-mobile` use `@comapeo/core` (a Node
 
 ## Architecture overview
 
-The module uses a **dual-process architecture**: the React Native UI runs in the main app process, while CoMapeo Core runs inside an embedded Node.js runtime in a separate process (Android foreground service). The two communicate via length-prefixed JSON messages over Unix domain sockets.
+The module runs CoMapeo Core inside an embedded Node.js runtime and communicates with the React Native layer via length-prefixed JSON messages over Unix domain sockets. The process model differs per platform:
+
+- **Android** uses a **dual-process** architecture: the UI runs in the main app process and Node.js runs in a separate `:ComapeoCore` foreground service process.
+- **iOS** runs Node.js **in-process** on a dedicated thread (via `nodejs-mobile`'s `NodeMobileStartNode`). iOS has no foreground-service equivalent, so graceful shutdown is driven by UIKit lifecycle events and `UIApplication.beginBackgroundTask`.
 
 ```
 ┌──────────────────────────────────────────┐
@@ -47,7 +50,7 @@ The module uses a **dual-process architecture**: the React Native UI runs in the
 
 ### IPC protocol
 
-Messages are framed with a **4-byte little-endian length prefix** followed by a UTF-8 JSON payload. Both sides use this same protocol. On Android, the Kotlin `NodeJSIPC` class implements the client side; on the Node.js side, the `SocketMessagePort` class (wrapping `framed-stream`) implements the server side.
+Messages are framed with a **4-byte little-endian length prefix** followed by a UTF-8 JSON payload. Both sides use this same protocol. On Android the Kotlin `NodeJSIPC` class implements the client side; on iOS the Swift `NodeJSIPC` class implements the same protocol. On the Node.js side, the `SocketMessagePort` class (wrapping `framed-stream`) implements the server side.
 
 ### Two socket channels
 
@@ -89,12 +92,28 @@ Messages are framed with a **4-byte little-endian length prefix** followed by a 
 │   └── CMakeLists.txt             # C++ build config
 │
 ├── ios/
-│   ├── ComapeoCoreModule.swift    # Expo module (stub/placeholder)
-│   ├── ComapeoCoreView.swift      # WKWebView native component
-│   └── ComapeoCore.podspec        # CocoaPods spec
+│   ├── ComapeoCoreModule.swift              # Expo module definition
+│   ├── AppLifecycleDelegate.swift           # ExpoAppDelegateSubscriber, owns shared NodeJSService
+│   ├── NodeJSService.swift                  # Runs Node.js on a dedicated thread, manages lifecycle
+│   ├── NodeJSService+BackgroundTask.swift   # UIKit background-task wrapper around stop()
+│   ├── NodeJSIPC.swift                      # Unix socket IPC client + waitForFile helper
+│   ├── NodeMobileBridge.{h,mm}              # Obj-C bridge to NodeMobile.xcframework
+│   ├── Log.swift                            # Logging utility
+│   ├── Package.swift                        # Swift Package for unit + simulator tests
+│   ├── ComapeoCore.podspec                  # CocoaPods spec
+│   ├── nodejs-project/                      # Node.js source (shared with android via sync step)
+│   └── Tests/                               # Swift Package test target (see Testing)
+│       ├── Helpers/MockNodeServer.swift
+│       ├── MessageFramingTests.swift
+│       ├── WatchForFileTests.swift
+│       ├── NodeJSIPCTests.swift
+│       ├── NodeJSServiceTests.swift
+│       └── IPCLifecycleTests.swift
 │
 ├── example/                       # Example Expo app with benchmarks
-│   └── App.tsx                    # Sends 1000 messages, measures round-trip time
+│   ├── App.tsx                    # Sends 1000 messages, measures round-trip time
+│   ├── android/app/src/androidTest/   # Instrumented integration tests (real service)
+│   └── ios/corereactnativeexampleTests/  # XCTest integration tests (real Node.js runtime)
 │
 ├── docs/
 │   ├── Todos.md                   # Implementation TODO list
@@ -163,9 +182,47 @@ C++ layer between Kotlin and `libnode.so` (the embedded Node.js binary). Also re
 
 **`lib/connection-manager.js`** — Tracks active socket connections and provides `closeAll()` for clean shutdown.
 
-### iOS
+### iOS native layer
 
-The iOS implementation is currently a **stub/placeholder**. It contains a WKWebView-based component but does not implement the full IPC messaging that Android provides.
+#### ComapeoCoreModule (`ComapeoCoreModule.swift`)
+The Expo module entry point. On `OnCreate` it creates a `NodeJSIPC` pointed at the shared `NodeJSService`'s `comapeo.sock` and forwards `"message"` events to JavaScript. `Function("postMessage")` forwards calls to the IPC; `Function("getState")` reflects the service state; `"stateChange"` events are emitted from the shared `NodeJSService.onStateChange` callback.
+
+#### AppLifecycleDelegate (`AppLifecycleDelegate.swift`)
+An `ExpoAppDelegateSubscriber` that owns a **single static** `NodeJSService` (`_nodeService`). Node-mobile's `NodeMobileStartNode` can only be called once per process, so the service must be a process-wide singleton — Expo creates a fresh module instance per-test and tests also reference `AppLifecycleDelegate.shared.nodeService`, so the service is static to keep them pointing at the same instance. Lifecycle hooks:
+- `applicationDidBecomeActive` — `nodeService.start()`
+- `applicationDidEnterBackground` — `stopWithBackgroundTask(timeout: 10)`
+- `applicationWillTerminate` — synchronous `stop(timeout: 5)`
+
+#### NodeJSService (`NodeJSService.swift`)
+Runs Node.js on a dedicated 2 MB-stack thread (required by nodejs-mobile). Responsibilities:
+- Allocates `comapeo.sock` and `state.sock` under `filesDir` (currently `/tmp/comapeo` — short path needed to fit inside the 104-byte `sockaddr_un.sun_path` limit).
+- Opens a `NodeJSIPC` against `state.sock` for lifecycle/control messages.
+- Calls the `NodeEntryPoint` closure (blocking call into `NodeMobileStartNode`) on the node thread.
+- On `stop()`, sends `{"type":"shutdown"}` over `state.sock` and waits on a completion semaphore signalled by the node thread's exit.
+
+State machine: `STOPPED → STARTING → STARTED → STOPPING → STOPPED` with an additional `ERROR` state.
+
+`NodeEntryPoint` and `resolveJSEntryPoint` are injected so tests can substitute a blocking-semaphore fake for the real `NodeMobileStartNode` call.
+
+#### NodeJSService+BackgroundTask (`NodeJSService+BackgroundTask.swift`)
+UIKit-specific extension. Wraps `stop(timeout:)` inside `UIApplication.beginBackgroundTask(...)` so iOS grants extra execution time for graceful shutdown when the app backgrounds. Kept separate from `NodeJSService.swift` so the Swift Package target can build without UIKit.
+
+#### NodeJSIPC (`NodeJSIPC.swift`)
+Unix domain socket IPC client using `Darwin.socket`/`connect`/`read`/`write` with GCD queues. Key behaviors:
+- Waits for socket file creation with `waitForFile(atPath:timeoutSeconds:)` (50 ms polling — a `FileObserver` equivalent is not used).
+- Connects with exponential backoff (100 ms → 5 s, 5 attempts).
+- Reads/writes length-prefixed JSON frames.
+- `sendMessage` dispatches to a serial send queue; `sendMessageSync` is used during shutdown to guarantee the shutdown frame is written before the node thread exits.
+- `socket` is `internal` (not `private`) so tests can toggle `SO_SNDBUF`/`O_NONBLOCK` to exercise partial-write paths.
+
+State machine: `disconnected → connecting → connected → disconnecting → disconnected` (plus `error`).
+
+#### NodeMobileBridge (`NodeMobileBridge.{h,mm}`)
+Obj-C bridge exposing `NodeMobileStartNode` from the `NodeMobile.xcframework` to Swift.
+
+### iOS Node.js project
+
+The Node.js source lives at `ios/nodejs-project/` and mirrors `android/src/main/assets/nodejs-project/`. Both platforms run the same `index.js` + `lib/` files. The iOS build bundles the directory into the app bundle; `resolveJSEntryPoint` resolves `nodejs-project/index.js` via `Bundle.main.path(...)`.
 
 ## Data flow
 
@@ -190,8 +247,61 @@ The iOS implementation is currently a **stub/placeholder**. It contains a WKWebV
 | Platform | Status | Notes |
 |---|---|---|
 | Android | Functional | Full implementation with foreground service, JNI, IPC |
-| iOS | Stub | WebView placeholder, IPC not implemented |
+| iOS | Functional (in progress) | In-process Node.js via `nodejs-mobile`, IPC, graceful shutdown; several behavioral gaps covered by failing tests — see Testing |
 | Web | Not started | Declared in expo-module.config.json but no implementation |
+
+## Testing
+
+### Android
+
+| Layer | Tool | Location |
+|---|---|---|
+| JVM unit tests | JUnit4 | `android/src/test/java/com/comapeo/core/` |
+| Instrumented IPC/file-watch tests | AndroidJUnit4 | `android/src/androidTest/java/com/comapeo/core/` |
+| Service lifecycle integration tests | AndroidJUnit4 on example app | `example/android/app/src/androidTest/java/com/comapeo/core/example/` |
+| Local runner | Shell script | `e2e/run-instrumented-tests.sh` |
+| CI | `.github/workflows/android-tests.yml` | |
+
+### iOS
+
+| Layer | Tool | Location | How it's run |
+|---|---|---|---|
+| Framing unit tests | `swift test` (no simulator) | `ios/Tests/MessageFramingTests.swift` | Unit-tests CI job, `swift test --filter MessageFramingTests` |
+| Package integration tests (mocked Node.js) | `xcodebuild test` on `ComapeoCore-Package` | `ios/Tests/` (all other files) | Simulator-tests CI job |
+| Example app integration tests (real Node.js) | `xcodebuild test` on `corereactnativeexample` workspace | `example/ios/corereactnativeexampleTests/` | Integration-tests CI job |
+| CI | `.github/workflows/ios-tests.yml` | | |
+
+#### What each iOS layer covers
+
+- **`ios/Tests/`** is a Swift Package test target (see `ios/Package.swift`). It builds only the platform-portable files (`NodeJSIPC.swift`, `NodeJSService.swift`, `Log.swift`) — UIKit-dependent files are excluded so the package compiles for both macOS and iOS Simulator.
+  - `MessageFramingTests` — pure framing-protocol unit tests, no sockets.
+  - `WatchForFileTests` — tests the `waitForFile` helper directly.
+  - `NodeJSIPCTests` — connects `NodeJSIPC` to a real Unix domain socket via `MockNodeServer` (no Node.js required).
+  - `NodeJSServiceTests` — drives `NodeJSService` with a mock `NodeEntryPoint` that blocks on a `DispatchSemaphore` until signalled, simulating the node runtime without calling `NodeMobileStartNode`.
+  - `IPCLifecycleTests` — wires `NodeJSService` + `NodeJSIPC` + `MockNodeServer` for end-to-end mocked lifecycle scenarios.
+  - `Helpers/MockNodeServer.swift` — shared Unix-socket mock server used across the last three files.
+
+- **`example/ios/corereactnativeexampleTests/`** runs against the **real** `NodeMobileStartNode` inside the example app target.
+  - `ComapeoCoreModuleTests` — verifies two testable seams on `ComapeoCoreModule` (the IPC socket path matches `NodeJSService.comapeoSocketPath`; `stateString(for:ipc:)` reflects the service state).
+  - `ServiceLifecycleTest` — end-to-end tests of the shared `NodeJSService` driven by UIKit lifecycle events. Because `NodeMobileStartNode` can only be called once per process, these tests share a single service instance and are **ordered by alphabetical test name** (`test01_…` through `test99_…`) with the shutdown test forced to run last.
+
+#### Testable seams
+
+- `NodeJSService.init(filesDir:nodeEntryPoint:resolveJSEntryPoint:)` accepts closures for node-runtime startup and JS entry resolution so unit tests never call `NodeMobileStartNode`.
+- `ComapeoCoreModule` exposes two internal statics (`resolveSocketPath()`, `stateString(for:ipc:)`) the example-app tests assert on.
+- `NodeJSIPC.socket: Int32` is `internal` (not `private`) so `testLargeMessageIsDeliveredIntactUnderBackpressure` can set `SO_SNDBUF` / `O_NONBLOCK` to force partial writes.
+- `waitForFile(atPath:timeoutSeconds:)` is file-scope `internal` so `WatchForFileTests` can call it directly.
+
+#### Known-failing iOS tests (document real bugs)
+
+The commit `c665cf6 Add failing tests for bugs surfaced by ultrareview` added tests that intentionally fail against the current implementation to lock in the bug and the desired behavior. They should stay red until the production code is fixed:
+
+- `NodeJSIPCTests.testMessagesSentBeforeConnectAreBuffered` — pre-connect `sendMessage` calls are dropped at the "socket not connected" guard; must be buffered and flushed.
+- `NodeJSIPCTests.testLargeMessageIsDeliveredIntactUnderBackpressure` — `sendMessageInternal` treats short `write()` returns as fatal, desyncing the receiver.
+- `NodeJSServiceTests.testStopTimeoutTransitionsToErrorNotStopped` — a timed-out `stop()` currently lands in `.stopped`, which would permit a second `start()` and violate `NodeMobileStartNode`'s once-per-process constraint.
+- `NodeJSServiceTests.testStartFromErrorStateIsRejected` — follow-up to the above.
+- `ServiceLifecycleTest.test05_LateStateIPCReceivesStartedEvent` — Node-side `started`/`ready` messages are emitted before any iOS client finishes connecting, so `controlClients` is empty and the messages go nowhere.
+- `ServiceLifecycleTest.test98_BackgroundDoesNotStopNode` — backgrounding triggers `stopWithBackgroundTask`, but since `NodeMobileStartNode` can't be restarted, the first background/foreground cycle permanently breaks the app.
 
 ## Development
 
@@ -211,5 +321,5 @@ The `example/` directory contains an Expo app that benchmarks message throughput
 - Expose foreground service + Node.js process status to JS (`starting`, `running`, `stopping`, `stopped`)
 - Serve blobs/icons over Unix domain socket, wrapped in a content provider
 - Read `abiFilters` from consuming app's `build.gradle`
-- Implement iOS native module with full IPC support
+- Fix the iOS behavioral bugs currently documented by failing tests (pre-connect buffering, partial-write handling, stop-timeout state, late state-IPC delivery, background-handling once-per-process constraint)
 - Implement web platform support
