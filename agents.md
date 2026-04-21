@@ -304,7 +304,7 @@ Shared helpers live in `ios/Tests/Helpers/`:
 These run against the **real** `NodeMobileStartNode` inside the example app target, so they're the only layer that exercises the actual Node.js runtime + JS entry point.
 
 - `ComapeoCoreModuleTests` — verifies two testable seams on `ComapeoCoreModule` (the IPC socket path matches `NodeJSService.comapeoSocketPath`; `stateString(for:ipc:)` reflects the service state).
-- `ServiceLifecycleTest` — end-to-end tests of the shared `NodeJSService` driven by UIKit lifecycle events. Because `NodeMobileStartNode` can only be called once per process, these tests share a single service instance and are **ordered by alphabetical test name** (`test01_…` through `test99_…`) with the shutdown test forced to run last. The ordering is load-bearing — see the class header comment before adding new cases.
+- `ServiceLifecycleTest` — a single `testFullServiceLifecycle` method that walks through startup, steady-state assertions, background behaviour, and graceful shutdown as sequential phases wrapped in `XCTContext.runActivity(named:)` blocks. This used to be split into separate `test01_…`/`test99_…` methods that relied on XCTest's alphabetic test-discovery order to enforce sequencing; that worked but made the ordering dependency invisible and fragile. `NodeMobileStartNode` is once-per-process, so the phases genuinely can't run in isolation — a monolithic method makes the constraint part of the code instead of a naming convention.
 
 #### Testable seams in production code
 
