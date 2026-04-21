@@ -18,7 +18,9 @@ export default function App() {
           Module API Example
         </Text>
 
-        <Group name="Projects">{projects.length}</Group>
+        <Group name="Projects">
+          <Text>{projects.length}</Text>
+        </Group>
         <Group name="Render count">
           <Text testID="render-count">{renderCount++}</Text>
         </Group>
