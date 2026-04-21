@@ -24,6 +24,7 @@ const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
 const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
+const val NODEJS_NATIVE_ASSETS_DIRNAME = "nodejs-native"
 
 @Suppress("KotlinJniMissingFunction")
 class NodeJSService(context: android.content.Context) : ContextWrapper(context) {
@@ -35,6 +36,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var nodeJob: Job? = null
     private val dataDir: String = filesDir.absolutePath
+    private val nodeNativeAssetsDir: File = File(filesDir, NODEJS_NATIVE_ASSETS_DIRNAME)
     private val nodeProjectDir: File = File(filesDir, NODEJS_PROJECT_DIRNAME)
     private val jsFile: File = File(nodeProjectDir, NODEJS_PROJECT_INDEX_FILENAME)
     private val comapeoSocketFile: File = File(filesDir, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
@@ -177,6 +179,43 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                 }
             }
         }
+        copyNativeAssets()
         updateLastKnownVersion()
+    }
+
+    private fun copyNativeAssets() {
+        val abiName = getCurrentABIName()
+        val nativeAssetsPath = "$NODEJS_NATIVE_ASSETS_DIRNAME/$abiName"
+
+        val dirs = readAssetLines("$nativeAssetsPath/dir.list")
+        val files = readAssetLines("$nativeAssetsPath/file.list")
+
+        if (files.isEmpty()) {
+            log("No native assets to copy from $nativeAssetsPath")
+            return
+        }
+
+        for (dir in dirs) {
+            File(nodeProjectDir, dir).mkdirs()
+        }
+
+        for (file in files) {
+            val dest = File(nodeProjectDir, file)
+            dest.parentFile?.mkdirs()
+            assets.open("$nativeAssetsPath/$file").use { input ->
+                dest.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+    }
+
+    private fun readAssetLines(path: String): List<String> {
+        return try {
+            assets.open(path).bufferedReader().readLines()
+        } catch (e: java.io.IOException) {
+            log("Asset file not found: $path")
+            emptyList()
+        }
     }
 }
