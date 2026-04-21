@@ -15,7 +15,8 @@
     "expo-module": "expo-module",
     "open:ios": "xed example/ios",
     "open:android": "open -a \"Android Studio\" example/android",
-    "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh"
+    "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh",
+    "backend:build": "node ./scripts/build-backend.ts"
   },
   "keywords": [
     "react-native",
