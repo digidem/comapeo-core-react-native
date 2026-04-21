@@ -26,6 +26,9 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "plugins": ["./plugins/with-ios-tests"]
+    "plugins": [
+      "./plugins/with-ios-tests",
+      "./plugins/with-disable-debug-dylib"
+    ]
   }
 }

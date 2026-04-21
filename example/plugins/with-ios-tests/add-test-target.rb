@@ -1,8 +1,7 @@
 #!/usr/bin/env ruby
 # Adds an XCTest target to the generated Xcode project, linked against
 # the main app as host. Driven by the with-ios-tests Expo config plugin
-# during `expo prebuild`. Also applies Xcode 16/26 compatibility settings
-# on the app target.
+# during `expo prebuild`.
 require 'xcodeproj'
 
 app_name       = ENV.fetch('APP_TARGET_NAME')
@@ -43,22 +42,4 @@ unless project.targets.any? { |t| t.name == test_name }
   test_target.add_dependency(app_target)
 end
 
-# Xcode 16+ default of ENABLE_DEBUG_DYLIB_SUPPORT=YES splits the app into
-# a stub + runtime dylib; this breaks RCTBundleURLProvider's mainBundle
-# lookup so RN never requests a bundle from Metro. Xcode 26+ adds
-# user-script sandboxing that blocks RN/Expo script phases from reading
-# Pods/. Pin both off on the app target.
-app_target.build_configurations.each do |config|
-  config.build_settings['ENABLE_DEBUG_DYLIB_SUPPORT']   = 'NO'
-  config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
-end
-
 project.save
-
-# Cocoapods' xcodeproj gem can't parse objectVersion 70 (Xcode 26 default).
-# Downgrade to 54 so `pod install` works. Xcode tolerates older versions.
-pbxproj_path = File.join(project_path, 'project.pbxproj')
-content = File.read(pbxproj_path)
-if content.sub!(/objectVersion = (7\d|6\d);/, 'objectVersion = 54;')
-  File.write(pbxproj_path, content)
-end
