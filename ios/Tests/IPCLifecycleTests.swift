@@ -12,41 +12,34 @@ import XCTest
 /// 4. Service stops, sending shutdown message and cleaning up
 ///
 /// This is the highest-value integration test — it verifies the contract
-/// between components rather than internal state machine details.
+/// between components rather than internal state-machine details.
 final class IPCLifecycleTests: XCTestCase {
 
     private var testDir: String!
-    /// Signals to unblock the mock node entry point
+    /// Signals to unblock the mock node entry point. Stored on `self` so
+    /// `tearDown` can unconditionally release the fake node thread even when
+    /// a test fails partway through.
     private var signalNodeExit: (() -> Void)!
-
-    /// Creates a NodeJSService with a mock entry point that blocks until signaled.
-    private func makeTestService() -> NodeJSService {
-        let semaphore = DispatchSemaphore(value: 0)
-        signalNodeExit = { semaphore.signal() }
-        return NodeJSService(
-            filesDir: testDir,
-            nodeEntryPoint: { _ in semaphore.wait(); return 0 },
-            resolveJSEntryPoint: { "/fake/index.js" }
-        )
-    }
 
     override func setUp() {
         super.setUp()
-        // Use /tmp with a short prefix to stay within sockaddr_un.sun_path's 104-byte limit.
-        // NSTemporaryDirectory() returns a long path (e.g. /var/folders/.../T/) that,
-        // combined with UUID and socket filenames, can exceed 104 bytes and cause
-        // silent truncation leading to bind() EADDRINUSE failures.
-        let shortID = UUID().uuidString.prefix(8)
-        testDir = "/tmp/cml-\(shortID)"
-        try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        testDir = TestPaths.makeShortTempDir(prefix: "cml")
     }
 
     override func tearDown() {
         // Ensure the mock node thread isn't left blocking
         signalNodeExit?()
         signalNodeExit = nil
-        try? FileManager.default.removeItem(atPath: testDir)
+        TestPaths.removeTempDir(testDir)
         super.tearDown()
+    }
+
+    /// Builds a service wired to the shared mock harness and stores the
+    /// signal-exit closure on `self` so `tearDown` can always release it.
+    private func makeTestService() -> NodeJSService {
+        let (service, signal) = makeMockNodeService(filesDir: testDir)
+        signalNodeExit = signal
+        return service
     }
 
     /// Tests a complete message round trip: app sends a request through the
@@ -92,14 +85,13 @@ final class IPCLifecycleTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(comapeoClientFd, 0, "Comapeo server should accept connection")
         defer { if comapeoClientFd >= 0 { close(comapeoClientFd) } }
 
-        Thread.sleep(forTimeInterval: 0.3)
+        waitUntil("appIPC should reach .connected", appIPC.state == .connected)
 
         // App sends a message
         let testRequest = #"{"type":"request","id":1}"#
         appIPC.sendMessage(testRequest)
 
         // Mock server receives the request
-        Thread.sleep(forTimeInterval: 0.3)
         let receivedRequest = MockNodeServer.receiveFramedMessage(fd: comapeoClientFd)
         XCTAssertEqual(receivedRequest, testRequest, "Mock server should receive the request")
 
@@ -133,8 +125,6 @@ final class IPCLifecycleTests: XCTestCase {
         let stateClientFd = stateServer.acceptClient()
         XCTAssertGreaterThanOrEqual(stateClientFd, 0)
         defer { if stateClientFd >= 0 { close(stateClientFd) } }
-
-        Thread.sleep(forTimeInterval: 0.3)
 
         // Stop the service asynchronously
         let stopped = expectation(description: "Service stopped")
@@ -195,7 +185,7 @@ final class IPCLifecycleTests: XCTestCase {
         let comapeoClientFd = comapeoServer.acceptClient()
         defer { if comapeoClientFd >= 0 { close(comapeoClientFd) } }
 
-        Thread.sleep(forTimeInterval: 0.3)
+        waitUntil("appIPC should reach .connected", appIPC.state == .connected)
 
         // Echo server on a background thread
         DispatchQueue.global().async {
@@ -206,11 +196,10 @@ final class IPCLifecycleTests: XCTestCase {
             }
         }
 
-        // Send multiple messages
+        // Send multiple messages as fast as possible — the IPC layer is
+        // expected to handle this without needing the caller to pace sends.
         for i in 0..<messageCount {
             appIPC.sendMessage(#"{"id":\#(i)}"#)
-            // Small delay to avoid overwhelming the echo server
-            Thread.sleep(forTimeInterval: 0.05)
         }
 
         waitForExpectations(timeout: 10)
@@ -251,7 +240,7 @@ final class IPCLifecycleTests: XCTestCase {
             let clientFd = comapeoServer.acceptClient()
             XCTAssertGreaterThanOrEqual(clientFd, 0)
 
-            Thread.sleep(forTimeInterval: 0.3)
+            waitUntil("appIPC should reach .connected", appIPC.state == .connected)
 
             // Server sends a message to the app
             MockNodeServer.sendFramedMessage(fd: clientFd, message: #"{"cycle":\#(cycle)}"#)

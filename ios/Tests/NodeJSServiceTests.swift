@@ -13,41 +13,32 @@ import XCTest
 ///
 /// This is the iOS equivalent of testing the Android `ComapeoCoreService` +
 /// `NodeJSService` graceful shutdown behavior.
+///
+/// `testStopTimeoutTransitionsToErrorNotStopped` and
+/// `testStartFromErrorStateIsRejected` were introduced as failing tests
+/// (commit c665cf6) and now serve as regression tests for the fix in
+/// `ba9edbe`/`62f9128` — a timed-out `stop()` must land in `.error` rather
+/// than `.stopped`, so nothing tries to call `NodeMobileStartNode` twice
+/// in a single process.
 final class NodeJSServiceTests: XCTestCase {
 
     private var testDir: String!
 
-    /// A mock node entry point that blocks until signaled, simulating node_start().
-    private func makeMockNodeEntryPoint() -> (entryPoint: NodeJSService.NodeEntryPoint, signal: () -> Void) {
-        let semaphore = DispatchSemaphore(value: 0)
-        let entryPoint: NodeJSService.NodeEntryPoint = { _ in
-            semaphore.wait()
-            return 0
-        }
-        return (entryPoint, { semaphore.signal() })
-    }
-
-    private func makeTestService() -> (service: NodeJSService, signalExit: () -> Void) {
-        let (entryPoint, signal) = makeMockNodeEntryPoint()
-        let service = NodeJSService(
-            filesDir: testDir,
-            nodeEntryPoint: entryPoint,
-            resolveJSEntryPoint: { "/fake/index.js" }
-        )
-        return (service, signal)
-    }
-
     override func setUp() {
         super.setUp()
-        // Use /tmp with a short prefix to stay within sockaddr_un.sun_path's 104-byte limit.
-        let shortID = UUID().uuidString.prefix(8)
-        testDir = "/tmp/cms-\(shortID)"
-        try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        testDir = TestPaths.makeShortTempDir(prefix: "cms")
     }
 
     override func tearDown() {
-        try? FileManager.default.removeItem(atPath: testDir)
+        TestPaths.removeTempDir(testDir)
         super.tearDown()
+    }
+
+    /// Builds a service wired to a blocking mock node entry point.
+    /// Thin wrapper over the shared `makeMockNodeService` helper so callsites
+    /// don't have to repeat `filesDir: testDir`.
+    private func makeTestService() -> (service: NodeJSService, signalExit: () -> Void) {
+        return makeMockNodeService(filesDir: testDir)
     }
 
     // MARK: - Startup Tests
@@ -70,7 +61,12 @@ final class NodeJSServiceTests: XCTestCase {
         service.cleanup()
     }
 
-    func testStartFromNonStoppedStateIsIgnored() {
+    /// Covers the `.started → start()` no-op path. The other non-stopped
+    /// states have their own coverage: `.error` in `testStartFromErrorStateIsRejected`;
+    /// `.starting` and `.stopping` are transient and not directly observable
+    /// without racy test plumbing, so they're covered by the internal
+    /// `guard state == .stopped` in `NodeJSService.start()`.
+    func testSecondStartFromStartedIsIgnored() {
         let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "State reached STARTED")
 
@@ -90,7 +86,9 @@ final class NodeJSServiceTests: XCTestCase {
         }
 
         service.start()
-        Thread.sleep(forTimeInterval: 0.2)
+        // Give any errant state change time to land — shorter than the
+        // previous sleep because the state machine is synchronous.
+        waitUntil(timeout: 0.1, "state should stay .started", service.state == .started)
 
         XCTAssertTrue(stateChanges.isEmpty, "No state changes should occur on duplicate start")
         XCTAssertEqual(service.state, .started)
@@ -125,24 +123,21 @@ final class NodeJSServiceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(clientFd, 0, "Should accept IPC client")
         defer { close(clientFd) }
 
-        // Give the IPC connection time to fully establish
-        Thread.sleep(forTimeInterval: 0.3)
-
         // Stop the service on a background thread (stop() blocks)
+        let stopFinished = expectation(description: "stop() returned")
         DispatchQueue.global().async {
             service.stop(timeout: 2)
+            stopFinished.fulfill()
         }
 
         // Read the shutdown message from the mock server side
         let message = MockNodeServer.receiveFramedMessage(fd: clientFd)
         XCTAssertEqual(message, #"{"type":"shutdown"}"#, "Should receive shutdown message")
 
-        // Signal the mock node process to exit
+        // Signal the mock node process to exit so stop() can complete.
         signalExit()
 
-        // Give stop() time to complete
-        Thread.sleep(forTimeInterval: 1)
-
+        wait(for: [stopFinished], timeout: 5)
         XCTAssertEqual(service.state, .stopped)
     }
 
@@ -284,12 +279,7 @@ final class NodeJSServiceTests: XCTestCase {
 
         // Second cycle — need a new service since node can only start once per process
         // (but in tests with mocks, we can reuse)
-        let (entryPoint2, signalExit2) = makeMockNodeEntryPoint()
-        let service2 = NodeJSService(
-            filesDir: testDir,
-            nodeEntryPoint: entryPoint2,
-            resolveJSEntryPoint: { "/fake/index.js" }
-        )
+        let (service2, signalExit2) = makeTestService()
         let started2 = expectation(description: "Started second time")
         service2.onStateChange = { state in
             if state == .started { started2.fulfill() }
@@ -376,7 +366,10 @@ final class NodeJSServiceTests: XCTestCase {
         service.onStateChange = { stateChangesAfterError.append($0) }
 
         service.start()
-        Thread.sleep(forTimeInterval: 0.2)
+        // Poll briefly — start() is synchronous, so any change would already
+        // have fired by the first poll. We still give it a moment in case the
+        // guard itself dispatched something unexpected.
+        waitUntil(timeout: 0.1, "state must remain .error", service.state == .error)
 
         XCTAssertEqual(service.state, .error, "start() from .error must not transition state")
         XCTAssertTrue(

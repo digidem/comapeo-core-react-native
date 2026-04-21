@@ -6,23 +6,22 @@ import XCTest
 /// These tests create a mock Unix domain socket server (via `MockNodeServer`)
 /// and verify that NodeJSIPC can connect, send, and receive length-prefixed
 /// JSON messages correctly — mirroring Android's `NodeJSIPCTest.kt`.
+///
+/// Two of the cases below (`testMessagesSentBeforeConnectAreBuffered`,
+/// `testLargeMessageIsDeliveredIntactUnderBackpressure`) started life as
+/// failing tests documenting real bugs; they now serve as regression tests
+/// for the pre-connect buffering and partial-write fixes.
 final class NodeJSIPCTests: XCTestCase {
 
     private var testDir: String!
 
     override func setUp() {
         super.setUp()
-        // Use /tmp with a short prefix to stay within sockaddr_un.sun_path's 104-byte limit.
-        // NSTemporaryDirectory() returns a long path (e.g. /var/folders/.../T/) that,
-        // combined with UUID and socket filenames, can exceed 104 bytes and cause
-        // silent truncation leading to bind() EADDRINUSE failures.
-        let shortID = UUID().uuidString.prefix(8)
-        testDir = "/tmp/cmt-\(shortID)"
-        try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        testDir = TestPaths.makeShortTempDir(prefix: "cmt")
     }
 
     override func tearDown() {
-        try? FileManager.default.removeItem(atPath: testDir)
+        TestPaths.removeTempDir(testDir)
         super.tearDown()
     }
 
@@ -54,23 +53,30 @@ final class NodeJSIPCTests: XCTestCase {
 
         let ipc = NodeJSIPC(socketPath: server.socketPath) { _ in }
 
+        // Hold the server-side connection open while we re-call connect() below.
+        // A DispatchSemaphore beats a fixed sleep — it makes the "keep alive"
+        // intent obvious and ends the moment the test is done.
+        let doneWithServer = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             let clientFd = server.acceptClient()
             if clientFd >= 0 {
-                // Keep alive
-                Thread.sleep(forTimeInterval: 3)
+                doneWithServer.wait()
                 close(clientFd)
             }
         }
+        defer { doneWithServer.signal() }
 
-        // Wait for initial connection
-        Thread.sleep(forTimeInterval: 0.5)
+        // Wait for the initial async connection to establish, then call
+        // connect() again and assert state didn't change.
+        waitUntil("IPC should reach .connected", ipc.state == .connected)
 
-        // Call connect() again — should be a no-op
         ipc.connect()
-        Thread.sleep(forTimeInterval: 0.2)
+        // No state transition should be triggered — but we can't directly
+        // observe "no transition", so poll briefly and assert the terminal
+        // state is unchanged.
+        waitUntil(timeout: 0.2, "state should stay .connected", ipc.state == .connected)
+        XCTAssertEqual(ipc.state, .connected, "Second connect() must not change state")
 
-        XCTAssertEqual(ipc.state, .connected, "State should remain connected")
         ipc.disconnect()
     }
 
@@ -137,7 +143,7 @@ final class NodeJSIPCTests: XCTestCase {
             }
         }
 
-        Thread.sleep(forTimeInterval: 0.2)
+        waitUntil("IPC should reach .connected before send", ipc.state == .connected)
         ipc.sendMessage(testMessage)
 
         waitForExpectations(timeout: 5)
@@ -156,16 +162,19 @@ final class NodeJSIPCTests: XCTestCase {
             messageReceived.fulfill()
         }
 
+        // Keep the server-side socket alive until the test signals done.
+        let doneWithServer = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             let clientFd = server.acceptClient()
             guard clientFd >= 0 else { return }
             defer { close(clientFd) }
 
             MockNodeServer.sendFramedMessage(fd: clientFd, message: testMessage)
-            Thread.sleep(forTimeInterval: 1)
+            doneWithServer.wait()
         }
 
         waitForExpectations(timeout: 5)
+        doneWithServer.signal()
         ipc.disconnect()
     }
 
@@ -181,7 +190,7 @@ final class NodeJSIPCTests: XCTestCase {
             echoReceived.fulfill()
         }
 
-        // Echo server: receives a message and sends it back
+        let doneWithServer = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             let clientFd = server.acceptClient()
             guard clientFd >= 0 else { return }
@@ -189,14 +198,15 @@ final class NodeJSIPCTests: XCTestCase {
 
             if let received = MockNodeServer.receiveFramedMessage(fd: clientFd) {
                 MockNodeServer.sendFramedMessage(fd: clientFd, message: received)
-                Thread.sleep(forTimeInterval: 1)
             }
+            doneWithServer.wait()
         }
 
-        Thread.sleep(forTimeInterval: 0.2)
+        waitUntil("IPC should reach .connected before send", ipc.state == .connected)
         ipc.sendMessage(testMessage)
 
         waitForExpectations(timeout: 5)
+        doneWithServer.signal()
         ipc.disconnect()
     }
 
@@ -218,7 +228,7 @@ final class NodeJSIPCTests: XCTestCase {
             receiveLock.unlock()
         }
 
-        // Server sends multiple messages
+        let doneWithServer = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             let clientFd = server.acceptClient()
             guard clientFd >= 0 else { return }
@@ -227,7 +237,7 @@ final class NodeJSIPCTests: XCTestCase {
             for i in 0..<messageCount {
                 MockNodeServer.sendFramedMessage(fd: clientFd, message: #"{"id":\#(i)}"#)
             }
-            Thread.sleep(forTimeInterval: 2)
+            doneWithServer.wait()
         }
 
         waitForExpectations(timeout: 5)
@@ -239,6 +249,7 @@ final class NodeJSIPCTests: XCTestCase {
         }
         receiveLock.unlock()
 
+        doneWithServer.signal()
         ipc.disconnect()
     }
 
@@ -256,25 +267,30 @@ final class NodeJSIPCTests: XCTestCase {
             messageReceived.fulfill()
         }
 
+        let doneWithServer = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             let clientFd = server.acceptClient()
             guard clientFd >= 0 else { return }
             defer { close(clientFd) }
 
             MockNodeServer.sendFramedMessage(fd: clientFd, message: testMessage)
-            Thread.sleep(forTimeInterval: 2)
+            doneWithServer.wait()
         }
 
         waitForExpectations(timeout: 5)
+        doneWithServer.signal()
         ipc.disconnect()
     }
 
-    // MARK: - Pre-connection Buffering
+    // MARK: - Regression: Pre-connect buffering
+    //
+    // Fixed in commit 67785f1 "Buffer pre-connect sends; loop over partial
+    // reads and writes". Before the fix, `sendMessage` calls made while the
+    // IPC was still in `.connecting` hit the "socket not connected" guard and
+    // were silently dropped. The contract `postMessage` exposes to JS (and
+    // that Android honours via `Channel.UNLIMITED`) is that messages queue
+    // up and flush on connection.
 
-    /// Messages sent before the IPC has finished connecting must not be silently
-    /// dropped — they must be delivered once the connection is established.
-    /// This is the behavior on Android (via `Channel.UNLIMITED`) and is the
-    /// contract `postMessage` exposes to JS.
     func testMessagesSentBeforeConnectAreBuffered() throws {
         let socketPath = (testDir as NSString).appendingPathComponent("buffered.sock")
 
@@ -283,9 +299,8 @@ final class NodeJSIPCTests: XCTestCase {
         let ipc = NodeJSIPC(socketPath: socketPath) { _ in }
         defer { ipc.disconnect() }
 
-        // Fire two messages while still connecting. The current code drops
-        // these at the `socket not connected` guard; the fix must buffer them
-        // and flush on connection.
+        // Fire two messages while still connecting. These must be buffered
+        // and flushed once the connection is established.
         ipc.sendMessage("first")
         ipc.sendMessage("second")
 
@@ -320,17 +335,15 @@ final class NodeJSIPCTests: XCTestCase {
         receivedLock.unlock()
     }
 
-    // MARK: - Partial-write handling
+    // MARK: - Regression: Partial-write handling
+    //
+    // Fixed in commit 67785f1. Before the fix, `sendMessageInternal` treated
+    // any short `write()` return as fatal and bailed out, leaving the
+    // receiver desynced because the length prefix had already been sent.
+    // We force the short-write path by shrinking `SO_SNDBUF` and turning on
+    // `O_NONBLOCK` — production uses a blocking socket where short writes
+    // are rare but still permitted (e.g. on `EINTR`).
 
-    /// When the kernel's send buffer is full, `write()` on a stream socket may
-    /// return fewer bytes than requested. The current `sendMessageInternal`
-    /// treats that as fatal and returns, leaving the receiver desynced because
-    /// the length prefix was already sent. The fix must loop until all bytes
-    /// are written.
-    ///
-    /// To force short writes deterministically we make the client socket
-    /// non-blocking with a tiny send buffer — production uses a blocking
-    /// socket where short writes are rare but still permitted (e.g. EINTR).
     func testLargeMessageIsDeliveredIntactUnderBackpressure() throws {
         let server = try startServer(name: "partial-write.sock")
         defer { server.stop() }
@@ -350,10 +363,7 @@ final class NodeJSIPCTests: XCTestCase {
 
             // Drain slowly so the client-side send buffer fills and stays full —
             // without this, the kernel has plenty of room and no short write occurs.
-            var received = ""
-            let msg = MockNodeServer.receiveFramedMessage(fd: clientFd)
-            received = msg ?? ""
-
+            let received = MockNodeServer.receiveFramedMessage(fd: clientFd) ?? ""
             if received == payload {
                 messageReceivedIntact.fulfill()
             }
@@ -362,11 +372,7 @@ final class NodeJSIPCTests: XCTestCase {
         wait(for: [clientConnected], timeout: 5)
 
         // Wait for the client-side connection to finish and expose its fd.
-        let deadline = Date().addingTimeInterval(5)
-        while ipc.socket < 0 && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        XCTAssertGreaterThanOrEqual(ipc.socket, 0, "Client socket never connected")
+        waitUntil("Client socket should be open", ipc.socket >= 0)
 
         // Make the socket non-blocking with a tiny send buffer so the 64 KiB
         // payload cannot fit in one `write()` call.
@@ -386,6 +392,12 @@ final class NodeJSIPCTests: XCTestCase {
 
     // MARK: - Disconnect Tests
 
+    /// When the server closes its end, the IPC's receive loop sees EOF, logs
+    /// the read error and transitions to `.disconnected` via `disconnect()`.
+    /// The previous version of this assertion tolerated `.error` as well,
+    /// which was permissive-by-default rather than deliberate — the read
+    /// path never transitions to `.error`. Asserting `.disconnected` exactly
+    /// makes the contract explicit.
     func testServerDisconnectTriggersDisconnectedState() throws {
         let server = try startServer(name: "disconnect.sock")
         defer { server.stop() }
@@ -404,17 +416,11 @@ final class NodeJSIPCTests: XCTestCase {
 
         waitForExpectations(timeout: 5)
 
-        // Give time for the disconnect to propagate
-        Thread.sleep(forTimeInterval: 0.5)
-
-        let state = ipc.state
-        XCTAssertTrue(
-            state == .disconnected || {
-                if case .error = state { return true }
-                return false
-            }(),
-            "State should be disconnected or error after server closes, got: \(state)"
+        waitUntil(
+            "IPC should transition to .disconnected after server closes",
+            ipc.state == .disconnected
         )
+        XCTAssertEqual(ipc.state, .disconnected)
 
         ipc.disconnect()
     }
