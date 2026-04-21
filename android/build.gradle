@@ -81,11 +81,11 @@ android {
     ndkVersion '27.0.12077973'
 }
 
-android.libraryVariants.all { variant ->
-    def mergeAssetsTask = tasks.findByName("merge${variant.name.capitalize()}Assets")
-    if (mergeAssetsTask) {
-        mergeAssetsTask.inputs.dir("src/main/assets/nodejs-project")
-    }
+// Run installNodejsProjectDeps before any build task. Hooking preBuild (rather
+// than a specific mergeAssets/packageAssets task) avoids depending on AGP task
+// names that differ between library/app modules and change between AGP versions.
+project.afterEvaluate {
+    tasks.named("preBuild").configure { dependsOn(installNodejsDeps) }
 }
 
 dependencies {
