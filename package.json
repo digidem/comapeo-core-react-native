@@ -5,6 +5,18 @@
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "type": "module",
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": "^11",
+      "onFail": "warn"
+    },
+    "runtime": {
+      "name": "node",
+      "version": "^24",
+      "onFail": "warn"
+    }
+  },
   "scripts": {
     "build": "expo-module build",
     "clean": "expo-module clean",
