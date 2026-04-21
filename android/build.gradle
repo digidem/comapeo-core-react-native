@@ -81,13 +81,6 @@ android {
     ndkVersion '27.0.12077973'
 }
 
-// Run installNodejsProjectDeps before any build task. Hooking preBuild (rather
-// than a specific mergeAssets/packageAssets task) avoids depending on AGP task
-// names that differ between library/app modules and change between AGP versions.
-project.afterEvaluate {
-    tasks.named("preBuild").configure { dependsOn(installNodejsDeps) }
-}
-
 dependencies {
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.7'
     implementation 'androidx.lifecycle:lifecycle-process:2.9.0'
