@@ -1,16 +1,8 @@
 {
-  "extends": "@tsconfig/node18/tsconfig.json",
+  "extends": ["../tsconfig.json"],
   "compilerOptions": {
-    "forceConsistentCasingInFileNames": true,
-    "allowJs": true,
-    "checkJs": true,
-    "noErrorTruncation": true,
-    "paths": {
-      "*": ["./types", "./node_modules/@digidem/types/vendor/*/index.d.ts"]
-    },
-    "noEmit": true,
-    "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true
+    "lib": ["ES2023"],
+    "module": "node18"
   },
   "include": ["**/*"],
   "exclude": ["node_modules"]

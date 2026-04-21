@@ -1,17 +1,25 @@
 {
-  "extends": "@tsconfig/node18/tsconfig.json",
   "compilerOptions": {
-    "forceConsistentCasingInFileNames": true,
     "allowJs": true,
     "checkJs": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": ["ESNext"],
+    "module": "nodenext",
+    "noEmit": true,
     "noErrorTruncation": true,
     "paths": {
       "*": ["./types", "./node_modules/@digidem/types/vendor/*/index.d.ts"]
     },
-    "noEmit": true,
-    "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true
+    "skipLibCheck": true,
+    "strict": true
   },
   "include": ["**/*"],
-  "exclude": ["node_modules", "android", "ios"]
+  "exclude": [
+    "node_modules",
+    "android",
+    "ios",
+    "backend",
+    "example",
+    "nodejs-assets"
+  ]
 }
