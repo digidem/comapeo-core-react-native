@@ -138,6 +138,9 @@ jobs:
       - name: Install npm dependencies
         run: npm install --ignore-scripts && cd example && npm install --ignore-scripts
 
+      - name: Build backend
+        run: npm run backend:build
+
       - name: Expo prebuild (generates example/android)
         run: cd example && npx expo prebuild --platform android --no-install
 
