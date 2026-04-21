@@ -22,10 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 18
-          cache: npm
+          node-version-file: package.json
 
       - uses: actions/setup-java@v4
         with:
@@ -89,10 +88,9 @@ jobs:
           tool-cache: false
           swap-storage: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 18
-          cache: npm
+          node-version-file: package.json
 
       - uses: actions/setup-java@v4
         with:
