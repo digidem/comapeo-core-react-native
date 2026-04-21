@@ -1,10 +1,15 @@
-#!/usr/bin/env node
-
-import fs, { cpSync, mkdirSync, rmSync } from "node:fs";
-import path, { join } from "node:path";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+} from "node:fs";
+import { cp, glob, writeFile } from "node:fs/promises";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { $ } from "execa";
-import { globSync } from "node:fs";
 
 const $$ = $({ stdio: "inherit" });
 
@@ -26,7 +31,10 @@ process.chdir(PROJECT_ROOT);
 mkdirSync(TEMP_NODEJS_ASSETS_DIR, { recursive: true });
 
 rmSync(TEMP_NODEJS_ASSETS_BACKEND_DIR, { force: true, recursive: true });
-rmSync(TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR, { force: true, recursive: true });
+rmSync(TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR, {
+  force: true,
+  recursive: true,
+});
 
 // ------------------------------------------------
 // Bundle the backend
@@ -76,18 +84,13 @@ const KEEP_THESE_FROM_BACKEND = [
       "package.json",
     );
 
-    const packagePathRelative = path.relative(
+    const packagePathRelative = relative(
       TEMP_NODEJS_ASSETS_BACKEND_DIR,
       packageJsonPath,
     );
 
-    const bindingGypPath = path.join(
-      path.dirname(packagePathRelative),
-      "binding.gyp",
-    );
-    if (
-      fs.existsSync(path.join(TEMP_NODEJS_ASSETS_BACKEND_DIR, bindingGypPath))
-    ) {
+    const bindingGypPath = join(dirname(packagePathRelative), "binding.gyp");
+    if (existsSync(join(TEMP_NODEJS_ASSETS_BACKEND_DIR, bindingGypPath))) {
       return [packagePathRelative, bindingGypPath];
     } else {
       return packagePathRelative;
@@ -96,15 +99,15 @@ const KEEP_THESE_FROM_BACKEND = [
 ];
 
 for (const name of KEEP_THESE_FROM_BACKEND) {
-  const source = path.join(TEMP_NODEJS_ASSETS_BACKEND_DIR, name);
+  const source = join(TEMP_NODEJS_ASSETS_BACKEND_DIR, name);
 
   const destination =
     // Flatten dist into top-level of nodejs-assets directory
     name === "dist"
       ? TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR
-      : path.join(TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR, name);
+      : join(TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR, name);
 
-  fs.cpSync(source, destination, { recursive: true });
+  cpSync(source, destination, { recursive: true });
 }
 
 // ------------------------------------------------
@@ -128,7 +131,7 @@ await Promise.all(
       "package.json",
     );
 
-    const { version } = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
+    const { version } = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
 
     const { abi: NODE_ABI } = getNodeJsMobileNodeVersions();
 
@@ -137,13 +140,13 @@ await Promise.all(
       `node_modules/${name}/prebuilds/`,
     );
 
-    fs.rmSync(prebuildsDir, { recursive: true, force: true });
+    rmSync(prebuildsDir, { recursive: true, force: true });
 
     await Promise.all(
       ANDROID_ARCHS.map(async (arch) => {
-        const targetDir = path.join(prebuildsDir, `android-${arch}`);
+        const targetDir = join(prebuildsDir, `android-${arch}`);
 
-        fs.mkdirSync(targetDir, { recursive: true });
+        mkdirSync(targetDir, { recursive: true });
 
         const artifactInfo = getArtifactInfo({
           name,
@@ -160,12 +163,12 @@ await Promise.all(
           cwd: targetDir,
         })`tar xzf ${artifactInfo.name} --directory .`;
 
-        fs.unlinkSync(path.join(targetDir, artifactInfo.name));
+        unlinkSync(join(targetDir, artifactInfo.name));
 
         // better-sqlite3 includes an additional native module for testing purposes
         // removing since it's not needed and also causes issues with nodejs-mobile-react-native
         if (name === "better-sqlite3") {
-          fs.unlinkSync(path.join(targetDir, "test_extension.node"));
+          unlinkSync(join(targetDir, "test_extension.node"));
         }
       }),
     );
@@ -201,25 +204,75 @@ const ANDROID_NATIVE_ASSETS_DIR = join(ANDROID_ASSETS_DIR, "nodejs-native");
 rmSync(ANDROID_NATIVE_ASSETS_DIR, { force: true, recursive: true });
 mkdirSync(ANDROID_NATIVE_ASSETS_DIR, { recursive: true });
 
-for (const arch of ANDROID_ARCHS) {
-  const nodeFiles = globSync(`node_modules/**/android-${arch}/**/*.node`, {
-    cwd: TEMP_NODEJS_NATIVE_ASSETS_DIR,
-  });
+await Promise.all(
+  ANDROID_ARCHS.map(async (arch) => {
+    const androidAbi = arch === "arm" ? "armeabi-v7a" : "arm64-v8a";
 
-  for (const f of nodeFiles) {
-    // TODO: Maybe change directory names?
-    const nativeTargetDir = join(
-      ANDROID_NATIVE_ASSETS_DIR,
-      arch === "arm" ? "armeabi-v7a" : "arm64-v8a",
-      f,
-    );
+    // Copy native assets from temp folder to relevant Android native assets directory
+    {
+      const nodeFiles = await Array.fromAsync(
+        glob(`node_modules/**/android-${arch}/**/*.node`, {
+          cwd: TEMP_NODEJS_NATIVE_ASSETS_DIR,
+        }),
+      );
 
-    cpSync(join(TEMP_NODEJS_NATIVE_ASSETS_DIR, f), nativeTargetDir, {
-      force: true,
-      recursive: true,
-    });
-  }
-}
+      for (const entry of nodeFiles) {
+        // better-sqlite3 expects a different directory structure for locating the binding
+        const nativeTargetDir = entry.startsWith("node_modules/better-sqlite3/")
+          ? join(
+              ANDROID_NATIVE_ASSETS_DIR,
+              androidAbi,
+              "node_modules/better-sqlite3/build",
+              basename(entry),
+            )
+          : join(ANDROID_NATIVE_ASSETS_DIR, androidAbi, entry);
+
+        await cp(join(TEMP_NODEJS_NATIVE_ASSETS_DIR, entry), nativeTargetDir, {
+          force: true,
+          recursive: true,
+        });
+      }
+    }
+
+    // Create dir.list and file.list entries
+    {
+      const dirListFileEntries = new Set<string>();
+      const fileListFileEntries = new Set<string>();
+
+      const nativeAssetsAbiDir = join(ANDROID_NATIVE_ASSETS_DIR, androidAbi);
+
+      const nativeNodeModules = await Array.fromAsync(
+        glob("node_modules/**/*", {
+          cwd: nativeAssetsAbiDir,
+          withFileTypes: true,
+        }),
+      );
+
+      for (const entry of nativeNodeModules) {
+        dirListFileEntries.add(relative(nativeAssetsAbiDir, entry.parentPath));
+
+        if (entry.isFile()) {
+          fileListFileEntries.add(
+            relative(nativeAssetsAbiDir, join(entry.parentPath, entry.name)),
+          );
+        }
+      }
+
+      await Promise.all([
+        writeFile(
+          join(nativeAssetsAbiDir, "dir.list"),
+          Array.from(dirListFileEntries).join("\n") + "\n",
+          "utf-8",
+        ),
+        writeFile(
+          join(nativeAssetsAbiDir, "file.list"),
+          Array.from(fileListFileEntries).join("\n") + "\n",
+          "utf-8",
+        ),
+      ]);
+    }
+  }),
+);
 
 // ------------------------------------------------
 // Helpers
@@ -231,7 +284,7 @@ function getNodeJsMobileNodeVersions() {
     import.meta.url,
   ).pathname;
 
-  const content = fs.readFileSync(nodeVersionFilePath, "utf-8");
+  const content = readFileSync(nodeVersionFilePath, "utf-8");
 
   const major = content.match(/#define NODE_MAJOR_VERSION (.+)/)?.[1];
   const minor = content.match(/#define NODE_MINOR_VERSION (.+)/)?.[1];
