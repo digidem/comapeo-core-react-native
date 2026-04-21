@@ -27,7 +27,8 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "./plugins/with-ios-tests"
+      "./plugins/with-ios-tests",
+      "./plugins/with-android-tests"
     ]
   }
 }

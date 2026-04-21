@@ -72,13 +72,25 @@ ensure_deps() {
 }
 
 # ---------------------------------------------------------------------------
+# Regenerate example/android via Expo prebuild. The plugin at
+# example/plugins/with-android-tests injects the instrumented-test sources
+# and Gradle deps.
+# ---------------------------------------------------------------------------
+
+run_prebuild() {
+  cd "$EXAMPLE_DIR"
+  echo "==> Running expo prebuild --platform android..."
+  npx expo prebuild --platform android --no-install
+  cd "$PROJECT_ROOT"
+}
+
+# ---------------------------------------------------------------------------
 # JVM unit tests (no device needed)
 # ---------------------------------------------------------------------------
 
 run_unit_tests() {
   echo ""
   echo "==> Running JVM unit tests..."
-  ensure_deps
   cd "$EXAMPLE_DIR/android"
   # The library module name in the Gradle build varies by Expo setup.
   # Run via the app module which includes the library.
@@ -86,6 +98,15 @@ run_unit_tests() {
     echo "Warning: Library module test task failed. This may be expected if the module name differs."
   cd "$PROJECT_ROOT"
 }
+
+# ---------------------------------------------------------------------------
+# Shared setup: deps + prebuild (unless --skip-build)
+# ---------------------------------------------------------------------------
+
+ensure_deps
+if [ "$SKIP_BUILD" = false ]; then
+  run_prebuild
+fi
 
 if [ "$UNIT_ONLY" = true ]; then
   run_unit_tests
@@ -95,7 +116,7 @@ if [ "$UNIT_ONLY" = true ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Preflight checks
+# Preflight checks (instrumented path only)
 # ---------------------------------------------------------------------------
 
 if ! command -v adb &>/dev/null; then
@@ -146,13 +167,11 @@ ensure_device
 # Run instrumented tests via Gradle
 # ---------------------------------------------------------------------------
 
-ensure_deps
-
 echo ""
-if [ "$SKIP_BUILD" = false ]; then
-  echo "==> Building and running instrumented tests..."
-else
+if [ "$SKIP_BUILD" = true ]; then
   echo "==> Running instrumented tests (assuming pre-built)..."
+else
+  echo "==> Building and running instrumented tests..."
 fi
 
 cd "$EXAMPLE_DIR/android"
