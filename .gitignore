@@ -69,3 +69,4 @@ android/libnode/.version
 # Backend-related artifacts
 backend/dist
 nodejs-assets
+android/src/main/assets/
