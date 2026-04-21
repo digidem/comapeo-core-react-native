@@ -271,10 +271,9 @@ await Promise.all(
 // ------------------------------------------------
 
 function getNodeJsMobileNodeVersions() {
-  const nodeVersionFilePath = new URL(
-    "../android/libnode/include/node/node_version.h",
-    import.meta.url,
-  ).pathname;
+  const nodeVersionFilePath = fileURLToPath(
+    new URL("../android/libnode/include/node/node_version.h", import.meta.url),
+  );
 
   const content = readFileSync(nodeVersionFilePath, "utf-8");
 
