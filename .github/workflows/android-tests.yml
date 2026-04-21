@@ -2,9 +2,9 @@ name: Android Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 18
           cache: npm
 
       - uses: actions/setup-java@v4
@@ -47,10 +47,7 @@ jobs:
         run: ./scripts/download-nodejs-mobile.sh
 
       - name: Install npm dependencies
-        run: npm install --ignore-scripts && cd example && npm install --ignore-scripts
-
-      - name: Expo prebuild (generates example/android)
-        run: cd example && npx expo prebuild --platform android --no-install
+        run: npm install --ignore-scripts
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -76,7 +73,7 @@ jobs:
 
     strategy:
       matrix:
-        api-level: [ 30 ]
+        api-level: [30]
 
     steps:
       - uses: actions/checkout@v4
@@ -94,7 +91,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 18
           cache: npm
 
       - uses: actions/setup-java@v4
@@ -138,10 +135,7 @@ jobs:
         run: ./scripts/download-nodejs-mobile.sh
 
       - name: Install npm dependencies
-        run: npm install --ignore-scripts && cd example && npm install --ignore-scripts
-
-      - name: Expo prebuild (generates example/android)
-        run: cd example && npx expo prebuild --platform android --no-install
+        run: npm install --ignore-scripts
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -170,11 +164,10 @@ jobs:
           force-avd-creation: false
           ram-size: 4096M
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
-          disable-animations: false
+          disable-animations: true
           script: echo "Generated AVD snapshot for caching"
 
       - name: Run instrumented tests
-        timeout-minutes: 15
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
@@ -182,23 +175,9 @@ jobs:
           arch: x86_64
           force-avd-creation: false
           ram-size: 4096M
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect
-            -noaudio -no-boot-anim
-          disable-animations: false
-          script: |
-            # Wait for system services after snapshot restore —
-            # sys.boot_completed can flip before the `input` service publishes,
-            # which makes emulator-runner's own `input keyevent 82` crash the
-            # emulator. We run this loop ourselves and skip the keyevent
-            # (disable-animations: false).
-            adb wait-for-device shell 'while [[ -z $(getprop sys.boot_completed) ]]; do sleep 1; done'
-            # Disable animations via settings (more reliable than input keyevent)
-            adb shell settings put global window_animation_scale 0.0
-            adb shell settings put global transition_animation_scale 0.0
-            adb shell settings put global animator_duration_scale 0.0
-            # -i prints per-test STARTED/PASSED/FAILED so a hanging test is
-            # identifiable
-            cd example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -i -PreactNativeArchitectures=x86_64
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+          script: cd example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
 
       - name: Upload test results
         if: always()

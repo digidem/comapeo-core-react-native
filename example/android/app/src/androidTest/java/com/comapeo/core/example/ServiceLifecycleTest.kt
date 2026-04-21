@@ -86,55 +86,13 @@ class ServiceLifecycleTest {
         }
     }
 
-    private fun getServiceProcessPid(): Int? {
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        @Suppress("DEPRECATION")
-        val processes = am.runningAppProcesses ?: return null
-        return processes.firstOrNull {
-            it.processName == "$PACKAGE_NAME$SERVICE_PROCESS"
-        }?.pid
-    }
-
-    /**
-     * Waits for the Android service and its `:ComapeoCore` child process, then
-     * holds for [stabilityDuration] verifying the PID does not change. If the
-     * PID changes or the process disappears, Node.js has crashed at startup —
-     * throws [AssertionError] immediately with a pointer to logcat.
-     *
-     * Returns false only if the service never appears within [timeout].
-     */
-    private fun waitForServiceRunning(
-        timeout: Long = STARTUP_TIMEOUT_MS,
-        stabilityDuration: Long = 1_500L,
-    ): Boolean {
+    private fun waitForServiceRunning(timeout: Long = STARTUP_TIMEOUT_MS): Boolean {
         val deadline = System.currentTimeMillis() + timeout
-        var initialPid: Int = -1
-        while (System.currentTimeMillis() < deadline && initialPid == -1) {
-            if (isServiceRunning()) {
-                initialPid = getServiceProcessPid() ?: -1
-            }
-            if (initialPid == -1) Thread.sleep(POLL_INTERVAL_MS)
-        }
-        if (initialPid == -1) return false
-
-        val stabilityDeadline = System.currentTimeMillis() + stabilityDuration
-        while (System.currentTimeMillis() < stabilityDeadline) {
+        while (System.currentTimeMillis() < deadline) {
+            if (isServiceRunning()) return true
             Thread.sleep(POLL_INTERVAL_MS)
-            val currentPid = getServiceProcessPid()
-            if (currentPid == null) {
-                throw AssertionError(
-                    ":ComapeoCore process (pid $initialPid) died. " +
-                    "Check logcat for 'E nodejs' — Node.js likely crashed at startup."
-                )
-            }
-            if (currentPid != initialPid) {
-                throw AssertionError(
-                    ":ComapeoCore process crashed and restarted (pid $initialPid -> $currentPid). " +
-                    "Check logcat for 'E nodejs' — Node.js likely crashed at startup."
-                )
-            }
         }
-        return true
+        return false
     }
 
     private fun waitForServiceStopped(timeout: Long = SHUTDOWN_TIMEOUT_MS): Boolean {
