@@ -8,14 +8,21 @@ const TEST_TARGET_NAME = 'corereactnativeexampleTests';
 const TEST_BUNDLE_ID = 'com.comapeo.core.example.tests';
 const IPHONEOS_DEPLOYMENT_TARGET = '15.1';
 
-function withIosTestTarget(config) {
+// Source of truth for the iOS XCTest sources. Kept under example/tests/ios/
+// (rather than bundled with the plugin) to mirror with-android-tests —
+// test code for both platforms then lives side-by-side under example/tests/.
+const DEFAULT_SOURCE_DIR = '../../tests/ios';
+
+function withIosTestTarget(config, props = {}) {
+  const sourceDir = props.sourceDir ?? DEFAULT_SOURCE_DIR;
+
   return withDangerousMod(config, [
     'ios',
     async (cfg) => {
       const pluginDir = __dirname;
       const iosDir = path.join(cfg.modRequest.projectRoot, 'ios');
 
-      copyTestSources(pluginDir, iosDir);
+      copyTestSources(pluginDir, sourceDir, iosDir);
       patchPodfile(iosDir);
       runAddTestTargetScript(pluginDir, iosDir);
 
@@ -24,11 +31,17 @@ function withIosTestTarget(config) {
   ]);
 }
 
-function copyTestSources(pluginDir, iosDir) {
-  const srcDir = path.join(pluginDir, 'tests');
+function copyTestSources(pluginDir, sourceDir, iosDir) {
+  const srcDir = path.resolve(pluginDir, sourceDir);
   const dstDir = path.join(iosDir, TEST_TARGET_NAME);
+
+  if (!fs.existsSync(srcDir)) {
+    throw new Error(`with-ios-tests: source dir not found: ${srcDir}`);
+  }
+
   fs.mkdirSync(dstDir, { recursive: true });
   for (const name of fs.readdirSync(srcDir)) {
+    if (!name.endsWith('.swift')) continue;
     fs.copyFileSync(path.join(srcDir, name), path.join(dstDir, name));
   }
 }
