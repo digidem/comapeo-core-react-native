@@ -90,6 +90,9 @@ jobs:
       - name: Install Node.js project dependencies
         run: cd ios/nodejs-project && npm install --omit=dev
 
+      - name: Expo prebuild
+        run: cd example && npx expo prebuild --platform ios --no-install
+
       - name: Pod install
         run: cd example/ios && pod install
 
