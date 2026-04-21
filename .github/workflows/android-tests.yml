@@ -47,7 +47,10 @@ jobs:
         run: ./scripts/download-nodejs-mobile.sh
 
       - name: Install npm dependencies
-        run: npm install --ignore-scripts
+        run: npm install --ignore-scripts && cd example && npm install --ignore-scripts
+
+      - name: Expo prebuild (generates example/android)
+        run: cd example && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -135,7 +138,10 @@ jobs:
         run: ./scripts/download-nodejs-mobile.sh
 
       - name: Install npm dependencies
-        run: npm install --ignore-scripts
+        run: npm install --ignore-scripts && cd example && npm install --ignore-scripts
+
+      - name: Expo prebuild (generates example/android)
+        run: cd example && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
