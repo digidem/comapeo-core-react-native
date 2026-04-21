@@ -25,16 +25,8 @@ const TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR = join(
 );
 const TEMP_NODEJS_NATIVE_ASSETS_DIR = join(TEMP_NODEJS_ASSETS_DIR, "native");
 
-// Ensure we start in the right place
-process.chdir(PROJECT_ROOT);
-
+rmSync(TEMP_NODEJS_ASSETS_DIR, { force: true, recursive: true });
 mkdirSync(TEMP_NODEJS_ASSETS_DIR, { recursive: true });
-
-rmSync(TEMP_NODEJS_ASSETS_BACKEND_DIR, { force: true, recursive: true });
-rmSync(TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR, {
-  force: true,
-  recursive: true,
-});
 
 // ------------------------------------------------
 // Bundle the backend
