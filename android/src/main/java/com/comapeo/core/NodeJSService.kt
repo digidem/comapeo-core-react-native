@@ -87,6 +87,11 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                     withContext(Dispatchers.IO) {
                         nodeProjectDir.deleteRecursively()
                         copyAssetFolder(NODEJS_PROJECT_DIRNAME, nodeProjectDir)
+                        log("Copied nodejs-project into data directory")
+                        
+                        val abiName = getCurrentABIName()
+                        copyAssetFolder("$NODEJS_NATIVE_ASSETS_DIRNAME/$abiName", nodeProjectDir)
+                        log("Copied native assets for $abiName into nodejs-project in data directory")
                     }
                 }
 
@@ -179,43 +184,6 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                 }
             }
         }
-        copyNativeAssets()
         updateLastKnownVersion()
-    }
-
-    private fun copyNativeAssets() {
-        val abiName = getCurrentABIName()
-        val nativeAssetsPath = "$NODEJS_NATIVE_ASSETS_DIRNAME/$abiName"
-
-        val dirs = readAssetLines("$nativeAssetsPath/dir.list")
-        val files = readAssetLines("$nativeAssetsPath/file.list")
-
-        if (files.isEmpty()) {
-            log("No native assets to copy from $nativeAssetsPath")
-            return
-        }
-
-        for (dir in dirs) {
-            File(nodeProjectDir, dir).mkdirs()
-        }
-
-        for (file in files) {
-            val dest = File(nodeProjectDir, file)
-            dest.parentFile?.mkdirs()
-            assets.open("$nativeAssetsPath/$file").use { input ->
-                dest.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-        }
-    }
-
-    private fun readAssetLines(path: String): List<String> {
-        return try {
-            assets.open(path).bufferedReader().readLines()
-        } catch (e: java.io.IOException) {
-            log("Asset file not found: $path")
-            emptyList()
-        }
     }
 }
