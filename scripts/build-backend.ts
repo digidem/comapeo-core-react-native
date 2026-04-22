@@ -150,11 +150,6 @@ await Promise.all(
         })`tar xzf ${artifactInfo.name} --directory .`;
 
         unlinkSync(join(targetDir, artifactInfo.name));
-
-        // better-sqlite3 includes an additional native module for testing purposes
-        if (name === "better-sqlite3") {
-          unlinkSync(join(targetDir, "test_extension.node"));
-        }
       }),
     );
   }),
@@ -271,8 +266,12 @@ function getArtifactInfo({
     ? `${name}-${version}-node-${nodeAbi}-android-${arch}.tar.gz`
     : `${name}-${version}-android-${arch}.tar.gz`;
 
+  const ghReleaseName =
+    // For better-sqlite3, we need to use the release built with bare-make
+    name === "better-sqlite3" ? `${version}-bare-make` : version;
+
   return {
     name,
-    url: `https://github.com/digidem/${name}-nodejs-mobile/releases/download/${version}/${assetName}`,
+    url: `https://github.com/digidem/${name}-nodejs-mobile/releases/download/${ghReleaseName}/${assetName}`,
   };
 }
