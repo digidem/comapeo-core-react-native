@@ -41,8 +41,6 @@ await $$({
   cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR,
 })`npm ci --ignore-scripts`;
 
-// TODO: Run postinstall if any patches exist
-
 await $$({ cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR })`npm run build`;
 
 const NATIVE_MODULES = [
@@ -158,7 +156,6 @@ await Promise.all(
         unlinkSync(join(targetDir, artifactInfo.name));
 
         // better-sqlite3 includes an additional native module for testing purposes
-        // removing since it's not needed and also causes issues with nodejs-mobile-react-native
         if (name === "better-sqlite3") {
           unlinkSync(join(targetDir, "test_extension.node"));
         }
@@ -190,7 +187,6 @@ cpSync(
 
 // Copy native prebuilds into assets
 
-// TODO: Maybe change location?
 const ANDROID_NATIVE_ASSETS_DIR = join(ANDROID_ASSETS_DIR, "nodejs-native");
 
 rmSync(ANDROID_NATIVE_ASSETS_DIR, { force: true, recursive: true });
