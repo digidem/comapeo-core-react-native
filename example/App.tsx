@@ -1,6 +1,7 @@
 import { comapeo } from "@comapeo/core-react-native";
-import { SafeAreaView, ScrollView, Text, View } from "react-native";
 import React, { useEffect, useState } from "react";
+import { ScrollView, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 let renderCount = 0;
 
