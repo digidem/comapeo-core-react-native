@@ -6,7 +6,7 @@ import {
   rmSync,
   unlinkSync,
 } from "node:fs";
-import { cp, glob, writeFile } from "node:fs/promises";
+import { cp, glob } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { $ } from "execa";
@@ -40,8 +40,6 @@ cpSync(BACKEND_SRC_DIR, TEMP_NODEJS_ASSETS_BACKEND_DIR, {
 await $$({
   cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR,
 })`npm ci --ignore-scripts`;
-
-// TODO: Run postinstall if any patches exist
 
 await $$({ cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR })`npm run build`;
 
@@ -108,11 +106,7 @@ for (const name of KEEP_THESE_FROM_BACKEND) {
 
 rmSync(TEMP_NODEJS_NATIVE_ASSETS_DIR, { force: true, recursive: true });
 
-const ANDROID_ARCHS = [
-  "arm",
-  "arm64",
-  // "x64"
-] as const;
+const ANDROID_ARCHS = ["arm", "arm64", "x64"] as const;
 
 await Promise.all(
   NATIVE_MODULES.map(async ({ name, usesNapi }) => {
@@ -156,12 +150,6 @@ await Promise.all(
         })`tar xzf ${artifactInfo.name} --directory .`;
 
         unlinkSync(join(targetDir, artifactInfo.name));
-
-        // better-sqlite3 includes an additional native module for testing purposes
-        // removing since it's not needed and also causes issues with nodejs-mobile-react-native
-        if (name === "better-sqlite3") {
-          unlinkSync(join(targetDir, "test_extension.node"));
-        }
       }),
     );
   }),
@@ -190,7 +178,6 @@ cpSync(
 
 // Copy native prebuilds into assets
 
-// TODO: Maybe change location?
 const ANDROID_NATIVE_ASSETS_DIR = join(ANDROID_ASSETS_DIR, "nodejs-native");
 
 rmSync(ANDROID_NATIVE_ASSETS_DIR, { force: true, recursive: true });
@@ -198,7 +185,24 @@ mkdirSync(ANDROID_NATIVE_ASSETS_DIR, { recursive: true });
 
 await Promise.all(
   ANDROID_ARCHS.map(async (arch) => {
-    const androidAbi = arch === "arm" ? "armeabi-v7a" : "arm64-v8a";
+    let androidAbi: string;
+    switch (arch) {
+      case "arm": {
+        androidAbi = "armeabi-v7a";
+        break;
+      }
+      case "arm64": {
+        androidAbi = "arm64-v8a";
+        break;
+      }
+      case "x64": {
+        androidAbi = "x86_64";
+        break;
+      }
+      default: {
+        throw new Error(`Unsupported arch ${arch}`);
+      }
+    }
 
     // Copy native assets from temp folder to relevant Android native assets directory
     {
@@ -224,44 +228,6 @@ await Promise.all(
           recursive: true,
         });
       }
-    }
-
-    // Create dir.list and file.list entries
-    {
-      const dirListFileEntries = new Set<string>();
-      const fileListFileEntries = new Set<string>();
-
-      const nativeAssetsAbiDir = join(ANDROID_NATIVE_ASSETS_DIR, androidAbi);
-
-      const nativeNodeModules = await Array.fromAsync(
-        glob("node_modules/**/*", {
-          cwd: nativeAssetsAbiDir,
-          withFileTypes: true,
-        }),
-      );
-
-      for (const entry of nativeNodeModules) {
-        dirListFileEntries.add(relative(nativeAssetsAbiDir, entry.parentPath));
-
-        if (entry.isFile()) {
-          fileListFileEntries.add(
-            relative(nativeAssetsAbiDir, join(entry.parentPath, entry.name)),
-          );
-        }
-      }
-
-      await Promise.all([
-        writeFile(
-          join(nativeAssetsAbiDir, "dir.list"),
-          Array.from(dirListFileEntries).join("\n") + "\n",
-          "utf-8",
-        ),
-        writeFile(
-          join(nativeAssetsAbiDir, "file.list"),
-          Array.from(fileListFileEntries).join("\n") + "\n",
-          "utf-8",
-        ),
-      ]);
     }
   }),
 );
@@ -300,8 +266,12 @@ function getArtifactInfo({
     ? `${name}-${version}-node-${nodeAbi}-android-${arch}.tar.gz`
     : `${name}-${version}-android-${arch}.tar.gz`;
 
+  const ghReleaseName =
+    // For better-sqlite3, we need to use the release built with bare-make
+    name === "better-sqlite3" ? `${version}-bare-make` : version;
+
   return {
     name,
-    url: `https://github.com/digidem/${name}-nodejs-mobile/releases/download/${version}/${assetName}`,
+    url: `https://github.com/digidem/${name}-nodejs-mobile/releases/download/${ghReleaseName}/${assetName}`,
   };
 }
