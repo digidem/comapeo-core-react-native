@@ -6,7 +6,7 @@ import {
   rmSync,
   unlinkSync,
 } from "node:fs";
-import { cp, glob, writeFile } from "node:fs/promises";
+import { cp, glob } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { $ } from "execa";
@@ -224,44 +224,6 @@ await Promise.all(
           recursive: true,
         });
       }
-    }
-
-    // Create dir.list and file.list entries
-    {
-      const dirListFileEntries = new Set<string>();
-      const fileListFileEntries = new Set<string>();
-
-      const nativeAssetsAbiDir = join(ANDROID_NATIVE_ASSETS_DIR, androidAbi);
-
-      const nativeNodeModules = await Array.fromAsync(
-        glob("node_modules/**/*", {
-          cwd: nativeAssetsAbiDir,
-          withFileTypes: true,
-        }),
-      );
-
-      for (const entry of nativeNodeModules) {
-        dirListFileEntries.add(relative(nativeAssetsAbiDir, entry.parentPath));
-
-        if (entry.isFile()) {
-          fileListFileEntries.add(
-            relative(nativeAssetsAbiDir, join(entry.parentPath, entry.name)),
-          );
-        }
-      }
-
-      await Promise.all([
-        writeFile(
-          join(nativeAssetsAbiDir, "dir.list"),
-          Array.from(dirListFileEntries).join("\n") + "\n",
-          "utf-8",
-        ),
-        writeFile(
-          join(nativeAssetsAbiDir, "file.list"),
-          Array.from(fileListFileEntries).join("\n") + "\n",
-          "utf-8",
-        ),
-      ]);
     }
   }),
 );
