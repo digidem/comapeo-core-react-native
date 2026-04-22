@@ -87,7 +87,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                     withContext(Dispatchers.IO) {
                         nodeProjectDir.deleteRecursively()
                         copyAssetFolder(NODEJS_PROJECT_DIRNAME, nodeProjectDir)
-                        log("Copied nodejs-project into data directory")
+                        log("Copied $NODEJS_PROJECT_DIRNAME into data directory")
                         
                         val abiName = getCurrentABIName()
                         val nativeAssetsDirToCopy = "$NODEJS_NATIVE_ASSETS_DIRNAME/$abiName"
