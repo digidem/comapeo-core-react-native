@@ -106,11 +106,7 @@ for (const name of KEEP_THESE_FROM_BACKEND) {
 
 rmSync(TEMP_NODEJS_NATIVE_ASSETS_DIR, { force: true, recursive: true });
 
-const ANDROID_ARCHS = [
-  "arm",
-  "arm64",
-  // "x64"
-] as const;
+const ANDROID_ARCHS = ["arm", "arm64", "x64"] as const;
 
 await Promise.all(
   NATIVE_MODULES.map(async ({ name, usesNapi }) => {
@@ -194,7 +190,24 @@ mkdirSync(ANDROID_NATIVE_ASSETS_DIR, { recursive: true });
 
 await Promise.all(
   ANDROID_ARCHS.map(async (arch) => {
-    const androidAbi = arch === "arm" ? "armeabi-v7a" : "arm64-v8a";
+    let androidAbi: string;
+    switch (arch) {
+      case "arm": {
+        androidAbi = "armeabi-v7a";
+        break;
+      }
+      case "arm64": {
+        androidAbi = "arm64-v8a";
+        break;
+      }
+      case "x64": {
+        androidAbi = "x86_64";
+        break;
+      }
+      default: {
+        throw new Error(`Unsupported arch ${arch}`);
+      }
+    }
 
     // Copy native assets from temp folder to relevant Android native assets directory
     {
