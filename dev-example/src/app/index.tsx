@@ -1,7 +1,6 @@
 import { Stack, useRouter } from 'expo-router';
 import { Platform, Text, View } from 'react-native';
 
-import { EmptyState } from '@/components/EmptyState';
 import { FAB } from '@/components/FAB';
 import { Glyph } from '@/components/Glyph';
 import { HeaderButton } from '@/components/HeaderButton';
@@ -11,7 +10,10 @@ import { Section } from '@/components/Section';
 import { ShortId } from '@/components/ShortId';
 import { StatusChip } from '@/components/StatusChip';
 import { colorFromString } from '@/lib/colors';
-import { useManyProjects, useOwnDeviceInfo, useManyInvites } from '@comapeo/core-react';
+import { T } from '@/lib/theme';
+import { useManyInvites, useManyProjects, useOwnDeviceInfo } from '@comapeo/core-react';
+
+const tintedTitle = { color: T.primary, fontWeight: '500' as const };
 
 export default function ProjectsHome() {
   const router = useRouter();
@@ -19,7 +21,11 @@ export default function ProjectsHome() {
   const { data: device } = useOwnDeviceInfo();
   const { data: invites } = useManyInvites();
 
+  const pendingInvites = invites.filter((i) => i.state === 'pending');
+  const empty = projects.length === 0;
+
   const goNew = () => router.push('/new-project');
+  const goJoin = () => router.push('/join');
 
   return (
     <>
@@ -31,9 +37,57 @@ export default function ProjectsHome() {
         }}
       />
       <Screen>
-        <Section header="Your projects">
-          {projects.length === 0 ? (
-            <EmptyState title="No projects yet" />
+        {pendingInvites.length > 0 ? (
+          <Section header="Invites" footer="useManyInvites() · from other devices on your network">
+            <Row
+              isLast
+              onPress={() => router.push('/invites')}
+              leading={
+                <Glyph
+                  bg="#DB2777"
+                  ch="✉"
+                  size={Platform.OS === 'ios' ? 32 : 40}
+                  radius={Platform.OS === 'ios' ? 7 : 20}
+                />
+              }
+              title={`${pendingInvites.length} pending invite${pendingInvites.length === 1 ? '' : 's'}`}
+              subtitle={`from ${pendingInvites.map((i) => i.invitorName).join(', ')}`}
+              right={<StatusChip label={`${pendingInvites.length}`} tone="warning" />}
+            />
+          </Section>
+        ) : null}
+
+        <Section header={empty ? 'Get started' : 'Your projects'}>
+          {empty ? (
+            <>
+              <Row
+                onPress={goJoin}
+                leading={
+                  <Glyph
+                    bg={T.primary}
+                    ch="▦"
+                    size={Platform.OS === 'ios' ? 36 : 40}
+                    radius={Platform.OS === 'ios' ? 8 : 20}
+                  />
+                }
+                title={<Text style={tintedTitle}>Join a project</Text>}
+                subtitle="Show your QR code to receive an invite"
+              />
+              <Row
+                isLast
+                onPress={goNew}
+                leading={
+                  <Glyph
+                    bg="rgba(14,107,82,0.12)"
+                    ch="＋"
+                    size={Platform.OS === 'ios' ? 36 : 40}
+                    radius={Platform.OS === 'ios' ? 8 : 20}
+                  />
+                }
+                title={<Text style={tintedTitle}>Create a project</Text>}
+                subtitle="Start a new project on this device"
+              />
+            </>
           ) : (
             projects.map((proj, i) => (
               <Row
@@ -59,23 +113,32 @@ export default function ProjectsHome() {
           )}
         </Section>
 
+        {!empty ? (
+          <Section header="Join another">
+            <Row
+              isLast
+              onPress={goJoin}
+              leading={
+                <Glyph
+                  bg="rgba(14,107,82,0.12)"
+                  ch="▦"
+                  size={Platform.OS === 'ios' ? 32 : 40}
+                  radius={Platform.OS === 'ios' ? 7 : 20}
+                />
+              }
+              title={<Text style={tintedTitle}>Show QR to join</Text>}
+              subtitle="Let someone with a project invite this device"
+            />
+          </Section>
+        ) : null}
+
         <Section header="Device">
           <Row
+            isLast
             title="Device info"
             subtitle={device.name}
             right={<ShortId id={device.deviceId} label="deviceId" size="xs" />}
             onPress={() => router.push('/device')}
-          />
-          <Row
-            isLast
-            title="Invites"
-            subtitle={`${invites.length} received`}
-            right={
-              invites.length > 0 ? (
-                <StatusChip label={`${invites.length}`} tone="info" />
-              ) : undefined
-            }
-            onPress={() => router.push('/invites')}
           />
         </Section>
       </Screen>

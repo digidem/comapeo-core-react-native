@@ -18,13 +18,15 @@ reference for building apps on top of `@comapeo/core-react-native` +
 
 ## Screens
 
-| Route                                                       | Hook(s)                                              |
+| Route                                                       | Hook(s) / API                                        |
 |-------------------------------------------------------------|------------------------------------------------------|
 | `/` ProjectsHome                                            | `useManyProjects`, `useOwnDeviceInfo`, `useManyInvites` |
 | `/new-project` (modal)                                      | `useCreateProject`                                   |
+| `/join`                                                     | QR-code based "be invited" screen. Shows IP + port (from `startLocalPeerDiscoveryServer`) + first 8 bytes of `deviceId` |
 | `/device`                                                   | `useOwnDeviceInfo`, `useSetOwnDeviceInfo`, `useIsArchiveDevice`, `useSetIsArchiveDevice` |
-| `/invites`                                                  | `useManyInvites`, `useAcceptInvite`, `useRejectInvite` |
+| `/invites` + `/invites/[inviteId]`                          | `useManyInvites`, `useSingleInvite`, `useAcceptInvite`, `useRejectInvite` |
 | `/projects/[projectId]` ProjectHome                         | `useProjectSettings`, `useManyDocs` (counts), `useSyncState` |
+| `/projects/[projectId]/invite` (modal)                      | QR scanner → `connectLocalPeer` → role pick → `useSendInvite` |
 | `/projects/[projectId]/settings`                            | `useProjectSettings`, `useUpdateProjectSettings`     |
 | `/projects/[projectId]/leave` (modal)                       | `useLeaveProject`                                    |
 | `/projects/[projectId]/observations` + `[docId]` + `new`    | `useManyDocs`, `useSingleDocByDocId`, `useCreateDocument`, `useUpdateDocument`, `useDeleteDocument`, `usePresetsSelection` |
@@ -49,6 +51,27 @@ npm run android    # or `npm run ios`
 
 The first build will take a while because the parent module's nodejs-mobile
 backend has to be downloaded and bundled.
+
+## QR-code invite flow
+
+Uses **`expo-camera`** for scanning and **`react-native-qrcode-svg`** for
+rendering. The root layout mounts `useStartLocalPeerDiscoveryServer()` at app
+startup so this device is always reachable (`src/app/_layout.tsx`). See
+`src/lib/pairing.ts` for the QR encoding (URL format
+`comapeo://join?ip=&port=&id=16hex`) and `src/lib/useLocalPeers.ts` for the
+peer-event plumbing.
+
+- **Receiver side** (`/join`): renders a QR for this device containing
+  `{ ip, port, deviceIdPrefix }`. The IP comes from
+  `expo-network.getIpAddressAsync()` and the port from
+  `comapeo.startLocalPeerDiscoveryServer()`. Only the first 8 bytes (16 hex
+  chars) of the deviceId are exposed — the full id is verified during the
+  Noise handshake after connection.
+- **Sender side** (`/projects/[projectId]/invite`): camera scanner →
+  `connectLocalPeer({ address, port, name: idPrefix })` → wait for the peer
+  to appear in `listLocalPeers()` with `status: 'connected'` → pick role →
+  `useSendInvite({ projectId }).mutate({ deviceId, roleId })` → "waiting"
+  screen.
 
 ## Map server
 

@@ -27,7 +27,6 @@ const ROLE_NAME: Record<string, string> = {
 function tone(roleId: string) {
   if (roleId === 'f7c150f5a3a9a855' || roleId === 'a12a6702b93bd7ff') return 'info' as const;
   if (roleId === '9e6d29263cba36c9') return 'danger' as const;
-  if (roleId === '8ced989b1904606b') return 'neutral' as const;
   return 'neutral' as const;
 }
 
@@ -36,7 +35,7 @@ export default function MembersScreen() {
   const projectId = useProjectId();
   const { data: members } = useManyMembers({ projectId });
 
-  const goInvite = () => router.push(`/projects/${projectId}/invites`);
+  const goInvite = () => router.push(`/projects/${projectId}/invite`);
 
   return (
     <>
@@ -48,11 +47,23 @@ export default function MembersScreen() {
         }}
       />
       <Screen>
-        {members.length === 0 ? (
-          <EmptyState title="No members yet" />
-        ) : (
+        {Platform.OS === 'ios' ? (
           <Section>
-            {members.map((m, i) => {
+            <Row
+              isLast
+              onPress={goInvite}
+              leading={<Glyph bg="rgba(14,107,82,0.12)" ch="＋" size={32} radius={7} />}
+              title={<Text style={{ color: T.primary, fontWeight: '500' }}>Invite a member</Text>}
+              subtitle="Scan their QR to send an invite"
+            />
+          </Section>
+        ) : null}
+
+        <Section header={`In this project (${members.length})`}>
+          {members.length === 0 ? (
+            <EmptyState title="No members yet" />
+          ) : (
+            members.map((m, i) => {
               const roleName = ROLE_NAME[m.role.roleId] ?? m.role.name ?? 'member';
               const initial = (m.name ?? '?')[0]?.toUpperCase() ?? '?';
               return (
@@ -70,11 +81,11 @@ export default function MembersScreen() {
                   right={<StatusChip label={roleName} tone={tone(m.role.roleId)} />}
                 />
               );
-            })}
-          </Section>
-        )}
+            })
+          )}
+        </Section>
       </Screen>
-      <FAB label="Invite" onPress={goInvite} />
+      <FAB label="Invite member" onPress={goInvite} />
     </>
   );
 }

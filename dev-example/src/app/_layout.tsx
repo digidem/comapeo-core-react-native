@@ -9,6 +9,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { LoadingScreen } from '@/components/LoadingScreen';
 import { ToastHost } from '@/components/ToastHost';
 import { T } from '@/lib/theme';
+import { useStartLocalPeerDiscoveryServer } from '@/lib/useLocalPeers';
 import { ComapeoProviders } from '@/providers/ComapeoProviders';
 
 export default function RootLayout() {
@@ -19,6 +20,7 @@ export default function RootLayout() {
         <ComapeoProviders>
           <ErrorBoundary>
             <Suspense fallback={<LoadingScreen label="Starting CoMapeo…" />}>
+              <LocalPeerServer />
               <Stack
                 screenOptions={{
                   headerStyle: { backgroundColor: T.bg },
@@ -38,4 +40,11 @@ export default function RootLayout() {
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
+}
+
+// Kicks off the local peer discovery server once, at app startup, so this
+// device is always reachable by scanner-side invites.
+function LocalPeerServer() {
+  useStartLocalPeerDiscoveryServer();
+  return null;
 }

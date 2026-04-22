@@ -74,9 +74,11 @@ export default function ProjectHome() {
           <Row
             leading={<Glyph bg="#0891B2" ch="M" size={30} radius={7} />}
             title="Members"
+            subtitle="Invite and manage people in this project"
             onPress={() => router.push(`/projects/${projectId}/members`)}
           />
           <Row
+            isLast
             leading={<Glyph bg="#0E6B52" ch="⇌" size={30} radius={7} />}
             title="Sync"
             right={
@@ -88,12 +90,6 @@ export default function ProjectHome() {
               ) : undefined
             }
             onPress={() => router.push(`/projects/${projectId}/sync`)}
-          />
-          <Row
-            isLast
-            leading={<Glyph bg="#DB2777" ch="✉" size={30} radius={7} />}
-            title="Invites"
-            onPress={() => router.push(`/projects/${projectId}/invites`)}
           />
         </Section>
 
