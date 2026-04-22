@@ -1,17 +1,17 @@
-import { Stack } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import QRCode from 'react-native-qrcode-svg';
+import { Stack } from "expo-router";
+import { useEffect, useState } from "react";
+import { StyleSheet, Text, View } from "react-native";
+import QRCode from "react-native-qrcode-svg";
 
-import { ErrorBanner } from '@/components/ErrorBanner';
-import { LoadingScreen } from '@/components/LoadingScreen';
-import { Screen } from '@/components/Screen';
-import { Section } from '@/components/Section';
-import { ShortId } from '@/components/ShortId';
-import { deviceIdPrefix, encodePairingUrl } from '@/lib/pairing';
-import { T } from '@/lib/theme';
-import { useLocalIpAddress, useLocalPeers } from '@/lib/useLocalPeers';
-import { useOwnDeviceInfo } from '@comapeo/core-react';
+import { ErrorBanner } from "@/components/ErrorBanner";
+import { LoadingScreen } from "@/components/LoadingScreen";
+import { Screen } from "@/components/Screen";
+import { Section } from "@/components/Section";
+import { ShortId } from "@/components/ShortId";
+import { deviceIdPrefix, encodePairingUrl } from "@/lib/pairing";
+import { T } from "@/lib/theme";
+import { useLocalIpAddress, useLocalPeers } from "@/lib/useLocalPeers";
+import { useOwnDeviceInfo } from "@comapeo/core-react";
 
 export default function JoinScreen() {
   const { data: device } = useOwnDeviceInfo();
@@ -24,7 +24,7 @@ export default function JoinScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: 'Join a project' }} />
+      <Stack.Screen options={{ title: "Join a project" }} />
       <Screen>
         <View style={styles.intro}>
           <Text style={styles.introText}>
@@ -33,7 +33,9 @@ export default function JoinScreen() {
         </View>
 
         {error ? (
-          <ErrorBanner message={`Could not start local peer server: ${error.message}`} />
+          <ErrorBanner
+            message={`Could not start local peer server: ${error.message}`}
+          />
         ) : null}
 
         {!ready ? (
@@ -43,15 +45,15 @@ export default function JoinScreen() {
         )}
 
         <Section header="Encoded payload">
-          <Kv k="device" v={device.name ?? '—'} />
+          <Kv k="device" v={device.name ?? "—"} />
           <Kv
             k="deviceId"
             v={idPrefix}
-            right={<ShortId id={device.deviceId} label="deviceId" size="xs" />}
+            right={<ShortId id={device.deviceId} size="xs" />}
             mono
           />
-          <Kv k="ip" v={ip ?? '—'} mono />
-          <Kv k="port" v={port != null ? String(port) : '—'} mono last />
+          <Kv k="ip" v={ip ?? "—"} mono />
+          <Kv k="port" v={port != null ? String(port) : "—"} mono last />
         </Section>
 
         <Text style={styles.footerHint}>
@@ -63,7 +65,15 @@ export default function JoinScreen() {
   );
 }
 
-function QrCard({ ip, port, idPrefix }: { ip: string; port: number; idPrefix: string }) {
+function QrCard({
+  ip,
+  port,
+  idPrefix,
+}: {
+  ip: string;
+  port: number;
+  idPrefix: string;
+}) {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     setUrl(encodePairingUrl({ ip, port, idPrefix }));
@@ -95,11 +105,17 @@ function Kv({
     <View
       style={[
         styles.kv,
-        !last && { borderBottomColor: T.separator, borderBottomWidth: T.separatorWidth },
+        !last && {
+          borderBottomColor: T.separator,
+          borderBottomWidth: T.separatorWidth,
+        },
       ]}
     >
       <Text style={styles.kvKey}>{k}</Text>
-      <Text style={[styles.kvVal, mono && { fontFamily: T.mono }]} numberOfLines={1}>
+      <Text
+        style={[styles.kvVal, mono && { fontFamily: T.mono }]}
+        numberOfLines={1}
+      >
         {v}
       </Text>
       {right ? <View style={styles.kvRight}>{right}</View> : null}
@@ -112,29 +128,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: 4,
     paddingBottom: 16,
-    alignItems: 'center',
+    alignItems: "center",
   },
   introText: {
     fontSize: 15,
     lineHeight: 22,
     color: T.textMuted,
-    textAlign: 'center',
+    textAlign: "center",
     fontFamily: T.font,
     maxWidth: 320,
   },
   qrWrap: {
-    alignItems: 'center',
+    alignItems: "center",
     paddingVertical: 12,
     paddingHorizontal: 16,
   },
   qrCard: {
-    backgroundColor: '#fff',
+    backgroundColor: "#fff",
     padding: 20,
     borderRadius: 20,
   },
   kv: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 12,
     paddingHorizontal: 16,
     paddingVertical: 10,
@@ -155,7 +171,7 @@ const styles = StyleSheet.create({
   footerHint: {
     fontSize: 12,
     color: T.textMuted,
-    textAlign: 'center',
+    textAlign: "center",
     paddingHorizontal: 32,
     paddingTop: 16,
     lineHeight: 18,

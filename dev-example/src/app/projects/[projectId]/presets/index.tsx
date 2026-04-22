@@ -1,24 +1,24 @@
-import { Stack, useRouter } from 'expo-router';
-import { Text } from 'react-native';
+import { Stack, useRouter } from "expo-router";
+import { Text } from "react-native";
 
-import { EmptyState } from '@/components/EmptyState';
-import { PresetIcon } from '@/components/PresetIcon';
-import { Row } from '@/components/Row';
-import { Screen } from '@/components/Screen';
-import { Section } from '@/components/Section';
-import { ShortId } from '@/components/ShortId';
-import { T } from '@/lib/theme';
-import { useProjectId } from '@/lib/useProjectId';
-import { useManyDocs } from '@comapeo/core-react';
+import { EmptyState } from "@/components/EmptyState";
+import { PresetIcon } from "@/components/PresetIcon";
+import { Row } from "@/components/Row";
+import { Screen } from "@/components/Screen";
+import { Section } from "@/components/Section";
+import { ShortId } from "@/components/ShortId";
+import { T } from "@/lib/theme";
+import { useProjectId } from "@/lib/useProjectId";
+import { useManyDocs } from "@comapeo/core-react";
 
 export default function PresetList() {
   const router = useRouter();
   const projectId = useProjectId();
-  const { data: presets } = useManyDocs({ projectId, docType: 'preset' });
+  const { data: presets } = useManyDocs({ projectId, docType: "preset" });
 
   return (
     <>
-      <Stack.Screen options={{ title: 'Presets' }} />
+      <Stack.Screen options={{ title: "Presets" }} />
       <Screen>
         {presets.length === 0 ? (
           <EmptyState title="No presets" />
@@ -32,11 +32,13 @@ export default function PresetList() {
                 title={p.name}
                 subtitle={
                   <Text style={{ color: T.textMuted, fontSize: 13 }}>
-                    {p.geometry.join(', ')} · {p.fieldRefs.length} fields
+                    {p.geometry.join(", ")} · {p.fieldRefs.length} fields
                   </Text>
                 }
-                right={<ShortId id={p.docId} label="docId" size="xs" />}
-                onPress={() => router.push(`/projects/${projectId}/presets/${p.docId}`)}
+                right={<ShortId id={p.docId} size="xs" />}
+                onPress={() =>
+                  router.push(`/projects/${projectId}/presets/${p.docId}`)
+                }
               />
             ))}
           </Section>

@@ -1,89 +1,109 @@
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import { Stack, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
+import { CameraView, useCameraPermissions } from "expo-camera";
+import { Stack, useRouter } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Platform,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 
-import { DangerButton } from '@/components/DangerButton';
-import { ErrorBanner } from '@/components/ErrorBanner';
-import { Glyph } from '@/components/Glyph';
-import { HeaderButton } from '@/components/HeaderButton';
-import { PrimaryButton } from '@/components/PrimaryButton';
-import { Row } from '@/components/Row';
-import { Screen } from '@/components/Screen';
-import { Section } from '@/components/Section';
-import { ShortId } from '@/components/ShortId';
-import { StatusChip } from '@/components/StatusChip';
-import { decodePairingUrl, type PairingPayload } from '@/lib/pairing';
-import { T } from '@/lib/theme';
-import { useProjectId } from '@/lib/useProjectId';
-import { waitForPeerConnection } from '@/lib/useLocalPeers';
-import { useClientApi, useProjectSettings, useSendInvite } from '@comapeo/core-react';
+import { DangerButton } from "@/components/DangerButton";
+import { ErrorBanner } from "@/components/ErrorBanner";
+import { Glyph } from "@/components/Glyph";
+import { HeaderButton } from "@/components/HeaderButton";
+import { PrimaryButton } from "@/components/PrimaryButton";
+import { Row } from "@/components/Row";
+import { Screen } from "@/components/Screen";
+import { Section } from "@/components/Section";
+import { ShortId } from "@/components/ShortId";
+import { StatusChip } from "@/components/StatusChip";
+import { decodePairingUrl, type PairingPayload } from "@/lib/pairing";
+import { T } from "@/lib/theme";
+import { useProjectId } from "@/lib/useProjectId";
+import { waitForPeerConnection } from "@/lib/useLocalPeers";
+import {
+  useClientApi,
+  useProjectSettings,
+  useSendInvite,
+} from "@comapeo/core-react";
 
 type Step =
-  | { kind: 'scan' }
-  | { kind: 'connecting'; payload: PairingPayload }
-  | { kind: 'failed'; message: string }
-  | { kind: 'picking'; peerDeviceId: string }
-  | { kind: 'sent'; peerDeviceId: string };
+  | { kind: "scan" }
+  | { kind: "connecting"; payload: PairingPayload }
+  | { kind: "failed"; message: string }
+  | { kind: "picking"; peerDeviceId: string }
+  | { kind: "sent"; peerDeviceId: string };
 
 const ROLES = [
   {
-    id: 'f7c150f5a3a9a855',
-    name: 'Coordinator',
+    id: "f7c150f5a3a9a855",
+    name: "Coordinator",
     description:
-      'Can invite others, edit project settings, and manage members. Grants full trust.',
+      "Can invite others, edit project settings, and manage members. Grants full trust.",
   },
   {
-    id: '012fd2d431c0bf60',
-    name: 'Member',
+    id: "012fd2d431c0bf60",
+    name: "Member",
     description:
-      'Can create and edit observations, tracks, and presets. Cannot invite others or change settings.',
+      "Can create and edit observations, tracks, and presets. Cannot invite others or change settings.",
   },
 ] as const;
 
-type RoleId = (typeof ROLES)[number]['id'];
+type RoleId = (typeof ROLES)[number]["id"];
 
 export default function InviteWizard() {
   const router = useRouter();
   const projectId = useProjectId();
   const { data: project } = useProjectSettings({ projectId });
-  const [step, setStep] = useState<Step>({ kind: 'scan' });
+  const [step, setStep] = useState<Step>({ kind: "scan" });
 
   return (
     <>
       <Stack.Screen
         options={{
           title: titleFor(step),
-          presentation: 'modal',
+          presentation: "modal",
           headerLeft: () => (
-            <HeaderButton label={Platform.OS === 'ios' ? 'Cancel' : '×'} onPress={() => router.back()} />
+            <HeaderButton
+              label={Platform.OS === "ios" ? "Cancel" : "×"}
+              onPress={() => router.back()}
+            />
           ),
         }}
       />
-      {step.kind === 'scan' ? (
+      {step.kind === "scan" ? (
         <ScanStep
-          onPayload={(payload) => setStep({ kind: 'connecting', payload })}
+          onPayload={(payload) => setStep({ kind: "connecting", payload })}
         />
       ) : null}
-      {step.kind === 'connecting' ? (
+      {step.kind === "connecting" ? (
         <ConnectStep
           payload={step.payload}
-          onConnected={(peerDeviceId) => setStep({ kind: 'picking', peerDeviceId })}
-          onFailed={(message) => setStep({ kind: 'failed', message })}
+          onConnected={(peerDeviceId) =>
+            setStep({ kind: "picking", peerDeviceId })
+          }
+          onFailed={(message) => setStep({ kind: "failed", message })}
         />
       ) : null}
-      {step.kind === 'failed' ? (
-        <FailedStep message={step.message} onRetry={() => setStep({ kind: 'scan' })} />
+      {step.kind === "failed" ? (
+        <FailedStep
+          message={step.message}
+          onRetry={() => setStep({ kind: "scan" })}
+        />
       ) : null}
-      {step.kind === 'picking' ? (
+      {step.kind === "picking" ? (
         <PickRoleStep
           projectId={projectId}
-          projectName={project.name ?? 'Project'}
+          projectName={project.name ?? "Project"}
           peerDeviceId={step.peerDeviceId}
-          onSent={() => setStep({ kind: 'sent', peerDeviceId: step.peerDeviceId })}
+          onSent={() =>
+            setStep({ kind: "sent", peerDeviceId: step.peerDeviceId })
+          }
         />
       ) : null}
-      {step.kind === 'sent' ? (
+      {step.kind === "sent" ? (
         <SentStep
           peerDeviceId={step.peerDeviceId}
           onDone={() => router.back()}
@@ -94,11 +114,11 @@ export default function InviteWizard() {
 }
 
 function titleFor(step: Step): string {
-  if (step.kind === 'scan') return 'Scan to invite';
-  if (step.kind === 'connecting') return 'Connecting';
-  if (step.kind === 'failed') return 'Could not connect';
-  if (step.kind === 'picking') return 'Invite to project';
-  return 'Invite sent';
+  if (step.kind === "scan") return "Scan to invite";
+  if (step.kind === "connecting") return "Connecting";
+  if (step.kind === "failed") return "Could not connect";
+  if (step.kind === "picking") return "Invite to project";
+  return "Invite sent";
 }
 
 // ─────────────────────────────── Scan step ───────────────────────────────
@@ -129,7 +149,9 @@ function ScanStep({ onPayload }: { onPayload: (p: PairingPayload) => void }) {
           <Text style={styles.permissionBody}>
             To invite another device you need to scan its QR code.
           </Text>
-          <PrimaryButton onPress={requestPermission}>Grant camera access</PrimaryButton>
+          <PrimaryButton onPress={requestPermission}>
+            Grant camera access
+          </PrimaryButton>
         </View>
       </Screen>
     );
@@ -142,10 +164,10 @@ function ScanStep({ onPayload }: { onPayload: (p: PairingPayload) => void }) {
           <CameraView
             style={StyleSheet.absoluteFill}
             facing="back"
-            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+            barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
             onBarcodeScanned={({ data }) => onScanned(data)}
           />
-          {(['tl', 'tr', 'bl', 'br'] as const).map((c) => (
+          {(["tl", "tr", "bl", "br"] as const).map((c) => (
             <View key={c} style={[styles.corner, cornerStyles[c]]} />
           ))}
         </View>
@@ -174,7 +196,11 @@ function ConnectStep({
     (async () => {
       try {
         const anyApi = api as unknown as {
-          connectLocalPeer(opts: { address: string; port: number; name: string }): void;
+          connectLocalPeer(opts: {
+            address: string;
+            port: number;
+            name: string;
+          }): void;
         };
         anyApi.connectLocalPeer({
           address: payload.ip,
@@ -184,7 +210,8 @@ function ConnectStep({
         const peer = await waitForPeerConnection(api, payload.idPrefix);
         if (!cancelled) onConnected(peer.deviceId);
       } catch (err) {
-        if (!cancelled) onFailed(err instanceof Error ? err.message : 'Connection failed');
+        if (!cancelled)
+          onFailed(err instanceof Error ? err.message : "Connection failed");
       }
     })();
     return () => {
@@ -205,11 +232,17 @@ function ConnectStep({
   );
 }
 
-function FailedStep({ message, onRetry }: { message: string; onRetry: () => void }) {
+function FailedStep({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
   return (
     <Screen>
       <View style={styles.centerBlock}>
-        <View style={[styles.iconCircle, { backgroundColor: '#FEE2E2' }]}>
+        <View style={[styles.iconCircle, { backgroundColor: "#FEE2E2" }]}>
           <Text style={[styles.iconText, { color: T.danger }]}>⚠</Text>
         </View>
         <Text style={styles.stepTitle}>Could not connect</Text>
@@ -238,24 +271,27 @@ function PickRoleStep({
   peerDeviceId: string;
   onSent: () => void;
 }) {
-  const [roleId, setRoleId] = useState<RoleId>('012fd2d431c0bf60');
+  const [roleId, setRoleId] = useState<RoleId>("012fd2d431c0bf60");
   const send = useSendInvite({ projectId });
-  const isPending = send.status === 'pending';
+  const isPending = send.status === "pending";
 
   const submit = () => {
-    send.mutate(
-      { deviceId: peerDeviceId, roleId },
-      { onSuccess: onSent },
-    );
+    send.mutate({ deviceId: peerDeviceId, roleId }, { onSuccess: onSent });
   };
 
   return (
     <Screen>
       <Section header="Connected peer">
         <Row
-          leading={<Glyph bg={T.primary} ch={peerDeviceId[0]?.toUpperCase() ?? '?'} size={36} />}
+          leading={
+            <Glyph
+              bg={T.primary}
+              ch={peerDeviceId[0]?.toUpperCase() ?? "?"}
+              size={36}
+            />
+          }
           title="Peer connected"
-          subtitle={<ShortId id={peerDeviceId} label="deviceId" size="xs" />}
+          subtitle={<ShortId id={peerDeviceId} size="xs" />}
           right={<StatusChip label="connected" tone="success" />}
           isLast
         />
@@ -286,7 +322,7 @@ function PickRoleStep({
       {send.error ? <ErrorBanner message={send.error.message} /> : null}
       <View style={{ padding: 16 }}>
         <PrimaryButton onPress={submit} disabled={isPending}>
-          {isPending ? 'Sending…' : 'Send invite'}
+          {isPending ? "Sending…" : "Send invite"}
         </PrimaryButton>
       </View>
     </Screen>
@@ -295,11 +331,17 @@ function PickRoleStep({
 
 // ───────────────────────────── Sent step ─────────────────────────────
 
-function SentStep({ peerDeviceId, onDone }: { peerDeviceId: string; onDone: () => void }) {
+function SentStep({
+  peerDeviceId,
+  onDone,
+}: {
+  peerDeviceId: string;
+  onDone: () => void;
+}) {
   return (
     <Screen>
       <View style={styles.centerBlock}>
-        <View style={[styles.iconCircle, { backgroundColor: '#FEF3C7' }]}>
+        <View style={[styles.iconCircle, { backgroundColor: "#FEF3C7" }]}>
           <ActivityIndicator size="small" color="#A16207" />
         </View>
         <Text style={styles.stepTitle}>Waiting for response</Text>
@@ -313,8 +355,12 @@ function SentStep({ peerDeviceId, onDone }: { peerDeviceId: string; onDone: () =
         </View>
       </View>
       <Section header="Invite">
-        <Row title="peer" subtitle={<ShortId id={peerDeviceId} label="deviceId" size="xs" />} />
-        <Row isLast title="status" right={<StatusChip label="pending" tone="warning" />} />
+        <Row title="peer" subtitle={<ShortId id={peerDeviceId} size="xs" />} />
+        <Row
+          isLast
+          title="status"
+          right={<StatusChip label="pending" tone="warning" />}
+        />
       </Section>
     </Screen>
   );
@@ -330,8 +376,8 @@ const cornerStyles = {
 const styles = StyleSheet.create({
   viewfinderWrap: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
+    alignItems: "center",
+    justifyContent: "flex-start",
     paddingTop: 16,
     gap: 18,
   },
@@ -339,20 +385,20 @@ const styles = StyleSheet.create({
     width: 300,
     height: 300,
     borderRadius: 20,
-    backgroundColor: '#111',
-    overflow: 'hidden',
+    backgroundColor: "#111",
+    overflow: "hidden",
   },
   corner: {
-    position: 'absolute',
+    position: "absolute",
     width: 28,
     height: 28,
     borderRadius: 6,
-    borderColor: '#fff',
+    borderColor: "#fff",
   },
   hint: {
     fontSize: 14,
     color: T.textMuted,
-    textAlign: 'center',
+    textAlign: "center",
     maxWidth: 280,
     lineHeight: 21,
     fontFamily: T.font,
@@ -361,27 +407,37 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 40,
     gap: 12,
-    alignItems: 'center',
+    alignItems: "center",
   },
-  permissionTitle: { fontSize: 20, fontWeight: '600', color: T.text, fontFamily: T.font },
+  permissionTitle: {
+    fontSize: 20,
+    fontWeight: "600",
+    color: T.text,
+    fontFamily: T.font,
+  },
   permissionBody: {
     fontSize: 15,
     color: T.textMuted,
-    textAlign: 'center',
+    textAlign: "center",
     marginBottom: 16,
     fontFamily: T.font,
   },
   centerBlock: {
     paddingVertical: 40,
     paddingHorizontal: 24,
-    alignItems: 'center',
+    alignItems: "center",
     gap: 14,
   },
-  stepTitle: { fontSize: 22, fontWeight: '600', color: T.text, fontFamily: T.font },
+  stepTitle: {
+    fontSize: 22,
+    fontWeight: "600",
+    color: T.text,
+    fontFamily: T.font,
+  },
   stepSub: {
     fontSize: 15,
     color: T.textMuted,
-    textAlign: 'center',
+    textAlign: "center",
     maxWidth: 320,
     lineHeight: 22,
     fontFamily: T.font,
@@ -390,18 +446,18 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
-  iconText: { fontSize: 30, fontWeight: '600' },
+  iconText: { fontSize: 30, fontWeight: "600" },
   radio: {
     width: 22,
     height: 22,
     borderRadius: 11,
     borderWidth: 2,
-    borderColor: 'rgba(60,60,67,0.3)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderColor: "rgba(60,60,67,0.3)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   radioSelected: { borderColor: T.primary },
   radioInner: {

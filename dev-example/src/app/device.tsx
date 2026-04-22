@@ -1,20 +1,20 @@
-import { Stack } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { Platform, View } from 'react-native';
+import { Stack } from "expo-router";
+import { useEffect, useState } from "react";
+import { Platform, View } from "react-native";
 
-import { FormField } from '@/components/FormField';
-import { HeaderButton } from '@/components/HeaderButton';
-import { PrimaryButton } from '@/components/PrimaryButton';
-import { Screen } from '@/components/Screen';
-import { Section } from '@/components/Section';
-import { ShortId } from '@/components/ShortId';
-import { fmtDateTime, shortId } from '@/lib/format';
+import { FormField } from "@/components/FormField";
+import { HeaderButton } from "@/components/HeaderButton";
+import { PrimaryButton } from "@/components/PrimaryButton";
+import { Screen } from "@/components/Screen";
+import { Section } from "@/components/Section";
+import { ShortId } from "@/components/ShortId";
+import { fmtDateTime, shortId } from "@/lib/format";
 import {
   useIsArchiveDevice,
   useOwnDeviceInfo,
   useSetIsArchiveDevice,
   useSetOwnDeviceInfo,
-} from '@comapeo/core-react';
+} from "@comapeo/core-react";
 
 export default function DeviceScreen() {
   const { data: device } = useOwnDeviceInfo();
@@ -22,10 +22,10 @@ export default function DeviceScreen() {
   const setDevice = useSetOwnDeviceInfo();
   const setArchive = useSetIsArchiveDevice();
 
-  const [name, setName] = useState(device.name ?? '');
-  useEffect(() => setName(device.name ?? ''), [device.name]);
+  const [name, setName] = useState(device.name ?? "");
+  useEffect(() => setName(device.name ?? ""), [device.name]);
 
-  const isPending = setDevice.status === 'pending';
+  const isPending = setDevice.status === "pending";
 
   const save = () => {
     const next = name.trim();
@@ -37,22 +37,30 @@ export default function DeviceScreen() {
     <>
       <Stack.Screen
         options={{
-          title: 'This device',
+          title: "This device",
           headerRight: () =>
-            Platform.OS === 'ios' ? (
-              <HeaderButton label={isPending ? 'Saving…' : 'Save'} onPress={save} />
+            Platform.OS === "ios" ? (
+              <HeaderButton
+                label={isPending ? "Saving…" : "Save"}
+                onPress={save}
+              />
             ) : undefined,
         }}
       />
       <Screen>
         <Section header="Identity">
-          <FormField label="name" value={name} onChangeText={setName} placeholder="Device name" />
+          <FormField
+            label="name"
+            value={name}
+            onChangeText={setName}
+            placeholder="Device name"
+          />
           <FormField label="deviceType" value={device.deviceType} readOnly />
           <FormField
             label="deviceId"
             value={shortId(device.deviceId)}
             readOnly
-            right={<ShortId id={device.deviceId} label="deviceId" size="xs" />}
+            right={<ShortId id={device.deviceId} size="xs" />}
             isLast
           />
         </Section>
@@ -64,18 +72,20 @@ export default function DeviceScreen() {
             right={
               <PrimaryButton
                 style={{ minHeight: 32, paddingVertical: 6 }}
-                onPress={() => setArchive.mutate({ isArchiveDevice: !isArchive })}
+                onPress={() =>
+                  setArchive.mutate({ isArchiveDevice: !isArchive })
+                }
               >
-                {isArchive ? 'Unset' : 'Set'}
+                {isArchive ? "Unset" : "Set"}
               </PrimaryButton>
             }
             isLast
           />
         </Section>
-        {Platform.OS !== 'ios' ? (
+        {Platform.OS !== "ios" ? (
           <View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
             <PrimaryButton onPress={save} disabled={isPending}>
-              {isPending ? 'Saving…' : 'Save device info'}
+              {isPending ? "Saving…" : "Save device info"}
             </PrimaryButton>
           </View>
         ) : null}

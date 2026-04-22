@@ -1,24 +1,27 @@
-import { Stack, useRouter } from 'expo-router';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Stack, useRouter } from "expo-router";
+import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
-import { AttachmentThumbs } from '@/components/AttachmentThumbs';
-import { EmptyState } from '@/components/EmptyState';
-import { FAB } from '@/components/FAB';
-import { HeaderButton } from '@/components/HeaderButton';
-import { PresetIcon } from '@/components/PresetIcon';
-import { Screen } from '@/components/Screen';
-import { Section } from '@/components/Section';
-import { ShortId } from '@/components/ShortId';
-import { StatusChip } from '@/components/StatusChip';
-import { fmtCoord, relTime } from '@/lib/format';
-import { T } from '@/lib/theme';
-import { useProjectId } from '@/lib/useProjectId';
-import { useManyDocs } from '@comapeo/core-react';
+import { AttachmentThumbs } from "@/components/AttachmentThumbs";
+import { EmptyState } from "@/components/EmptyState";
+import { FAB } from "@/components/FAB";
+import { HeaderButton } from "@/components/HeaderButton";
+import { PresetIcon } from "@/components/PresetIcon";
+import { Screen } from "@/components/Screen";
+import { Section } from "@/components/Section";
+import { ShortId } from "@/components/ShortId";
+import { StatusChip } from "@/components/StatusChip";
+import { fmtCoord, relTime } from "@/lib/format";
+import { T } from "@/lib/theme";
+import { useProjectId } from "@/lib/useProjectId";
+import { useManyDocs } from "@comapeo/core-react";
 
 export default function ObservationList() {
   const router = useRouter();
   const projectId = useProjectId();
-  const { data: observations } = useManyDocs({ projectId, docType: 'observation' });
+  const { data: observations } = useManyDocs({
+    projectId,
+    docType: "observation",
+  });
 
   const goNew = () => router.push(`/projects/${projectId}/observations/new`);
 
@@ -26,9 +29,11 @@ export default function ObservationList() {
     <>
       <Stack.Screen
         options={{
-          title: 'Observations',
+          title: "Observations",
           headerRight: () =>
-            Platform.OS === 'ios' ? <HeaderButton label="＋" onPress={goNew} /> : undefined,
+            Platform.OS === "ios" ? (
+              <HeaderButton label="＋" onPress={goNew} />
+            ) : undefined,
         }}
       />
       <Screen>
@@ -38,11 +43,12 @@ export default function ObservationList() {
           <Section>
             {observations.map((o, i) => {
               const isLast = i === observations.length - 1;
-              const presetName = (o.tags?.['category'] as string) ?? o.schemaName;
+              const presetName =
+                (o.tags?.["category"] as string) ?? o.schemaName;
               return (
                 <Pressable
                   key={o.docId}
-                  android_ripple={{ color: 'rgba(0,0,0,0.06)' }}
+                  android_ripple={{ color: "rgba(0,0,0,0.06)" }}
                   style={[
                     styles.row,
                     !isLast && {
@@ -51,23 +57,32 @@ export default function ObservationList() {
                     },
                   ]}
                   onPress={() =>
-                    router.push(`/projects/${projectId}/observations/${o.docId}`)
+                    router.push(
+                      `/projects/${projectId}/observations/${o.docId}`,
+                    )
                   }
                 >
-                  <PresetIcon name={presetName} size={Platform.OS === 'ios' ? 36 : 40} />
+                  <PresetIcon
+                    name={presetName}
+                    size={Platform.OS === "ios" ? 36 : 40}
+                  />
                   <View style={styles.body}>
                     <View style={styles.titleRow}>
                       <Text style={styles.title}>{presetName}</Text>
-                      {o.deleted ? <StatusChip label="deleted" tone="danger" /> : null}
+                      {o.deleted ? (
+                        <StatusChip label="deleted" tone="danger" />
+                      ) : null}
                     </View>
                     {o.lat != null && o.lon != null ? (
                       <Text style={styles.coord}>
-                        {fmtCoord(o.lat, 'lat')} · {fmtCoord(o.lon, 'lon')}
+                        {fmtCoord(o.lat, "lat")} · {fmtCoord(o.lon, "lon")}
                       </Text>
                     ) : null}
                     <View style={styles.meta}>
-                      <ShortId id={o.docId} label="docId" size="xs" />
-                      <Text style={styles.metaText}>{relTime(o.updatedAt)}</Text>
+                      <ShortId id={o.docId} size="xs" />
+                      <Text style={styles.metaText}>
+                        {relTime(o.updatedAt)}
+                      </Text>
                       <View style={{ flex: 1 }} />
                       <AttachmentThumbs attachments={o.attachments} />
                     </View>
@@ -85,21 +100,21 @@ export default function ObservationList() {
 
 const styles = StyleSheet.create({
   row: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 12,
     paddingHorizontal: 16,
     paddingVertical: Platform.select({ ios: 10, default: 12 }),
   },
   body: { flex: 1, minWidth: 0 },
   titleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
     marginBottom: 2,
   },
   title: {
     fontSize: 16,
-    fontWeight: Platform.select({ ios: '500', default: '400' }),
+    fontWeight: Platform.select({ ios: "500", default: "400" }),
     color: T.text,
     fontFamily: T.font,
   },
@@ -109,8 +124,8 @@ const styles = StyleSheet.create({
     fontFamily: T.mono,
   },
   meta: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
     marginTop: 6,
   },

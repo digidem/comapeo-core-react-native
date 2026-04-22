@@ -1,14 +1,14 @@
-import { Stack } from 'expo-router';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { Stack } from "expo-router";
+import { Platform, StyleSheet, Text, View } from "react-native";
 
-import { EmptyState } from '@/components/EmptyState';
-import { Glyph } from '@/components/Glyph';
-import { Screen } from '@/components/Screen';
-import { Section } from '@/components/Section';
-import { ShortId } from '@/components/ShortId';
-import { StatusChip } from '@/components/StatusChip';
-import { T } from '@/lib/theme';
-import { useManyReceivedMapShares } from '@comapeo/core-react';
+import { EmptyState } from "@/components/EmptyState";
+import { Glyph } from "@/components/Glyph";
+import { Screen } from "@/components/Screen";
+import { Section } from "@/components/Section";
+import { ShortId } from "@/components/ShortId";
+import { StatusChip } from "@/components/StatusChip";
+import { T } from "@/lib/theme";
+import { useManyReceivedMapShares } from "@comapeo/core-react";
 
 // NOTE: Map server is not yet wired up in comapeo-core-react-native, so this
 // list will likely be empty (or return an error toast). The screen exists to
@@ -19,7 +19,7 @@ export default function MapSharesScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: 'Map shares' }} />
+      <Stack.Screen options={{ title: "Map shares" }} />
       <Screen>
         <Section header="Received">
           {received.length === 0 ? (
@@ -46,27 +46,35 @@ export default function MapSharesScreen() {
                     },
                   ]}
                 >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 10,
+                    }}
+                  >
                     <Glyph
                       bg="#475569"
                       ch="▦"
-                      size={Platform.OS === 'ios' ? 34 : 40}
-                      radius={Platform.OS === 'ios' ? 8 : 20}
+                      size={Platform.OS === "ios" ? 34 : 40}
+                      radius={Platform.OS === "ios" ? 8 : 20}
                     />
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.title}>{s.mapName ?? '(unnamed map)'}</Text>
-                      <ShortId id={s.shareId} label="shareId" size="xs" />
+                      <Text style={styles.title}>
+                        {s.mapName ?? "(unnamed map)"}
+                      </Text>
+                      <ShortId id={s.shareId} size="xs" />
                     </View>
                     <StatusChip
                       label={s.status}
                       tone={
-                        s.status === 'completed'
-                          ? 'success'
-                          : s.status === 'downloading'
-                            ? 'info'
-                            : s.status === 'error'
-                              ? 'danger'
-                              : 'warning'
+                        s.status === "completed"
+                          ? "success"
+                          : s.status === "downloading"
+                            ? "info"
+                            : s.status === "error"
+                              ? "danger"
+                              : "warning"
                       }
                     />
                   </View>
@@ -85,12 +93,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: Platform.select({ ios: 12, default: 14 }),
   },
-  title: { fontSize: 16, fontWeight: '500', color: T.text, fontFamily: T.font },
+  title: { fontSize: 16, fontWeight: "500", color: T.text, fontFamily: T.font },
   hint: {
     color: T.textMuted,
     fontSize: 13,
     paddingHorizontal: 24,
-    textAlign: 'center',
-    fontStyle: 'italic',
+    textAlign: "center",
+    fontStyle: "italic",
   },
 });

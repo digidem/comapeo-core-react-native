@@ -1,24 +1,24 @@
-import { Stack, useRouter } from 'expo-router';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { Stack, useRouter } from "expo-router";
+import { Platform, StyleSheet, Text, View } from "react-native";
 
-import { EmptyState } from '@/components/EmptyState';
-import { Glyph } from '@/components/Glyph';
-import { Row } from '@/components/Row';
-import { Screen } from '@/components/Screen';
-import { Section } from '@/components/Section';
-import { ShortId } from '@/components/ShortId';
-import { StatusChip } from '@/components/StatusChip';
-import { T } from '@/lib/theme';
-import { useManyInvites } from '@comapeo/core-react';
+import { EmptyState } from "@/components/EmptyState";
+import { Glyph } from "@/components/Glyph";
+import { Row } from "@/components/Row";
+import { Screen } from "@/components/Screen";
+import { Section } from "@/components/Section";
+import { ShortId } from "@/components/ShortId";
+import { StatusChip } from "@/components/StatusChip";
+import { T } from "@/lib/theme";
+import { useManyInvites } from "@comapeo/core-react";
 
 export default function InvitesScreen() {
   const router = useRouter();
   const { data: invites } = useManyInvites();
-  const pending = invites.filter((i) => i.state === 'pending');
+  const pending = invites.filter((i) => i.state === "pending");
 
   return (
     <>
-      <Stack.Screen options={{ title: 'Invites' }} />
+      <Stack.Screen options={{ title: "Invites" }} />
       <Screen>
         <View style={styles.intro}>
           <Text style={styles.introText}>
@@ -27,7 +27,10 @@ export default function InvitesScreen() {
           </Text>
         </View>
 
-        <Section header="Pending" footer="useManyInvites() · received on this device">
+        <Section
+          header="Pending"
+          footer="useManyInvites() · received on this device"
+        >
           {pending.length === 0 ? (
             <EmptyState title="No pending invites" />
           ) : (
@@ -40,18 +43,19 @@ export default function InvitesScreen() {
                   <Glyph
                     bg={T.primary}
                     ch="✉"
-                    size={Platform.OS === 'ios' ? 34 : 40}
-                    radius={Platform.OS === 'ios' ? 8 : 20}
+                    size={Platform.OS === "ios" ? 34 : 40}
+                    radius={Platform.OS === "ios" ? 8 : 20}
                   />
                 }
-                title={inv.projectName || '(unnamed project)'}
+                title={inv.projectName || "(unnamed project)"}
                 subtitle={
                   <View style={styles.subtitle}>
-                    <ShortId id={inv.inviteId} label="inviteId" size="xs" />
+                    <ShortId id={inv.inviteId} size="xs" />
                     {inv.invitorName ? (
                       <Text style={{ color: T.textMuted, fontSize: 13 }}>
-                        {' '}from {inv.invitorName}
-                        {inv.roleName ? ` · ${inv.roleName}` : ''}
+                        {" "}
+                        from {inv.invitorName}
+                        {inv.roleName ? ` · ${inv.roleName}` : ""}
                       </Text>
                     ) : null}
                   </View>
@@ -71,6 +75,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
   },
-  introText: { fontSize: 13, color: T.textMuted, lineHeight: 19, fontFamily: T.font },
-  subtitle: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
+  introText: {
+    fontSize: 13,
+    color: T.textMuted,
+    lineHeight: 19,
+    fontFamily: T.font,
+  },
+  subtitle: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
 });
