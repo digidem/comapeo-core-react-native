@@ -6,6 +6,8 @@ Location for code that sets up `@comapeo/core` in nodejs-mobile and makes it acc
 
 ### `@hyperswarm/secret-stream`
 
+Later version introduces sodium-native@5, which we don't yet have prebuilds for.
+
 ### `fs-native-extensions`
 
 Needs to match version that we have native prebuilds for.
