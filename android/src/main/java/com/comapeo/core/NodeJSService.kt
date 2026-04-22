@@ -90,8 +90,9 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                         log("Copied nodejs-project into data directory")
                         
                         val abiName = getCurrentABIName()
-                        copyAssetFolder("$NODEJS_NATIVE_ASSETS_DIRNAME/$abiName", nodeProjectDir)
-                        log("Copied native assets for $abiName into nodejs-project in data directory")
+                        val nativeAssetsDirToCopy = "$NODEJS_NATIVE_ASSETS_DIRNAME/$abiName"
+                        copyAssetFolder(nativeAssetsDirToCopy, nodeProjectDir)
+                        log("Copied $nativeAssetsDirToCopy into data directory")
                     }
                 }
 
