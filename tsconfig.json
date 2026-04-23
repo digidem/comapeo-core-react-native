@@ -3,7 +3,7 @@
     "allowJs": true,
     "checkJs": true,
     "forceConsistentCasingInFileNames": true,
-    "lib": ["ESNext"],
+    "lib": ["dom", "ESNext"],
     "module": "nodenext",
     "noEmit": true,
     "noErrorTruncation": true,

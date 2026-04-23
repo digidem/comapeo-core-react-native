@@ -73,3 +73,6 @@ android/libnode/.version
 backend/dist
 nodejs-assets
 android/src/main/assets/
+
+# output
+build/

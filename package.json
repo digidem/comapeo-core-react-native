@@ -18,7 +18,7 @@
     }
   },
   "scripts": {
-    "build": "expo-module build",
+    "build": "expo-module build --project tsconfig.build.json --watch false",
     "clean": "expo-module clean",
     "lint": "expo-module lint",
     "test": "expo-module test",
