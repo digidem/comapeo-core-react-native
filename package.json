@@ -5,6 +5,16 @@
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "type": "module",
+  "files": [
+    "expo-module.config.json",
+    "android/build.gradle",
+    "android/CMakeLists.txt",
+    "android/src/main/",
+    "android/libnode/",
+    "build/",
+    "ios/",
+    "src/"
+  ],
   "devEngines": {
     "packageManager": {
       "name": "npm",
