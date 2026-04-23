@@ -10,13 +10,13 @@ const expo = require("expo-module-scripts/eslint.config.base");
 export default defineConfig([
   {
     name: "ignores",
-    ignores: ["android", "build", "ios"],
+    ignores: ["android", "example", "ios"],
   },
   js.configs.recommended,
   tseslint.configs.recommended,
   {
-    name: "backend",
-    files: ["backend/**/*"],
+    name: "node",
+    files: ["backend", "scripts"],
     languageOptions: {
       globals: { ...globals.node, ...globals.nodeBuiltin },
     },
