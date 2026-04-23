@@ -3,7 +3,7 @@ import { type JsonValue } from "type-fest";
 import {
   ComapeoCoreModuleEvents,
   type MessageEventPayload,
-} from "./ComapeoCore.types";
+} from "./ComapeoCore.types.js";
 import { createMapeoClient, type MapeoClientApi } from "@comapeo/ipc/client.js";
 
 declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
@@ -23,7 +23,7 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
   }
 
   startObserving<EventName extends keyof ComapeoCoreModuleEvents>(
-    eventName: EventName
+    eventName: EventName,
   ): void {
     // eslint-disable-next-line no-useless-return
     if (eventName !== "message") return;
@@ -31,13 +31,13 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
   }
 
   stopObserving<EventName extends keyof ComapeoCoreModuleEvents>(
-    eventName: EventName
+    eventName: EventName,
   ): void {
     // eslint-disable-next-line no-useless-return
     if (eventName !== "message") return;
     nativeModule.removeListener(
       eventName as "message",
-      this.#handleMessageEvent
+      this.#handleMessageEvent,
     );
   }
 
@@ -52,14 +52,14 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
 
   addEventListener<EventName extends keyof MessagePortEvents>(
     eventName: EventName,
-    listener: MessagePortEvents[EventName]
+    listener: MessagePortEvents[EventName],
   ) {
     this.addListener(eventName, listener);
   }
 
   removeEventListener<EventName extends keyof MessagePortEvents>(
     eventName: EventName,
-    listener: MessagePortEvents[EventName]
+    listener: MessagePortEvents[EventName],
   ) {
     this.removeListener(eventName, listener);
   }
