@@ -5,10 +5,7 @@ import { createRequire } from "node:module";
 import globals from "globals";
 
 const require = createRequire(import.meta.url);
-const expo = require(
-  // @ts-expect-error Not worth fixing
-  "expo-module-scripts/eslint.config.base",
-);
+const expo = require("expo-module-scripts/eslint.config.base");
 
 export default defineConfig([
   {

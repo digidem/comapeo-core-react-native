@@ -76,3 +76,4 @@ android/src/main/assets/
 
 # output
 build/
+*.tsbuildinfo
