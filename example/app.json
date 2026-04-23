@@ -22,9 +22,6 @@
       },
       "package": "com.comapeo.core.example"
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
     "plugins": ["./plugins/with-android-tests"]
   }
 }
