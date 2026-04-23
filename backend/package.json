@@ -39,7 +39,6 @@
     "typescript": "5.9.3"
   },
   "overrides": {
-    "@hyperswarm/secret-stream": "6.7.1",
     "fs-native-extensions": "1.4.3",
     "mirror-drive": "1.4.0",
     "require-addon": "1.1.0",
