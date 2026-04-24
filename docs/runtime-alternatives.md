@@ -2,7 +2,10 @@
 
 Research notes and assessment of options for replacing `nodejs-mobile` as
 the backend JS runtime in `comapeo-core-react-native`. Decision horizon:
-1–2 years. Workload to run: `fastify` HTTP + `@comapeo/core` (hypercore
+1–2 years. Workload to run: HTTP server (`fastify` today; migrating to
+`itty-router` per
+[comapeo-core#1100](https://github.com/digidem/comapeo-core/issues/1100))
++ `@comapeo/core` (hypercore
 family) + SQLite (currently `better-sqlite3` + drizzle) + crypto
 (`sodium-native`) + P2P networking (`udx-native`) on a background thread
 separate from React Native's UI.
@@ -88,24 +91,63 @@ any JS-side bit-twiddling pays the cost.
   *any* non-nodejs-mobile path. Worth doing regardless of final
   destination — estimated 2–4 weeks.
 
-### 3.2 `fastify`
+### 3.2 `fastify` → `itty-router` (already planned in core)
 
-- Fastify is a pure-JS dep and so portability depends on its Node-core
-  dep set: `net`, `tls`, `http`, `stream`, `events`, `buffer`, `path`,
-  `url`, `crypto`, plus its own internal deps (`find-my-way`, `pino`,
-  `avvio`, `@fastify/ajv-compiler`).
-- **Bare:** `bare-http1` exists but fastify compatibility is unverified
-  and not a documented use case. `bare-https` and `bare-tls` similarly
-  unverified.
-- **Hermes:** need the entire Node HTTP/streams stack reimplemented.
-- **QuickJS / LLRT:** LLRT has partial HTTP (fetch-like) but no Node
-  `http.Server` semantics. Fastify won't run.
-- **Mitigation**: decide whether HTTP is load-bearing. If it's only used
-  for local IPC with the RN UI (unlikely — we already use UDS) or for
-  exposing a local HTTP API to mobile browsers, **replace fastify with
-  a smaller, more portable server** (e.g. a minimal router on
-  `bare-http1` or a pure-JS server on whatever the target provides).
-  1–2 weeks.
+**Status: being actively addressed.** Two open issues in
+[`digidem/comapeo-core`](https://github.com/digidem/comapeo-core):
+
+- [#1099 Externalize fastify server](https://github.com/digidem/comapeo-core/issues/1099):
+  remove fastify from `MapeoManager`'s constructor contract entirely.
+  HTTP is only needed for exposing blob/icon URLs to image views — a
+  separate concern from core sync logic.
+- [#1100 Switch from Fastify to a different HTTP server](https://github.com/digidem/comapeo-core/issues/1100):
+  replace fastify with
+  [`itty-router`](https://itty.dev/itty-router/) + its
+  [Node adapter](https://itty.dev/itty-router/guides/node). itty-router
+  is designed for non-Node edge environments (Workers, Deno) and is
+  "only a few bytes." Type-safe routing with minimal runtime surface.
+
+**What this does to the portability calculus:**
+
+- itty-router itself is runtime-agnostic — it's a routing layer, not a
+  server. Works on any runtime that can speak `Request`/`Response`.
+- The **Node adapter** is what ties to Node's `http.Server`. Bare,
+  Hermes, QuickJS — each would need its own adapter, but the surface
+  is small (a few hundred lines — an HTTP/1.1 parser + a `Request`
+  constructor).
+- Removes the `pino`, `avvio`, `@fastify/ajv-compiler`, `find-my-way`
+  transitive deps from the bundle. Significant portability win.
+
+**itty-router still needs `Request`/`Response`/`Headers`** (and
+`fetch` if any code makes outbound HTTP calls). These are Web Platform
+APIs, global in Workers/Deno/Bun/Node 18+, but **not** in Bare or
+Hermes by default. Per-runtime status:
+
+- **Bare:**
+  [`bare-fetch`](https://github.com/holepunchto/bare-fetch) (v2.8.2,
+  actively maintained) provides `fetch`, `Request`, `Response`,
+  `Headers` using only first-party `bare-*` deps (`bare-http1`,
+  `bare-https`, `bare-stream`, `bare-url`, `bare-zlib`,
+  `bare-form-data`). Exports a `./global` entry to install them as
+  globals. Still need a ~50–100 LOC adapter that bridges
+  `bare-http1`'s incoming request to a `Request` and writes the
+  router's `Response` back out — directly analogous to itty-router's
+  own Node adapter.
+- **Hermes:** no first-party Fetch primitives. Would need either
+  `undici`/`@whatwg-node/fetch` bundled as pure JS on top of a socket
+  shim, or a minimal hand-written Request/Response implementation. Plus
+  a minimal HTTP/1.1 parser + server loop (`llhttp.js` or similar).
+- **QuickJS / LLRT:** LLRT has partial `fetch`; QuickJS has none.
+  An itty-router adapter on top of their fetch-style APIs is plausible
+  where they exist.
+
+**Mitigation**: track #1099 and #1100; the migration away from fastify
+removes a large portability obstacle regardless of destination. If
+HTTP turns out to only be needed for the blob/icon view URLs (likely —
+all other RPC goes over UDS), an itty-router-based server is a few
+hundred lines per runtime adapter rather than a fastify compatibility
+investigation. 1–2 weeks for the core-side migration; per-runtime
+adapters are a small tax on top.
 
 ### 3.3 The hypercore stack
 
@@ -178,9 +220,11 @@ any JS-side bit-twiddling pays the cost.
 - **`better-sqlite3` has no Bare equivalent** with the same API.
   `sqlite3-native` has different async shape; drizzle's better-sqlite3
   driver breaks. Must migrate drizzle to an async dialect first.
-- **`fastify` compatibility unverified** and probably requires
-  replacement — the ecosystem is fastify → pino → avvio → N deps and
-  they all need to compose on top of `bare-http1`.
+- **HTTP server story**: fastify compatibility unverified, but
+  [comapeo-core#1100](https://github.com/digidem/comapeo-core/issues/1100)
+  plans to replace fastify with itty-router + Node adapter. Porting
+  the adapter to `bare-http1` is a small, self-contained task —
+  removes the fastify compatibility question entirely.
 - **Maintainer concentration**: 7 contributors on bare; 1485 commits
   from Kasper Isager; everyone else <10. Bus factor is 1–2.
 - `react-native-bare-kit` is pre-1.0 (v0.13.x) and sees occasional
@@ -190,9 +234,13 @@ any JS-side bit-twiddling pays the cost.
 
 **Estimated effort:**
 
-- One-time migration: 3–6 engineer-months. Biggest chunks are
-  async-sqlite + fastify replacement. `@comapeo/core` itself likely
-  ports cleanly because Holepunch owns the stack.
+- One-time migration: 3–6 engineer-months. Biggest chunk is
+  async-sqlite. HTTP replacement is being handled in core
+  ([#1099](https://github.com/digidem/comapeo-core/issues/1099) +
+  [#1100](https://github.com/digidem/comapeo-core/issues/1100)) — by
+  the time a Bare migration is considered, fastify is likely already
+  gone. `@comapeo/core` itself likely ports cleanly because Holepunch
+  owns the stack.
 - Ongoing: 100–200 eng-hrs/year to track Bare releases, RN bumps, and
   build regressions.
 
@@ -223,8 +271,12 @@ Babel-transpile closures. Loading arbitrary npm packages that do
   oriented. JSI bindings install on a single `jsi::Runtime&`, which is
   per-VM — you'd need to re-install each JSI module on the worker
   runtime. Possible but not out-of-the-box.
-- For `http`: fastify depends on Node `http.Server`; you need the full
-  HTTP/1.1 parse + connection lifecycle on your `net` shim.
+- For `http`: once
+  [comapeo-core#1100](https://github.com/digidem/comapeo-core/issues/1100)
+  ships, we need an itty-router adapter on top of whatever minimal
+  HTTP/1.1 server we bring to Hermes — not the full fastify
+  dependency chain. Scope shrinks from "port Node http" to "HTTP/1.1
+  parser + request/response objects".
 
 **The native-module problem:** standard Node-API addons don't load on
 Hermes. Solutions are either:
@@ -258,11 +310,13 @@ Hermes. Solutions are either:
 
 **Estimated effort:**
 
-- One-time: 9–18 engineer-months for a "fastify-capable + hypercore"
+- One-time: 9–18 engineer-months for a "hypercore-capable backend"
   compat layer on a second Hermes VM, with native deps ported via
-  `react-native-node-api`. Could be substantially less if we drop
-  fastify and take a smaller HTTP server, and if `react-native-node-api`
-  lands upstream.
+  `react-native-node-api`. The itty-router migration
+  ([comapeo-core#1100](https://github.com/digidem/comapeo-core/issues/1100))
+  shrinks the HTTP half of this by a lot — estimate assumes that
+  migration has already happened. Could be substantially less if
+  `react-native-node-api` lands upstream.
 - Ongoing: **ever-growing** unless backend dep set is frozen. Every new
   transitive dep risks requiring a new JSI shim.
 
@@ -383,8 +437,10 @@ this app.
 
 - `nodejs-mobile` binary size becomes a distribution blocker we can't
   solve through AAB splits.
-- We're willing to do the async-SQLite + fastify-replacement work
-  (4–6 weeks prerequisite).
+- We're willing to do the async-SQLite prerequisite work (2–4 weeks).
+  The fastify → itty-router migration
+  ([comapeo-core#1100](https://github.com/digidem/comapeo-core/issues/1100))
+  is already in flight in core and doesn't need to be redone here.
 - We're OK betting on a runtime with a small maintainer community.
 - Timing: 2027 at earliest.
 
@@ -422,9 +478,16 @@ any of the above paths:
 1. **Ship the `nodejs-mobile` build-pipeline improvements** from
    [build-architecture-plan.md](./build-architecture-plan.md). Reduces
    current ops burden regardless of long-term path.
-2. **Audit fastify usage.** Does the backend actually need a general HTTP
-   server, or is everything IPC over UDS now? If fastify is vestigial,
-   remove it — eliminates one major portability blocker.
+2. **Track
+   [comapeo-core#1099](https://github.com/digidem/comapeo-core/issues/1099)
+   and [#1100](https://github.com/digidem/comapeo-core/issues/1100)** —
+   the planned externalization of fastify and migration to itty-router.
+   Once landed, the HTTP-server portability story becomes "bring an
+   adapter per runtime" rather than "port the fastify dep tree". This
+   is a core-side change, not something this repo drives, but it's a
+   prerequisite for any of the migration targets below. Confirm HTTP is
+   only needed for blob/icon URLs in the final shape — if so, the
+   per-runtime adapter is tiny.
 3. **Prototype an async-SQLite migration of drizzle** in a branch. Pick a
    driver that works on multiple candidate runtimes (op-sqlite on
    Hermes; sqlite3-native on Bare). Don't ship yet; establish the
