@@ -22,6 +22,9 @@
       },
       "package": "com.comapeo.core.example"
     },
-    "plugins": ["./plugins/with-android-tests"]
+    "plugins": [
+      "./plugins/with-android-tests",
+      "./plugins/with-ios-tests"
+    ]
   }
 }

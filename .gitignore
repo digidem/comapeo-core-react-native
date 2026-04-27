@@ -66,8 +66,16 @@ ios/NodeMobile.xcframework/**/NodeMobile
 # Node headers
 android/libnode/include/
 
-# nodejs-mobile version marker
+# nodejs-mobile version markers
 android/libnode/.version
+ios/NodeMobile.xcframework/.version
+
+# nodejs-project installed dependencies
+ios/nodejs-project/node_modules/
+
+# Swift Package Manager
+ios/.build/
+ios/.swiftpm/
 
 # Backend-related artifacts
 backend/dist

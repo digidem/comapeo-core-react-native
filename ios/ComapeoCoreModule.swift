@@ -1,48 +1,72 @@
 import ExpoModulesCore
 
 public class ComapeoCoreModule: Module {
-  // Each module class must implement the definition function. The definition consists of components
-  // that describes the module's functionality and behavior.
-  // See https://docs.expo.dev/modules/module-api for more details about available components.
-  public func definition() -> ModuleDefinition {
-    // Sets the name of the module that JavaScript code will use to refer to the module. Takes a string as an argument.
-    // Can be inferred from module's class name, but it's recommended to set it explicitly for clarity.
-    // The module will be accessible from `requireNativeModule('ComapeoCore')` in JavaScript.
-    Name("ComapeoCore")
+    private var ipc: NodeJSIPC?
 
-    // Sets constant properties on the module. Can take a dictionary or a closure that returns a dictionary.
-    Constants([
-      "PI": Double.pi
-    ])
+    // MARK: - Testable seams
+    //
+    // These helpers exist so tests can verify two invariants:
+    //   1. The module's IPC client path must equal the path NodeJSService binds to.
+    //   2. getState() must return the same source as the stateChange event (service state).
 
-    // Defines event names that the module can send to JavaScript.
-    Events("onChange")
-
-    // Defines a JavaScript synchronous function that runs the native code on the JavaScript thread.
-    Function("hello") {
-      return "Hello world! 👋"
+    static func resolveSocketPath() -> String {
+        // Use the static accessor on AppLifecycleDelegate (NOT `.shared`) —
+        // OnCreate runs on the React Native JS thread, and lazy-initialising
+        // `.shared` from off-main-thread traps under Expo 55's @MainActor
+        // BaseExpoAppDelegateSubscriber.init().
+        return AppLifecycleDelegate.nodeService.comapeoSocketPath
     }
 
-    // Defines a JavaScript function that always returns a Promise and whose native code
-    // is by default dispatched on the different thread than the JavaScript runtime runs on.
-    AsyncFunction("setValueAsync") { (value: String) in
-      // Send an event to JavaScript.
-      self.sendEvent("onChange", [
-        "value": value
-      ])
+    static func stateString(for service: NodeJSService, ipc: NodeJSIPC?) -> String {
+        // The service owns the authoritative lifecycle state; the IPC socket's
+        // connection state is a downstream concern and may transiently diverge
+        // (see bug: late socket file creation, mid-session reconnects, etc.).
+        return service.state.rawValue
     }
 
-    // Enables the module to be used as a native view. Definition components that are accepted as part of the
-    // view definition: Prop, Events.
-    View(ComapeoCoreView.self) {
-      // Defines a setter for the `url` prop.
-      Prop("url") { (view: ComapeoCoreView, url: URL) in
-        if view.webView.url != url {
-          view.webView.load(URLRequest(url: url))
+    public func definition() -> ModuleDefinition {
+        Name("ComapeoCore")
+
+        Events("message", "stateChange")
+
+        OnCreate {
+            let socketPath = ComapeoCoreModule.resolveSocketPath()
+            self.ipc = NodeJSIPC(socketPath: socketPath) { [weak self] message in
+                self?.sendEvent("message", ["data": message])
+            }
+
+            // Observe service state changes. `onStateChange` is a single-slot
+            // callback — assigning here replaces any previous observer. In normal
+            // app operation only one ComapeoCoreModule instance is alive at a time,
+            // so the last-writer-wins semantics are fine. If Expo ever creates two
+            // simultaneous module instances (e.g. during a hot-reload handoff), only
+            // the new instance will receive stateChange events until the old one is
+            // destroyed.
+            AppLifecycleDelegate.nodeService.onStateChange = { [weak self] state in
+                self?.sendEvent("stateChange", ["state": state.rawValue])
+            }
         }
-      }
 
-      Events("onLoad")
+        OnDestroy {
+            self.ipc?.disconnect()
+            self.ipc = nil
+        }
+
+        OnAppEntersForeground {
+            self.ipc?.connect()
+        }
+
+        Function("postMessage") { (message: String) in
+            self.ipc?.sendMessage(message)
+        }
+
+        Function("getState") { () -> String in
+            // Static accessor — Function callbacks may run off-main-thread
+            // and `.shared`'s lazy init is @MainActor under Expo 55.
+            ComapeoCoreModule.stateString(
+                for: AppLifecycleDelegate.nodeService,
+                ipc: self.ipc
+            )
+        }
     }
-  }
 }

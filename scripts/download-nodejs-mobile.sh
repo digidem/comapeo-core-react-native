@@ -1,72 +1,103 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Downloads prebuilt nodejs-mobile binaries for Android from GitHub releases.
+# Downloads prebuilt nodejs-mobile binaries from GitHub releases.
 #
-# These binaries (libnode.so per ABI + Node.js headers) are required for the
-# native CMake build. They are NOT checked into the repo due to size (~57MB).
+# Android: libnode.so per ABI + Node.js headers → android/libnode/
+# iOS:     NodeMobile.xcframework              → ios/NodeMobile.xcframework/
 #
 # Usage:
-#   ./scripts/download-nodejs-mobile.sh              # uses default version
-#   ./scripts/download-nodejs-mobile.sh v18.20.4     # specific version
-#   NODEJS_MOBILE_VERSION=v18.20.4 ./scripts/...     # via env var
+#   ./scripts/download-nodejs-mobile.sh                          # both platforms
+#   ./scripts/download-nodejs-mobile.sh --platform android       # Android only
+#   ./scripts/download-nodejs-mobile.sh --platform ios            # iOS only
+#   ./scripts/download-nodejs-mobile.sh --platform all v18.20.4  # explicit version
+#   NODEJS_MOBILE_VERSION=v18.20.4 ./scripts/...                 # via env var
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-LIBNODE_DIR="$PROJECT_ROOT/android/libnode"
 
-# Version can be overridden by argument or env var
-VERSION="${1:-${NODEJS_MOBILE_VERSION:-v18.20.4}}"
+PLATFORM="all"
+VERSION=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --platform) PLATFORM="${2:-all}"; shift 2 ;;
+    *)          VERSION="$1"; shift ;;
+  esac
+done
 
-# Strip leading 'v' for the filename but keep for the tag
+VERSION="${VERSION:-${NODEJS_MOBILE_VERSION:-v18.20.4}}"
 TAG="$VERSION"
 [[ "$TAG" != v* ]] && TAG="v$TAG"
 FILE_VERSION="${TAG#v}"
+BASE_URL="https://github.com/nodejs-mobile/nodejs-mobile/releases/download/${TAG}"
 
-DOWNLOAD_URL="https://github.com/nodejs-mobile/nodejs-mobile/releases/download/${TAG}/nodejs-mobile-v${FILE_VERSION}-android.zip"
-ZIP_FILE="/tmp/nodejs-mobile-android-${FILE_VERSION}.zip"
+# Downloads and extracts a release zip into the project tree.
+#
+# Args: name target_dir extract_into verify_file [exclude_pattern]
+#   name             — "android" or "ios" (matches the URL slug + zip filename).
+#   target_dir       — final destination; holds the .version marker.
+#   extract_into     — where `unzip` writes. The two release zips have different
+#                      layouts: the Android zip's top level is loose (`bin/`,
+#                      `include/`) so we extract directly into `target_dir`;
+#                      the iOS zip wraps its contents in `NodeMobile.xcframework/`
+#                      so we extract into the parent and the wrapper becomes
+#                      `target_dir`.
+#   verify_file      — relative path under `target_dir` that must exist post-extract.
+#   exclude_pattern  — optional `-x` pattern. The iOS zip also ships node-side
+#                      headers under top-level `include/` that we don't need
+#                      (the NodeMobile framework provides its own headers via
+#                      its module.modulemap). Exclude them so the extra dir
+#                      doesn't pollute the source tree.
+download() {
+  local name="$1" target="$2" extract_into="$3" verify="$4" exclude="${5:-}"
+  local marker="$target/.version"
 
-echo "==> Downloading nodejs-mobile ${TAG} for Android..."
-echo "    URL: $DOWNLOAD_URL"
+  if [ -f "$marker" ] && [ "$(cat "$marker")" = "$TAG" ]; then
+    echo "==> $name: already $TAG, skipping"
+    return
+  fi
 
-# Skip download if already extracted with correct version
-MARKER_FILE="$LIBNODE_DIR/.version"
-if [ -f "$MARKER_FILE" ] && [ "$(cat "$MARKER_FILE")" = "$TAG" ]; then
-  echo "    Already downloaded (${TAG}). Skipping."
-  exit 0
-fi
+  local zip="/tmp/nodejs-mobile-${name}-${FILE_VERSION}.zip"
+  if [ -f "$zip" ]; then
+    echo "==> $name: using cached $zip"
+  else
+    echo "==> $name: downloading $TAG"
+    curl -fSL --retry 3 --retry-delay 5 \
+      -o "$zip" \
+      "${BASE_URL}/nodejs-mobile-v${FILE_VERSION}-${name}.zip"
+  fi
 
-# Download
-if [ -f "$ZIP_FILE" ]; then
-  echo "    Using cached zip: $ZIP_FILE"
-else
-  curl -fSL --retry 3 --retry-delay 5 -o "$ZIP_FILE" "$DOWNLOAD_URL"
-fi
+  rm -rf "$target"
+  mkdir -p "$extract_into"
+  if [ -n "$exclude" ]; then
+    unzip -q "$zip" -d "$extract_into" -x "$exclude"
+  else
+    unzip -q "$zip" -d "$extract_into"
+  fi
 
-# Extract into android/libnode/
-echo "==> Extracting to $LIBNODE_DIR..."
-rm -rf "$LIBNODE_DIR"
-mkdir -p "$LIBNODE_DIR"
-
-# The zip contains bin/ and include/ at the top level
-unzip -q "$ZIP_FILE" -d "$LIBNODE_DIR"
-
-# Verify expected structure
-for abi in arm64-v8a armeabi-v7a x86_64; do
-  if [ ! -f "$LIBNODE_DIR/bin/$abi/libnode.so" ]; then
-    echo "Error: Expected $LIBNODE_DIR/bin/$abi/libnode.so not found"
+  if [ ! -e "$target/$verify" ]; then
+    echo "Error: expected $target/$verify after extract" >&2
     exit 1
   fi
-done
 
-if [ ! -f "$LIBNODE_DIR/include/node/node.h" ]; then
-  echo "Error: Expected $LIBNODE_DIR/include/node/node.h not found"
-  exit 1
-fi
+  echo "$TAG" > "$marker"
+  echo "==> $name: $TAG ready"
+}
 
-# Write version marker
-echo "$TAG" > "$MARKER_FILE"
+ANDROID_TARGET="$PROJECT_ROOT/android/libnode"
+IOS_TARGET="$PROJECT_ROOT/ios/NodeMobile.xcframework"
 
-echo "==> nodejs-mobile ${TAG} Android binaries ready."
-echo "    ABIs: arm64-v8a, armeabi-v7a, x86_64"
-echo "    Path: $LIBNODE_DIR"
+case "$PLATFORM" in
+  android) download android "$ANDROID_TARGET" "$ANDROID_TARGET"   "include/node/node.h" ;;
+  ios)     download ios     "$IOS_TARGET"     "$PROJECT_ROOT/ios" "Info.plist" "include/*" ;;
+  all)
+    download android "$ANDROID_TARGET" "$ANDROID_TARGET"   "include/node/node.h"
+    download ios     "$IOS_TARGET"     "$PROJECT_ROOT/ios" "Info.plist" "include/*"
+    ;;
+  *)
+    echo "Error: unknown platform '$PLATFORM'. Use: android, ios, or all" >&2
+    exit 1
+    ;;
+esac
+
+echo "==> Done."
