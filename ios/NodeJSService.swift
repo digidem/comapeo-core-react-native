@@ -138,7 +138,15 @@ class NodeJSService {
         transitionState(to: .stopping)
 
         // Send shutdown message — this causes Node.js JS code to exit,
-        // which unblocks node_start() in runNode()
+        // which unblocks node_start() in runNode().
+        //
+        // If stateIPC is still in .connecting (Node hasn't started listening on
+        // state.sock yet), sendMessageSync enqueues the message in IPC's
+        // pendingMessages list. cleanup() then calls stateIPC.disconnect(), which
+        // discards pending messages without flushing them. The message is lost,
+        // the semaphore wait below times out, and the service transitions to .error.
+        // This is intentional: if Node hasn't connected within `timeout` seconds,
+        // there's nothing we can do but declare the shutdown failed.
         let shutdownMessage = "{\"type\":\"shutdown\"}"
         if let ipc = stateIPC {
             ipc.sendMessageSync(shutdownMessage)

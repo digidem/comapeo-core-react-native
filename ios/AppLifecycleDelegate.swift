@@ -81,8 +81,12 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
 
     public func applicationWillTerminate(_ application: UIApplication) {
         log("applicationWillTerminate — stopping Node.js")
-        // Final graceful-shutdown hook. Synchronous with a short timeout
-        // since termination is imminent.
+        // Final graceful-shutdown hook. Synchronous with a short timeout since
+        // termination is imminent. iOS grants ~5 s total for this callback; using
+        // the full 5 s leaves no margin. In practice Node exits within ~1 s when
+        // it receives the shutdown message, so the budget is rarely exhausted.
+        // If it times out, NodeJSService transitions to .error (the node thread is
+        // still alive, but the process is about to die, so that's acceptable).
         Self.nodeService.stop(timeout: 5)
     }
 }

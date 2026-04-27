@@ -35,7 +35,13 @@ class NodeJSIPC {
 
     /// Marker so `disconnect()` can detect re-entrance from the receive loop
     /// (where waiting on `receiveWorkItem` would deadlock).
-    private static let receiveQueueKey = DispatchSpecificKey<Void>()
+    ///
+    /// This must be per-instance (not `static`) so that `disconnect()` called
+    /// on instance B while running inside instance A's receive callback correctly
+    /// checks B's own queue, not A's. A `static` key would cause any IPC instance's
+    /// receive queue to satisfy the check, skipping the join on the wrong instance
+    /// and potentially closing B's fd while B's receive loop is still in flight.
+    private let receiveQueueKey = DispatchSpecificKey<Void>()
 
     private var receiveWorkItem: DispatchWorkItem?
     /// Messages enqueued by `sendMessage` before the socket is connected.
@@ -51,7 +57,7 @@ class NodeJSIPC {
     init(socketPath: String, onMessage: @escaping (String) -> Void) {
         self.socketPath = socketPath
         self.onMessage = onMessage
-        receiveQueue.setSpecific(key: Self.receiveQueueKey, value: ())
+        receiveQueue.setSpecific(key: receiveQueueKey, value: ())
         log("NodeJSIPC initialized with socket path: \(socketPath)")
         connect()
     }
@@ -150,7 +156,7 @@ class NodeJSIPC {
         }
 
         // 3. Wait for the receive loop to exit, unless we are it.
-        let onReceiveQueue = DispatchQueue.getSpecific(key: Self.receiveQueueKey) != nil
+        let onReceiveQueue = DispatchQueue.getSpecific(key: receiveQueueKey) != nil
         if !onReceiveQueue {
             workItem?.wait()
         }
@@ -410,6 +416,13 @@ func connectSocket(path: String) throws -> Int32 {
         }
     }
 
+    // addrLen covers the fixed header (sa_family_t = 1 byte on Darwin, where
+    // sun_len is a separate byte making offsetof(sun_path) = 2) plus the
+    // null-terminated path. This is technically 1 byte short of the textbook
+    // `offsetof(sun_path) + strlen + 1` formula, but Darwin's connect(2) is
+    // lenient about the supplied length as long as it covers the actual path.
+    // MockNodeServer uses the same formula for bind(2), so client and server
+    // are consistently matched.
     let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
     let result = withUnsafePointer(to: &addr) { addrPtr in
         addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in

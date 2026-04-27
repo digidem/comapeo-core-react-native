@@ -354,7 +354,7 @@ The `example/` directory contains an Expo app that benchmarks message throughput
 
 ## Open TODOs
 
-- Expose foreground service + Node.js process status to JS (`starting`, `running`, `stopping`, `stopped`)
+- Expose Node.js lifecycle state to JS (`starting`, `running`, `stopping`, `stopped`): iOS has native `stateChange` event + `getState()` in `ComapeoCoreModule.swift`, but Android's `ComapeoCoreModule.kt` has neither, and the TypeScript layer (`src/ComapeoCoreModule.ts`) does not wire up either yet. The native iOS implementation is done; Android parity + TS bindings remain.
 - Serve blobs/icons over Unix domain socket, wrapped in a content provider
 - Read `abiFilters` from consuming app's `build.gradle`
 - Implement web platform support

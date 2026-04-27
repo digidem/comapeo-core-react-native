@@ -35,8 +35,13 @@ public class ComapeoCoreModule: Module {
                 self?.sendEvent("message", ["data": message])
             }
 
-            // Observe service state changes. Static accessor — see
-            // resolveSocketPath above for why we avoid `.shared` here.
+            // Observe service state changes. `onStateChange` is a single-slot
+            // callback — assigning here replaces any previous observer. In normal
+            // app operation only one ComapeoCoreModule instance is alive at a time,
+            // so the last-writer-wins semantics are fine. If Expo ever creates two
+            // simultaneous module instances (e.g. during a hot-reload handoff), only
+            // the new instance will receive stateChange events until the old one is
+            // destroyed.
             AppLifecycleDelegate.nodeService.onStateChange = { [weak self] state in
                 self?.sendEvent("stateChange", ["state": state.rawValue])
             }
