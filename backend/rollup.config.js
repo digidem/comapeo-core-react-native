@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
 import alias from "@rollup/plugin-alias";
 import commonjs from "@rollup/plugin-commonjs";
-import esmShim from "@rollup/plugin-esm-shim";
+import { default as esmShim } from "@rollup/plugin-esm-shim";
 import json from "@rollup/plugin-json";
 
 import nativePaths from "./rollup-plugins/rollup-plugin-native-paths.js";
