@@ -78,10 +78,15 @@ from the earlier draft are worth calling out up front:
 5. **A single `Module.prototype.require` patch is sufficient as the runtime
    intercept.** The harness validated this with one patch and no
    `require.extensions['.node']` fallback — the patch caught every loader
-   pattern in `quickbit-native` / `node-gyp-build`. The app plan still uses the
-   rollup rewrite (Appendix C option A) as the primary mechanism for
-   determinism and per-callsite version resolution, with the `require` patch
-   as the safety net (Appendix C option C). Scales to N addons with a Map.
+   pattern in `quickbit-native` / `node-gyp-build`. **[revised 2026-04-27]**
+   The app plan uses only the rollup rewrite (Appendix C option A) — no
+   runtime `require` patch. For the controlled set of six known modules with
+   fully enumerated loader patterns (`bindings`, `node-gyp-build`,
+   `require.addon`), build-time rewrites are sufficient and deterministic.
+   The runtime patch adds maintenance cost (monkey-patching
+   `Module.prototype.require`) without providing meaningful safety for a
+   fixed dep set. Re-add if a future addon introduces an unrecognized loading
+   pattern.
 
 With those findings the rest of the plan stands; changes are inlined below
 marked **[validated]** or **[revised]** where relevant.
@@ -140,7 +145,7 @@ Gaps in the current state (the actual work to do):
 The UDS boundary is the most portable piece of the current stack. Backend JS
 ([backend/index.js:19](../backend/index.js#L19)) takes `comapeoSocketPath` and
 `controlSocketPath` as argv and listens on them; Kotlin
-([android/src/main/java/com/comapeo/core/NodeJSIPC.kt:28-57](../android/src/main/java/com/comapeo/core/NodeJSIPC.kt#L28-L57))
+([android/src/main/java/com/comapeo/core/NodeJSIPC.kt:28-57](../android/src/main/java/com/comapeo/core/NodeJSIPC.kt#L28-57))
 connects `LocalSocket` with 4-byte LE length-prefixed JSON framing
 ([backend/lib/message-port.js:32-49](../backend/lib/message-port.js#L32-L49)
 mirrors this via `FramedStream`). Neither side knows the other exists beyond
@@ -486,9 +491,10 @@ from phase 1 being _packaging-final_, just that JS loads.
    backend are routinely lost and load failures are invisible in logcat.
 6. **[revised]** Update `rollup-plugin-native-paths` to rewrite the three loader
    patterns (`bindings`, `node-gyp-build`, `require.addon`) to call a single
-   injected `__loadAddon(name, version)` helper, **and** install a
-   `Module.prototype.require` patch in the same prelude as a safety net for
-   any callsite the rewrite missed. The helper dispatches by platform:
+   injected `__loadAddon(name, version)` helper. No runtime
+   `Module.prototype.require` patch — all six modules have fully enumerated
+   loader patterns, so build-time rewrites are deterministic and sufficient.
+   The helper dispatches by platform:
    - android: `process.dlopen(mod, 'lib<name>.<version>.so')` — bare filename,
      no directory
    - ios: `process.dlopen(mod, path.join(NATIVE_LIB_DIR, '<name>@<version>.framework/<name>@<version>'))`
@@ -587,7 +593,7 @@ Don't. Bundle-splitting makes sense when:
   the APK; there's no delta story.
 - Different entry points need different dependency subsets (Bare sometimes ships
   `app.bundle` + `push.bundle` per
-  [bare-android/app/build.gradle:47-71](../bare-reference-repos/bare-android/app/build.gradle#L47-L71)
+  [bare-android/app/build.gradle:47-71](../bare-reference-repos/bare-android/app/build.gradle#L47-71)
   for the Firebase push extension). We don't currently have a multi-entry use
   case; if a future push-handler entry point is added, that's the time to split
   — not before.
@@ -848,9 +854,9 @@ If a future addon breaks that, we widen the rollup plugin.
 
 ### Chosen approach
 
-**[revised]** Choose **A + C** (not A + B as originally planned).
+**[revised 2026-04-27]** Choose **A only** (not A + C as previously planned).
 
-**A (bundle-stage rewrite) remains the primary mechanism**, because:
+**A (bundle-stage rewrite) is the sole mechanism**, because:
 
 - It's **deterministic** — what ships is what the bundle shows, with no runtime
   mutation surprises.
@@ -860,76 +866,63 @@ If a future addon breaks that, we widen the rollup plugin.
 - It runs at **build time**, so errors (missing prebuild, unresolved basename)
   surface in CI rather than at first app launch.
 - It extends code we already own.
+- The three loader patterns (`bindings`, `node-gyp-build`, `require.addon`) are
+  fully enumerated for all six known modules. There is no loading path the
+  rollup plugin could miss for this dep set.
 
-**C (Module.prototype.require patch) is the safety net** — revised from the
-earlier plan's B because harness validation showed C is simpler and catches
-strictly more:
-
-- A single patch on `Module.prototype.require` intercepts every
-  `require('<name>')` callsite — including the ones inside `node-gyp-build` /
-  `bindings` themselves when they do their internal `require` dance. The harness
-  validation passed with just this patch (no rollup rewrite in the test path, no
-  B-style extension handler).
-- In the app, A handles the normal case deterministically; C fires only if
-  something slipped through A (unusual loader pattern, dynamic require,
-  third-party addon we didn't rewrite).
-- Costs ~10 lines. Performance overhead is one Map lookup per require() call,
-  all at startup.
+Dropping option C (Module.prototype.require patch) eliminates runtime
+monkey-patching that carries real maintenance cost — an extra interception
+point to debug when load failures surface — without providing meaningful
+safety for a fixed, known dep set. If a future addon introduces an unrecognized
+loading pattern, add option C then rather than carrying it speculatively.
 
 ```js
-// Injected at runtime via a rollup-emitted prelude
-const PLATFORM = /* 'android' | 'ios' — set at build time */
+// Injected at bundle-head by rollup-plugin-native-paths
+const PLATFORM = /* 'android' | 'ios' — substituted at build time */
 const NATIVE_LIB_DIR = process.env.NATIVE_LIB_DIR /* ios only; unused on android */
-const ADDON_MAP = new Map([
-  ['sodium-native@5.2.1', { android: 'libsodium-native.5.2.1.so',
-                            ios:     'sodium-native@5.2.1.framework/sodium-native@5.2.1' }],
-  /* … one entry per (name, version) discovered at build time … */
-])
 const preloaded = new Map()
 
 function __loadAddon(name, version) {
   const key = name + '@' + version
   if (preloaded.has(key)) return preloaded.get(key)
-  const entry = ADDON_MAP.get(key)
-  if (!entry) throw new Error(`No addon registered for ${key}`)
   const mod = { exports: {} }
   if (PLATFORM === 'android') {
     // Bare filename — Bionic's per-app linker namespace resolves it
     // against the APK's lib/<abi>/ mmap region. A full-path dlopen
     // would fail because extractNativeLibs="false" means the .so is
     // not on disk at any resolvable path.
-    process.dlopen(mod, entry.android)
+    process.dlopen(mod, `lib${name}.${version}.so`)
   } else {
-    process.dlopen(mod, require('path').join(NATIVE_LIB_DIR, entry.ios))
+    process.dlopen(mod, require('path').join(
+      NATIVE_LIB_DIR,
+      `${name}@${version}.framework/${name}@${version}`
+    ))
   }
   preloaded.set(key, mod.exports)
   return mod.exports
 }
 
-// Safety net for anything the rollup rewrite missed. Captures both
-// bare-name requires (id === 'sodium-native') and resolves them to the
-// only version we know of — if the dep graph has multiple versions the
-// rollup rewrite path always wins, because it runs on the specific
-// callsite before this ever fires.
-const Module = require('module')
-const origRequire = Module.prototype.require
-Module.prototype.require = function patchedRequire (id) {
-  // Exact-name match — resolves to whichever version the top-level
-  // installed copy corresponds to. Multi-version callsites are
-  // handled by rollup-plugin-native-paths at build time.
-  for (const [key, _] of ADDON_MAP) {
-    if (key.startsWith(id + '@')) return __loadAddon(id, key.slice(id.length + 1))
-  }
-  return origRequire.call(this, id)
-}
+// Each native loader call in the bundle is rewritten by rollup-plugin-native-paths
+// to a direct __loadAddon invocation. Example transforms:
+//   require('node-gyp-build')(__dirname)          → __loadAddon('sodium-native', '5.2.1')
+//   require('bindings')({bindings: 'foo.node'})   → __loadAddon('better-sqlite3', '9.6.0')
+//   require.addon('.', __filename)                → __loadAddon('fs-native-extensions', '1.4.3')
+// Version is resolved from the module's package.json at rollup transform time,
+// so multi-version dep trees get the correct .so per callsite automatically.
 ```
 
 ### Options explicitly not chosen
 
+- **C (Module.prototype.require patch)**: harness validation confirmed C is
+  sufficient as a safety net, but for a fixed set of six known modules with
+  fully enumerated loader patterns, the rollup rewrite (A) handles every
+  callsite at build time. Carrying C speculatively adds a runtime interception
+  point that is harder to debug when load failures surface. Re-add if a future
+  addon introduces a loading pattern the rollup plugin cannot statically
+  transform.
 - **B (`require.extensions['.node']`)**: harness validation showed C does
-  everything B would do and catches more. Keeping the single interception point
-  (Module.prototype.require) is simpler than two. If we do hit a file-path load
-  that slips past both A and C, add B then — but don't add it speculatively.
+  everything B would do and catches more. Neither is used in the current
+  approach; both remain available as escalation options.
 - **D (`module.register`)**: unavailable on Node 18.20.4 (added in 20.6.0).
   Revisit when `nodejs-mobile` updates the underlying Node version, but even
   then it's not the right layer for native addon interception.
