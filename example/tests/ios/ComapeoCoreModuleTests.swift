@@ -13,7 +13,11 @@ import XCTest
 final class ComapeoCoreModuleTests: XCTestCase {
 
     func testModuleSocketPathMatchesServicePath() {
-        let servicePath = AppLifecycleDelegate.shared.nodeService.comapeoSocketPath
+        // Use the static accessor directly. Going through `.shared` would
+        // re-introduce the off-main-thread `@MainActor`-init regression if a
+        // future `async` test, `Task { }`, or `XCTContext.runActivity` block
+        // happened to evaluate this expression off the main thread.
+        let servicePath = AppLifecycleDelegate.nodeService.comapeoSocketPath
         XCTAssertEqual(
             ComapeoCoreModule.resolveSocketPath(),
             servicePath,

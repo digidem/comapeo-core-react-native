@@ -200,10 +200,14 @@ C++ layer between Kotlin and `libnode.so` (the embedded Node.js binary). Also re
 The Expo module entry point. On `OnCreate` it creates a `NodeJSIPC` pointed at the shared `NodeJSService`'s `comapeo.sock` and forwards `"message"` events to JavaScript. `Function("postMessage")` forwards calls to the IPC; `Function("getState")` reflects the service state; `"stateChange"` events are emitted from the shared `NodeJSService.onStateChange` callback.
 
 #### AppLifecycleDelegate (`AppLifecycleDelegate.swift`)
-An `ExpoAppDelegateSubscriber` that owns a **single static** `NodeJSService` (`_nodeService`). `NodeMobileStartNode` can only be called once per process, so the service must be a process-wide singleton — Expo creates a fresh module instance per-test, and tests also reference `AppLifecycleDelegate.shared.nodeService`, so the service is static to keep them pointing at the same instance. Lifecycle hooks:
-- `applicationDidBecomeActive` — `nodeService.start()` (guarded by `state == .stopped`, so subsequent foregrounds are no-ops).
+An `ExpoAppDelegateSubscriber` that owns a **single static** `NodeJSService` exposed as `AppLifecycleDelegate.nodeService`. `NodeMobileStartNode` can only be called once per process, so the service must be a process-wide singleton — Expo's autolinking instantiates its own delegate, every callsite that needs the service goes through the static, and a `#if DEBUG`-only `static let shared` exists for test code that needs to drive the lifecycle methods directly (e.g. invoking `applicationDidEnterBackground` from a regression test). The static is the API; the instance is incidental.
+
+Production callsites must access `AppLifecycleDelegate.nodeService` (the static), never `.shared.nodeService`. Lazy-initialising `.shared` from a non-main thread traps under Xcode 26 / Swift 6: the inherited `BaseExpoAppDelegateSubscriber.init()` derives from `UIResponder`, which is `@MainActor`-isolated, and Swift's runtime executor check (`_swift_task_checkIsolatedSwift`) SIGTRAPs when init runs off-main — exactly what `ComapeoCoreModule.OnCreate` does, since Expo runs it on the React Native JS thread. `.shared` stays gated to DEBUG so the surface area can't accidentally be reached from a release build.
+
+Lifecycle hooks:
+- `applicationDidBecomeActive` — `Self.nodeService.start()` (guarded by `state == .stopped`, so subsequent foregrounds are no-ops).
 - `applicationDidEnterBackground` — deliberately a **no-op**. Stopping on background would permanently break the app because we can't restart the Node.js runtime in the same process. iOS may suspend or terminate the app during long background windows, at which point the next launch is a fresh process.
-- `applicationWillTerminate` — synchronous `stop(timeout: 5)` as a final graceful-shutdown hook.
+- `applicationWillTerminate` — synchronous `Self.nodeService.stop(timeout: 5)` as a final graceful-shutdown hook.
 
 #### NodeJSService (`NodeJSService.swift`)
 Runs Node.js on a dedicated 2 MB-stack thread (required by nodejs-mobile). Responsibilities:

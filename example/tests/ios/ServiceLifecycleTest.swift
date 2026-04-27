@@ -20,7 +20,9 @@ import UIKit
 final class ServiceLifecycleTest: XCTestCase {
 
     private var service: NodeJSService {
-        AppLifecycleDelegate.shared.nodeService
+        // Static accessor — see ComapeoCoreModuleTests for why we avoid
+        // `AppLifecycleDelegate.shared` even from test code.
+        AppLifecycleDelegate.nodeService
     }
 
     /// Waits for the service to reach `.started`. Node may already be started

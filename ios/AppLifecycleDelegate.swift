@@ -10,17 +10,29 @@ import UIKit
 /// suspend or kill the process during long background windows, at which point
 /// the next foreground is a fresh process with a fresh single-use slot. The
 /// only graceful-shutdown hook is `applicationWillTerminate`.
+///
+/// The actual `NodeJSService` is held by the `static let nodeService` below.
+/// Expo's autolinking instantiates its own `AppLifecycleDelegate` for lifecycle
+/// callbacks, but every instance routes through that single static — so
+/// `NodeMobileStartNode`'s once-per-process constraint is preserved no matter
+/// how many delegate instances exist.
 public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
-    static let shared = AppLifecycleDelegate()
-
-    /// Single shared NodeJSService used by all AppLifecycleDelegate instances.
-    /// Expo's module system creates its own instance while tests access `shared`,
-    /// so the service must be static to avoid dual-instance conflicts
-    /// (NodeMobileStartNode can only be called once per process).
-    // Use /tmp for socket files to stay within the 104-byte sockaddr_un.sun_path
-    // limit. The app's Documents/tmp directory can exceed this on iOS simulators.
-    // On real iOS devices, /tmp is sandboxed to the app's container.
-    private static let _nodeService = NodeJSService(
+    /// Process-wide `NodeJSService`. Use this from any thread.
+    ///
+    /// Going through a delegate instance (e.g. via the DEBUG-only `shared`
+    /// below) would force lazy init of `AppLifecycleDelegate`; its superclass
+    /// `BaseExpoAppDelegateSubscriber` derives from `UIResponder`, which is
+    /// `@MainActor`-isolated under Xcode 26 / Swift 6. Initialising off-main
+    /// trips Swift's runtime executor check (SIGTRAP via
+    /// `_swift_task_checkIsolatedSwift`) — that's exactly what `OnCreate` in
+    /// `ComapeoCoreModule` does, since Expo runs it on the React Native JS
+    /// thread.
+    ///
+    /// Use `/tmp` for socket files so the path stays within the 104-byte
+    /// `sockaddr_un.sun_path` limit. The app's Documents/tmp directory can
+    /// exceed it on iOS Simulator runners; on a real iOS device, `/tmp` is
+    /// sandboxed to the app's container.
+    static let nodeService = NodeJSService(
         filesDir: "/tmp/comapeo",
         nodeEntryPoint: { arguments in
             let cStrings = arguments.map { strdup($0)! }
@@ -36,24 +48,22 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         }
     )
 
-    /// Static accessor for the shared service. Use this from any non-main-thread
-    /// context (e.g. inside `ComapeoCoreModule`'s `OnCreate`, which Expo runs on
-    /// the React Native JS thread). Going through `.shared` would force lazy
-    /// init of `AppLifecycleDelegate`, whose superclass `BaseExpoAppDelegateSubscriber`
-    /// is `@MainActor`-isolated in Expo 55 — Swift 6's runtime check then traps
-    /// (SIGTRAP via `_swift_task_checkIsolatedSwift`) when init runs off-main.
-    static var nodeService: NodeJSService { _nodeService }
-
-    /// Instance-level accessor kept for tests, which run on the main thread and
-    /// therefore can safely materialise `.shared` without tripping the actor
-    /// isolation check.
-    var nodeService: NodeJSService { Self._nodeService }
+    #if DEBUG
+    /// Test-only entry point. Test code occasionally needs an
+    /// `AppLifecycleDelegate` instance — e.g. to drive
+    /// `applicationDidEnterBackground(_:)` directly — and tests are reliably
+    /// invoked on the main thread, so the `@MainActor` isolation on the
+    /// inherited init doesn't trap. Production code never sees this symbol:
+    /// it's gated to DEBUG builds so the surface area can't accidentally
+    /// be reached from off-main paths in a release.
+    static let shared = AppLifecycleDelegate()
+    #endif
 
     public func applicationDidBecomeActive(_ application: UIApplication) {
         log("applicationDidBecomeActive")
         // Start is guarded by `state == .stopped`, so subsequent foreground
         // transitions in the same process are no-ops.
-        nodeService.start()
+        Self.nodeService.start()
     }
 
     public func applicationWillResignActive(_ application: UIApplication) {
@@ -73,6 +83,6 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         log("applicationWillTerminate — stopping Node.js")
         // Final graceful-shutdown hook. Synchronous with a short timeout
         // since termination is imminent.
-        nodeService.stop(timeout: 5)
+        Self.nodeService.stop(timeout: 5)
     }
 }
