@@ -13,6 +13,14 @@ The full plan in [`docs/build-architecture-plan.md`](./build-architecture-plan.m
 
 The "switch iOS to use the same JS bundle as Android" sentence in the task is exactly Phase 1 of the source plan, and the smoke test is the iOS half of Phase 3. Everything else from the source plan stays on the roadmap but is explicitly not touched here.
 
+**Simulator-only for Phase 1.** This branch ships iOS support for the simulator slices only (`arm64-simulator` for Apple Silicon hosts, `x86_64-simulator` for Intel hosts and CI runners). Device builds (`ios-arm64`) are deferred to Phase 2, when the xcframework packaging migration provides a single multi-slice artifact per addon. Reasons:
+
+- The smoke test runs on the simulator, so device slices are not on the critical path for the deliverable in this branch.
+- Loose `.node` files for both device and simulator in the same Resources bundle would force a runtime branch on `TARGET_OS_SIMULATOR` plus extraction logic that Phase 2 throws away.
+- iOS code-signing constraints (an embedded Mach-O without an xcframework wrapper) bite differently on device vs. simulator. Solving both at once duplicates work that the xcframework migration solves uniformly.
+
+A device build attempted against this branch will fail at link/launch time with a missing-arch error — that's the intended failure mode until Phase 2 lands. CI runs simulator only.
+
 ---
 
 ## 1. Current divergence (the actual starting point)
@@ -48,7 +56,8 @@ After this branch lands and merges:
 - An iOS XCTest (`CoreManagerSmokeTest.swift`) launches the example app, waits for the runtime to come up, and asserts that the JS-side `comapeo.listProjects()` returns successfully — proving the embedded `ComapeoManager` instantiated, drizzle migrations ran, and the RPC roundtrip works. This is the "creates a CoMapeo core manager instance" contract.
 - The pod-install `script_phase` that runs `npm install --omit=dev` in `ios/nodejs-project/` is deleted. Native deps in the unified bundle ship pre-installed in `nodejs-assets/`.
 - Native addons still extract from the resource bundle to a working dir at first launch (Phase 2 of the source plan replaces this with xcframeworks; not here).
-- iOS CI in `.github/workflows/ios-tests.yml` runs the new smoke test.
+- iOS CI in `.github/workflows/ios-tests.yml` runs the new smoke test on a simulator destination.
+- **Simulator-only.** The example app builds and runs on iOS simulators (Apple Silicon and Intel). Device builds intentionally fail until Phase 2 lands xcframework packaging that supplies the `ios-arm64` slice alongside the simulator ones.
 
 Non-goals (deliberately deferred):
 
@@ -70,7 +79,7 @@ Five steps; ~2–3 days of focused work. Each step ends in a runnable checkpoint
 
 1. Introduce an `IOS_ASSETS_DIR = ios/nodejs-project` constant alongside `ANDROID_ASSETS_DIR`. (Keep the existing path; just stop hand-editing it.)
 2. After the rollup + `KEEP_THESE_FROM_BACKEND` copy currently lands in `TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR`, add a second `cpSync` that copies that same directory into `IOS_ASSETS_DIR`. **This is the unification.** A single source dir, two destinations.
-3. Add `IOS_ARCHS = ["arm64", "arm64-simulator", "x64-simulator"] as const` and a parallel artifact-fetch loop. Use the same `digidem/<name>-nodejs-mobile` GH release pattern; output naming will be `${name}-${version}-ios-${arch}.tar.gz` (matches the existing per-module workflow). Land prebuilds in `ios/nodejs-native/<arch>/node_modules/<pkg>/prebuilds/...` to match Android's structure 1:1. (In Phase 2 of the source plan these will be wrapped into xcframeworks; for now loose `.node` files keep this branch tractable.)
+3. Add `IOS_ARCHS = ["arm64-simulator", "x64-simulator"] as const` (simulator-only — see §0) and a parallel artifact-fetch loop. Use the same `digidem/<name>-nodejs-mobile` GH release pattern; output naming will be `${name}-${version}-ios-${arch}.tar.gz` (matches the existing per-module workflow). Land prebuilds in `ios/nodejs-native/<arch>/node_modules/<pkg>/prebuilds/...` to match Android's structure 1:1. (In Phase 2 of the source plan these will be wrapped into xcframeworks alongside the device slice; for now loose simulator `.node` files keep this branch tractable.) The `ios-arm64` device slice is deliberately omitted — Phase 2 adds it.
 4. Mirror the better-sqlite3 special-case (writes to `node_modules/better-sqlite3/build/`).
 5. Delete `ios/nodejs-project/{package.json,package-lock.json,index.js,lib,types,tsconfig.json}` from git in the same commit. After this step the directory exists only as a build artifact.
 6. Add `ios/nodejs-project/` and `ios/nodejs-native/` to `.gitignore`.
@@ -201,7 +210,7 @@ This test has to run **before** `ServiceLifecycleTest`'s "graceful shutdown" pha
 
 3. **Once-per-process constraint vs. test ordering.** Step 3's smoke test must run before `ServiceLifecycleTest`'s shutdown phase. If alphabetic ordering is violated by a future test, the smoke test silently turns into a no-op (Node already exited). Belt-and-braces: either rename to ensure ordering, or add a precondition `XCTAssertEqual(service.state, .started)` so the failure is loud.
 
-4. **Native-prebuild URL mismatch for iOS.** The per-module GH release naming convention for iOS slices may not exactly match the assumption in Step 1.3. Before writing code, fetch one URL by hand for `sodium-native` to confirm. If the convention differs, treat it as a per-module-repo issue and unblock by tagging the missing release; do not paper over with arch-specific switch statements in `build-backend.ts`.
+4. **Native-prebuild URL mismatch for iOS.** The per-module GH release naming convention for iOS slices may not exactly match the assumption in Step 1.3. Before writing code, fetch one URL by hand for `sodium-native` to confirm — for both `arm64-simulator` and `x86_64-simulator`. If the convention differs, treat it as a per-module-repo issue and unblock by tagging the missing release; do not paper over with arch-specific switch statements in `build-backend.ts`. Device-slice (`ios-arm64`) availability is **not** required for Phase 1 — those releases can lag without blocking this branch.
 
 5. **Node 18 module-loading edge cases on iOS.** The Android side has been exercising the rolled-up bundle in production; iOS hasn't. Possible surfaces: ICU data path, TZ data, `process.platform === 'ios'` checks anywhere in `@comapeo/core`'s deps. None are known broken — flagging as the most likely source of "works on Android, doesn't on iOS" surprises during Step 2's checkpoint.
 
@@ -228,9 +237,10 @@ Each commit is individually buildable and reviewable; (4) is the load-bearing on
 ## 6. Acceptance criteria
 
 - [ ] `git ls-files ios/nodejs-project/` returns nothing (directory is purely generated).
-- [ ] `cd example && npm run test:ios` passes locally on macOS-15 with Xcode 26.
-- [ ] `.github/workflows/ios-tests.yml` integration job passes the new `CoreManagerSmokeTest`.
+- [ ] `cd example && npm run test:ios` passes locally on macOS-15 with Xcode 26 against a simulator destination.
+- [ ] `.github/workflows/ios-tests.yml` integration job passes the new `CoreManagerSmokeTest` on `iphonesimulator`.
 - [ ] `xxd android/src/main/assets/nodejs-project/index.mjs | head` and `xxd ios/nodejs-project/index.mjs | head` produce identical output.
-- [ ] Example app on iOS simulator: `comapeo.listProjects()` returns `[]` (not a hang, not an error).
+- [ ] Example app on iOS simulator (both `arm64-simulator` on Apple Silicon and `x86_64-simulator` on Intel/CI): `comapeo.listProjects()` returns `[]` (not a hang, not an error).
+- [ ] Device build (`-sdk iphoneos`) deliberately fails with a missing-arch error — confirms Phase 1 scoping is honest. (Phase 2 fixes this.)
 - [ ] `ios/ComapeoCore.podspec` no longer contains the `script_phase` block.
 - [ ] No new asset-extraction logic on iOS (modulo the targeted drizzle workaround if Risk §4.2 actually bites).
