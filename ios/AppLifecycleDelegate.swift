@@ -32,8 +32,15 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// `sockaddr_un.sun_path` limit. The app's Documents/tmp directory can
     /// exceed it on iOS Simulator runners; on a real iOS device, `/tmp` is
     /// sandboxed to the app's container.
+    ///
+    /// `privateStorageDir` is the analogue of Android's `getFilesDir()`: an
+    /// app-private writable directory that survives across process restarts
+    /// (and, on iOS, is excluded from iCloud backup by default for
+    /// Application Support). The embedded ComapeoManager opens its SQLite
+    /// database and writes blobs/projects under here.
     static let nodeService = NodeJSService(
         filesDir: "/tmp/comapeo",
+        privateStorageDir: Self.resolvePrivateStorageDir(),
         nodeEntryPoint: { arguments in
             let cStrings = arguments.map { strdup($0)! }
             defer { cStrings.forEach { free($0) } }
@@ -44,9 +51,29 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             }
         },
         resolveJSEntryPoint: {
-            Bundle.main.path(forResource: "index", ofType: "js", inDirectory: "nodejs-project")
+            // The unified backend bundle is ESM (`index.mjs`). Both Android
+            // and iOS resolve the same entry filename now — Android's
+            // NodeJSService.kt has used `index.mjs` since the rollup build
+            // landed; iOS catches up here.
+            Bundle.main.path(forResource: "index", ofType: "mjs", inDirectory: "nodejs-project")
         }
     )
+
+    /// Resolves the app-private writable directory passed to the backend as
+    /// `privateStorageDir`. Falls back to NSTemporaryDirectory only if
+    /// Application Support is somehow unavailable, which would indicate a
+    /// broken sandbox — we'd rather start in a degraded state and surface
+    /// the failure later than crash on launch.
+    private static func resolvePrivateStorageDir() -> String {
+        let fm = FileManager.default
+        let base = (try? fm.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )) ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return base.appendingPathComponent("comapeo", isDirectory: true).path
+    }
 
     #if DEBUG
     /// Test-only entry point. Test code occasionally needs an

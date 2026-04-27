@@ -38,8 +38,9 @@ final class ComapeoCoreModuleTests: XCTestCase {
         let mockEntry: NodeJSService.NodeEntryPoint = { _ in semaphore.wait(); return 0 }
         let service = NodeJSService(
             filesDir: testDir,
+            privateStorageDir: (testDir as NSString).appendingPathComponent("private-storage"),
             nodeEntryPoint: mockEntry,
-            resolveJSEntryPoint: { "/fake/index.js" }
+            resolveJSEntryPoint: { "/fake/index.mjs" }
         )
 
         let started = expectation(description: "mock service reached .started")

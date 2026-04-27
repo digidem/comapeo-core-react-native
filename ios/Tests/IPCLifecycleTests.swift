@@ -55,10 +55,10 @@ final class IPCLifecycleTests: XCTestCase {
         waitForExpectations(timeout: 5)
 
         // Create mock servers after start() so deleteSocketFiles() doesn't remove them.
-        // The stateIPC is already polling via waitForFile(), so it will connect once
+        // The controlIPC is already polling via waitForFile(), so it will connect once
         // the server creates the socket file.
         let comapeoServer = MockNodeServer(socketPath: service.comapeoSocketPath)
-        let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
+        let stateServer = MockNodeServer(socketPath: service.controlSocketPath)
         try comapeoServer.start()
         try stateServer.start()
         defer {
@@ -117,7 +117,7 @@ final class IPCLifecycleTests: XCTestCase {
         service.start()
         waitForExpectations(timeout: 5)
 
-        let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
+        let stateServer = MockNodeServer(socketPath: service.controlSocketPath)
         try stateServer.start()
         defer { stateServer.stop() }
 
@@ -156,7 +156,7 @@ final class IPCLifecycleTests: XCTestCase {
         waitForExpectations(timeout: 5)
 
         let comapeoServer = MockNodeServer(socketPath: service.comapeoSocketPath)
-        let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
+        let stateServer = MockNodeServer(socketPath: service.controlSocketPath)
         try comapeoServer.start()
         try stateServer.start()
         defer {
