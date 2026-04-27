@@ -16,6 +16,10 @@ const $$ = $({ stdio: "inherit" });
 const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BACKEND_SRC_DIR = join(PROJECT_ROOT, "backend");
 const ANDROID_ASSETS_DIR = join(PROJECT_ROOT, "android/src/main/assets");
+// iOS Phase 1 ships simulator-only. Device support arrives with the
+// xcframework migration in Phase 2. See docs/unified-js-bundle-ios-plan.md.
+const IOS_NODEJS_PROJECT_DIR = join(PROJECT_ROOT, "ios/nodejs-project");
+const IOS_NODEJS_NATIVE_DIR = join(PROJECT_ROOT, "ios/nodejs-native");
 const TEMP_NODEJS_ASSETS_DIR = join(PROJECT_ROOT, "nodejs-assets");
 
 const TEMP_NODEJS_ASSETS_BACKEND_DIR = join(TEMP_NODEJS_ASSETS_DIR, "backend");
@@ -107,6 +111,15 @@ for (const name of KEEP_THESE_FROM_BACKEND) {
 rmSync(TEMP_NODEJS_NATIVE_ASSETS_DIR, { force: true, recursive: true });
 
 const ANDROID_ARCHS = ["arm", "arm64", "x64"] as const;
+// Simulator-only for Phase 1. Device slice (`arm64`) is added in Phase 2 when
+// xcframework packaging gives us a single multi-slice artifact per addon.
+const IOS_ARCHS = ["arm64-simulator", "x64-simulator"] as const;
+
+/** target = `${platform}-${arch}` (e.g. "android-arm64", "ios-arm64-simulator") */
+const PREBUILD_TARGETS = [
+  ...ANDROID_ARCHS.map((arch) => ({ platform: "android" as const, arch })),
+  ...IOS_ARCHS.map((arch) => ({ platform: "ios" as const, arch })),
+];
 
 await Promise.all(
   NATIVE_MODULES.map(async ({ name, usesNapi }) => {
@@ -129,14 +142,15 @@ await Promise.all(
     rmSync(prebuildsDir, { recursive: true, force: true });
 
     await Promise.all(
-      ANDROID_ARCHS.map(async (arch) => {
-        const targetDir = join(prebuildsDir, `android-${arch}`);
+      PREBUILD_TARGETS.map(async ({ platform, arch }) => {
+        const targetDir = join(prebuildsDir, `${platform}-${arch}`);
 
         mkdirSync(targetDir, { recursive: true });
 
         const artifactInfo = getArtifactInfo({
           name,
           version,
+          platform,
           arch,
           nodeAbi: usesNapi ? undefined : NODE_ABI,
         });
@@ -176,12 +190,26 @@ cpSync(
   { force: true, recursive: true },
 );
 
+// Copy bundled backend into the iOS resources tree as well — same source dir,
+// two destinations. This is the unified-bundle deliverable: a single rolled-up
+// `index.mjs` (plus KEEP_THESE_FROM_BACKEND) drives both platforms.
+
+rmSync(IOS_NODEJS_PROJECT_DIR, { force: true, recursive: true });
+
+cpSync(TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR, IOS_NODEJS_PROJECT_DIR, {
+  force: true,
+  recursive: true,
+});
+
 // Copy native prebuilds into assets
 
 const ANDROID_NATIVE_ASSETS_DIR = join(ANDROID_ASSETS_DIR, "nodejs-native");
 
 rmSync(ANDROID_NATIVE_ASSETS_DIR, { force: true, recursive: true });
 mkdirSync(ANDROID_NATIVE_ASSETS_DIR, { recursive: true });
+
+rmSync(IOS_NODEJS_NATIVE_DIR, { force: true, recursive: true });
+mkdirSync(IOS_NODEJS_NATIVE_DIR, { recursive: true });
 
 await Promise.all(
   ANDROID_ARCHS.map(async (arch) => {
@@ -232,6 +260,41 @@ await Promise.all(
   }),
 );
 
+// iOS prebuild placement. Same source tree as Android (`PREBUILD_TARGETS`
+// fetched both platforms in one pass above); the layout under
+// `ios/nodejs-native/<arch>/` mirrors `android/.../nodejs-native/<abi>/` 1:1
+// so the resource extraction code on each platform speaks the same shape.
+//
+// Phase 2 of the source plan replaces this with `<name>@<version>.xcframework`
+// embedded via Xcode's Embed & Sign phase. For Phase 1 the loose `.node`
+// files ship inside the `ios/nodejs-native` resource bundle directory and are
+// extracted at first launch alongside `nodejs-project/`.
+await Promise.all(
+  IOS_ARCHS.map(async (arch) => {
+    const nodeFiles = await Array.fromAsync(
+      glob(`node_modules/**/ios-${arch}/**/*.node`, {
+        cwd: TEMP_NODEJS_NATIVE_ASSETS_DIR,
+      }),
+    );
+
+    for (const entry of nodeFiles) {
+      const nativeTargetDir = entry.startsWith("node_modules/better-sqlite3/")
+        ? join(
+            IOS_NODEJS_NATIVE_DIR,
+            arch,
+            "node_modules/better-sqlite3/build",
+            basename(entry),
+          )
+        : join(IOS_NODEJS_NATIVE_DIR, arch, entry);
+
+      await cp(join(TEMP_NODEJS_NATIVE_ASSETS_DIR, entry), nativeTargetDir, {
+        force: true,
+        recursive: true,
+      });
+    }
+  }),
+);
+
 // ------------------------------------------------
 // Helpers
 // ------------------------------------------------
@@ -254,24 +317,26 @@ function getNodeJsMobileNodeVersions() {
 function getArtifactInfo({
   name,
   version,
+  platform,
   arch,
   nodeAbi,
 }: {
   name: string;
   version: string;
+  platform: "android" | "ios";
   arch: string;
   nodeAbi?: string;
 }) {
   const assetName = nodeAbi
-    ? `${name}-${version}-node-${nodeAbi}-android-${arch}.tar.gz`
-    : `${name}-${version}-android-${arch}.tar.gz`;
+    ? `${name}-${version}-node-${nodeAbi}-${platform}-${arch}.tar.gz`
+    : `${name}-${version}-${platform}-${arch}.tar.gz`;
 
   const ghReleaseName =
     // For better-sqlite3, we need to use the release built with bare-make
     name === "better-sqlite3" ? `${version}-bare-make` : version;
 
   return {
-    name,
+    name: assetName,
     url: `https://github.com/digidem/${name}-nodejs-mobile/releases/download/${ghReleaseName}/${assetName}`,
   };
 }
