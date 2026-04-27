@@ -44,6 +44,10 @@ Pod::Spec.new do |s|
   # This also ensures node_modules exists for subsequent `pod install` runs.
   # Skipped when node_modules already exists so incremental builds don't pay
   # npm's startup cost on every compile.
+  # TODO: revisit this script_phase once the iOS/Android nodejs-project sync
+  # follow-up lands. With a single source of truth + a generation step that
+  # handles npm install, this can move out of the podspec entirely (or shift
+  # to a `prepare_command` if the new flow guarantees ordering).
   s.script_phase = {
     :name => 'Install Node.js Project Dependencies',
     :script => <<~SCRIPT,

@@ -21,7 +21,7 @@ final class ComapeoCoreModuleTests: XCTestCase {
         )
     }
 
-    func testStateStringReflectsServiceState() {
+    func testStateStringDerivesFromServiceArgumentNotIPC() {
         // Drive a mock service to `.started`. With `ipc: nil` passed in, any
         // correct implementation must derive the string from the service state
         // (matching what the `stateChange` event emits).

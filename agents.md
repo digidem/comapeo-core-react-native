@@ -118,12 +118,14 @@ Messages are framed with a **4-byte little-endian length prefix** followed by a 
 │   ├── tests/                     # Source-of-truth test files (copied into prebuilt projects)
 │   │   ├── android/               #   ServiceLifecycleTest.kt, ShutdownPathTest.kt, WaitForFileTest.kt
 │   │   └── ios/                   #   ComapeoCoreModuleTests.swift, ServiceLifecycleTest.swift
-│   └── plugins/
-│       ├── with-ios-tests/        # Config plugin — injects iOS test target at prebuild
-│       │   ├── index.js           #   Copies ../../tests/ios/*.swift, patches Podfile
+│   └── plugins/                   # Example-app-only Expo config plugins.
+│       │                          # NOT shipped to consumers of @comapeo/core-react-native;
+│       │                          # they exist purely to re-inject the example app's test
+│       │                          # target every time `expo prebuild` regenerates example/ios|android/.
+│       ├── with-ios-tests/        # Injects iOS test target at prebuild
+│       │   ├── index.js           #   Copies ../../tests/ios/*.swift, idempotently patches Podfile via mergeContents
 │       │   └── add-test-target.rb #   Adds the test target to the Xcode project
-│       └── with-android-tests/    # Config plugin — injects androidTest sources + deps
-│           └── index.js           #   Copies ../../tests/android/*.kt into prebuilt android/
+│       └── with-android-tests/    # Injects androidTest sources + deps via mergeContents
 │
 ├── docs/
 │   ├── Todos.md                   # Implementation TODO list
@@ -285,15 +287,16 @@ Two test layers, two CI jobs:
 | Example app tests (real Node.js) | `xcodebuild test` on the example workspace | `example/tests/ios/` | `integration-tests` CI job — iOS Simulator, requires `NodeMobile.xcframework` |
 | CI workflow | `.github/workflows/ios-tests.yml` | | |
 
-The example-app test target isn't checked into `example/ios/` — it's injected at Expo prebuild time by the `with-ios-tests` config plugin (`example/plugins/with-ios-tests/`), which copies the Swift sources from `example/tests/ios/` into the prebuilt Xcode project, patches the `Podfile`, and registers a new target via a Ruby script. This keeps the test sources under version control without committing the generated Xcode project.
+The example-app test target isn't checked into `example/ios/` — it's injected at Expo prebuild time by the `with-ios-tests` config plugin (`example/plugins/with-ios-tests/`), which copies the Swift sources from `example/tests/ios/` into the prebuilt Xcode project, idempotently injects a CocoaPods test target into the `Podfile` via `mergeContents` (`# @generated begin/end with-ios-tests:test-target`), and registers the test target in the Xcode project via a Ruby script using the `xcodeproj` gem. This keeps the test sources under version control without committing the generated Xcode project.
+
+**Important:** this plugin is internal to the example app — it is not part of the public surface of `@comapeo/core-react-native`. Module consumers do not import or register it; they configure their own test setup as they see fit. The Podfile mutation goes against Expo's general guidance ("don't modify the Podfile from a config plugin") because there's no first-class Expo mod for adding CocoaPods test targets — see the discussion in PR #6 review for the full reasoning.
 
 #### Swift Package tests (`ios/Tests/`)
 
-The `ComapeoCore` Swift Package target (`ios/Package.swift`) compiles only the UIKit-free files (`NodeJSIPC`, `NodeJSService`, `Log`), so the whole test suite runs on macOS via `swift test` — no simulator, no code signing, no NodeMobile. One run is ~1.7s and about 46 tests.
+The `ComapeoCore` Swift Package target (`ios/Package.swift`) compiles only the UIKit-free files (`NodeJSIPC`, `NodeJSService`, `Log`), so the whole test suite runs on macOS via `swift test` — no simulator, no code signing, no NodeMobile. The full run is a few seconds.
 
-- `MessageFramingTests` — pure framing-protocol unit tests, no sockets.
 - `WatchForFileTests` — tests the `waitForFile` helper directly.
-- `NodeJSIPCTests` — connects `NodeJSIPC` to a real Unix domain socket via `MockNodeServer`.
+- `NodeJSIPCTests` — connects `NodeJSIPC` to a real Unix domain socket via `MockNodeServer`. Covers framing, pre-connect buffering, partial-write handling, error-state recovery, and concurrent shutdown.
 - `NodeJSServiceTests` — drives `NodeJSService` with a mock `NodeEntryPoint` that blocks on a `DispatchSemaphore` until signalled, simulating the node runtime without calling `NodeMobileStartNode`.
 - `IPCLifecycleTests` — wires `NodeJSService` + `NodeJSIPC` + `MockNodeServer` for end-to-end mocked lifecycle scenarios.
 

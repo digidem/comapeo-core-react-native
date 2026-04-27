@@ -62,6 +62,19 @@ class NodeJSService {
         self.comapeoSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
         self.stateSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.stateSocketFilename)
 
+        // Fail loudly if either socket path won't fit in sockaddr_un.sun_path
+        // (104 bytes on Darwin, including the null terminator). A silently
+        // truncated path causes bind() to succeed against a different file —
+        // surfacing later as a mysterious connection-refused or hang.
+        let sunPathMax = 104
+        for path in [comapeoSocketPath, stateSocketPath] {
+            let needed = path.utf8.count + 1
+            precondition(
+                needed <= sunPathMax,
+                "Socket path too long for sockaddr_un.sun_path (\(needed) > \(sunPathMax)): \(path)"
+            )
+        }
+
         self.nodeEntryPoint = nodeEntryPoint
         self.resolveJSEntryPoint = resolveJSEntryPoint
 

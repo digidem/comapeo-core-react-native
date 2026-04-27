@@ -329,6 +329,12 @@ final class NodeJSServiceTests: XCTestCase {
     /// state to `.stopped` would allow `start()` to be called again, violating
     /// nodejs-mobile's once-per-process constraint. The service must transition to
     /// `.error` instead.
+    ///
+    /// Incidentally exercises the state-IPC-still-connecting path: the mock service
+    /// has no real state socket server, so `stateIPC` never connects. The shutdown
+    /// frame `stop()` sends via `sendMessageSync` lands in the IPC's pre-connect
+    /// pending list rather than reaching a peer — that's the actual production
+    /// failure mode this test guards against.
     func testStopTimeoutTransitionsToErrorNotStopped() {
         let (service, _) = makeTestService()
         let startedExpectation = expectation(description: "Started")
@@ -344,6 +350,33 @@ final class NodeJSServiceTests: XCTestCase {
         XCTAssertEqual(
             service.state, .error,
             "A timed-out stop must transition to .error, not .stopped — the node thread is still alive"
+        )
+    }
+
+    /// Specifically targets the rapid-start-stop race. `start()` is synchronous,
+    /// but the runNode thread's transition to `.started` and the state IPC's
+    /// async connect both schedule on background queues. A `stop()` call dispatched
+    /// immediately after `start()` lands somewhere in `.starting` or early
+    /// `.started`, with the state IPC almost certainly still in `.connecting`.
+    /// The service must dispose cleanly — no crash, no hang — and end up in
+    /// `.error` (since the mock entry never exits).
+    func testRapidStopAfterStartIsSafe() {
+        let (service, _) = makeTestService()
+
+        let stopReturned = expectation(description: "stop returned")
+        service.start()
+        DispatchQueue.global().async {
+            // Tiny head-start to vary the race window a bit; without it, stop
+            // often runs before runNode has even scheduled.
+            usleep(200) // 0.2 ms
+            service.stop(timeout: 0.2)
+            stopReturned.fulfill()
+        }
+        wait(for: [stopReturned], timeout: 5)
+
+        XCTAssertEqual(
+            service.state, .error,
+            "rapid stop after start must dispose cleanly and land in .error; got \(service.state)"
         )
     }
 

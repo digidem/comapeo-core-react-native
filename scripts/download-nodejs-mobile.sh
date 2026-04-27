@@ -16,147 +16,86 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Parse arguments
 PLATFORM="all"
 VERSION=""
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --platform)
-      PLATFORM="${2:-all}"
-      shift 2
-      ;;
-    *)
-      VERSION="$1"
-      shift
-      ;;
+    --platform) PLATFORM="${2:-all}"; shift 2 ;;
+    *)          VERSION="$1"; shift ;;
   esac
 done
 
 VERSION="${VERSION:-${NODEJS_MOBILE_VERSION:-v18.20.4}}"
-
-# Normalize version tag
 TAG="$VERSION"
 [[ "$TAG" != v* ]] && TAG="v$TAG"
 FILE_VERSION="${TAG#v}"
-
 BASE_URL="https://github.com/nodejs-mobile/nodejs-mobile/releases/download/${TAG}"
 
-download_android() {
-  local LIBNODE_DIR="$PROJECT_ROOT/android/libnode"
-  local MARKER_FILE="$LIBNODE_DIR/.version"
-  local DOWNLOAD_URL="${BASE_URL}/nodejs-mobile-v${FILE_VERSION}-android.zip"
-  local ZIP_FILE="/tmp/nodejs-mobile-android-${FILE_VERSION}.zip"
+# Downloads and extracts a release zip into the project tree.
+#
+# Args: name target_dir extract_into verify_file [exclude_pattern]
+#   name             — "android" or "ios" (matches the URL slug + zip filename).
+#   target_dir       — final destination; holds the .version marker.
+#   extract_into     — where `unzip` writes. The two release zips have different
+#                      layouts: the Android zip's top level is loose (`bin/`,
+#                      `include/`) so we extract directly into `target_dir`;
+#                      the iOS zip wraps its contents in `NodeMobile.xcframework/`
+#                      so we extract into the parent and the wrapper becomes
+#                      `target_dir`.
+#   verify_file      — relative path under `target_dir` that must exist post-extract.
+#   exclude_pattern  — optional `-x` pattern. The iOS zip also ships node-side
+#                      headers under top-level `include/` that we don't need
+#                      (the NodeMobile framework provides its own headers via
+#                      its module.modulemap). Exclude them so the extra dir
+#                      doesn't pollute the source tree.
+download() {
+  local name="$1" target="$2" extract_into="$3" verify="$4" exclude="${5:-}"
+  local marker="$target/.version"
 
-  echo "==> Android: nodejs-mobile ${TAG}"
-
-  # Skip if already extracted with correct version
-  if [ -f "$MARKER_FILE" ] && [ "$(cat "$MARKER_FILE")" = "$TAG" ]; then
-    echo "    Already downloaded (${TAG}). Skipping."
+  if [ -f "$marker" ] && [ "$(cat "$marker")" = "$TAG" ]; then
+    echo "==> $name: already $TAG, skipping"
     return
   fi
 
-  # Download
-  if [ -f "$ZIP_FILE" ]; then
-    echo "    Using cached zip: $ZIP_FILE"
+  local zip="/tmp/nodejs-mobile-${name}-${FILE_VERSION}.zip"
+  if [ -f "$zip" ]; then
+    echo "==> $name: using cached $zip"
   else
-    echo "    Downloading: $DOWNLOAD_URL"
-    curl -fSL --retry 3 --retry-delay 5 -o "$ZIP_FILE" "$DOWNLOAD_URL"
+    echo "==> $name: downloading $TAG"
+    curl -fSL --retry 3 --retry-delay 5 \
+      -o "$zip" \
+      "${BASE_URL}/nodejs-mobile-v${FILE_VERSION}-${name}.zip"
   fi
 
-  # Extract
-  echo "    Extracting to $LIBNODE_DIR..."
-  rm -rf "$LIBNODE_DIR"
-  mkdir -p "$LIBNODE_DIR"
-  unzip -q "$ZIP_FILE" -d "$LIBNODE_DIR"
+  rm -rf "$target"
+  mkdir -p "$extract_into"
+  if [ -n "$exclude" ]; then
+    unzip -q "$zip" -d "$extract_into" -x "$exclude"
+  else
+    unzip -q "$zip" -d "$extract_into"
+  fi
 
-  # Verify expected structure
-  for abi in arm64-v8a armeabi-v7a x86_64; do
-    if [ ! -f "$LIBNODE_DIR/bin/$abi/libnode.so" ]; then
-      echo "Error: Expected $LIBNODE_DIR/bin/$abi/libnode.so not found"
-      exit 1
-    fi
-  done
-
-  if [ ! -f "$LIBNODE_DIR/include/node/node.h" ]; then
-    echo "Error: Expected $LIBNODE_DIR/include/node/node.h not found"
+  if [ ! -e "$target/$verify" ]; then
+    echo "Error: expected $target/$verify after extract" >&2
     exit 1
   fi
 
-  echo "$TAG" > "$MARKER_FILE"
-  echo "    Android binaries ready (ABIs: arm64-v8a, armeabi-v7a, x86_64)"
+  echo "$TAG" > "$marker"
+  echo "==> $name: $TAG ready"
 }
 
-download_ios() {
-  local XCFRAMEWORK_DIR="$PROJECT_ROOT/ios/NodeMobile.xcframework"
-  local MARKER_FILE="$XCFRAMEWORK_DIR/.version"
-  local DOWNLOAD_URL="${BASE_URL}/nodejs-mobile-v${FILE_VERSION}-ios.zip"
-  local ZIP_FILE="/tmp/nodejs-mobile-ios-${FILE_VERSION}.zip"
-
-  echo "==> iOS: nodejs-mobile ${TAG}"
-
-  # Skip if already extracted with correct version
-  if [ -f "$MARKER_FILE" ] && [ "$(cat "$MARKER_FILE")" = "$TAG" ]; then
-    echo "    Already downloaded (${TAG}). Skipping."
-    return
-  fi
-
-  # Download
-  if [ -f "$ZIP_FILE" ]; then
-    echo "    Using cached zip: $ZIP_FILE"
-  else
-    echo "    Downloading: $DOWNLOAD_URL"
-    curl -fSL --retry 3 --retry-delay 5 -o "$ZIP_FILE" "$DOWNLOAD_URL"
-  fi
-
-  # Extract — the zip contains a NodeMobile.xcframework directory at the top level
-  echo "    Extracting to $XCFRAMEWORK_DIR..."
-  rm -rf "$XCFRAMEWORK_DIR"
-  mkdir -p "$PROJECT_ROOT/ios"
-
-  # Extract to a temp dir first to handle the top-level directory in the zip
-  local TEMP_DIR
-  TEMP_DIR="$(mktemp -d)"
-  unzip -q "$ZIP_FILE" -d "$TEMP_DIR"
-
-  # The zip may contain NodeMobile.xcframework/ at top level or the contents directly
-  if [ -d "$TEMP_DIR/NodeMobile.xcframework" ]; then
-    mv "$TEMP_DIR/NodeMobile.xcframework" "$XCFRAMEWORK_DIR"
-  else
-    mv "$TEMP_DIR" "$XCFRAMEWORK_DIR"
-  fi
-  rm -rf "$TEMP_DIR"
-
-  # Verify expected structure
-  for lib_id in ios-arm64 ios-arm64_x86_64-simulator; do
-    if [ ! -f "$XCFRAMEWORK_DIR/$lib_id/NodeMobile.framework/NodeMobile" ]; then
-      echo "Error: Expected $XCFRAMEWORK_DIR/$lib_id/NodeMobile.framework/NodeMobile not found"
-      exit 1
-    fi
-  done
-
-  if [ ! -f "$XCFRAMEWORK_DIR/Info.plist" ]; then
-    echo "Error: Expected $XCFRAMEWORK_DIR/Info.plist not found"
-    exit 1
-  fi
-
-  echo "$TAG" > "$MARKER_FILE"
-  echo "    iOS xcframework ready (device + simulator)"
-}
+ANDROID_TARGET="$PROJECT_ROOT/android/libnode"
+IOS_TARGET="$PROJECT_ROOT/ios/NodeMobile.xcframework"
 
 case "$PLATFORM" in
-  android)
-    download_android
-    ;;
-  ios)
-    download_ios
-    ;;
+  android) download android "$ANDROID_TARGET" "$ANDROID_TARGET"   "include/node/node.h" ;;
+  ios)     download ios     "$IOS_TARGET"     "$PROJECT_ROOT/ios" "Info.plist" "include/*" ;;
   all)
-    download_android
-    download_ios
+    download android "$ANDROID_TARGET" "$ANDROID_TARGET"   "include/node/node.h"
+    download ios     "$IOS_TARGET"     "$PROJECT_ROOT/ios" "Info.plist" "include/*"
     ;;
   *)
-    echo "Error: Unknown platform '$PLATFORM'. Use: android, ios, or all"
+    echo "Error: unknown platform '$PLATFORM'. Use: android, ios, or all" >&2
     exit 1
     ;;
 esac

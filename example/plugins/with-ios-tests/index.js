@@ -1,7 +1,22 @@
+// Example-app-only Expo config plugin. NOT part of the public
+// @comapeo/core-react-native API. Consumers of this module never see this
+// plugin — it lives under example/plugins/ purely so that the example app
+// (which doubles as our integration-test harness) can re-inject its test
+// target every time `expo prebuild` regenerates example/ios/.
+//
+// Mirrors the structure of with-android-tests, which uses the official
+// @expo/config-plugins `withAppBuildGradle` + `mergeContents` machinery.
+// There is no equivalent first-class mod for the Podfile (Expo deliberately
+// does not expose one — the Podfile is Ruby and not safely parsable), so we
+// fall back to `withDangerousMod` and use the same `mergeContents` utility
+// to inject our target stanza idempotently with a tagged marker comment.
 const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 const { withDangerousMod } = require('@expo/config-plugins');
+const {
+  mergeContents,
+} = require('@expo/config-plugins/build/utils/generateCode');
 
 const APP_TARGET_NAME = 'corereactnativeexample';
 const TEST_TARGET_NAME = 'corereactnativeexampleTests';
@@ -48,23 +63,29 @@ function copyTestSources(pluginDir, sourceDir, iosDir) {
 
 function patchPodfile(iosDir) {
   const podfilePath = path.join(iosDir, 'Podfile');
-  let podfile = fs.readFileSync(podfilePath, 'utf8');
-  if (podfile.includes(`target '${TEST_TARGET_NAME}'`)) return;
+  const podfile = fs.readFileSync(podfilePath, 'utf8');
 
-  const subTarget = `
-  target '${TEST_TARGET_NAME}' do
+  const targetBlock = `  target '${TEST_TARGET_NAME}' do
     inherit! :search_paths
-  end
-`;
+  end`;
 
-  const anchor = /^(\s*)post_install do \|installer\|/m;
-  if (!anchor.test(podfile)) {
-    throw new Error(
-      "with-ios-tests: couldn't find `post_install` in Podfile — prebuild template changed?",
-    );
+  // mergeContents handles the "already merged" case via the tag marker:
+  // `# @generated begin with-ios-tests:test-target ...` / `# @generated end`.
+  // Re-running prebuild after the block is in place returns didMerge: false
+  // and we skip the write. A missing anchor throws ERR_NO_MATCH from inside
+  // mergeContents — let that propagate; the message points at the regex.
+  const result = mergeContents({
+    tag: 'with-ios-tests:test-target',
+    src: podfile,
+    newSrc: targetBlock,
+    anchor: /^(\s*)post_install do \|installer\|/m,
+    offset: 0,
+    comment: '#',
+  });
+
+  if (result.didMerge) {
+    fs.writeFileSync(podfilePath, result.contents);
   }
-  podfile = podfile.replace(anchor, `${subTarget}$&`);
-  fs.writeFileSync(podfilePath, podfile);
 }
 
 function runAddTestTargetScript(pluginDir, iosDir) {

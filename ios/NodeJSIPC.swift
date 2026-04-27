@@ -194,6 +194,11 @@ class NodeJSIPC {
             case .connecting, .disconnected:
                 // Defer until connection completes. performConnect() will
                 // flush the pending list in order on success.
+                // TODO: bound `pendingMessages` growth. A hot-loop sender
+                // pre-connect can grow this without limit. Today the only
+                // producer is the bundled JS bridge, which makes the risk
+                // theoretical, but matching Android's `Channel.UNLIMITED`
+                // is parity-by-coincidence rather than a deliberate choice.
                 lock.lock()
                 pendingMessages.append(message)
                 lock.unlock()
@@ -293,6 +298,10 @@ class NodeJSIPC {
             UInt32(lengthBuffer[3]) << 24
         )
 
+        // TODO: cap `messageLength` to a sanity bound. A corrupt/hostile
+        // length prefix (up to 4 GiB) becomes an immediate allocation here.
+        // The peer is the bundled Node.js process so this is a robustness
+        // concern, not a security one — Android also runs uncapped today.
         // Read message body
         var messageBuffer = [UInt8](repeating: 0, count: messageLength)
         try readFully(fd: fd, buffer: &messageBuffer, count: messageLength)

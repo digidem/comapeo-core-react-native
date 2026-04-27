@@ -210,6 +210,42 @@ final class NodeJSIPCTests: XCTestCase {
         ipc.disconnect()
     }
 
+    /// Unicode round-trip — exercises the production framing path against a
+    /// payload whose UTF-8 byte-length differs from its character count. A
+    /// length-prefix bug that confused bytes for chars would over- or
+    /// under-allocate the receive buffer and corrupt the message.
+    func testRoundTripUnicodeMessage() throws {
+        let server = try startServer(name: "unicode.sock")
+        defer { server.stop() }
+
+        let echoReceived = expectation(description: "Unicode echo received")
+        let testMessage = #"{"name":"日本語テスト","emoji":"🗺️"}"#
+
+        let ipc = NodeJSIPC(socketPath: server.socketPath) { message in
+            XCTAssertEqual(message, testMessage)
+            echoReceived.fulfill()
+        }
+
+        let doneWithServer = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            let clientFd = server.acceptClient()
+            guard clientFd >= 0 else { return }
+            defer { close(clientFd) }
+
+            if let received = MockNodeServer.receiveFramedMessage(fd: clientFd) {
+                MockNodeServer.sendFramedMessage(fd: clientFd, message: received)
+            }
+            doneWithServer.wait()
+        }
+
+        waitUntil("IPC should reach .connected before send", ipc.state == .connected)
+        ipc.sendMessage(testMessage)
+
+        waitForExpectations(timeout: 5)
+        doneWithServer.signal()
+        ipc.disconnect()
+    }
+
     func testMultipleMessages() throws {
         let server = try startServer(name: "multi.sock")
         defer { server.stop() }
@@ -419,6 +455,27 @@ final class NodeJSIPCTests: XCTestCase {
         XCTAssertEqual(
             ipc.state, .connecting,
             "connect() from .error must synchronously set state to .connecting"
+        )
+    }
+
+    /// `disconnect()` from `.error` must transition cleanly to `.disconnected`.
+    /// This path differs from `.connected → .disconnected` because there is no
+    /// open fd to shut down and no receive worker to join — the state machine
+    /// must still settle correctly.
+    func testDisconnectFromErrorState() throws {
+        let socketPath = (testDir as NSString).appendingPathComponent("error-then-disconnect.sock")
+        FileManager.default.createFile(atPath: socketPath, contents: nil)
+
+        let ipc = NodeJSIPC(socketPath: socketPath) { _ in }
+
+        waitUntil(timeout: 10, "IPC should reach .error after failed connect", {
+            if case .error = ipc.state { return true } else { return false }
+        }())
+
+        ipc.disconnect()
+        XCTAssertEqual(
+            ipc.state, .disconnected,
+            "disconnect() from .error must transition to .disconnected"
         )
     }
 
