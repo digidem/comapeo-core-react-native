@@ -1,6 +1,6 @@
 import XCTest
 import UIKit
-@testable import ComapeoCore
+@testable internal import ComapeoCore
 
 /// Integration test for NodeJSService against the real Node.js runtime.
 ///

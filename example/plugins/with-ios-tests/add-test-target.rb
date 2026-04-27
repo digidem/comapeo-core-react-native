@@ -35,7 +35,13 @@ unless project.targets.any? { |t| t.name == test_name }
     bs['BUNDLE_LOADER']               = '$(TEST_HOST)'
     bs['PRODUCT_BUNDLE_IDENTIFIER']   = test_bundle_id
     bs['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
-    bs['SWIFT_VERSION']               = '5.0'
+    # Swift 5.9 minimum: the auto-generated Pods-corereactnativeexampleTests
+    # ExpoModulesProvider.swift uses Swift 5.9+'s `internal import X`
+    # access-level-on-import syntax (SE-0409). Compiling the test target
+    # in Swift 5.0 mode triggers "ambiguous implicit access level" errors
+    # against our `@testable import ComapeoCore` because the two imports
+    # disagree on whether the access level is explicit or implicit.
+    bs['SWIFT_VERSION']               = '5.9'
     bs['CLANG_ENABLE_MODULES']        = 'YES'
   end
 

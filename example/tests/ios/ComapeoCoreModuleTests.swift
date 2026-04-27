@@ -1,5 +1,5 @@
 import XCTest
-@testable import ComapeoCore
+@testable internal import ComapeoCore
 
 /// Unit tests for the `ComapeoCoreModule` static testable seams.
 ///
