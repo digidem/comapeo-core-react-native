@@ -37,8 +37,32 @@ const controlIpcServer = new SimpleRpcServer({
   },
 });
 
-controlIpcServer.listen(controlSocketPath);
-comapeoRpcServer.listen(comapeoSocketPath);
+// Listen on both sockets in parallel, then drive the readiness state machine.
+// `started` fires as soon as both `listen()` promises resolve so a control
+// client knows the comapeo socket is accepting connections; `ready` fires
+// after a 1 s settle window for callers that want a stronger "I won't see
+// startup races" signal. Late-connecting clients receive both replayed.
+//
+// See SimpleRpcServer for why the settle window exists. The Swift state-IPC
+// client polls for the socket file plus retries, which can land its first
+// successful accept several tens of ms after the broadcast — without the
+// replay it sees nothing.
+Promise.all([
+  controlIpcServer.listen(controlSocketPath),
+  comapeoRpcServer.listen(comapeoSocketPath),
+])
+  .then(async () => {
+    console.log(
+      `Node server listening on ${controlSocketPath} and ${comapeoSocketPath}`,
+    );
+    controlIpcServer.setReadinessPhase("started");
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    controlIpcServer.setReadinessPhase("ready");
+  })
+  .catch((error) => {
+    console.error("Failed to start servers", error);
+    process.exit(1);
+  });
 
 process.on("exit", () => {
   console.log("node exiting");
