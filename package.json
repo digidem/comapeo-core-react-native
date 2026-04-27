@@ -4,17 +4,41 @@
   "description": "CoMapeo Core for React Native",
   "main": "build/index.js",
   "types": "build/index.d.ts",
+  "type": "module",
+  "files": [
+    "expo-module.config.json",
+    "android/build.gradle",
+    "android/CMakeLists.txt",
+    "android/src/main/",
+    "android/libnode/",
+    "build/",
+    "ios/",
+    "src/"
+  ],
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": "^11",
+      "onFail": "warn"
+    },
+    "runtime": {
+      "name": "node",
+      "version": "^24",
+      "onFail": "warn"
+    }
+  },
   "scripts": {
-    "build": "expo-module build",
+    "build": "expo-module build --watch false",
     "clean": "expo-module clean",
     "lint": "expo-module lint",
     "test": "expo-module test",
     "prepare": "expo-module prepare",
     "prepublishOnly": "expo-module prepublishOnly",
-    "expo-module": "expo-module",
+    "prepack": "npm run backend:build",
     "open:ios": "xed example/ios",
     "open:android": "open -a \"Android Studio\" example/android",
-    "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh"
+    "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh",
+    "backend:build": "node ./scripts/build-backend.ts"
   },
   "keywords": [
     "react-native",
@@ -30,15 +54,26 @@
   "license": "MIT",
   "homepage": "https://github.com/digidem/comapeo-core-react-native#readme",
   "devDependencies": {
-    "@types/react": "~19.0.0",
-    "expo-module-scripts": "^4.1.6",
-    "expo": "~53.0.0",
-    "react-native": "0.79.1",
-    "type-fest": "^4.33.0"
+    "@eslint/js": "9.39.4",
+    "@types/node": "24.12.2",
+    "@types/react": "19.2.14",
+    "eslint": "9.39.4",
+    "execa": "9.6.1",
+    "expo": "55.0.17",
+    "expo-module-scripts": "55.0.2",
+    "globals": "17.5.0",
+    "prettier": "3.8.3",
+    "react": "19.2.0",
+    "react-native": "0.83.6",
+    "type-fest": "5.6.0",
+    "typescript-eslint": "8.59.0"
   },
   "peerDependencies": {
     "expo": "*",
     "react": "*",
     "react-native": "*"
+  },
+  "dependencies": {
+    "@comapeo/ipc": "^8.0.0"
   }
 }

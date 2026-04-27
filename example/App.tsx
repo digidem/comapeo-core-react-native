@@ -1,36 +1,15 @@
-import { useEvent } from "expo";
-import { messagePort, state } from "@comapeo/core-react-native";
-import { Button, SafeAreaView, ScrollView, Text, View } from "react-native";
-import { faker } from "@faker-js/faker";
-import React from "react";
+import { comapeo } from "@comapeo/core-react-native";
+import React, { useEffect, useState } from "react";
+import { ScrollView, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 let renderCount = 0;
 
-const MSG_COUNT = 1000;
-const fixtureStart = Date.now();
-faker.seed("nodejs-mobile-test-messages");
-const MESSAGE_FIXTURES = Array.from({ length: MSG_COUNT }, createRandomUser);
-const fixtureTime = Date.now() - fixtureStart;
-
-console.log("initial state:", state.getState());
-
 export default function App() {
-  // const onChangePayload = useEvent(messagePort, "message");
-  const serverState = useEvent(state, "stateChange", state.getState());
-  const timerRef = React.useRef(0);
-  const [benchmark, setBenchmark] = React.useState<null | number>(null);
+  const [projects, setProjects] = useState<unknown[]>([]);
 
-  React.useEffect(() => {
-    const subscription = messagePort.addListener("message", (msg) => {
-      if (msg.id === MSG_COUNT) {
-        const totalTime = Date.now() - timerRef.current;
-        setBenchmark(totalTime);
-      }
-    });
-
-    return () => {
-      subscription.remove();
-    };
+  useEffect(() => {
+    comapeo.listProjects().then(setProjects);
   }, []);
 
   return (
@@ -39,27 +18,9 @@ export default function App() {
         <Text style={styles.header} testID="header">
           Module API Example
         </Text>
-        <Group name="State">
-          <Text testID="state-value">{serverState}</Text>
-        </Group>
-        <Group name="Message Server">
-          <Button
-            testID="send-button"
-            title="Send"
-            onPress={async () => {
-              timerRef.current = Date.now();
-              for (const msg of MESSAGE_FIXTURES) {
-                messagePort.postMessage(msg);
-              }
-            }}
-          />
-        </Group>
-        <Group name="Received Messages">
-          {benchmark === null ? null : (
-            <Text testID="benchmark-result">
-              Received {MSG_COUNT} messages in {benchmark}ms
-            </Text>
-          )}
+
+        <Group name="Projects">
+          <Text>{projects.length}</Text>
         </Group>
         <Group name="Render count">
           <Text testID="render-count">{renderCount++}</Text>
@@ -102,17 +63,3 @@ const styles = {
     height: 200,
   },
 };
-
-function createRandomUser(_, i) {
-  return {
-    id: i + 1,
-    uuid: faker.string.uuid(),
-    avatar: faker.image.avatar(),
-    birthday: faker.date.birthdate().toISOString(),
-    email: faker.internet.email(),
-    firstName: faker.person.firstName(),
-    lastName: faker.person.lastName(),
-    sex: faker.person.sexType(),
-    subscriptionTier: faker.helpers.arrayElement(["free", "basic", "business"]),
-  };
-}

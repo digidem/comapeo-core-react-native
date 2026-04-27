@@ -1,17 +1,14 @@
 {
-  "platforms": [
-    "apple",
-    "android",
-    "web"
-  ],
+  "platforms": ["apple", "android"],
   "apple": {
     "modules": [
       "ComapeoCoreModule"
+    ],
+    "appDelegateSubscribers": [
+      "AppLifecycleDelegate"
     ]
   },
   "android": {
-    "modules": [
-      "com.comapeo.core.ComapeoCoreModule"
-    ]
+    "modules": ["com.comapeo.core.ComapeoCoreModule"]
   }
 }

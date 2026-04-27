@@ -3,8 +3,8 @@ import { type JsonValue } from "type-fest";
 import {
   ComapeoCoreModuleEvents,
   type MessageEventPayload,
-  type StateChangeEventPayload,
 } from "./ComapeoCore.types";
+import { createMapeoClient, type MapeoClientApi } from "@comapeo/ipc/client.js";
 
 declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   postMessage(value: string): void;
@@ -17,53 +17,23 @@ type MessagePortEvents = {
   message: (message: JsonValue) => void;
 };
 
-type StateChangeEvents = {
-  stateChange: (state: string) => void;
-};
-
-class State extends EventEmitter<StateChangeEvents> {
-  getState() {
-    return nativeModule.getState();
-  }
-
-  startObserving(eventName: keyof StateChangeEvents): void {
-    // eslint-disable-next-line no-useless-return
-    if (eventName !== "stateChange") return;
-    nativeModule.addListener(eventName, this.#handleStateChangeEvent);
-  }
-
-  stopObserving(eventName: keyof StateChangeEvents): void {
-    // eslint-disable-next-line no-useless-return
-    if (eventName !== "stateChange") return;
-    nativeModule.removeListener(eventName, this.#handleStateChangeEvent);
-  }
-
-  #handleStateChangeEvent = (event: StateChangeEventPayload) => {
-    this.emit("stateChange", event.state);
-  };
-}
-
-class MessagePort extends EventEmitter<MessagePortEvents> {
+class CoreMessagePort extends EventEmitter<MessagePortEvents> {
   postMessage(value: JsonValue) {
     nativeModule.postMessage(JSON.stringify(value));
   }
+
   startObserving<EventName extends keyof ComapeoCoreModuleEvents>(
-    eventName: EventName
+    eventName: EventName,
   ): void {
-    // eslint-disable-next-line no-useless-return
     if (eventName !== "message") return;
-    nativeModule.addListener(eventName as "message", this.#handleMessageEvent);
+    nativeModule.addListener(eventName, this.#handleMessageEvent);
   }
 
   stopObserving<EventName extends keyof ComapeoCoreModuleEvents>(
-    eventName: EventName
+    eventName: EventName,
   ): void {
-    // eslint-disable-next-line no-useless-return
     if (eventName !== "message") return;
-    nativeModule.removeListener(
-      eventName as "message",
-      this.#handleMessageEvent
-    );
+    nativeModule.removeListener(eventName, this.#handleMessageEvent);
   }
 
   #handleMessageEvent = (event: MessageEventPayload) => {
@@ -71,10 +41,24 @@ class MessagePort extends EventEmitter<MessagePortEvents> {
       const message = JSON.parse(event.data);
       this.emit("message", message);
     } catch {
-      // ignore
+      console.error("Failed to parse message event data", event.data);
     }
   };
+
+  addEventListener<EventName extends keyof MessagePortEvents>(
+    eventName: EventName,
+    listener: MessagePortEvents[EventName],
+  ) {
+    this.addListener(eventName, listener);
+  }
+
+  removeEventListener<EventName extends keyof MessagePortEvents>(
+    eventName: EventName,
+    listener: MessagePortEvents[EventName],
+  ) {
+    this.removeListener(eventName, listener);
+  }
 }
 
-export const messagePort = new MessagePort();
-export const state = new State();
+const messagePort = new CoreMessagePort() as unknown as MessagePort;
+export const comapeo: MapeoClientApi = createMapeoClient(messagePort);

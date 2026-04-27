@@ -6,7 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -23,9 +22,9 @@
       },
       "package": "com.comapeo.core.example"
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
-    "plugins": ["./plugins/with-android-tests"]
+    "plugins": [
+      "./plugins/with-android-tests",
+      "./plugins/with-ios-tests"
+    ]
   }
 }

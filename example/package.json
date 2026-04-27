@@ -3,25 +3,25 @@
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {
-    "start": "expo start",
+    "start": "expo start --dev-client",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web",
     "build:android": "expo run:android --variant release --no-install",
     "e2e:android": "../e2e/run-e2e.sh",
     "test:android": "../e2e/run-instrumented-tests.sh",
-    "test:android:unit": "../e2e/run-instrumented-tests.sh --unit-only"
+    "test:android:unit": "../e2e/run-instrumented-tests.sh --unit-only",
+    "test:ios": "cd ios && xcodebuild test -workspace corereactnativeexample.xcworkspace -scheme corereactnativeexample -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' CODE_SIGNING_ALLOWED='NO'"
   },
   "dependencies": {
-    "@faker-js/faker": "^10.0.0",
-    "expo": "~53.0.6",
-    "react": "19.0.0",
-    "react-native": "0.79.2"
+    "expo": "55.0.17",
+    "react": "19.2.5",
+    "react-native": "0.83.6",
+    "react-native-safe-area-context": "5.6.2"
   },
   "devDependencies": {
-    "@babel/core": "^7.25.2",
-    "@types/react": "~19.0.10",
-    "typescript": "~5.8.3"
+    "@babel/core": "7.29.0",
+    "@types/react": "19.2.14",
+    "typescript": "5.9.3"
   },
   "private": true,
   "expo": {

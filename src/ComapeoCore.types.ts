@@ -4,13 +4,12 @@ export type OnLoadEventPayload = {
 
 export type ComapeoCoreModuleEvents = {
   message: (params: MessageEventPayload) => void;
-  stateChange: (params: StateChangeEventPayload) => void;
 };
 
 export type MessageEventPayload = {
   data: string;
 };
 
-export type StateChangeEventPayload = {
-  state: string;
+export type MessageErrorEventPayload = {
+  data: Error;
 };

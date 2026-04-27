@@ -8,3 +8,18 @@
       content provider. This would prohibit access to the http server from other
       apps, and simplify sharing with other apps.
 - [ ] Read abiFilters (gradle.build) from consuming app.
+
+### Lifecycle Management
+
+There are several lifecycles to manage:
+
+1. The Android app lifecycle (foreground, background, killed)
+2. The foreground service lifecycle (starting, running, stopping, stopped)
+3. The NodeJS process lifecycle (starting, running, stopping, stopped)
+4. The React Native lifecycle (starting, running, stopping, stopped)
+
+Additionally, sockets and servers need to be managed, gracefully handling
+disconnections and errors, and reconnecting as needed.
+
+This isn't fully implemented yet, and needs more thought to ensure all edge
+cases are handled.

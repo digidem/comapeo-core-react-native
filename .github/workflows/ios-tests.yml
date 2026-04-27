@@ -1,0 +1,126 @@
+name: iOS Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package-tests:
+    name: Swift Package Tests (macOS)
+    runs-on: macos-14
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      # The Swift Package test target (`ComapeoCore-Package`) builds only
+      # platform-portable files (NodeJSIPC, NodeJSService, Log) and runs
+      # against Unix sockets via Darwin APIs — all of which work on macOS
+      # without a simulator. This is fast-feedback coverage for the framing,
+      # IPC, service lifecycle, and waitForFile helpers.
+      - name: Run package tests
+        run: |
+          cd ios
+          swift test
+
+  integration-tests:
+    name: Integration Tests (Example App)
+    # Xcode 26 minimum: Expo SDK 55's ExpoModulesCore source uses
+    # `@MainActor` on protocol conformances and other Swift Concurrency
+    # constructs that fail to compile on Xcode 16.x (Swift 6.0/6.1) under
+    # strict-isolation checking — see https://github.com/expo/expo/issues/42525.
+    # Xcode 26.x (Swift 6.2+) is the first release that compiles these
+    # cleanly. macos-15 runners ship Xcode 26.0.1 through 26.3.
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install && cd example && npm install
+
+      - name: Download NodeMobile
+        run: npm run download:nodejs-mobile -- --platform ios
+
+      - name: Install Node.js project dependencies
+        run: cd ios/nodejs-project && npm install --omit=dev
+
+      - name: Expo prebuild
+        run: cd example && npx expo prebuild --platform ios --no-install
+
+      - name: Pod install
+        run: cd example/ios && pod install
+
+      # Don't pin a specific device name (e.g. "iPhone 16"). GitHub-hosted
+      # macos-15 runners *should* have iPhone 16 pre-installed for iOS 26 per
+      # the runner image readme, but in practice some runner instances boot
+      # with no simulator devices registered (only the placeholder destination
+      # is listed by xcodebuild) — looks like a transient provisioning state.
+      # Discover the first available iPhone simulator on an iOS runtime that
+      # matches our SDK and use its UDID. If none is registered, create one.
+      - name: Resolve iOS Simulator
+        id: simulator
+        run: |
+          set -euo pipefail
+          # Prefer iOS 26.x to match the SDK Xcode 26.3 builds against.
+          # Fall back to whatever iPhone simulator is available.
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys, re
+          data = json.load(sys.stdin)
+          # Prefer iOS 26.x runtimes, then any iOS runtime.
+          def runtime_rank(rt):
+            m = re.search(r"iOS-(\d+)-(\d+)", rt)
+            if not m: return (-1, -1)
+            return (int(m.group(1)), int(m.group(2)))
+          runtimes = sorted(
+            (rt for rt in data["devices"] if "iOS" in rt),
+            key=runtime_rank, reverse=True,
+          )
+          for rt in runtimes:
+            for d in data["devices"][rt]:
+              if d.get("isAvailable") and "iPhone" in d.get("name", ""):
+                print(d["udid"])
+                sys.exit(0)
+          sys.exit(1)
+          ' || true)
+          if [ -z "$UDID" ]; then
+            echo "No pre-installed iPhone simulator found — creating one."
+            RUNTIME=$(xcrun simctl list runtimes available --json | python3 -c '
+            import json, sys
+            for rt in json.load(sys.stdin)["runtimes"]:
+              if "iOS" in rt["name"] and rt.get("isAvailable"):
+                print(rt["identifier"])
+                break
+            ')
+            UDID=$(xcrun simctl create "ci-iphone" "iPhone 17" "$RUNTIME")
+          fi
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices "$UDID"
+
+      - name: Run integration tests
+        run: |
+          cd example/ios
+          xcodebuild test \
+            -workspace corereactnativeexample.xcworkspace \
+            -scheme corereactnativeexample \
+            -sdk iphonesimulator \
+            -destination "id=${{ steps.simulator.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED='NO'

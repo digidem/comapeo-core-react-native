@@ -38,7 +38,7 @@ class ComapeoCoreService : Service() {
         const val CHANNEL_ID = "ComapeoServiceChannel"
         const val NOTIFICATION_ID = 1
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
-        const val STATE_SOCKET_FILENAME = "state.sock"
+        const val CONTROL_SOCKET_FILENAME = "control.sock"
         /**
          * Tracks the number of active service instances in this process.
          * Used to prevent Process.killProcess() in onDestroy from killing a
