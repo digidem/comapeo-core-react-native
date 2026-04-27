@@ -390,6 +390,38 @@ final class NodeJSIPCTests: XCTestCase {
         wait(for: [messageReceivedIntact], timeout: 10)
     }
 
+    // MARK: - Reconnection from .error
+
+    /// Covers the `.error → connect()` transition in `NodeJSIPC.connect()`.
+    /// Drives the IPC to `.error` by pointing it at a regular file (not a
+    /// socket) so `waitForFile` returns immediately and `connectWithRetry`
+    /// fails. Calling `connect()` again must synchronously move state out of
+    /// `.error` — the new attempt may then succeed or fail, but the guard
+    /// must not reject a retry.
+    func testConnectFromErrorStateRetries() throws {
+        let socketPath = (testDir as NSString).appendingPathComponent("not-a-socket.sock")
+        FileManager.default.createFile(atPath: socketPath, contents: nil)
+
+        let ipc = NodeJSIPC(socketPath: socketPath) { _ in }
+        defer { ipc.disconnect() }
+
+        // Wait for the initial connect attempt to exhaust its retries and land
+        // in .error. With default retry timing (100/200/400/800ms backoff +
+        // ~5 connect() syscalls) this resolves within a couple of seconds.
+        waitUntil(timeout: 10, "IPC should reach .error after failed connect", {
+            if case .error = ipc.state { return true } else { return false }
+        }())
+
+        // connect() from .error must transition state synchronously. After it
+        // returns, state must no longer be .error — the retry has been kicked
+        // off. (The retry will likely fail again, but that's expected here.)
+        ipc.connect()
+        XCTAssertEqual(
+            ipc.state, .connecting,
+            "connect() from .error must synchronously set state to .connecting"
+        )
+    }
+
     // MARK: - Disconnect Tests
 
     /// When the server closes its end, the IPC's receive loop sees EOF, logs
@@ -423,6 +455,120 @@ final class NodeJSIPCTests: XCTestCase {
         XCTAssertEqual(ipc.state, .disconnected)
 
         ipc.disconnect()
+    }
+
+    // MARK: - Concurrent shutdown behavior
+
+    /// Calling `disconnect()` from inside a receive callback must not deadlock.
+    /// Observers commonly want to tear down the IPC in response to a specific
+    /// message (e.g. "shutdown ack" → close). Since `onMessage` runs on the
+    /// receive worker, a naive `disconnect()` that waits for the receive worker
+    /// to finish would wait on itself.
+    func testDisconnectFromMessageCallbackDoesNotDeadlock() throws {
+        let server = try startServer(name: "disconnect-from-cb.sock")
+        defer { server.stop() }
+
+        let didDisconnect = expectation(description: "disconnect returned from callback")
+
+        var ipcRef: NodeJSIPC?
+        let ipc = NodeJSIPC(socketPath: server.socketPath) { _ in
+            ipcRef?.disconnect()
+            didDisconnect.fulfill()
+        }
+        ipcRef = ipc
+
+        // Trigger a single message to fire onMessage on the receive queue.
+        DispatchQueue.global().async {
+            let clientFd = server.acceptClient()
+            guard clientFd >= 0 else { return }
+            MockNodeServer.sendFramedMessage(fd: clientFd, message: #"{"x":1}"#)
+            close(clientFd)
+        }
+
+        wait(for: [didDisconnect], timeout: 5)
+        waitUntil("IPC must reach .disconnected after re-entrant disconnect", ipc.state == .disconnected)
+    }
+
+    /// Spam concurrent sends while a `disconnect()` runs. The fix-under-test
+    /// is the cancel-and-join sequence: disconnect drains the send queue and
+    /// joins the receive worker before closing the fd, so no `write()` is
+    /// in flight against a closed (and possibly reused) fd. Behavioral
+    /// assertion: nothing crashes, and final state is `.disconnected`.
+    func testConcurrentSendsAndDisconnectAreSafe() throws {
+        let server = try startServer(name: "concurrent.sock")
+        defer { server.stop() }
+
+        let ipc = NodeJSIPC(socketPath: server.socketPath) { _ in }
+
+        // Server side: accept once and drain forever (until the client closes).
+        DispatchQueue.global().async {
+            let clientFd = server.acceptClient()
+            guard clientFd >= 0 else { return }
+            var buf = [UInt8](repeating: 0, count: 4096)
+            while Darwin.read(clientFd, &buf, buf.count) > 0 {}
+            close(clientFd)
+        }
+
+        waitUntil("IPC connected before stress", ipc.state == .connected)
+
+        // Spam 50 sends from many threads.
+        let group = DispatchGroup()
+        for i in 0..<50 {
+            group.enter()
+            DispatchQueue.global().async {
+                ipc.sendMessage(#"{"id":\#(i)}"#)
+                group.leave()
+            }
+        }
+
+        // Disconnect concurrently — somewhere in the middle of the send fan-out.
+        DispatchQueue.global().async {
+            usleep(500) // ~0.5 ms head-start so sends are in flight
+            ipc.disconnect()
+        }
+
+        XCTAssertEqual(group.wait(timeout: .now() + 5), .success, "all send dispatches returned")
+        waitUntil("IPC reaches .disconnected after concurrent shutdown", ipc.state == .disconnected)
+    }
+
+    /// `disconnect()` called while the IPC is still mid-`performConnect`
+    /// (waiting for the socket file) must win over the in-flight connect
+    /// attempt. If the connect later succeeds, the new fd must be cleaned
+    /// up and state must NOT be flipped back to `.connected`.
+    func testDisconnectDuringConnectionAttemptIsHonored() throws {
+        let socketPath = (testDir as NSString).appendingPathComponent("late-server.sock")
+
+        // No server yet — IPC enters .connecting and gets stuck inside waitForFile().
+        let ipc = NodeJSIPC(socketPath: socketPath) { _ in }
+        waitUntil("IPC reaches .connecting", ipc.state == .connecting)
+
+        // Tear down before the server appears.
+        ipc.disconnect()
+        XCTAssertEqual(ipc.state, .disconnected)
+
+        // Now create the server — performConnect's waitForFile will return
+        // and connectWithRetry will succeed. The race-guard must close the
+        // orphan fd and leave state alone.
+        let server = MockNodeServer(socketPath: socketPath)
+        try server.start()
+        defer { server.stop() }
+
+        // Drain any orphan accept on the server side so the test exits cleanly.
+        DispatchQueue.global().async {
+            let fd = server.acceptClient()
+            if fd >= 0 { close(fd) }
+        }
+
+        // Give performConnect time to complete its racing attempt. State must
+        // remain .disconnected throughout.
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            XCTAssertEqual(
+                ipc.state, .disconnected,
+                "racing performConnect must not flip state back to .connected"
+            )
+            Thread.sleep(forTimeInterval: 0.05)
+        }
     }
 
     // MARK: - Helpers

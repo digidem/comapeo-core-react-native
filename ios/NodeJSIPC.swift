@@ -5,6 +5,13 @@ import Foundation
 /// Uses a length-prefixed JSON framing protocol (4-byte little-endian length prefix
 /// followed by UTF-8 JSON payload) over Unix domain sockets — matching the Android
 /// `NodeJSIPC.kt` implementation.
+///
+/// Lifecycle ordering (mirrors Android's `cancelAndJoin`-then-close model):
+/// `disconnect()` shuts down the socket to wake any blocked read, joins the
+/// receive worker, drains the send queue with a sync barrier, and only then
+/// closes the fd. This guarantees no `read(2)`/`write(2)` is in flight against
+/// the fd at the moment `close(2)` runs, so the kernel can't reassign the fd
+/// number under an active operation.
 class NodeJSIPC {
     enum State: Equatable {
         case disconnected
@@ -12,32 +19,24 @@ class NodeJSIPC {
         case connected
         case disconnecting
         case error(String)
-
-        static func == (lhs: State, rhs: State) -> Bool {
-            switch (lhs, rhs) {
-            case (.disconnected, .disconnected),
-                 (.connecting, .connecting),
-                 (.connected, .connected),
-                 (.disconnecting, .disconnecting):
-                return true
-            case (.error(let a), .error(let b)):
-                return a == b
-            default:
-                return false
-            }
-        }
     }
 
     private let socketPath: String
     private let onMessage: (String) -> Void
     private let lock = NSLock()
-    /// Unix socket file descriptor. Internal (rather than private) so that
-    /// tests using `@testable import` can tune kernel buffer options
-    /// (e.g. `SO_SNDBUF`, `O_NONBLOCK`) to force partial-write conditions.
-    var socket: Int32 = -1
-    private var sendQueue = DispatchQueue(label: "com.comapeo.core.ipc.send")
-    private var receiveQueue = DispatchQueue(label: "com.comapeo.core.ipc.receive")
-    private var connectQueue = DispatchQueue(label: "com.comapeo.core.ipc.connect")
+    /// Unix socket file descriptor. Tests using `@testable import` read this
+    /// to tune kernel buffer options (e.g. `SO_SNDBUF`, `O_NONBLOCK`) — they
+    /// don't need to mutate it, so the setter stays private.
+    private(set) var socket: Int32 = -1
+
+    private let sendQueue = DispatchQueue(label: "com.comapeo.core.ipc.send")
+    private let receiveQueue = DispatchQueue(label: "com.comapeo.core.ipc.receive")
+    private let connectQueue = DispatchQueue(label: "com.comapeo.core.ipc.connect")
+
+    /// Marker so `disconnect()` can detect re-entrance from the receive loop
+    /// (where waiting on `receiveWorkItem` would deadlock).
+    private static let receiveQueueKey = DispatchSpecificKey<Void>()
+
     private var receiveWorkItem: DispatchWorkItem?
     /// Messages enqueued by `sendMessage` before the socket is connected.
     /// Flushed in connect order when the connection completes. Guarded by `lock`.
@@ -52,20 +51,26 @@ class NodeJSIPC {
     init(socketPath: String, onMessage: @escaping (String) -> Void) {
         self.socketPath = socketPath
         self.onMessage = onMessage
+        receiveQueue.setSpecific(key: Self.receiveQueueKey, value: ())
         log("NodeJSIPC initialized with socket path: \(socketPath)")
         connect()
     }
 
     func connect() {
         lock.lock()
-        guard state != .connected && state != .connecting else {
+        // Reject .disconnecting so a sendMessage racing with disconnect()
+        // can't flip state back to .connecting while close is in progress.
+        // .error is recoverable: callers can retry by calling connect() again.
+        switch state {
+        case .connected, .connecting, .disconnecting:
             lock.unlock()
             return
-        }
-        if case .error = state {
+        case .error:
             state = .disconnected
+            state = .connecting
+        case .disconnected:
+            state = .connecting
         }
-        state = .connecting
         lock.unlock()
 
         connectQueue.async { [weak self] in
@@ -82,6 +87,14 @@ class NodeJSIPC {
             let fd = try connectWithRetry(socketPath: socketPath)
             let messagesToFlush: [String]
             lock.lock()
+            // disconnect() may have run while we were waiting/connecting.
+            // If state is no longer .connecting, the new fd is orphaned —
+            // close it and bail without touching state.
+            guard state == .connecting else {
+                lock.unlock()
+                close(fd)
+                return
+            }
             self.socket = fd
             state = .connected
             messagesToFlush = pendingMessages
@@ -97,12 +110,28 @@ class NodeJSIPC {
             }
         } catch {
             lock.lock()
-            state = .error(error.localizedDescription)
+            // Same race as the success path: only transition to .error if
+            // we're still the connect attempt that's expected to.
+            if state == .connecting {
+                state = .error(error.localizedDescription)
+            }
             lock.unlock()
             log("Failed to connect: \(error.localizedDescription)")
         }
     }
 
+    /// Tears down the connection. Safe to call from any thread, including
+    /// the receive loop (which calls back here on read errors) — the
+    /// `receiveQueueKey` check below skips the join in that case.
+    ///
+    /// Sequence:
+    ///   1. Snapshot fd; transition to .disconnecting.
+    ///   2. `shutdown(2)` to wake any blocked `read(2)` in the receive loop.
+    ///      Using shutdown rather than close means the fd number can't be
+    ///      reassigned while a syscall still holds it.
+    ///   3. Join the receive worker (skipped if we ARE the receive worker).
+    ///   4. Drain the send queue with a sync barrier so no write is in flight.
+    ///   5. `close(2)` the fd. Steps 3+4 guarantee it's no longer in use.
     func disconnect() {
         lock.lock()
         guard state != .disconnecting && state != .disconnected else {
@@ -111,17 +140,32 @@ class NodeJSIPC {
         }
         state = .disconnecting
         let fd = socket
-        socket = -1
+        let workItem = receiveWorkItem
+        receiveWorkItem = nil
         lock.unlock()
 
-        receiveWorkItem?.cancel()
-        receiveWorkItem = nil
+        // 2. Wake a blocked receive loop.
+        if fd >= 0 {
+            _ = Darwin.shutdown(fd, SHUT_RDWR)
+        }
 
+        // 3. Wait for the receive loop to exit, unless we are it.
+        let onReceiveQueue = DispatchQueue.getSpecific(key: Self.receiveQueueKey) != nil
+        if !onReceiveQueue {
+            workItem?.wait()
+        }
+
+        // 4. Drain the send queue. Any in-flight sendMessageInternal finishes
+        // here (its write will have failed via shutdown, which is fine).
+        sendQueue.sync {}
+
+        // 5. Now safe to close — no read/write can still be using the fd.
         if fd >= 0 {
             close(fd)
         }
 
         lock.lock()
+        socket = -1
         state = .disconnected
         lock.unlock()
     }
@@ -211,7 +255,9 @@ class NodeJSIPC {
         let workItem = DispatchWorkItem { [weak self] in
             self?.receiveLoop()
         }
+        lock.lock()
         receiveWorkItem = workItem
+        lock.unlock()
         receiveQueue.async(execute: workItem)
     }
 

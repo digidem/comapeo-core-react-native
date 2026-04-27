@@ -424,4 +424,33 @@ final class NodeJSServiceTests: XCTestCase {
             XCTAssertLessThan(sp, sd, "STOPPING should come before STOPPED")
         }
     }
+
+    // MARK: - Observer re-entrance
+
+    /// `onStateChange` callbacks must be invoked outside the service's
+    /// internal lock. A callback that calls back into a locked method
+    /// (here, `cleanup()`) would otherwise deadlock waiting for the lock
+    /// the transition is already holding.
+    func testObserverCanReenterLockedMethodFromCallback() {
+        let (service, signalExit) = makeTestService()
+
+        let callbackCompleted = expectation(description: "callback finished without deadlock")
+
+        service.onStateChange = { state in
+            // Re-enter a method that takes the service's internal lock from
+            // inside the callback. If the callback ran while the lock was
+            // held, this would deadlock.
+            if state == .started {
+                service.cleanup()
+                callbackCompleted.fulfill()
+            }
+        }
+
+        service.start()
+        // 5s is generous: the call should return in milliseconds. A
+        // deadlock would block here until the timeout.
+        wait(for: [callbackCompleted], timeout: 5)
+
+        signalExit()
+    }
 }

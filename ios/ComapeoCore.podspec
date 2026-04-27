@@ -42,19 +42,27 @@ Pod::Spec.new do |s|
 
   # Install Node.js project npm dependencies before compilation.
   # This also ensures node_modules exists for subsequent `pod install` runs.
+  # Skipped when node_modules already exists so incremental builds don't pay
+  # npm's startup cost on every compile.
   s.script_phase = {
     :name => 'Install Node.js Project Dependencies',
     :script => <<~SCRIPT,
-      if [ -f "${PODS_TARGET_SRCROOT}/nodejs-project/package.json" ]; then
-        # Resolve NODE_BINARY using the same .xcode.env mechanism as React Native / Expo.
-        if [ -f "${PODS_ROOT}/../.xcode.env" ]; then source "${PODS_ROOT}/../.xcode.env"; fi
-        if [ -f "${PODS_ROOT}/../.xcode.env.local" ]; then source "${PODS_ROOT}/../.xcode.env.local"; fi
-        if [ -z "$NODE_BINARY" ]; then NODE_BINARY="$(command -v node)"; fi
-        # Add node's bin dir to PATH so npm's #!/usr/bin/env node shebang resolves correctly.
-        export PATH="$(dirname "$NODE_BINARY"):$PATH"
-        NPM_BINARY="$(dirname "$NODE_BINARY")/npm"
-        cd "${PODS_TARGET_SRCROOT}/nodejs-project" && "$NPM_BINARY" install --omit=dev
+      NODEJS_PROJECT_DIR="${PODS_TARGET_SRCROOT}/nodejs-project"
+      if [ ! -f "${NODEJS_PROJECT_DIR}/package.json" ]; then
+        exit 0
       fi
+      if [ -d "${NODEJS_PROJECT_DIR}/node_modules" ]; then
+        echo "node_modules already present — skipping npm install"
+        exit 0
+      fi
+      # Resolve NODE_BINARY using the same .xcode.env mechanism as React Native / Expo.
+      if [ -f "${PODS_ROOT}/../.xcode.env" ]; then source "${PODS_ROOT}/../.xcode.env"; fi
+      if [ -f "${PODS_ROOT}/../.xcode.env.local" ]; then source "${PODS_ROOT}/../.xcode.env.local"; fi
+      if [ -z "$NODE_BINARY" ]; then NODE_BINARY="$(command -v node)"; fi
+      # Add node's bin dir to PATH so npm's #!/usr/bin/env node shebang resolves correctly.
+      export PATH="$(dirname "$NODE_BINARY"):$PATH"
+      NPM_BINARY="$(dirname "$NODE_BINARY")/npm"
+      cd "${NODEJS_PROJECT_DIR}" && "$NPM_BINARY" install --omit=dev
     SCRIPT
     :execution_position => :before_compile
   }

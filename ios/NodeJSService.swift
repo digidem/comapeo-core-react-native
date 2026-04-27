@@ -3,9 +3,8 @@ import Foundation
 /// Manages the lifecycle of an embedded Node.js process on iOS.
 ///
 /// Unlike Android (which uses a foreground service in a separate process), iOS runs
-/// Node.js in-process. Graceful shutdown is triggered when the app enters background
-/// or is about to be terminated. The UIKit-specific background task handling lives in
-/// `NodeJSService+BackgroundTask.swift`.
+/// Node.js in-process. Graceful shutdown is triggered when the app is about to be
+/// terminated (`applicationWillTerminate`).
 class NodeJSService {
     enum State: String {
         case stopped = "STOPPED"
@@ -45,7 +44,6 @@ class NodeJSService {
         didSet {
             if oldValue != state {
                 log("NodeJSService state: \(oldValue.rawValue) -> \(state.rawValue)")
-                onStateChange?(state)
             }
         }
     }
@@ -71,6 +69,18 @@ class NodeJSService {
         deleteSocketFiles()
     }
 
+    /// Transitions to `newState` under the lock and fires `onStateChange`
+    /// outside it. Callers must NOT hold `lock` when calling this; the callback
+    /// otherwise runs while the lock is held, which would deadlock if the
+    /// observer re-enters any other locked method.
+    private func transitionState(to newState: State) {
+        lock.lock()
+        let changed = state != newState
+        state = newState
+        lock.unlock()
+        if changed { onStateChange?(newState) }
+    }
+
     func start() {
         lock.lock()
         guard state == .stopped else {
@@ -78,16 +88,15 @@ class NodeJSService {
             log("Cannot start: already in state \(state.rawValue)")
             return
         }
-        state = .starting
         nodeCompletionSemaphore = DispatchSemaphore(value: 0)
         lock.unlock()
+        transitionState(to: .starting)
 
         deleteSocketFiles()
 
         // Initialize the state IPC connection (connects asynchronously, waits for socket file)
-        stateIPC = NodeJSIPC(socketPath: stateSocketPath) { [weak self] message in
+        stateIPC = NodeJSIPC(socketPath: stateSocketPath) { message in
             log("State IPC received: \(message)")
-            _ = self
         }
 
         // Start Node.js on a background thread
@@ -111,9 +120,9 @@ class NodeJSService {
             log("Cannot stop: state is \(state.rawValue)")
             return
         }
-        state = .stopping
         let completionSem = nodeCompletionSemaphore
         lock.unlock()
+        transitionState(to: .stopping)
 
         // Send shutdown message — this causes Node.js JS code to exit,
         // which unblocks node_start() in runNode()
@@ -137,16 +146,17 @@ class NodeJSService {
         guard let jsPath = resolveJSEntryPoint() else {
             log("Error: Could not find nodejs-project/index.js in app bundle")
             lock.lock()
-            state = .error
+            let sem = nodeCompletionSemaphore
             lock.unlock()
-            nodeCompletionSemaphore?.signal()
+            transitionState(to: .error)
+            sem?.signal()
             return
         }
 
         lock.lock()
-        state = .started
         let completionSem = nodeCompletionSemaphore
         lock.unlock()
+        transitionState(to: .started)
 
         let args = ["node", jsPath, comapeoSocketPath, stateSocketPath]
         let exitCode = nodeEntryPoint(args)
@@ -175,11 +185,9 @@ class NodeJSService {
         nodeCompletionSemaphore?.signal()
         nodeCompletionSemaphore = nil
         nodeThread = nil
-        let targetState: State = threadExited ? .stopped : .error
-        if state != targetState {
-            state = targetState
-        }
         lock.unlock()
+
+        transitionState(to: threadExited ? .stopped : .error)
     }
 
     private func deleteSocketFiles() {

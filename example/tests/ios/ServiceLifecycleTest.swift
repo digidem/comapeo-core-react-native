@@ -48,24 +48,29 @@ final class ServiceLifecycleTest: XCTestCase {
         }
 
         XCTContext.runActivity(named: "double start is idempotent") { _ in
+            // Capture any transitions that fire after the second start() call.
+            // The state machine is synchronous, so an errant transition would
+            // already have landed by the time `start()` returns; the brief
+            // waitUntil window is a safety margin against hypothetical async
+            // observers, not a load-bearing wait.
+            var transitions: [NodeJSService.State] = []
+            let previous = service.onStateChange
+            service.onStateChange = { transitions.append($0) }
+            defer { service.onStateChange = previous }
+
             service.start() // should be a no-op
-            Thread.sleep(forTimeInterval: 2)
+            waitUntil(timeout: 0.3, "state should stay .started", service.state == .started)
             XCTAssertEqual(service.state, .started)
+            XCTAssertTrue(
+                transitions.isEmpty,
+                "second start() must not emit transitions; got \(transitions)"
+            )
         }
 
         XCTContext.runActivity(named: "state socket is listening") { _ in
             let ipc = NodeJSIPC(socketPath: service.stateSocketPath) { _ in }
             defer { ipc.disconnect() }
-
-            let connected = expectation(description: "connected")
-            DispatchQueue.global().async {
-                let deadline = Date().addingTimeInterval(10)
-                while ipc.state != .connected && Date() < deadline {
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
-                if ipc.state == .connected { connected.fulfill() }
-            }
-            wait(for: [connected], timeout: 15)
+            waitUntil(timeout: 15, "IPC should reach .connected", ipc.state == .connected)
             XCTAssertEqual(ipc.state, .connected)
         }
 
@@ -75,8 +80,12 @@ final class ServiceLifecycleTest: XCTestCase {
         // `waitForFile()` + retry-connect after that point got nothing.
         // Fixed in commit b3634de.
         XCTContext.runActivity(named: "late state-IPC receives started/ready") { _ in
-            // Give Node's index.js time to resolve its Promise.all and the
-            // 1 s delay before posting `ready`, so we're definitively "late".
+            // Deliberate sleep, not a poll: the test's premise is that we
+            // connect *after* Node has already broadcast started/ready. Node
+            // resolves its Promise.all and waits 1 s before posting `ready`,
+            // so 2 s ensures we're past that window. There's no observable
+            // condition that means "Node has finished broadcasting" without
+            // racing the very thing we're trying to test.
             Thread.sleep(forTimeInterval: 2)
 
             let received = expectation(description: "state IPC received started/ready")
@@ -115,14 +124,20 @@ final class ServiceLifecycleTest: XCTestCase {
 
             AppLifecycleDelegate.shared.applicationDidEnterBackground(UIApplication.shared)
 
-            // If the bug returns, state will flip to .stopped within a few
-            // seconds (background-task async stop with 10 s timeout).
-            Thread.sleep(forTimeInterval: 4)
-
-            XCTAssertEqual(
-                service.state, .started,
-                "Background transition must not stop Node (nodejs-mobile once-per-process constraint)"
-            )
+            // Negative assertion: state must STAY .started. Poll for ~4 s
+            // (longer than the previous bug's async-stop window) and fail
+            // fast if it ever transitions away. A fixed sleep would only
+            // catch the bug at the end; this catches it the moment it
+            // happens, with a clearer failure point.
+            let deadline = Date().addingTimeInterval(4)
+            while Date() < deadline {
+                XCTAssertEqual(
+                    service.state, .started,
+                    "Background transition must not stop Node (nodejs-mobile once-per-process constraint)"
+                )
+                if service.state != .started { return }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
         }
 
         // Terminal phase — after this, Node cannot be restarted in this

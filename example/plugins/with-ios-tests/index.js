@@ -1,6 +1,6 @@
 const path = require('path');
 const fs = require('fs');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { withDangerousMod } = require('@expo/config-plugins');
 
 const APP_TARGET_NAME = 'corereactnativeexample';
@@ -69,7 +69,7 @@ function patchPodfile(iosDir) {
 
 function runAddTestTargetScript(pluginDir, iosDir) {
   const script = path.join(pluginDir, 'add-test-target.rb');
-  execSync(`ruby ${JSON.stringify(script)}`, {
+  execFileSync('ruby', [script], {
     cwd: iosDir,
     stdio: 'inherit',
     env: {
