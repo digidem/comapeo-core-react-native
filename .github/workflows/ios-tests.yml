@@ -60,8 +60,13 @@ jobs:
       - name: Download NodeMobile
         run: npm run download:nodejs-mobile -- --platform ios
 
-      - name: Install Node.js project dependencies
-        run: cd ios/nodejs-project && npm install --omit=dev
+      # Generates ios/nodejs-project/ + ios/nodejs-native/ from backend/
+      # via the same rollup pipeline that produces the Android assets.
+      # Replaces the previous "cd ios/nodejs-project && npm install" step,
+      # which only worked because ios/nodejs-project/ used to be a
+      # hand-maintained npm root with its own lockfile.
+      - name: Build backend bundle
+        run: npm run backend:build
 
       - name: Expo prebuild
         run: cd example && npx expo prebuild --platform ios --no-install
