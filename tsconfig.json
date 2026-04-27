@@ -1,25 +1,8 @@
 {
+  "extends": "expo-module-scripts/tsconfig.base",
   "compilerOptions": {
-    "allowJs": true,
-    "checkJs": true,
-    "forceConsistentCasingInFileNames": true,
-    "lib": ["ESNext"],
-    "module": "nodenext",
-    "noEmit": true,
-    "noErrorTruncation": true,
-    "paths": {
-      "*": ["./types", "./node_modules/@digidem/types/vendor/*/index.d.ts"]
-    },
-    "skipLibCheck": true,
-    "strict": true
+    "outDir": "./build"
   },
-  "include": ["**/*"],
-  "exclude": [
-    "node_modules",
-    "android",
-    "ios",
-    "backend",
-    "example",
-    "nodejs-assets"
-  ]
+  "include": ["./src"],
+  "exclude": ["**/__mocks__/*", "**/__tests__/*", "**/__rsc_tests__/*"]
 }

@@ -81,3 +81,7 @@ ios/.swiftpm/
 backend/dist
 nodejs-assets
 android/src/main/assets/
+
+# output
+build/
+*.tsbuildinfo

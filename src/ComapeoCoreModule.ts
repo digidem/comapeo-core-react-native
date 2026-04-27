@@ -23,22 +23,17 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
   }
 
   startObserving<EventName extends keyof ComapeoCoreModuleEvents>(
-    eventName: EventName
+    eventName: EventName,
   ): void {
-    // eslint-disable-next-line no-useless-return
     if (eventName !== "message") return;
-    nativeModule.addListener(eventName as "message", this.#handleMessageEvent);
+    nativeModule.addListener(eventName, this.#handleMessageEvent);
   }
 
   stopObserving<EventName extends keyof ComapeoCoreModuleEvents>(
-    eventName: EventName
+    eventName: EventName,
   ): void {
-    // eslint-disable-next-line no-useless-return
     if (eventName !== "message") return;
-    nativeModule.removeListener(
-      eventName as "message",
-      this.#handleMessageEvent
-    );
+    nativeModule.removeListener(eventName, this.#handleMessageEvent);
   }
 
   #handleMessageEvent = (event: MessageEventPayload) => {
@@ -52,14 +47,14 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
 
   addEventListener<EventName extends keyof MessagePortEvents>(
     eventName: EventName,
-    listener: MessagePortEvents[EventName]
+    listener: MessagePortEvents[EventName],
   ) {
     this.addListener(eventName, listener);
   }
 
   removeEventListener<EventName extends keyof MessagePortEvents>(
     eventName: EventName,
-    listener: MessagePortEvents[EventName]
+    listener: MessagePortEvents[EventName],
   ) {
     this.removeListener(eventName, listener);
   }
