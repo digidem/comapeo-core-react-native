@@ -236,11 +236,11 @@ Each commit is individually buildable and reviewable; (4) is the load-bearing on
 
 ## 6. Acceptance criteria
 
-- [ ] `git ls-files ios/nodejs-project/` returns nothing (directory is purely generated).
-- [ ] `cd example && npm run test:ios` passes locally on macOS-15 with Xcode 26 against a simulator destination.
-- [ ] `.github/workflows/ios-tests.yml` integration job passes the new `CoreManagerSmokeTest` on `iphonesimulator`.
-- [ ] `xxd android/src/main/assets/nodejs-project/index.mjs | head` and `xxd ios/nodejs-project/index.mjs | head` produce identical output.
-- [ ] Example app on iOS simulator (both `arm64-simulator` on Apple Silicon and `x86_64-simulator` on Intel/CI): `comapeo.listProjects()` returns `[]` (not a hang, not an error).
-- [ ] Device build (`-sdk iphoneos`) deliberately fails with a missing-arch error — confirms Phase 1 scoping is honest. (Phase 2 fixes this.)
-- [ ] `ios/ComapeoCore.podspec` no longer contains the `script_phase` block.
-- [ ] No new asset-extraction logic on iOS (modulo the targeted drizzle workaround if Risk §4.2 actually bites).
+- [x] `git ls-files ios/nodejs-project/` returns nothing (directory is purely generated; `.gitignore` covers it).
+- [ ] `cd example && npm run test:ios` passes locally on macOS-15 with Xcode 26 against a simulator destination. _(unverified — depends on iOS prebuild availability per per-module repo; CI run after push will tell us)_
+- [ ] `.github/workflows/ios-tests.yml` integration job passes the new `CoreManagerSmokeTest` on `iphonesimulator`. _(pending CI run)_
+- [ ] `xxd android/src/main/assets/nodejs-project/index.mjs | head` and `xxd ios/nodejs-project/index.mjs | head` produce identical output. _(byte-equivalent by construction since both `cpSync` from the same `TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR`; verify after first successful CI run)_
+- [ ] Example app on iOS simulator (both `arm64-simulator` on Apple Silicon and `x86_64-simulator` on Intel/CI): `comapeo.listProjects()` returns `[]` (not a hang, not an error). _(pending end-to-end run)_
+- [ ] Device build (`-sdk iphoneos`) deliberately fails with a missing-arch error — confirms Phase 1 scoping is honest. (Phase 2 fixes this.) _(unverified)_
+- [x] `ios/ComapeoCore.podspec` no longer contains the `script_phase` block.
+- [x] No new asset-extraction logic on iOS (the rolled-up bundle ships pre-populated `node_modules`; CocoaPods' resource copy is the only "extraction" and is unchanged from before).
