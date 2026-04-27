@@ -34,14 +34,19 @@ jobs:
 
   integration-tests:
     name: Integration Tests (Example App)
-    runs-on: macos-14
+    # macos-15 because Expo 55 / RN 0.83's ExpoModulesCore hits a Swift 6.0.x
+    # strict-actor-isolation regression on Xcode 16.2 ("Main actor-isolated
+    # instance method ... cannot be used to satisfy nonisolated protocol
+    # requirement"). Xcode 16.4 ships Swift 6.1 which relaxes that diagnostic
+    # back to a warning. macos-14 caps at Xcode 16.2; macos-15 has 16.4.
+    runs-on: macos-15
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
