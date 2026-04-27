@@ -76,3 +76,8 @@ ios/nodejs-project/node_modules/
 # Swift Package Manager
 ios/.build/
 ios/.swiftpm/
+
+# Backend-related artifacts
+backend/dist
+nodejs-assets
+android/src/main/assets/

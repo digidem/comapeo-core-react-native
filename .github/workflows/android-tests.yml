@@ -2,9 +2,9 @@ name: Android Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -22,10 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
-          cache: npm
+          node-version-file: package.json
 
       - uses: actions/setup-java@v4
         with:
@@ -58,7 +57,7 @@ jobs:
       - name: Run JVM unit tests
         run: |
           cd example/android
-          ./gradlew :comapeo-core-react-native:testDebugUnitTest --no-daemon -PreactNativeArchitectures=x86_64
+          ./gradlew :comapeo-core-react-native:testDebugUnitTest --no-daemon
 
       - name: Upload test results
         if: always()
@@ -76,7 +75,7 @@ jobs:
 
     strategy:
       matrix:
-        api-level: [ 30 ]
+        api-level: [30]
 
     steps:
       - uses: actions/checkout@v4
@@ -92,10 +91,9 @@ jobs:
           tool-cache: false
           swap-storage: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
-          cache: npm
+          node-version-file: package.json
 
       - uses: actions/setup-java@v4
         with:
@@ -140,6 +138,9 @@ jobs:
       - name: Install npm dependencies
         run: npm install --ignore-scripts && cd example && npm install --ignore-scripts
 
+      - name: Build backend
+        run: npm run backend:build
+
       - name: Expo prebuild (generates example/android)
         run: cd example && npx expo prebuild --platform android --no-install
 
@@ -182,7 +183,8 @@ jobs:
           arch: x86_64
           force-avd-creation: false
           ram-size: 4096M
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect
+          emulator-options:
+            -no-snapshot-save -no-window -gpu swiftshader_indirect
             -noaudio -no-boot-anim
           disable-animations: false
           script: |
