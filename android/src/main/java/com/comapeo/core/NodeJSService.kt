@@ -23,7 +23,8 @@ data class ShutdownMessage(val type: String = "shutdown")
 const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
-const val NODEJS_PROJECT_INDEX_FILENAME = "index.js"
+const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
+const val NODEJS_NATIVE_ASSETS_DIRNAME = "nodejs-native"
 
 @Suppress("KotlinJniMissingFunction")
 class NodeJSService(context: android.content.Context) : ContextWrapper(context) {
@@ -35,10 +36,11 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var nodeJob: Job? = null
     private val dataDir: String = filesDir.absolutePath
+    private val nodeNativeAssetsDir: File = File(filesDir, NODEJS_NATIVE_ASSETS_DIRNAME)
     private val nodeProjectDir: File = File(filesDir, NODEJS_PROJECT_DIRNAME)
     private val jsFile: File = File(nodeProjectDir, NODEJS_PROJECT_INDEX_FILENAME)
     private val comapeoSocketFile: File = File(filesDir, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
-    private val stateSocketFile: File = File(filesDir, ComapeoCoreService.STATE_SOCKET_FILENAME)
+    private val controlSocketFile: File = File(filesDir, ComapeoCoreService.CONTROL_SOCKET_FILENAME)
     private val sharedPrefsName = packageName + SHARED_PREFS_NAME_POSTFIX
     private val json = Json { encodeDefaults = true }
     private val ipcDeferred = CompletableDeferred<NodeJSIPC>()
@@ -68,7 +70,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                 deleteSocketFiles()
                 log("Deleted socket files")
             }
-            ipcDeferred.complete(NodeJSIPC(stateSocketFile) { message ->
+            ipcDeferred.complete(NodeJSIPC(controlSocketFile) { message ->
                 log("Received message: $message")
             })
         }
@@ -85,6 +87,12 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                     withContext(Dispatchers.IO) {
                         nodeProjectDir.deleteRecursively()
                         copyAssetFolder(NODEJS_PROJECT_DIRNAME, nodeProjectDir)
+                        log("Copied $NODEJS_PROJECT_DIRNAME into data directory")
+                        
+                        val abiName = getCurrentABIName()
+                        val nativeAssetsDirToCopy = "$NODEJS_NATIVE_ASSETS_DIRNAME/$abiName"
+                        copyAssetFolder(nativeAssetsDirToCopy, nodeProjectDir)
+                        log("Copied $nativeAssetsDirToCopy into data directory")
                     }
                 }
 
@@ -93,7 +101,8 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                         "node",
                         jsFile.absolutePath,
                         comapeoSocketFile.absolutePath,
-                        stateSocketFile.absolutePath
+                        controlSocketFile.absolutePath,
+                        dataDir,
                     )
                 )
                 log("NodeJS service completed with exit code $exitCode")
@@ -140,7 +149,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
 
     private fun deleteSocketFiles() {
         comapeoSocketFile.delete()
-        stateSocketFile.delete()
+        controlSocketFile.delete()
     }
 
     private fun shouldCopyAssets(): Boolean {

@@ -27,13 +27,18 @@ export class SocketMessagePort extends TypedEmitter {
   /** @type {'idle' | 'active' | 'closed'} */
   #state = "idle";
   #framedStream;
+  /** @type {JsonValue[]} */
+  #queue = [];
 
   /** @param {Buffer} buf */
   #handleData = (buf) => {
-    if (this.#state !== "active") return; // should not happen but just in case
     try {
       const message = JSON.parse(buf.toString());
-      this.emit("message", message);
+      if (this.#state === "active") {
+        this.emit("message", message);
+      } else if (this.#state === "idle") {
+        this.#queue.push(message);
+      }
     } catch (reason) {
       console.error("Failed to parse message", reason);
       this.emit("messageerror", ensureError(reason));
@@ -46,16 +51,18 @@ export class SocketMessagePort extends TypedEmitter {
   constructor(socket) {
     super();
     this.#framedStream = new FramedStream(socket);
+    this.#framedStream.on("data", this.#handleData);
     this.#framedStream.on("close", () => {
+      this.#framedStream.off("data", this.#handleData);
       this.close();
     });
     this.#framedStream.on("error", (error) => {
-      this.emit("messageerror", ensureError(error));
+      // TODO: Emit error, handle in consumer
+      console.error("FramedStream error", error);
     });
   }
 
   /**
-   * Send messages with the subchannel's ID
    * @param {JsonValue} message
    */
   postMessage(message) {
@@ -65,13 +72,33 @@ export class SocketMessagePort extends TypedEmitter {
   start() {
     if (this.#state !== "idle") return;
     this.#state = "active";
-    this.#framedStream.on("data", this.#handleData);
+    for (const message of this.#queue) {
+      this.emit("message", message);
+    }
+    this.#queue.length = 0;
+  }
+
+  /**
+   * @template {keyof Events} TEvent
+   * @param {TEvent} event
+   * @param {Events[TEvent]} listener
+   */
+  addEventListener(event, listener) {
+    this.addListener(event, listener);
+  }
+  /**
+   * @template {keyof Events} TEvent
+   * @param {TEvent} event
+   * @param {Events[TEvent]} listener
+   */
+  removeEventListener(event, listener) {
+    this.removeListener(event, listener);
   }
 
   close() {
     if (this.#state === "closed") return;
     this.#state = "closed";
-    this.#framedStream.off("data", this.#handleData);
+    this.#queue.length = 0;
     this.#framedStream.destroy();
   }
 }
