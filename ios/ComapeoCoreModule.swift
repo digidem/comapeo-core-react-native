@@ -10,7 +10,11 @@ public class ComapeoCoreModule: Module {
     //   2. getState() must return the same source as the stateChange event (service state).
 
     static func resolveSocketPath() -> String {
-        return AppLifecycleDelegate.shared.nodeService.comapeoSocketPath
+        // Use the static accessor on AppLifecycleDelegate (NOT `.shared`) —
+        // OnCreate runs on the React Native JS thread, and lazy-initialising
+        // `.shared` from off-main-thread traps under Expo 55's @MainActor
+        // BaseExpoAppDelegateSubscriber.init().
+        return AppLifecycleDelegate.nodeService.comapeoSocketPath
     }
 
     static func stateString(for service: NodeJSService, ipc: NodeJSIPC?) -> String {
@@ -31,8 +35,9 @@ public class ComapeoCoreModule: Module {
                 self?.sendEvent("message", ["data": message])
             }
 
-            // Observe service state changes
-            AppLifecycleDelegate.shared.nodeService.onStateChange = { [weak self] state in
+            // Observe service state changes. Static accessor — see
+            // resolveSocketPath above for why we avoid `.shared` here.
+            AppLifecycleDelegate.nodeService.onStateChange = { [weak self] state in
                 self?.sendEvent("stateChange", ["state": state.rawValue])
             }
         }
@@ -51,8 +56,10 @@ public class ComapeoCoreModule: Module {
         }
 
         Function("getState") { () -> String in
+            // Static accessor — Function callbacks may run off-main-thread
+            // and `.shared`'s lazy init is @MainActor under Expo 55.
             ComapeoCoreModule.stateString(
-                for: AppLifecycleDelegate.shared.nodeService,
+                for: AppLifecycleDelegate.nodeService,
                 ipc: self.ipc
             )
         }

@@ -36,6 +36,17 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         }
     )
 
+    /// Static accessor for the shared service. Use this from any non-main-thread
+    /// context (e.g. inside `ComapeoCoreModule`'s `OnCreate`, which Expo runs on
+    /// the React Native JS thread). Going through `.shared` would force lazy
+    /// init of `AppLifecycleDelegate`, whose superclass `BaseExpoAppDelegateSubscriber`
+    /// is `@MainActor`-isolated in Expo 55 — Swift 6's runtime check then traps
+    /// (SIGTRAP via `_swift_task_checkIsolatedSwift`) when init runs off-main.
+    static var nodeService: NodeJSService { _nodeService }
+
+    /// Instance-level accessor kept for tests, which run on the main thread and
+    /// therefore can safely materialise `.shared` without tripping the actor
+    /// isolation check.
     var nodeService: NodeJSService { Self._nodeService }
 
     public func applicationDidBecomeActive(_ application: UIApplication) {
