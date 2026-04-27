@@ -69,6 +69,52 @@ jobs:
       - name: Pod install
         run: cd example/ios && pod install
 
+      # Don't pin a specific device name (e.g. "iPhone 16"). GitHub-hosted
+      # macos-15 runners *should* have iPhone 16 pre-installed for iOS 26 per
+      # the runner image readme, but in practice some runner instances boot
+      # with no simulator devices registered (only the placeholder destination
+      # is listed by xcodebuild) — looks like a transient provisioning state.
+      # Discover the first available iPhone simulator on an iOS runtime that
+      # matches our SDK and use its UDID. If none is registered, create one.
+      - name: Resolve iOS Simulator
+        id: simulator
+        run: |
+          set -euo pipefail
+          # Prefer iOS 26.x to match the SDK Xcode 26.3 builds against.
+          # Fall back to whatever iPhone simulator is available.
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys, re
+          data = json.load(sys.stdin)
+          # Prefer iOS 26.x runtimes, then any iOS runtime.
+          def runtime_rank(rt):
+            m = re.search(r"iOS-(\d+)-(\d+)", rt)
+            if not m: return (-1, -1)
+            return (int(m.group(1)), int(m.group(2)))
+          runtimes = sorted(
+            (rt for rt in data["devices"] if "iOS" in rt),
+            key=runtime_rank, reverse=True,
+          )
+          for rt in runtimes:
+            for d in data["devices"][rt]:
+              if d.get("isAvailable") and "iPhone" in d.get("name", ""):
+                print(d["udid"])
+                sys.exit(0)
+          sys.exit(1)
+          ' || true)
+          if [ -z "$UDID" ]; then
+            echo "No pre-installed iPhone simulator found — creating one."
+            RUNTIME=$(xcrun simctl list runtimes available --json | python3 -c '
+            import json, sys
+            for rt in json.load(sys.stdin)["runtimes"]:
+              if "iOS" in rt["name"] and rt.get("isAvailable"):
+                print(rt["identifier"])
+                break
+            ')
+            UDID=$(xcrun simctl create "ci-iphone" "iPhone 17" "$RUNTIME")
+          fi
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices "$UDID"
+
       - name: Run integration tests
         run: |
           cd example/ios
@@ -76,5 +122,5 @@ jobs:
             -workspace corereactnativeexample.xcworkspace \
             -scheme corereactnativeexample \
             -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination "id=${{ steps.simulator.outputs.udid }}" \
             CODE_SIGNING_ALLOWED='NO'
