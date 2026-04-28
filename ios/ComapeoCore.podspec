@@ -10,10 +10,11 @@ Pod::Spec.new do |s|
   s.license        = package['license']
   s.author         = package['author']
   s.homepage       = package['homepage']
-  s.platforms      = {
-    :ios => '15.1',
-    :tvos => '15.1'
-  }
+  # iOS-only. tvOS and visionOS aren't supported targets — the per-addon
+  # xcframeworks emitted by `scripts/build-backend.ts` only contain iOS
+  # device + simulator slices, and the wider build pipeline assumes the
+  # nodejs-mobile xcframework's iOS slices.
+  s.platforms      = { :ios => '15.1' }
   s.swift_version  = '5.4'
   s.source         = { git: 'https://github.com/digidem/comapeo-core-react-native' }
   s.static_framework = true

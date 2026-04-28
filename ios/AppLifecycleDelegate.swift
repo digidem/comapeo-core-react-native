@@ -155,11 +155,13 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// so two sim devices each get a distinct
     /// `/tmp/comapeo-<pid>/`. PIDs can be reused after the app exits;
     /// `NodeJSService.deleteSocketFiles()` cleans up at start and at
-    /// stop, and the host's standard `/tmp` cleanup eventually
-    /// collects any stragglers from a hard crash. We don't try to
-    /// gc stale `/tmp/comapeo-*` directories ourselves — the cost of
-    /// getting that wrong (deleting a peer simulator's live socket)
-    /// outweighs the cost of a few KB of orphaned dirs.
+    /// stop, and macOS's `com.apple.periodic-daily.plist` purges
+    /// `/tmp` entries older than three days, which collects
+    /// stragglers from any hard crash. We don't try to gc stale
+    /// `/tmp/comapeo-*` directories ourselves — the cost of getting
+    /// that wrong (deleting a peer simulator's live socket) outweighs
+    /// the cost of carrying a handful of empty dirs for up to three
+    /// days.
     ///
     /// **Device** uses the per-app sandbox tmp directly. Each app has
     /// its own sandbox so cross-instance collisions can't happen; we

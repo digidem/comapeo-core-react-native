@@ -14,7 +14,7 @@ index 6cb84fb..afc00e3 100644
     * @param {string} [opts.defaultOnlineStyleUrl] URL for an online-hosted StyleJSON asset.
     * @param {boolean} [opts.defaultIsArchiveDevice] Whether the node is an archive device by default
     * @param {(url: string) => WebSocket} [opts.makeWebsocket]
-+   * @param {object} [opts.betterSqlite3NativeBinding] Pre-loaded better-sqlite3 native addon module. When set, every `new Database(...)` call routes around `require('bindings')('better_sqlite3.node')` and uses this addon directly. nodejs-mobile callers (iOS in particular) need this because the default `bindings` lookup walks the filesystem expecting a `.node` next to the JS — but our native code ships inside a code-signed iOS xcframework loaded via `process.dlopen` at app start. Threaded through to MapeoProject so per-project DBs use the same addon.
++   * @param {object} [opts.betterSqlite3NativeBinding] Pre-loaded better-sqlite3 native addon module. When set, every `new Database(...)` call routes around the default node-bindings lookup and uses this addon directly. nodejs-mobile callers (iOS in particular) need this because the default lookup walks the filesystem expecting a .node file next to the JS — but our native code ships inside a code-signed iOS xcframework loaded via `process.dlopen` at app start. Threaded through to MapeoProject so per-project DBs use the same addon.
     */
    constructor({
      rootKey,
