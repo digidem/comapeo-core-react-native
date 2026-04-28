@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
@@ -15,9 +16,20 @@
         dlopen would fail because nativeLibraryDir is empty under this
         configuration). Pairs with `packagingOptions.jniLibs.useLegacyPackaging
         = false` in build.gradle.
+
+        `dataExtractionRules` (Android 12+) and `fullBackupContent` (older)
+        exclude the SharedPreferences file the rootkey envelope lives in
+        from cloud backup and device-to-device transfer. Consuming apps
+        that already declare these attributes will get a manifest-merger
+        conflict — they should add their own rules referencing the
+        `comapeo-core.xml` SharedPreferences file or use `tools:replace`
+        with awareness.
     -->
     <application
-        android:extractNativeLibs="false">
+        android:extractNativeLibs="false"
+        android:dataExtractionRules="@xml/comapeo_data_extraction_rules"
+        android:fullBackupContent="@xml/comapeo_backup_rules"
+        tools:targetApi="s">
         <!-- android:name should not change (see http://android-developers.blogspot.com/2011/06/things-that-cannot-change.html) -->
         <!-- android:process is used to run the service in a separate process -->
         <!-- android:exported stops other apps from starting this service -->

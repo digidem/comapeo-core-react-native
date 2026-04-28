@@ -23,15 +23,25 @@ func makeMockNodeEntryPoint() -> (entryPoint: NodeJSService.NodeEntryPoint, sign
     return (entryPoint, { semaphore.signal() })
 }
 
+/// A fixed 16-byte test vector used as the rootkey under macOS swift-test
+/// runs. Returned by the default `rootKeyProvider` injected via
+/// `makeMockNodeService` so tests never touch the real keychain.
+let mockTestRootKey = Data((0..<16).map { _ in UInt8(0xAB) })
+
 /// Convenience wrapper that also constructs the `NodeJSService` with the mock
 /// entry point and a fake JS path. Most tests just need `(service, signalExit)`.
 ///
 /// `privateStorageDir` defaults to a sibling of `socketDir` so callers don't
 /// have to thread two paths through every test. Tests that exercise the
 /// backend's filesystem state can override it.
+///
+/// `rootKeyProvider` defaults to a fixed test vector. Tests that want to
+/// exercise the failure path (e.g. simulating a locked keychain) can inject
+/// a closure that throws.
 func makeMockNodeService(
     socketDir: String,
-    privateStorageDir: String? = nil
+    privateStorageDir: String? = nil,
+    rootKeyProvider: @escaping NodeJSService.RootKeyProvider = { mockTestRootKey }
 ) -> (service: NodeJSService, signalExit: () -> Void) {
     let (entryPoint, signal) = makeMockNodeEntryPoint()
     let service = NodeJSService(
@@ -39,7 +49,22 @@ func makeMockNodeService(
         privateStorageDir: privateStorageDir
             ?? (socketDir as NSString).appendingPathComponent("private-storage"),
         nodeEntryPoint: entryPoint,
-        resolveJSEntryPoint: { "/fake/index.mjs" }
+        resolveJSEntryPoint: { "/fake/index.mjs" },
+        rootKeyProvider: rootKeyProvider
     )
     return (service, signal)
+}
+
+/// Boots the service and stands up a `MockBackend` to drive the
+/// `started → init → ready` handshake. Returns the backend so the caller can
+/// stop it (and inspect post-handshake state) when the test ends.
+///
+/// Order is load-bearing: `service.start()` calls `deleteSocketFiles()`
+/// synchronously, so the backend's `start()` must run AFTER that call —
+/// otherwise the bind file gets deleted out from under us.
+func startServiceWithMockBackend(_ service: NodeJSService) throws -> MockBackend {
+    service.start()
+    let backend = MockBackend(controlSocketPath: service.controlSocketPath)
+    try backend.start()
+    return backend
 }

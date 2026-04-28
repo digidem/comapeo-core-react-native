@@ -5,26 +5,30 @@ import { SocketMessagePort } from "./message-port.js";
  * Control-socket server: routes inbound requests by message `type` and
  * broadcasts readiness transitions to all connected clients.
  *
- * The readiness state machine has three phases. They mirror what the embedded
- * Node process can guarantee about its own startup:
+ * The readiness state machine has three phases. They reflect the two-stage
+ * boot the host now drives — control socket first, then `MapeoManager`
+ * construction (which needs a rootKey from native), then the comapeo RPC
+ * socket:
  *
- *   - `pre-listening` — both UDS servers (control + comapeo RPC) have not yet
- *     resolved their `listen()` promises. Clients connecting in this window
- *     receive nothing; they'll get the broadcast as soon as the host calls
- *     `setReadinessPhase("started")`.
- *   - `started`       — both servers are accepting connections. Emitted as
- *     `{type: "started"}`. Held for a 1 s settle window before transitioning.
- *   - `ready`         — past the settle window. Emitted as `{type: "ready"}`.
- *     A late-connecting client (one whose accept() lands after the broadcast)
- *     receives both replayed messages on connect, in order.
+ *   - `pre-listening` — control socket has not yet bound. Clients connecting
+ *     in this window receive nothing; they'll get the broadcast as soon as
+ *     the host calls `setReadinessPhase("started")`.
+ *   - `started`       — control socket is accepting connections. The host
+ *     is waiting for an `{type:"init", rootKey:"<base64>"}` frame so it can
+ *     construct `MapeoManager`. Emitted as `{type:"started"}`. Native sends
+ *     the init frame in response.
+ *   - `ready`         — `MapeoManager` exists and the comapeo RPC socket is
+ *     bound. Emitted as `{type:"ready"}`. RPC clients (the React Native
+ *     module) can safely connect and call methods.
  *
- * The settle window is what makes the iOS Swift state-IPC client reliable:
- * `NodeJSIPC.connect()` polls for the socket file with `waitForFile()` and
- * then runs `connectWithRetry()`, which on simulator runs can take ~50 ms
- * after the file appears. Without the replay, any IPC client that finishes
- * its retry handshake after the one-shot broadcast lost the message.
+ * Late-connecting clients receive both replayed messages in order, so a
+ * native state-IPC client that finishes `waitForFile()` + retry-connect after
+ * the one-shot broadcast still sees the transitions.
  *
- * @template {Record<string, (...args: any[]) => any>} TMethods
+ * Methods registered on the constructor are invoked with the full inbound
+ * message — handlers can read fields beyond `type` (e.g. `init.rootKey`).
+ *
+ * @template {Record<string, (message: any) => any>} TMethods
  */
 export class SimpleRpcServer extends ServerHelper {
   #methods;
@@ -80,7 +84,7 @@ export class SimpleRpcServer extends ServerHelper {
       console.warn("Received invalid message", message);
       return;
     }
-    this.#methods[message.type]();
+    this.#methods[message.type](message);
   }
 
   /**

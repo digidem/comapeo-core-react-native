@@ -59,11 +59,11 @@ final class CoreManagerSmokeTest: XCTestCase {
         XCTAssertEqual(service.state, .started)
 
         // Signal 3a: control socket emits `ready`. Broadcast happens after
-        // backend/index.js's Promise.all([controlIpcServer.listen,
-        // comapeoRpcServer.listen]) resolves PLUS a 1 s settle window. The
-        // ComapeoManager has been constructed before that point — see
-        // backend/index.js:22 (createComapeo) which runs before line 41
-        // (comapeoRpcServer.listen).
+        // backend/index.js sequences: bind control → broadcast `started` →
+        // receive native's `{type:"init",rootKey:...}` frame → construct
+        // ComapeoManager → bind comapeo socket → broadcast `ready`. So by
+        // the time `ready` lands, the manager exists and the comapeo
+        // socket is accepting connections.
         let readyReceived = expectation(description: "control IPC saw `ready`")
         readyReceived.assertForOverFulfill = false
         let messagesLock = NSLock()

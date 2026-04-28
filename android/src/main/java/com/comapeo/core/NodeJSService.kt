@@ -1,6 +1,7 @@
 package com.comapeo.core
 
 import android.content.ContextWrapper
+import android.util.Base64
 import android.util.Log
 import androidx.core.content.edit
 import kotlinx.coroutines.CompletableDeferred
@@ -27,6 +28,28 @@ const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
 
 @Suppress("KotlinJniMissingFunction")
 class NodeJSService(context: android.content.Context) : ContextWrapper(context) {
+    /**
+     * Public lifecycle state mirroring iOS's `NodeJSService.State`. The FGS's
+     * `ComapeoCoreService` forwards transitions to the JS layer via the
+     * Expo module so callers can render UI feedback. See issue #29.
+     *
+     * State semantics:
+     * - STOPPED  — initial; not running.
+     * - STARTING — Node process has been spawned (or is about to be) AND
+     *              we're awaiting the backend's `ready` broadcast on the
+     *              control socket. The rootkey hand-off happens in this
+     *              window: backend sends `started`, FGS sends the init
+     *              frame with the rootkey, backend constructs MapeoManager
+     *              and replies with `ready`.
+     * - STARTED  — RPC is safe to use. The comapeo socket is bound.
+     * - STOPPING — graceful shutdown initiated.
+     * - ERROR    — terminal: rootkey load failed, or shutdown timed out
+     *              with the node thread still alive.
+     */
+    enum class State {
+        STOPPED, STARTING, STARTED, STOPPING, ERROR
+    }
+
     interface Callback {
         fun onComplete(exitCode: Int)
         fun onError(e: Exception)
@@ -42,6 +65,27 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
     private val sharedPrefsName = packageName + SHARED_PREFS_NAME_POSTFIX
     private val json = Json { encodeDefaults = true }
     private val ipcDeferred = CompletableDeferred<NodeJSIPC>()
+
+    /**
+     * Single-slot state observer. The FGS routes transitions through here
+     * to `ComapeoCoreService`, which broadcasts to the main app process via
+     * the control socket's `started`/`ready` messages — JS side derives its
+     * own state machine from those (no extra cross-process IPC needed).
+     */
+    @Volatile
+    var onStateChange: ((State) -> Unit)? = null
+
+    @Volatile
+    private var state: State = State.STOPPED
+
+    fun getState(): State = state
+
+    private fun transitionState(to: State) {
+        if (state == to) return
+        log("NodeJSService state: $state -> $to")
+        state = to
+        onStateChange?.invoke(to)
+    }
 
     companion object {
 
@@ -64,9 +108,14 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                 deleteSocketFiles()
                 log("Deleted socket files")
             }
-            ipcDeferred.complete(NodeJSIPC(controlSocketFile) { message ->
-                log("Received message: $message")
-            })
+            // Drives the rootkey handshake: on `started` we ship the init
+            // frame with the bytes from RootKeyStore; on `ready` we
+            // promote to STARTED.
+            ipcDeferred.complete(
+                NodeJSIPC(controlSocketFile) { message ->
+                    handleControlMessage(message)
+                },
+            )
         }
     }
 
@@ -75,6 +124,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
             throw IllegalStateException("NodeJS service is already running")
         }
         log("Starting NodeJS service")
+        transitionState(State.STARTING)
         nodeJob = serviceScope.launch {
             try {
                 if (shouldCopyAssets()) {
@@ -103,10 +153,57 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                 callback.onComplete(exitCode)
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting node", e)
+                transitionState(State.ERROR)
                 callback.onError(e)
             } finally {
                 deleteSocketFiles()
+                if (state != State.ERROR) transitionState(State.STOPPED)
             }
+        }
+    }
+
+    /**
+     * Routes raw control-socket frames into lifecycle transitions and the
+     * rootkey handshake. The frames are well-known JSON shapes
+     * (`{"type":"started"}`, `{"type":"ready"}`); a substring match keeps
+     * this synchronous so the init-frame send is ordered immediately after
+     * `started`.
+     */
+    private fun handleControlMessage(message: String) {
+        log("Control IPC received: $message")
+        when {
+            message.contains("\"started\"") -> sendInitFrame()
+            message.contains("\"ready\"") -> {
+                if (state == State.STARTING) transitionState(State.STARTED)
+            }
+        }
+    }
+
+    /**
+     * Reads the rootkey via `RootKeyStore`, base64-encodes, and ships the
+     * init frame on the control socket. Failures here are terminal: the
+     * service transitions to `ERROR` rather than letting Node sit waiting
+     * for a frame that will never arrive. The ByteArray is zeroed after
+     * encoding — best-effort, since the encoded base64 string still lives
+     * in the JVM string pool until GC.
+     */
+    private fun sendInitFrame() {
+        val rootKeyBytes: ByteArray = try {
+            RootKeyStore(applicationContext).loadOrInitialize()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load rootkey", e)
+            transitionState(State.ERROR)
+            // Best-effort: try to abort the node process. nodeJob will
+            // observe the cancellation.
+            nodeJob?.cancel()
+            return
+        }
+        val b64 = Base64.encodeToString(rootKeyBytes, Base64.NO_WRAP)
+        rootKeyBytes.fill(0)
+        val frame = "{\"type\":\"init\",\"rootKey\":\"$b64\"}"
+        serviceScope.launch {
+            ipcDeferred.await().sendMessage(frame)
+            log("Sent init frame to backend")
         }
     }
 
@@ -115,6 +212,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
             log("NodeJS service is not running, nothing to stop")
             return
         }
+        transitionState(State.STOPPING)
         try {
             val message = json.encodeToString(ShutdownMessage())
             log(message)
@@ -138,6 +236,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
         deleteSocketFiles()
         nodeJob?.cancel()
         serviceScope.cancel()
+        transitionState(State.STOPPED)
         log("NodeJS service destroyed")
     }
 

@@ -19,6 +19,12 @@ class NodeJSService {
     /// Returns the exit code.
     typealias NodeEntryPoint = (_ arguments: [String]) -> Int32
 
+    /// Throws-or-returns the 16-byte rootkey. Native code reads from a
+    /// keychain-backed `RootKeyStore` in production; tests inject a fixed
+    /// vector. Called once per `start()`, off the main thread, after the
+    /// control IPC has connected and Node has broadcast `started`.
+    typealias RootKeyProvider = () throws -> Data
+
     static let comapeoSocketFilename = "comapeo.sock"
     static let controlSocketFilename = "control.sock"
 
@@ -44,6 +50,10 @@ class NodeJSService {
     /// How to locate the bundled JS entry point. Can be replaced for testing.
     private let resolveJSEntryPoint: () -> String?
 
+    /// Reads the rootkey on demand. Can be replaced for testing so the
+    /// macOS swift-test target never touches the real keychain.
+    private let rootKeyProvider: RootKeyProvider
+
     var onStateChange: ((State) -> Void)?
 
     private(set) var state: State = .stopped {
@@ -65,11 +75,14 @@ class NodeJSService {
     ///     keeps SQLite, blobs, and other on-disk state here.
     ///   - nodeEntryPoint: Blocking function that runs Node.js.
     ///   - resolveJSEntryPoint: Returns the path to the JS entry file.
+    ///   - rootKeyProvider: Returns the 16-byte device rootkey. Invoked
+    ///     during `starting` after the backend's `started` broadcast.
     init(
         socketDir: String,
         privateStorageDir: String,
         nodeEntryPoint: @escaping NodeEntryPoint,
-        resolveJSEntryPoint: @escaping () -> String?
+        resolveJSEntryPoint: @escaping () -> String?,
+        rootKeyProvider: @escaping RootKeyProvider
     ) {
         self.socketDir = socketDir
         self.privateStorageDir = privateStorageDir
@@ -91,6 +104,7 @@ class NodeJSService {
 
         self.nodeEntryPoint = nodeEntryPoint
         self.resolveJSEntryPoint = resolveJSEntryPoint
+        self.rootKeyProvider = rootKeyProvider
 
         try? FileManager.default.createDirectory(atPath: socketDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: privateStorageDir, withIntermediateDirectories: true)
@@ -122,11 +136,13 @@ class NodeJSService {
 
         deleteSocketFiles()
 
-        // Initialize the control IPC connection (connects asynchronously, waits for socket file).
-        // Receives broadcast `started`/`ready` messages from the backend's
-        // SimpleRpcServer once both UDS servers are listening.
-        controlIPC = NodeJSIPC(socketPath: controlSocketPath) { message in
-            log("Control IPC received: \(message)")
+        // Initialize the control IPC connection (connects asynchronously,
+        // waits for socket file). Drives the rootkey handshake: on `started`
+        // we ship the init frame; on `ready` we transition to `.started`.
+        // The backend's SimpleRpcServer replays both messages to late
+        // clients, so even a slow connect is safe.
+        controlIPC = NodeJSIPC(socketPath: controlSocketPath) { [weak self] message in
+            self?.handleControlMessage(message)
         }
 
         // Start Node.js on a background thread
@@ -138,6 +154,62 @@ class NodeJSService {
         thread.stackSize = 2 * 1024 * 1024 // 2MB stack required by nodejs-mobile
         nodeThread = thread
         thread.start()
+    }
+
+    /// Routes raw control-socket frames into lifecycle transitions.
+    ///
+    /// Cheap message inspection (substring match) — the protocol's only
+    /// payloads on this channel are well-known JSON like `{"type":"started"}`
+    /// and `{"type":"ready"}`. A real parser would be overkill and would also
+    /// need a worker queue; we want this to stay synchronous so the
+    /// init-frame send is ordered immediately after `started`.
+    private func handleControlMessage(_ message: String) {
+        log("Control IPC received: \(message)")
+        if message.contains("\"started\"") {
+            sendInitFrame()
+        } else if message.contains("\"ready\"") {
+            // Don't downgrade from .stopping back to .started — stop() may
+            // have raced ahead of the backend's `ready` broadcast.
+            lock.lock()
+            let canPromote = (state == .starting)
+            lock.unlock()
+            if canPromote { transitionState(to: .started) }
+        }
+    }
+
+    /// Reads the rootkey, base64-encodes, and ships the init frame on the
+    /// control socket. Called exactly once per start cycle, in response to
+    /// the backend's `started` broadcast. Failures here are terminal: we
+    /// transition to `.error` rather than letting Node sit forever waiting
+    /// for an init frame that will never arrive. See the
+    /// `kSecAttrAccessibleAfterFirstUnlock` note in `RootKeyStore`: a
+    /// device that has never been unlocked since reboot will throw here, and
+    /// retry-on-foreground is the right UX (handled by the next
+    /// `applicationDidBecomeActive` call).
+    private func sendInitFrame() {
+        guard let ipc = controlIPC else { return }
+        var keyBytes: Data
+        do {
+            keyBytes = try rootKeyProvider()
+        } catch {
+            log("Failed to load rootkey: \(error.localizedDescription)")
+            transitionState(to: .error)
+            return
+        }
+        defer {
+            // Best-effort zeroing. Swift `Data` doesn't guarantee single
+            // ownership of its backing buffer, so this is a hygiene measure
+            // not a security guarantee.
+            keyBytes.withUnsafeMutableBytes { rawBuf in
+                if let base = rawBuf.baseAddress {
+                    memset(base, 0, rawBuf.count)
+                }
+            }
+        }
+        let b64 = keyBytes.base64EncodedString()
+        let frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
+        ipc.sendMessage(frame)
+        log("Sent init frame to backend")
     }
 
     /// Gracefully stops the Node.js process by sending a shutdown message.
@@ -194,7 +266,9 @@ class NodeJSService {
         lock.lock()
         let completionSem = nodeCompletionSemaphore
         lock.unlock()
-        transitionState(to: .started)
+        // Stay in `.starting` while Node spins up — the transition to
+        // `.started` now waits for the backend's `ready` broadcast (after
+        // ComapeoManager is constructed), driven by `handleControlMessage`.
 
         // argv shape matches Android's NodeJSService.kt:
         //   [node, indexPath, comapeoSocketPath, controlSocketPath, privateStorageDir]

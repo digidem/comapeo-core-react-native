@@ -43,7 +43,7 @@ final class NodeJSServiceTests: XCTestCase {
 
     // MARK: - Startup Tests
 
-    func testStartTransitionsToStarted() {
+    func testStartTransitionsToStarted() throws {
         let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "State reached STARTED")
 
@@ -53,10 +53,14 @@ final class NodeJSServiceTests: XCTestCase {
             }
         }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
         XCTAssertEqual(service.state, .started)
+        // Sanity-check the rootkey actually round-tripped through the
+        // handshake. `mockTestRootKey` is the shared test vector.
+        XCTAssertEqual(backend.receivedRootKey, mockTestRootKey)
         signalExit()
         service.cleanup()
     }
@@ -66,7 +70,7 @@ final class NodeJSServiceTests: XCTestCase {
     /// `.starting` and `.stopping` are transient and not directly observable
     /// without racy test plumbing, so they're covered by the internal
     /// `guard state == .stopped` in `NodeJSService.start()`.
-    func testSecondStartFromStartedIsIgnored() {
+    func testSecondStartFromStartedIsIgnored() throws {
         let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "State reached STARTED")
 
@@ -76,7 +80,8 @@ final class NodeJSServiceTests: XCTestCase {
             }
         }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
         // Second start should be ignored
@@ -108,20 +113,12 @@ final class NodeJSServiceTests: XCTestCase {
             }
         }
 
-        service.start()
+        // The handshake-driving MockBackend keeps reading after `ready`,
+        // so the shutdown frame the service sends on stop() lands on its
+        // post-handshake read loop and is captured in `receivedShutdown`.
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
-
-        // Create mock state server AFTER start() so deleteSocketFiles() doesn't remove it.
-        // The controlIPC is already polling via waitForFile() and will connect once
-        // the server creates the socket file.
-        let stateServer = MockNodeServer(socketPath: service.controlSocketPath)
-        try stateServer.start()
-        defer { stateServer.stop() }
-
-        // Accept the IPC client connection from the service
-        let clientFd = stateServer.acceptClient()
-        XCTAssertGreaterThanOrEqual(clientFd, 0, "Should accept IPC client")
-        defer { close(clientFd) }
 
         // Stop the service on a background thread (stop() blocks)
         let stopFinished = expectation(description: "stop() returned")
@@ -130,18 +127,18 @@ final class NodeJSServiceTests: XCTestCase {
             stopFinished.fulfill()
         }
 
-        // Read the shutdown message from the mock server side
-        let message = MockNodeServer.receiveFramedMessage(fd: clientFd)
-        XCTAssertEqual(message, #"{"type":"shutdown"}"#, "Should receive shutdown message")
-
         // Signal the mock node process to exit so stop() can complete.
         signalExit()
 
         wait(for: [stopFinished], timeout: 5)
         XCTAssertEqual(service.state, .stopped)
+        XCTAssertTrue(
+            backend.receivedShutdown,
+            "MockBackend should observe the shutdown frame on the control socket"
+        )
     }
 
-    func testStopTransitionsToStopped() {
+    func testStopTransitionsToStopped() throws {
         let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
@@ -149,7 +146,8 @@ final class NodeJSServiceTests: XCTestCase {
             if state == .started { startedExpectation.fulfill() }
         }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
         var stateSequence = [NodeJSService.State]()
@@ -179,7 +177,7 @@ final class NodeJSServiceTests: XCTestCase {
         XCTAssertEqual(service.state, .stopped)
     }
 
-    func testStopCompletesQuicklyWhenNodeResponds() {
+    func testStopCompletesQuicklyWhenNodeResponds() throws {
         let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
@@ -187,7 +185,8 @@ final class NodeJSServiceTests: XCTestCase {
             if state == .started { startedExpectation.fulfill() }
         }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
         // Signal exit immediately so stop() completes quickly
@@ -201,7 +200,7 @@ final class NodeJSServiceTests: XCTestCase {
         XCTAssertEqual(service.state, .stopped)
     }
 
-    func testSocketFilesDeletedAfterStop() {
+    func testSocketFilesDeletedAfterStop() throws {
         let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
@@ -209,7 +208,8 @@ final class NodeJSServiceTests: XCTestCase {
             if state == .started { startedExpectation.fulfill() }
         }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
         signalExit()
@@ -222,7 +222,7 @@ final class NodeJSServiceTests: XCTestCase {
 
     // MARK: - Cleanup Tests
 
-    func testCleanupIsIdempotent() {
+    func testCleanupIsIdempotent() throws {
         let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
@@ -230,7 +230,8 @@ final class NodeJSServiceTests: XCTestCase {
             if state == .started { startedExpectation.fulfill() }
         }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
         signalExit()
@@ -242,7 +243,7 @@ final class NodeJSServiceTests: XCTestCase {
         XCTAssertEqual(service.state, .stopped)
     }
 
-    func testCleanupDirectlyFromStarted() {
+    func testCleanupDirectlyFromStarted() throws {
         // cleanup() with the default threadExited: true argument represents a
         // caller that knows the node thread has finished. State lands in .stopped.
         let (service, _) = makeTestService()
@@ -252,7 +253,8 @@ final class NodeJSServiceTests: XCTestCase {
             if state == .started { startedExpectation.fulfill() }
         }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
         // cleanup() without stop() — as the background task expiration handler would do
@@ -263,7 +265,7 @@ final class NodeJSServiceTests: XCTestCase {
 
     // MARK: - Restart Tests
 
-    func testCanRestartAfterStop() {
+    func testCanRestartAfterStop() throws {
         let (service1, signalExit1) = makeTestService()
 
         // First cycle
@@ -271,10 +273,11 @@ final class NodeJSServiceTests: XCTestCase {
         service1.onStateChange = { state in
             if state == .started { started1.fulfill() }
         }
-        service1.start()
-        waitForExpectations(timeout: 5)
+        let backend1 = try startServiceWithMockBackend(service1)
+        wait(for: [started1], timeout: 5)
         signalExit1()
         service1.stop(timeout: 1)
+        backend1.stop()
         XCTAssertEqual(service1.state, .stopped)
 
         // Second cycle — need a new service since node can only start once per process
@@ -284,8 +287,9 @@ final class NodeJSServiceTests: XCTestCase {
         service2.onStateChange = { state in
             if state == .started { started2.fulfill() }
         }
-        service2.start()
-        waitForExpectations(timeout: 5)
+        let backend2 = try startServiceWithMockBackend(service2)
+        defer { backend2.stop() }
+        wait(for: [started2], timeout: 5)
         XCTAssertEqual(service2.state, .started)
         signalExit2()
         service2.cleanup()
@@ -293,7 +297,7 @@ final class NodeJSServiceTests: XCTestCase {
 
     // MARK: - Concurrency Tests
 
-    func testConcurrentStopCallsAreSafe() {
+    func testConcurrentStopCallsAreSafe() throws {
         let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
 
@@ -301,7 +305,8 @@ final class NodeJSServiceTests: XCTestCase {
             if state == .started { startedExpectation.fulfill() }
         }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
         // Signal exit so stop() calls can complete
@@ -335,16 +340,19 @@ final class NodeJSServiceTests: XCTestCase {
     /// frame `stop()` sends via `sendMessageSync` lands in the IPC's pre-connect
     /// pending list rather than reaching a peer — that's the actual production
     /// failure mode this test guards against.
-    func testStopTimeoutTransitionsToErrorNotStopped() {
+    func testStopTimeoutTransitionsToErrorNotStopped() throws {
         let (service, _) = makeTestService()
         let startedExpectation = expectation(description: "Started")
         service.onStateChange = { if $0 == .started { startedExpectation.fulfill() } }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
         waitForExpectations(timeout: 5)
 
-        // The mock entry blocks forever (we never call signalExit). stop() sends
-        // a shutdown message that no one reads, so the completion semaphore times out.
+        // Tear down the backend before stop() so the shutdown frame has no
+        // reader — the service's send queues it, the completion semaphore
+        // times out because the mock entry never exits, and stop() lands
+        // in `.error`.
+        backend.stop()
         service.stop(timeout: 0.1)
 
         XCTAssertEqual(
@@ -383,15 +391,17 @@ final class NodeJSServiceTests: XCTestCase {
     /// After a timed-out stop has pushed the service into `.error`, subsequent
     /// `start()` calls must be rejected. Allowing a restart would invoke
     /// `NodeMobileStartNode` a second time in the same process.
-    func testStartFromErrorStateIsRejected() {
+    func testStartFromErrorStateIsRejected() throws {
         let (service, _) = makeTestService()
         let startedExpectation = expectation(description: "Started")
         service.onStateChange = { if $0 == .started { startedExpectation.fulfill() } }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
         waitForExpectations(timeout: 5)
 
-        // Force transition to .error via timeout path.
+        // Force transition to .error via timeout path. Tear the backend
+        // down first so the shutdown frame has no reader.
+        backend.stop()
         service.stop(timeout: 0.1)
         XCTAssertEqual(service.state, .error, "precondition: timed-out stop must land in .error")
 
@@ -413,7 +423,7 @@ final class NodeJSServiceTests: XCTestCase {
 
     // MARK: - State Transition Order Tests
 
-    func testFullLifecycleStateTransitions() {
+    func testFullLifecycleStateTransitions() throws {
         let (service, signalExit) = makeTestService()
         var transitions = [NodeJSService.State]()
         let lock = NSLock()
@@ -427,7 +437,8 @@ final class NodeJSServiceTests: XCTestCase {
         }
 
         // Start
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
         // Stop
@@ -464,7 +475,7 @@ final class NodeJSServiceTests: XCTestCase {
     /// internal lock. A callback that calls back into a locked method
     /// (here, `cleanup()`) would otherwise deadlock waiting for the lock
     /// the transition is already holding.
-    func testObserverCanReenterLockedMethodFromCallback() {
+    func testObserverCanReenterLockedMethodFromCallback() throws {
         let (service, signalExit) = makeTestService()
 
         let callbackCompleted = expectation(description: "callback finished without deadlock")
@@ -479,7 +490,8 @@ final class NodeJSServiceTests: XCTestCase {
             }
         }
 
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         // 5s is generous: the call should return in milliseconds. A
         // deadlock would block here until the timeout.
         wait(for: [callbackCompleted], timeout: 5)

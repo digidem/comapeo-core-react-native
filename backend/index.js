@@ -19,50 +19,105 @@ const [comapeoSocketPath, controlSocketPath, privateStorageDir] =
 
 const fastify = Fastify();
 
-const comapeo = createComapeo({
-  privateStorageDir,
-  fastify,
-  migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
-});
+// `MapeoManager` cannot exist until native sends the rootKey on the control
+// socket. Hold the comapeo RPC server in a closure so the shutdown handler
+// can close it if it ever got built, while staying a no-op if shutdown lands
+// before init.
+/** @type {ComapeoRpcServer | undefined} */
+let comapeoRpcServer;
+/** @type {Awaited<ReturnType<typeof createComapeo>> | undefined} */
+let comapeo;
 
-const comapeoRpcServer = new ComapeoRpcServer(comapeo);
+/** @type {(rootKey: Buffer) => void} */
+let resolveInit;
+/** @type {(reason: Error) => void} */
+let rejectInit;
+/** @type {Promise<Buffer>} */
+const initPromise = new Promise((resolve, reject) => {
+  resolveInit = resolve;
+  rejectInit = reject;
+});
+let initConsumed = false;
+
 const controlIpcServer = new SimpleRpcServer({
+  /**
+   * Receive the 16-byte rootKey from native and unblock manager construction.
+   *
+   * The first valid `init` resolves `initPromise`. Subsequent inits are
+   * rejected with a warning so a misbehaving native side cannot reset the
+   * manager mid-session. A malformed payload (non-string `rootKey`, bad
+   * base64, or wrong length after decode) rejects `initPromise` once,
+   * which surfaces to native as the process exiting non-zero — native then
+   * transitions to its `error` state.
+   *
+   * @param {Record<string, unknown>} message
+   */
+  init: (message) => {
+    if (initConsumed) {
+      console.warn("Received init after manager was created; ignoring");
+      return;
+    }
+    if (typeof message.rootKey !== "string") {
+      rejectInit(
+        new Error(
+          `init.rootKey must be a base64 string, got ${typeof message.rootKey}`,
+        ),
+      );
+      initConsumed = true;
+      return;
+    }
+    const rootKey = Buffer.from(message.rootKey, "base64");
+    if (rootKey.byteLength !== 16) {
+      rejectInit(
+        new Error(
+          `init.rootKey must decode to 16 bytes, got ${rootKey.byteLength}`,
+        ),
+      );
+      initConsumed = true;
+      return;
+    }
+    initConsumed = true;
+    resolveInit(rootKey);
+  },
   shutdown: async () => {
-    await Promise.all([
-      comapeoRpcServer.close(),
-      controlIpcServer.close(),
-      fastify.close(),
-    ]);
-    await comapeo.close();
+    const closePromises = [controlIpcServer.close(), fastify.close()];
+    if (comapeoRpcServer) closePromises.push(comapeoRpcServer.close());
+    await Promise.all(closePromises);
+    if (comapeo) await comapeo.close();
   },
 });
 
-// Listen on both sockets in parallel, then drive the readiness state machine.
-// `started` fires as soon as both `listen()` promises resolve so a control
-// client knows the comapeo socket is accepting connections; `ready` fires
-// after a 1 s settle window for callers that want a stronger "I won't see
-// startup races" signal. Late-connecting clients receive both replayed.
-//
-// See SimpleRpcServer for why the settle window exists. The Swift state-IPC
-// client polls for the socket file plus retries, which can land its first
-// successful accept several tens of ms after the broadcast — without the
-// replay it sees nothing.
-Promise.all([
-  controlIpcServer.listen(controlSocketPath),
-  comapeoRpcServer.listen(comapeoSocketPath),
-])
-  .then(async () => {
-    console.log(
-      `Node server listening on ${controlSocketPath} and ${comapeoSocketPath}`,
-    );
+(async () => {
+  try {
+    // 1. Bind the control socket. Native is already polling for it; once
+    // bound, the `started` broadcast tells native it can send the init frame.
+    await controlIpcServer.listen(controlSocketPath);
+    console.log(`Control socket listening on ${controlSocketPath}`);
     controlIpcServer.setReadinessPhase("started");
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // 2. Wait for native to send the rootKey. `initPromise` resolves on the
+    // first valid init frame; rejects on a malformed one.
+    const rootKey = await initPromise;
+
+    // 3. Construct the manager and bind the comapeo RPC socket.
+    comapeo = createComapeo({
+      privateStorageDir,
+      fastify,
+      migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
+      rootKey,
+    });
+    comapeoRpcServer = new ComapeoRpcServer(comapeo);
+    await comapeoRpcServer.listen(comapeoSocketPath);
+    console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
+
+    // 4. Announce ready. The settle-window-then-ready dance is gone now
+    // that `ready` carries actual meaning (manager exists, RPC is safe).
     controlIpcServer.setReadinessPhase("ready");
-  })
-  .catch((error) => {
+  } catch (error) {
     console.error("Failed to start servers", error);
     process.exit(1);
-  });
+  }
+})();
 
 process.on("exit", () => {
   console.log("node exiting");
