@@ -3,24 +3,28 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 /**
- * iOS-only addon loader rewrite plugin.
+ * Native-addon loader-pattern rewrite plugin. Platform-agnostic.
  *
- * Phase 1 / Android: native addons ship as loose `.node` files at known
- * paths under `nodejs-project/node_modules/<pkg>/prebuilds/...`. The
- * existing `rollup-plugin-native-paths.js` patches the three loader
+ * Phase 1 (both platforms) shipped native `.node` files at known paths
+ * under `nodejs-project/node_modules/<pkg>/prebuilds/...`, and the
+ * legacy `rollup-plugin-native-paths.js` patched the three loader
  * patterns (`require('bindings')(...)`, `require('node-gyp-build')(...)`,
- * `require.addon(...)`) so they walk into those paths via the bare
- * resolvers and Node ends up dlopening from the JS-level filesystem.
+ * `require.addon(...)`) so they walked into those paths via the bare
+ * resolvers. `process.dlopen` ended up loading from `filesDir` after
+ * a runtime asset extraction.
  *
- * Phase 2 / iOS: native addons ship as code-signed xcframeworks
- * embedded under `<App>.app/Frameworks/`. The bare resolvers can't reach
- * them — the embedded path isn't on any module-resolution search path
- * Node knows about. So instead of *adjusting* the loader call, we
- * *replace* it: each loader pattern becomes a call to
- * `__loadAddon(<package-name>, <package-version>)`, which
- * `process.dlopen`s the pre-positioned framework binary at
- * `NATIVE_LIB_DIR/<name>__<version>.framework/<name>__<version>` and
- * caches the result keyed by `name__version`.
+ * Phase 2 ships native code via the platform's standard packaging
+ * (Android `jniLibs/<abi>/lib<name>__<version>.so` mmap'd from the
+ * APK, iOS `<name>__<version>.xcframework` Embed-&-Sign'd into
+ * `<App>.app/Frameworks/`). The bare resolvers can't reach either
+ * location — neither is on a module-resolution search path Node knows
+ * about. So instead of *adjusting* the loader call to walk into the
+ * right node_modules path, we *replace* it: each loader pattern
+ * becomes a call to `__loadAddon(<package-name>, <package-version>)`,
+ * which the platform-specific runtime helper `process.dlopen`s
+ * appropriately. See `iosAddonLoaderBanner` /
+ * `androidAddonLoaderBanner` below — those wire the helper into the
+ * top of each platform's bundle.
  *
  * Multi-version safety: when the dep tree carries two versions of the
  * same addon (e.g. `sodium-native@4.3.3` top-level + `@5.1.0` nested
@@ -33,26 +37,20 @@ import path from "node:path";
  * `require('bindings')('better_sqlite3.node')` lazily, on first
  * `new Database(...)` call. The rewrite catches that callsite at
  * bundle time so when the lazy initialization runs at runtime, it
- * loads our xcframework via `__loadAddon('better-sqlite3', '<ver>')`.
+ * loads our prebuilt addon via `__loadAddon('better-sqlite3', '<ver>')`.
  * No special handling needed beyond the standard loader-pattern rewrite
  * — the underscore-vs-hyphen mismatch (`better_sqlite3.node` filename
  * vs. `better-sqlite3` package name) only mattered when we let the
  * original call run; the rewrite replaces the call entirely.
  *
- * The runtime helper itself ships via the bundle's `output.banner` (see
- * `iosAddonLoaderBanner`) so it lives at the top of the rolled-up file
- * and exists before any module-level loader call runs.
- *
  * @returns {import('rollup').Plugin}
  */
-export default function iosAddonLoaderPlugin() {
+export default function addonLoaderPlugin() {
   /** @type {Array<{ pattern: RegExp, replacement: (packageName: string, packageVersion: string) => string }>} */
   const replacements = [
     {
       // node-bindings as used by better-sqlite3: require('bindings')('foo.node').
-      // Backreference `\2` matches the same quote style for the inner arg —
-      // mirrors `rollup-plugin-native-paths.js` so both rewrites cover the
-      // exact same callsites.
+      // Backreference `\2` matches the same quote style for the inner arg.
       pattern: /require\(['"]bindings['"]\)\(((['"]).+?\2)?\)/g,
       replacement: (n, v) => `__loadAddon('${n}', '${v}')`,
     },
@@ -77,7 +75,7 @@ export default function iosAddonLoaderPlugin() {
   const packageCache = new Map();
 
   return {
-    name: "rollup-plugin-ios-addon-loader",
+    name: "rollup-plugin-addon-loader",
 
     /**
      * @param {string} code
@@ -104,13 +102,13 @@ export default function iosAddonLoaderPlugin() {
 
 /**
  * Banner for the iOS rollup output. Defines `__loadAddon(name, version)`
- * so the loader-pattern rewrites run at the top of the bundle have a
- * callable helper from the very first line.
+ * so the loader-pattern rewrites have a callable helper from the very
+ * first line of the bundle.
  *
  * `process.dlopen` lands in
  * `<App>.app/Frameworks/<name>__<version>.framework/<name>__<version>`
- * — Xcode's Embed & Sign phase populates Frameworks/ at app build time
- * from the xcframeworks emitted by `scripts/build-backend.ts`.
+ * — Xcode's Embed & Sign phase populates `Frameworks/` at app build
+ * time from the xcframeworks emitted by `scripts/build-backend.ts`.
  * `NATIVE_LIB_DIR` is set by Swift in `AppLifecycleDelegate.nodeService`'s
  * `nodeEntryPoint` closure before `NodeMobileStartNode` returns
  * control to the bundle.
@@ -124,10 +122,6 @@ export default function iosAddonLoaderPlugin() {
  * `buildFrameworkPlist` in scripts/build-backend.ts substitutes `__`
  * for `-` there only).
  *
- * Using string concatenation rather than `path.join` avoids needing a
- * `createRequire`/`import` dance in the banner — iOS is POSIX, so `/`
- * is fine.
- *
  * @type {string}
  */
 export const iosAddonLoaderBanner = [
@@ -139,6 +133,40 @@ export const iosAddonLoaderBanner = [
   "  if (cached) return cached;",
   "  const mod = { exports: {} };",
   "  process.dlopen(mod, __nativeLibDir + '/' + key + '.framework/' + key);",
+  "  __addonCache.set(key, mod.exports);",
+  "  return mod.exports;",
+  "}",
+].join("\n");
+
+/**
+ * Banner for the Android rollup output. Defines `__loadAddon(name, version)`
+ * the same way iOS does, but `process.dlopen`s a bare filename
+ * `lib<name>__<version>.so` — no path. Bionic's per-app linker
+ * namespace resolves the bare name against the APK's `lib/<abi>/`
+ * mmap region when the manifest has `extractNativeLibs="false"` and
+ * AGP keeps the libs uncompressed via `useLegacyPackaging=false`.
+ * Validated end-to-end by
+ * `digidem/nodejs-mobile-bare-prebuilds@feat/jnilibs-xcframework-packaging`'s
+ * Android test harness (canonical plan §0.1: a *full-path* `dlopen`
+ * against `getApplicationInfo().nativeLibraryDir` would *fail* under
+ * `extractNativeLibs="false"` because no `.so` is on disk at any
+ * resolvable path — bare-name dlopen against the APK mmap is the
+ * only thing that works).
+ *
+ * Same `__` separator as iOS for symmetry. `.so` filenames take it
+ * fine; AGP doesn't impose an alphanumeric-only rule the way Apple's
+ * `CFBundleIdentifier` does, so no sanitisation is needed.
+ *
+ * @type {string}
+ */
+export const androidAddonLoaderBanner = [
+  "const __addonCache = new Map();",
+  "function __loadAddon(name, version) {",
+  "  const key = name + '__' + version;",
+  "  const cached = __addonCache.get(key);",
+  "  if (cached) return cached;",
+  "  const mod = { exports: {} };",
+  "  process.dlopen(mod, 'lib' + key + '.so');",
   "  __addonCache.set(key, mod.exports);",
   "  return mod.exports;",
   "}",

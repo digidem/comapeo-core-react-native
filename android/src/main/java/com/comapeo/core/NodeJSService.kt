@@ -24,7 +24,6 @@ const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
 const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
-const val NODEJS_NATIVE_ASSETS_DIRNAME = "nodejs-native"
 
 @Suppress("KotlinJniMissingFunction")
 class NodeJSService(context: android.content.Context) : ContextWrapper(context) {
@@ -36,7 +35,6 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var nodeJob: Job? = null
     private val dataDir: String = filesDir.absolutePath
-    private val nodeNativeAssetsDir: File = File(filesDir, NODEJS_NATIVE_ASSETS_DIRNAME)
     private val nodeProjectDir: File = File(filesDir, NODEJS_PROJECT_DIRNAME)
     private val jsFile: File = File(nodeProjectDir, NODEJS_PROJECT_INDEX_FILENAME)
     private val comapeoSocketFile: File = File(filesDir, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
@@ -49,11 +47,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
 
         init {
             System.loadLibrary("comapeo-core-react-native")
-            log(getCurrentABIName())
         }
-
-        @JvmStatic
-        external fun getCurrentABIName(): String
 
         @JvmStatic
         external fun initialize(dataDir: String)
@@ -88,11 +82,11 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                         nodeProjectDir.deleteRecursively()
                         copyAssetFolder(NODEJS_PROJECT_DIRNAME, nodeProjectDir)
                         log("Copied $NODEJS_PROJECT_DIRNAME into data directory")
-                        
-                        val abiName = getCurrentABIName()
-                        val nativeAssetsDirToCopy = "$NODEJS_NATIVE_ASSETS_DIRNAME/$abiName"
-                        copyAssetFolder(nativeAssetsDirToCopy, nodeProjectDir)
-                        log("Copied $nativeAssetsDirToCopy into data directory")
+                        // Phase 2: native `.so` files no longer extract here.
+                        // They ship in `jniLibs/<abi>/` and Bionic mmaps them
+                        // from the APK at `dlopen` time — see the
+                        // `androidAddonLoaderBanner` runtime helper baked
+                        // into the rolled-up backend.
                     }
                 }
 

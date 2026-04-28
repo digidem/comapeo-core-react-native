@@ -6,10 +6,10 @@ import commonjs from "@rollup/plugin-commonjs";
 import { default as esmShim } from "@rollup/plugin-esm-shim";
 import json from "@rollup/plugin-json";
 
-import nativePaths from "./rollup-plugins/rollup-plugin-native-paths.js";
-import iosAddonLoaderPlugin, {
+import addonLoaderPlugin, {
+  androidAddonLoaderBanner,
   iosAddonLoaderBanner,
-} from "./rollup-plugins/rollup-plugin-ios-addon-loader.js";
+} from "./rollup-plugins/rollup-plugin-addon-loader.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,16 +44,6 @@ function stubComapeoMapsPlugin() {
  * @returns {import('rollup').RollupOptions['plugins']}
  */
 function buildPlugins({ platform }) {
-  // Native addon loader rewrite differs per platform:
-  //   Android: rewrite to bare-resolver paths so the bundled
-  //     loaders walk into nodejs-project/node_modules/<pkg>/prebuilds/<abi>/.
-  //   iOS: rewrite to __loadAddon(name, version) which process.dlopens
-  //     the embedded xcframework binary at
-  //     NATIVE_LIB_DIR/<name>__<version>.framework/<name>__<version>.
-  //     The runtime helper itself is injected via output.banner.
-  const addonLoaderPlugin =
-    platform === "ios" ? iosAddonLoaderPlugin() : nativePaths();
-
   return [
     alias({
       entries: [
@@ -68,7 +58,12 @@ function buildPlugins({ platform }) {
     // iOS-only: stub the maps fastify plugin so undici stays out of the
     // bundle. See lib/maps-stub.js.
     ...(platform === "ios" ? [stubComapeoMapsPlugin()] : []),
-    addonLoaderPlugin,
+    // Native addon loader rewrite is identical for both platforms:
+    // every loader pattern (`bindings`, `node-gyp-build`, `require.addon`)
+    // becomes `__loadAddon(name, version)`. The helper itself differs
+    // per output via the platform-specific banner — see `output.banner`
+    // entries below.
+    addonLoaderPlugin(),
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
     commonjs({ ignoreDynamicRequires: true }),
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
@@ -100,10 +95,19 @@ const sharedOutput = {
  *
  * @type {import('rollup').RollupOptions[]}
  */
+// Each output's `banner` defines `__loadAddon(name, version)` with the
+// platform-appropriate `process.dlopen` target — Android does
+// bare-name dlopen against the APK mmap region, iOS dlopen's the
+// Embed-&-Sign'd xcframework binary at NATIVE_LIB_DIR/<key>.framework/<key>.
+// See `rollup-plugin-addon-loader.js` for the helper bodies.
 const config = [
   {
     input: sharedInput,
-    output: { ...sharedOutput, dir: path.join(__dirname, "dist/android") },
+    output: {
+      ...sharedOutput,
+      dir: path.join(__dirname, "dist/android"),
+      banner: androidAddonLoaderBanner,
+    },
     plugins: buildPlugins({ platform: "android" }),
   },
   {
@@ -111,10 +115,6 @@ const config = [
     output: {
       ...sharedOutput,
       dir: path.join(__dirname, "dist/ios"),
-      // Defines `__loadAddon(name, version)` at the top of the bundle
-      // so module-level loader-pattern rewrites performed by
-      // `rollup-plugin-ios-addon-loader.js` have a callable helper
-      // from the very first line of the bundle.
       banner: iosAddonLoaderBanner,
     },
     plugins: buildPlugins({ platform: "ios" }),

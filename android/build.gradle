@@ -57,7 +57,12 @@ android {
     }
     sourceSets {
         main {
-            jniLibs.srcDirs 'libnode/bin/'
+            // `libnode/bin/` holds the prebuilt nodejs-mobile libnode.so per ABI.
+            // `src/main/jniLibs/` holds per-addon .so files emitted by
+            // `scripts/build-backend.ts` (one `lib<name>__<version>.so` per
+            // native module instance × ABI). Both directories ship into the
+            // same APK `lib/<abi>/` segment.
+            jniLibs.srcDirs 'libnode/bin/', 'src/main/jniLibs/'
             assets {
                 srcDirs 'src/main/assets'
             }
@@ -77,6 +82,18 @@ android {
         "**/libc++_shared.so",
         "**/libfbjni.so",
         ]
+        // Phase 2: keep `.so` files uncompressed and aligned in the APK
+        // so Bionic's per-app linker namespace can mmap them in place
+        // when the manifest sets `extractNativeLibs="false"`. Without
+        // this pair, AGP either reverts to the legacy "extract on
+        // install" behaviour or rejects the manifest at build time.
+        // The bundled `__loadAddon` helper does bare-name dlopen
+        // (`process.dlopen('lib<name>__<version>.so')`), which only
+        // resolves against the APK mmap region — `nativeLibraryDir`
+        // contains nothing under this configuration.
+        jniLibs {
+            useLegacyPackaging false
+        }
     }
     ndkVersion '27.0.12077973'
 }

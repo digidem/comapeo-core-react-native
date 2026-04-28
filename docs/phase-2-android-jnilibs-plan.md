@@ -1,20 +1,26 @@
 # Phase 2 plan — Android `jniLibs/` packaging for native addons
 
-Sequel to [`phase-2-xcframework-plan.md`](./phase-2-xcframework-plan.md)
-(landed in PR #16). That branch migrated iOS to xcframework Embed & Sign
-and explicitly punted the same architectural shift on Android. This plan
-covers the Android side: move `.node` files out of
-`android/src/main/assets/nodejs-native/<abi>/` (extracted at first
-launch by `NodeJSService.kt#copyAssetFolder`) into
-`android/src/main/jniLibs/<abi>/lib<name>.so`, mmap'd from the APK at
-load time. Symmetric goal to the iOS work: zero runtime extraction,
-automatic packaging by the toolchain, no `android.permission.WRITE_*`
-on shared external state.
+> **Status (2026-04-28):** ✅ Shipped on the same branch as iOS Phase 2
+> (PR #16 grew to cover both halves). Android `.node` files now ship
+> as `lib<name>__<version>.so` under `jniLibs/<abi>/`, mmap'd from the
+> APK with `extractNativeLibs="false"` + `useLegacyPackaging=false`.
+> The unified `rollup-plugin-addon-loader.js` replaces the per-platform
+> `rollup-plugin-native-paths.js` + `rollup-plugin-ios-addon-loader.js`
+> pair — same loader-pattern transform, two banners that differ only
+> in their `process.dlopen` target. Versioned filenames adopted from
+> the start (not deferred): the dep tree already carries two versions
+> of `sodium-native` and two of `better-sqlite3`, surfaced by the iOS
+> Phase 2 work, so the multi-version path is the reference path.
 
-The runtime intercept also unifies as part of this branch: the
-iOS-only `__loadAddon(name)` helper from PR #16 grows a
-platform-dispatched body, and `rollup-plugin-native-paths.js` is
-retired in favour of a single `rollup-plugin-addon-loader.js`.
+Sequel to [`phase-2-xcframework-plan.md`](./phase-2-xcframework-plan.md).
+That branch migrated iOS to xcframework Embed & Sign and originally
+punted the symmetric Android shift; this plan covers the Android side
+and unifies the rollup loader plugin across both platforms.
+
+The runtime intercept unifies as part of this branch: the iOS-only
+`__loadAddon(name)` helper from PR #16 grows a platform-dispatched
+banner, and `rollup-plugin-native-paths.js` is retired in favour of
+a single `rollup-plugin-addon-loader.js`.
 
 ---
 
@@ -432,27 +438,42 @@ no-op on Android.
 
 ## 5. Acceptance criteria
 
-- [ ] `npm run backend:build` produces
-      `android/src/main/jniLibs/<abi>/lib<name>.so` for each native
-      module × each Android ABI.
-- [ ] `git ls-files android/src/main/jniLibs/` returns nothing (gitignored).
-- [ ] `git ls-files android/src/main/assets/nodejs-native/` returns
+> **Status (2026-04-28):** mechanically-checkable items below are all
+> ticked from the local build + iOS sim run. The Android emulator and
+> APK-shape checks are CI-pending as of this commit (Android workflow
+> exercises the same build pipeline + emulator instrumented tests).
+
+- [x] `npm run backend:build` produces
+      `android/src/main/jniLibs/<abi>/lib<name>__<version>.so` for each
+      native module instance × each Android ABI. Versioned filenames
+      adopted from the start (deviated from the original "deferred"
+      plan because the dep tree already carries multi-version
+      addons — see status banner above).
+- [x] `git ls-files android/src/main/jniLibs/` returns nothing
+      (gitignored).
+- [x] `git ls-files android/src/main/assets/nodejs-native/` returns
       nothing AND the directory is no longer produced.
 - [ ] `unzip -l example/android/app/build/outputs/apk/.../app.apk | grep "lib/arm64-v8a"`
-      shows `lib<name>.so` entries (i.e. the linker can mmap them in
-      place); `aapt dump badging` confirms `extractNativeLibs:'-1'`.
+      shows `lib<name>__<version>.so` entries (i.e. the linker can
+      mmap them in place); `aapt dump badging` confirms
+      `extractNativeLibs:'-1'`. *(CI-pending — gradle build runs in
+      the Android workflow.)*
 - [ ] `Instrumented Tests (30)` passes on Android emulator API 30
       with the new packaging — confirms bare-name `dlopen` works
-      end-to-end.
-- [ ] `Integration Tests (Example App)` (iOS) still passes — confirms
-      the rollup loader plugin refactor didn't regress iOS.
+      end-to-end. *(CI-pending.)*
+- [x] `Integration Tests (Example App)` (iOS) still passes — confirms
+      the rollup loader plugin unification didn't regress iOS. (4/4
+      local sim run.)
 - [ ] `iOS Device Build (xcframework codesign verification)` still
-      passes.
-- [ ] `NodeJSService.kt` no longer references `nodejs-native` or
-      `getCurrentABIName` from `start()`.
-- [ ] `rollup-plugin-native-paths.js` is deleted.
-- [ ] `__loadAddon` banner is identical in both bundles
-      (`diff <(head -20 android.../index.mjs) <(head -20 ios.../index.mjs)`).
+      passes. *(CI-pending.)*
+- [x] `NodeJSService.kt` no longer references `nodejs-native` or
+      `getCurrentABIName` from `start()`; the JNI-side
+      `getCurrentABIName` symbol + the `CURRENT_ABI_NAME` macro are
+      also gone from `jni-bridge.cpp` (no callers).
+- [x] `rollup-plugin-native-paths.js` is deleted.
+- [x] Both bundles' `__loadAddon` helpers carry the same shape; only
+      the `process.dlopen` argument differs (Android: bare
+      `lib<key>.so`, iOS: `<NATIVE_LIB_DIR>/<key>.framework/<key>`).
 
 ---
 

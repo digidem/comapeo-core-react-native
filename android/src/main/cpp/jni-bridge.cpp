@@ -11,18 +11,6 @@
 
 using namespace facebook::jni;
 
-#if defined(__arm__)
-#define CURRENT_ABI_NAME "armeabi-v7a"
-#elif defined(__aarch64__)
-#define CURRENT_ABI_NAME "arm64-v8a"
-#elif defined(__i386__)
-#define CURRENT_ABI_NAME "x86"
-#elif defined(__x86_64__)
-#define CURRENT_ABI_NAME "x86_64"
-#else
-#error "Trying to compile for an unknown ABI."
-#endif
-
 // Start threads to redirect stdout and stderr to logcat.
 int pipe_stdout[2];
 int pipe_stderr[2];
@@ -89,11 +77,6 @@ class NodeJSService : public JavaClass<NodeJSService> {
 public:
     static constexpr auto kJavaDescriptor = "Lcom/comapeo/core/NodeJSService;";
 
-    static jstring getCurrentABIName(alias_ref<JClass>) {
-        log("getCurrentABIName: %s", CURRENT_ABI_NAME);
-        return make_jstring(CURRENT_ABI_NAME).release();
-    }
-
     static void initialize(alias_ref<JClass>, alias_ref<jstring> dataDir) {
         auto nativeDataDir = dataDir->toStdString();
         log("initialize: %s", nativeDataDir.c_str());
@@ -136,8 +119,6 @@ public:
 
     static void registerNatives() {
         javaClassStatic()->registerNatives({
-                                                   makeNativeMethod("getCurrentABIName",
-                                                                    NodeJSService::getCurrentABIName),
                                                    makeNativeMethod("initialize",
                                                                     NodeJSService::initialize),
                                                    makeNativeMethod("startNodeWithArguments",
