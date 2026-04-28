@@ -66,6 +66,16 @@ export default function iosAddonLoaderPlugin() {
     },
   ];
 
+  // Per-directory cache for `readContainingPackage` lookups. The walk
+  // is invoked once per transformed file, and a typical bundle pulls
+  // many sibling files from the same package — without a cache the
+  // plugin re-walks the same path tree thousands of times in a build.
+  // Scoped to the plugin closure so the cache lives for one rollup
+  // run; misses (`null`) are cached too, so repeat lookups against a
+  // file outside any package skip the directory walk.
+  /** @type {Map<string, { name: string, version: string, dir: string } | null>} */
+  const packageCache = new Map();
+
   return {
     name: "rollup-plugin-ios-addon-loader",
 
@@ -74,7 +84,7 @@ export default function iosAddonLoaderPlugin() {
      * @param {string} id
      */
     transform(code, id) {
-      const containingPackage = readContainingPackage(id);
+      const containingPackage = readContainingPackage(id, packageCache);
       if (!containingPackage) return null;
 
       const { name, version } = containingPackage;
@@ -137,28 +147,58 @@ export const iosAddonLoaderBanner = [
 /**
  * Returns the npm package directly containing the file at `id`, by
  * walking parent directories looking for the nearest `package.json`
- * with both `name` and `version` fields.
+ * with both `name` and `version` fields. Stops at the `node_modules`
+ * ancestor boundary so a malformed inner `package.json` (e.g. the
+ * `{"type": "module"}` pattern some packages use to flag an ESM
+ * subdirectory) can't cause the walk to leak into a parent package
+ * Node's resolver wouldn't consider this file part of.
+ *
+ * Memoized per-directory via the supplied `cache` map (per-plugin-run).
+ * Misses are cached too — repeat lookups against a file outside any
+ * package short-circuit instead of re-walking.
  *
  * @param {string} id Absolute path to a JS source file.
+ * @param {Map<string, { name: string, version: string, dir: string } | null>} cache
  * @returns {{ name: string, version: string, dir: string } | null}
  */
-function readContainingPackage(id) {
+function readContainingPackage(id, cache) {
   if (typeof id !== "string" || !path.isAbsolute(id)) return null;
+  /** @type {string[]} */
+  const visited = [];
   let dir = path.dirname(id);
   while (true) {
+    const cached = cache.get(dir);
+    if (cached !== undefined) {
+      // Propagate the answer to every directory we walked through.
+      for (const v of visited) cache.set(v, cached);
+      return cached;
+    }
+    visited.push(dir);
+
     const pkgPath = path.join(dir, "package.json");
     if (existsSync(pkgPath)) {
       try {
         const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
         if (pkg.name && pkg.version) {
-          return { name: pkg.name, version: pkg.version, dir };
+          const result = { name: pkg.name, version: pkg.version, dir };
+          for (const v of visited) cache.set(v, result);
+          return result;
         }
       } catch {
         // unreadable / unparseable — keep walking.
       }
     }
+
     const parent = path.dirname(dir);
-    if (parent === dir) return null;
+    // Stop at the `node_modules` ancestor boundary. Node's module
+    // resolution treats each `node_modules/<pkg>/` subtree as an
+    // independent package; if we got here without finding a valid
+    // package.json, the file isn't inside any package and walking
+    // further would cross into an unrelated parent.
+    if (parent === dir || path.basename(parent) === "node_modules") {
+      for (const v of visited) cache.set(v, null);
+      return null;
+    }
     dir = parent;
   }
 }
