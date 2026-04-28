@@ -19,7 +19,18 @@ config.resolver.nodeModulesPaths = [
 ];
 
 config.resolver.extraNodeModules = {
+<<<<<<< HEAD:apps/example/metro.config.js
   '@comapeo/core-react-native': '../..',
+||||||| parent of 126cd87 (initial attempt):example/metro.config.js
+  '@comapeo/core-react-native': '..',
+=======
+  '@comapeo/core-react-native': '..',
+  // https://github.com/expo/expo/issues/44647
+  'expo-modules-core': path.join(
+    __dirname,
+    './node_modules/expo/node_modules/expo-modules-core',
+  ),
+>>>>>>> 126cd87 (initial attempt):example/metro.config.js
 };
 
 config.watchFolders = [path.resolve(__dirname, '../..')];
