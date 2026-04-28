@@ -7,6 +7,41 @@ apply plugin: 'com.android.library'
 group = 'com.comapeo.core'
 version = '0.1.0'
 
+// Three ABIs this library ships prebuilt .so files for. Must stay in
+// sync with ANDROID_ARCHS in scripts/build-backend.ts.
+def supportedAbis = ['armeabi-v7a', 'arm64-v8a', 'x86_64']
+
+// Canonical RN convention: read the `reactNativeArchitectures` gradle
+// property (set by the consuming app's android/gradle.properties or
+// `-PreactNativeArchitectures=...`) so consumers can ship a narrower
+// set without forking. Two deviations from the standard helper:
+//   (a) fallback is our 3-ABI prebuilt set instead of all 4 — we don't
+//       fetch x86 prebuilds, so defaulting to it would produce a broken
+//       APK,
+//   (b) we intersect the requested set with `supportedAbis` because the
+//       same x86 caveat applies to consumer-supplied lists.
+def comapeoAbiFilters = {
+    def value = rootProject.findProperty('reactNativeArchitectures')
+    if (!value) return supportedAbis
+    def asked = value.toString().split(',').collect { it.trim() }.findAll { it }
+    def effective = asked.findAll { supportedAbis.contains(it) }
+    if (effective.isEmpty()) {
+        throw new GradleException(
+            "reactNativeArchitectures=${value} has no overlap with the ABIs " +
+            "comapeo-core-react-native ships prebuilds for (${supportedAbis.join(', ')})."
+        )
+    }
+    def dropped = asked - effective
+    if (!dropped.isEmpty()) {
+        logger.warn(
+            "comapeo-core-react-native: dropping unsupported ABIs " +
+            "${dropped.join(', ')} from reactNativeArchitectures; " +
+            "building ${effective.join(', ')}."
+        )
+    }
+    return effective
+}()
+
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
 apply from: expoModulesCorePlugin
 applyKotlinExpoModulesCorePlugin()
@@ -49,7 +84,7 @@ android {
             }
         }
         ndk {
-            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
+            abiFilters(*comapeoAbiFilters)
         }
     }
     lintOptions {
