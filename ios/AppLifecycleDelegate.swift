@@ -28,10 +28,22 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// `ComapeoCoreModule` does, since Expo runs it on the React Native JS
     /// thread.
     ///
-    /// Use `/tmp` for socket files so the path stays within the 104-byte
-    /// `sockaddr_un.sun_path` limit. The app's Documents/tmp directory can
-    /// exceed it on iOS Simulator runners; on a real iOS device, `/tmp` is
-    /// sandboxed to the app's container.
+    /// `socketDir` is constrained by Darwin's 104-byte
+    /// `sockaddr_un.sun_path` limit, which rules out every standard
+    /// iOS sandbox location except the per-app `tmp` directory:
+    /// `Documents/`, `Library/Application Support/`, and
+    /// `Library/Caches/` all push the path over 104 bytes once a
+    /// 12-byte socket basename is appended. `tmp/` is the only fit on
+    /// device.
+    ///
+    /// On iOS Simulator the equivalent sandbox `tmp` is also too long
+    /// (~130-byte CoreSimulator container path); but the simulator's
+    /// system `/tmp` IS the host Mac's `/tmp` and is writable from any
+    /// process, so we land sockets there. On real device the system
+    /// `/tmp` is NOT in the app sandbox — bind() returns `EACCES` —
+    /// so we use `NSTemporaryDirectory()` (the per-app sandbox tmp,
+    /// ~89 bytes) which fits one 12-byte basename with no nesting.
+    /// See `resolveSocketDir()` for the per-environment dispatch.
     ///
     /// `privateStorageDir` is the analogue of Android's `getFilesDir()`: an
     /// app-private writable directory that survives across process restarts
@@ -39,9 +51,25 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// Application Support). The embedded ComapeoManager opens its SQLite
     /// database and writes blobs/projects under here.
     static let nodeService = NodeJSService(
-        filesDir: "/tmp/comapeo",
+        socketDir: AppLifecycleDelegate.resolveSocketDir(),
         privateStorageDir: AppLifecycleDelegate.resolvePrivateStorageDir(),
         nodeEntryPoint: { arguments in
+            // Frameworks directory inside the .app bundle. Xcode's
+            // Embed & Sign phase places one `<name>.framework/`
+            // subdirectory here at app build time, populated from each
+            // `Frameworks/<name>.xcframework` emitted by
+            // `scripts/build-backend.ts`. The rolled-up backend reads
+            // this via `process.env.NATIVE_LIB_DIR` (see
+            // `backend/rollup-plugins/rollup-plugin-ios-addon-loader.js`)
+            // and `process.dlopen`s
+            // `<NATIVE_LIB_DIR>/<name>.framework/<name>` for each
+            // native addon. Setenv'd before `NodeMobileStartNode` so
+            // the value is visible from V8's first tick — bundle-level
+            // addon-loader rewrites run inside that V8 evaluation.
+            let frameworksDir = (Bundle.main.bundlePath as NSString)
+                .appendingPathComponent("Frameworks")
+            setenv("NATIVE_LIB_DIR", frameworksDir, 1)
+
             let cStrings = arguments.map { strdup($0)! }
             defer { cStrings.forEach { free($0) } }
 
@@ -51,100 +79,67 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             }
         },
         resolveJSEntryPoint: {
-            // The unified backend bundle is ESM (`index.mjs`). Both Android
-            // and iOS resolve the same entry filename now — Android's
-            // NodeJSService.kt has used `index.mjs` since the rollup build
-            // landed; iOS catches up here.
+            // The unified backend bundle is ESM (`index.mjs`). Both
+            // Android and iOS resolve the same entry filename now —
+            // Android's `NodeJSService.kt` has used `index.mjs` since
+            // the rollup build landed; iOS catches up here.
             //
-            // Resources arrive as two read-only resource trees in the app
-            // bundle: `nodejs-project/` (the JS) and `nodejs-native/<arch>/`
-            // (the .node prebuilds). Node's addon loader (`require.addon`)
-            // expects them merged under `nodejs-project/node_modules/...`,
-            // which is how Android arranges it on first launch. We mirror
-            // that here: copy `nodejs-project` into a writable location and
-            // overlay `nodejs-native/<arch>` on top, then return the path
-            // to the merged `index.mjs`.
-            AppLifecycleDelegate.prepareNodeBundle()
+            // Hand nodejs-mobile the read-only path inside the .app
+            // bundle directly. Nothing in the rolled-up backend writes
+            // back into `nodejs-project/` at runtime: native `.node`
+            // files live in `<App>.app/Frameworks/<name>__<version>.framework/`
+            // (loaded via `process.dlopen` against `NATIVE_LIB_DIR`,
+            // set in the `nodeEntryPoint` closure above), drizzle
+            // migrations are `fs.readFile`d, and SQLite/blobs/indexes
+            // go to `privateStorageDir`. Read access against the .app
+            // bundle is fine; we save ~24 MB / 50 files of
+            // copy-on-cold-start work that earlier iterations of this
+            // file did into Application Support.
+            //
+            // Android still has to extract on first launch because the
+            // APK doesn't expose a filesystem-readable path to its
+            // assets the way `<App>.app/<name>/` does on iOS.
+            let bundleEntry = (Bundle.main.bundlePath as NSString)
+                .appendingPathComponent("nodejs-project/index.mjs")
+            return FileManager.default.fileExists(atPath: bundleEntry)
+                ? bundleEntry
+                : nil
         }
     )
 
-    /// Extracts the bundled JS + native prebuilds into a writable location and
-    /// returns the path to the merged `index.mjs`. Mirrors Android's asset
-    /// copy in `NodeJSService.kt`. For Phase 1 we always re-extract on cold
-    /// start — the tree is ~50 files / ~24 MB, so the cost is negligible and
-    /// avoids stale files when a developer reinstalls the app over an older
-    /// build that left files behind.
-    private static func prepareNodeBundle() -> String? {
-        let fm = FileManager.default
-        let bundleRoot = Bundle.main.bundlePath as NSString
-        let bundleProjectDir = bundleRoot.appendingPathComponent("nodejs-project")
-        let bundleNativeRoot = bundleRoot.appendingPathComponent("nodejs-native")
-
-        // Simulator slice is selected at compile time: a simulator binary
-        // built for the host's CPU runs only that slice. Phase 2 (xcframework
-        // device + simulator) will add device archs here.
-        #if arch(arm64)
-        let archSlice = "arm64-simulator"
+    /// Resolves the directory that holds the Unix-domain socket files
+    /// the backend listens on. See the `nodeService` doc above for why
+    /// the simulator and device branches differ.
+    ///
+    /// **Simulator** uses the host Mac's `/tmp`, namespaced by host
+    /// PID. The host `/tmp` is shared with every process on the box,
+    /// so a fixed `/tmp/comapeo/` would collide between two
+    /// concurrently-booted simulators running the same app. PID is
+    /// unique per launched app instance at the host kernel level,
+    /// so two sim devices each get a distinct
+    /// `/tmp/comapeo-<pid>/`. PIDs can be reused after the app exits;
+    /// `NodeJSService.deleteSocketFiles()` cleans up at start and at
+    /// stop, and macOS's `com.apple.periodic-daily.plist` purges
+    /// `/tmp` entries older than three days, which collects
+    /// stragglers from any hard crash. We don't try to gc stale
+    /// `/tmp/comapeo-*` directories ourselves — the cost of getting
+    /// that wrong (deleting a peer simulator's live socket) outweighs
+    /// the cost of carrying a handful of empty dirs for up to three
+    /// days.
+    ///
+    /// **Device** uses the per-app sandbox tmp directly. Each app has
+    /// its own sandbox so cross-instance collisions can't happen; we
+    /// drop the namespace dir entirely because adding nesting would
+    /// push the path over 104 bytes.
+    private static func resolveSocketDir() -> String {
+        #if targetEnvironment(simulator)
+        return "/tmp/comapeo-\(getpid())"
         #else
-        let archSlice = "x64-simulator"
+        // Drop trailing slash for consistency with the simulator branch
+        // and with `NSString.appendingPathComponent` callsites that
+        // assume no trailing slash on the parent.
+        return (NSTemporaryDirectory() as NSString).standardizingPath
         #endif
-        let bundleArchDir = (bundleNativeRoot as NSString).appendingPathComponent(archSlice)
-
-        guard fm.fileExists(atPath: bundleProjectDir),
-              fm.fileExists(atPath: bundleArchDir) else {
-            log("Cannot prepare node bundle: missing nodejs-project or nodejs-native/\(archSlice)")
-            return nil
-        }
-
-        let appSupport = (try? fm.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )) ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        let runtimeRoot = appSupport.appendingPathComponent("comapeo-runtime", isDirectory: true).path
-        let runtimeProject = (runtimeRoot as NSString).appendingPathComponent("nodejs-project")
-
-        do {
-            if fm.fileExists(atPath: runtimeProject) {
-                try fm.removeItem(atPath: runtimeProject)
-            }
-            try fm.createDirectory(atPath: runtimeRoot, withIntermediateDirectories: true)
-            try fm.copyItem(atPath: bundleProjectDir, toPath: runtimeProject)
-            try mergeDirectory(from: bundleArchDir, into: runtimeProject)
-        } catch {
-            log("Failed to prepare node bundle: \(error)")
-            return nil
-        }
-
-        return (runtimeProject as NSString).appendingPathComponent("index.mjs")
-    }
-
-    /// Recursive copy that overlays `sourceDir` on `destDir`, replacing files
-    /// of the same name. Used to merge `nodejs-native/<arch>/node_modules/...`
-    /// onto `nodejs-project/node_modules/...` so the .node prebuilds land
-    /// next to each addon's package.json where Node's addon resolver finds
-    /// them.
-    private static func mergeDirectory(from sourceDir: String, into destDir: String) throws {
-        let fm = FileManager.default
-        let entries = try fm.contentsOfDirectory(atPath: sourceDir)
-        for entry in entries {
-            let src = (sourceDir as NSString).appendingPathComponent(entry)
-            let dst = (destDir as NSString).appendingPathComponent(entry)
-            var isDir: ObjCBool = false
-            fm.fileExists(atPath: src, isDirectory: &isDir)
-            if isDir.boolValue {
-                if !fm.fileExists(atPath: dst) {
-                    try fm.createDirectory(atPath: dst, withIntermediateDirectories: true)
-                }
-                try mergeDirectory(from: src, into: dst)
-            } else {
-                if fm.fileExists(atPath: dst) {
-                    try fm.removeItem(atPath: dst)
-                }
-                try fm.copyItem(atPath: src, toPath: dst)
-            }
-        }
     }
 
     /// Resolves the app-private writable directory passed to the backend as
