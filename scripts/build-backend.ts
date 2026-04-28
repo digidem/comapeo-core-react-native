@@ -5,6 +5,7 @@ import {
   readFileSync,
   rmSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { cp, glob } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
@@ -44,6 +45,31 @@ cpSync(BACKEND_SRC_DIR, TEMP_NODEJS_ASSETS_BACKEND_DIR, {
 await $$({
   cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR,
 })`npm ci --ignore-scripts`;
+
+// Replace @comapeo/core's maps fastify plugin with a no-op before rollup
+// runs. The plugin's only job is fetching map style.json over HTTP via
+// `undici`, whose `lazyllhttp()` calls `WebAssembly.compile` at module-init.
+// nodejs-mobile iOS runs V8 with `--jitless` (Apple's no-JIT policy), so the
+// `WebAssembly` global is absent and undici crashes the process before our
+// entry runs. Stripping the import here keeps undici out of the rolled-up
+// bundle entirely. The `plugin` export is still consumed by mapeo-manager,
+// so we keep the named exports — register-time becomes a no-op fastify
+// plugin. Tile fetching is out of scope for Phase 1; comapeo-mobile will
+// re-introduce it on iOS via a non-WASM HTTP client in a later phase.
+const mapsPluginPath = join(
+  TEMP_NODEJS_ASSETS_BACKEND_DIR,
+  "node_modules/@comapeo/core/src/fastify-plugins/maps.js",
+);
+writeFileSync(
+  mapsPluginPath,
+  [
+    "export const CUSTOM_MAP_PREFIX = 'custom'",
+    "export const FALLBACK_MAP_PREFIX = 'fallback'",
+    "/** @type {import('fastify').FastifyPluginAsync<any>} */",
+    "export async function plugin() {}",
+    "",
+  ].join("\n"),
+);
 
 await $$({ cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR })`npm run build`;
 
@@ -273,6 +299,15 @@ await Promise.all(
 // extracted at first launch alongside `nodejs-project/`.
 await Promise.all(
   IOS_ARCHS.map(async (arch) => {
+    // Drop the `-simulator` suffix from the inner `prebuilds/ios-…` path.
+    // The simulator/device split is meaningful for tarball naming, but Bare's
+    // addon resolver uses `process.platform` + `process.arch` at runtime —
+    // both of which yield e.g. `ios-arm64` regardless of simulator vs device.
+    // The outer `<IOS_NODEJS_NATIVE_DIR>/<arch>/` directory still keeps the
+    // suffix so the iOS Swift extractor can pick the right slice for the
+    // current build.
+    const runtimeArch = arch.replace(/-simulator$/, "");
+
     const nodeFiles = await Array.fromAsync(
       glob(`node_modules/**/ios-${arch}/**/*.node`, {
         cwd: TEMP_NODEJS_NATIVE_ASSETS_DIR,
@@ -280,6 +315,10 @@ await Promise.all(
     );
 
     for (const entry of nodeFiles) {
+      const runtimeEntry = entry.replaceAll(
+        `ios-${arch}`,
+        `ios-${runtimeArch}`,
+      );
       const nativeTargetDir = entry.startsWith("node_modules/better-sqlite3/")
         ? join(
             IOS_NODEJS_NATIVE_DIR,
@@ -287,7 +326,7 @@ await Promise.all(
             "node_modules/better-sqlite3/build",
             basename(entry),
           )
-        : join(IOS_NODEJS_NATIVE_DIR, arch, entry);
+        : join(IOS_NODEJS_NATIVE_DIR, arch, runtimeEntry);
 
       await cp(join(TEMP_NODEJS_NATIVE_ASSETS_DIR, entry), nativeTargetDir, {
         force: true,
@@ -333,12 +372,8 @@ function getArtifactInfo({
     ? `${name}-${version}-node-${nodeAbi}-${platform}-${arch}.tar.gz`
     : `${name}-${version}-${platform}-${arch}.tar.gz`;
 
-  const ghReleaseName =
-    // For better-sqlite3, we need to use the release built with bare-make
-    name === "better-sqlite3" ? `${version}-bare-make` : version;
-
   return {
     name: assetName,
-    url: `https://github.com/digidem/${name}-nodejs-mobile/releases/download/${ghReleaseName}/${assetName}`,
+    url: `https://github.com/digidem/${name}-nodejs-mobile/releases/download/${version}/${assetName}`,
   };
 }
