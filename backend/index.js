@@ -5,9 +5,11 @@ import { ComapeoRpcServer } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 
-// We define this here so we don't need to do additional bundling adjustments to get the path correct when running on the device
-// This assumes that we keep the relevant directory as part of the built assets when building for nodejs mobile
-// (see `KEEP_THESE` variable in build-backend.mjs)
+// Resolved relative to this file at evaluation time. The drizzle
+// migrations directory is kept alongside the bundle by
+// `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` so this path
+// is valid both at npm-install time and inside the staged
+// `nodejs-project/` resource tree on device.
 const MIGRATIONS_FOLDER_PATH = fileURLToPath(
   new URL("./node_modules/@comapeo/core/drizzle", import.meta.url),
 );

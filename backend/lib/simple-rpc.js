@@ -22,8 +22,8 @@ import { SocketMessagePort } from "./message-port.js";
  *     module) can safely connect and call methods.
  *
  * Late-connecting clients receive both replayed messages in order, so a
- * native state-IPC client that finishes `waitForFile()` + retry-connect after
- * the one-shot broadcast still sees the transitions.
+ * native control-IPC client that finishes `waitForFile()` + retry-connect
+ * after the one-shot broadcast still sees the transitions.
  *
  * Methods registered on the constructor are invoked with the full inbound
  * message — handlers can read fields beyond `type` (e.g. `init.rootKey`).
@@ -59,9 +59,8 @@ export class SimpleRpcServer extends ServerHelper {
     messagePort.start();
 
     // Replay readiness for late-connecting clients. Order matters:
-    // `started` always before `ready` — Swift tests assert on contains() so
-    // both can ride along on the same accept, but a client that intends to
-    // act on `started` separately needs to see it first.
+    // `started` always before `ready`, so a client that watches for
+    // `started` separately sees it before the `ready` follow-up.
     if (this.#readinessPhase === "started" || this.#readinessPhase === "ready") {
       messagePort.postMessage({ type: "started" });
     }
