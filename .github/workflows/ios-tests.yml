@@ -58,7 +58,7 @@ jobs:
           node-version-file: package.json
 
       - name: Install dependencies
-        run: npm install && cd example && npm install
+        run: npm install && cd apps/example && npm install
 
       - name: Download NodeMobile
         # Both platforms: `scripts/build-backend.ts#getNodeJsMobileNodeVersions`
@@ -80,10 +80,10 @@ jobs:
         run: npm run backend:build
 
       - name: Expo prebuild
-        run: cd example && npx expo prebuild --platform ios --no-install
+        run: cd apps/example && npx expo prebuild --platform ios --no-install
 
       - name: Pod install
-        run: cd example/ios && pod install
+        run: cd apps/example/ios && pod install
 
       # Don't pin a specific device name (e.g. "iPhone 16"). GitHub-hosted
       # macos-15 runners *should* have iPhone 16 pre-installed for iOS 26 per
@@ -139,7 +139,7 @@ jobs:
       # `tee` redirection this step intermittently times out at ~15 min.
       - name: Run integration tests
         run: |
-          cd example/ios
+          cd apps/example/ios
           xcodebuild test \
             -workspace corereactnativeexample.xcworkspace \
             -scheme corereactnativeexample \
@@ -186,7 +186,7 @@ jobs:
           node-version-file: package.json
 
       - name: Install dependencies
-        run: npm install && cd example && npm install
+        run: npm install && cd apps/example && npm install
 
       - name: Download NodeMobile
         run: npm run download:nodejs-mobile
@@ -195,14 +195,14 @@ jobs:
         run: npm run backend:build
 
       - name: Expo prebuild
-        run: cd example && npx expo prebuild --platform ios --no-install
+        run: cd apps/example && npx expo prebuild --platform ios --no-install
 
       - name: Pod install
-        run: cd example/ios && pod install
+        run: cd apps/example/ios && pod install
 
       - name: Build for iOS device (no run)
         run: |
-          cd example/ios
+          cd apps/example/ios
           xcodebuild build \
             -workspace corereactnativeexample.xcworkspace \
             -scheme corereactnativeexample \
