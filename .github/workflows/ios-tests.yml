@@ -27,10 +27,29 @@ jobs:
       # against Unix sockets via Darwin APIs — all of which work on macOS
       # without a simulator. This is fast-feedback coverage for the framing,
       # IPC, service lifecycle, and waitForFile helpers.
+      - name: Print Xcode + Swift versions
+        run: |
+          xcodebuild -version
+          swift --version
+
       - name: Run package tests
         run: |
           cd ios
-          swift test
+          swift test --verbose 2>&1 | tee swift-test.log
+
+      - name: Print swift test log on failure
+        if: failure()
+        run: |
+          echo "=== ios/swift-test.log ==="
+          cat ios/swift-test.log || true
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-package-test-log
+          path: ios/swift-test.log
+          if-no-files-found: ignore
 
   integration-tests:
     name: Integration Tests (Example App)
@@ -139,7 +158,23 @@ jobs:
             -scheme corereactnativeexample \
             -sdk iphonesimulator \
             -destination "id=${{ steps.simulator.outputs.udid }}" \
-            CODE_SIGNING_ALLOWED='NO'
+            CODE_SIGNING_ALLOWED='NO' 2>&1 | tee xcodebuild-test.log
+
+      - name: Print xcodebuild log on failure
+        if: failure()
+        run: |
+          echo "=== xcodebuild test failure summary ==="
+          grep -E "error:|FAIL|Test Case|Assertion" example/ios/xcodebuild-test.log | head -100 || true
+          echo "=== last 200 lines of log ==="
+          tail -200 example/ios/xcodebuild-test.log || true
+
+      - name: Upload xcodebuild log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-test-log
+          path: example/ios/xcodebuild-test.log
+          if-no-files-found: ignore
 
   device-build:
     name: iOS Device Build (xcframework codesign verification)
