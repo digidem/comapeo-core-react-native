@@ -26,7 +26,7 @@ func makeMockNodeEntryPoint() -> (entryPoint: NodeJSService.NodeEntryPoint, sign
 /// A fixed 16-byte test vector used as the rootkey under macOS swift-test
 /// runs. Returned by the default `rootKeyProvider` injected via
 /// `makeMockNodeService` so tests never touch the real keychain.
-let mockTestRootKey = Data((0..<16).map { _ in UInt8(0xAB) })
+let mockTestRootKey = Data(repeating: 0xAB, count: 16)
 
 /// Convenience wrapper that also constructs the `NodeJSService` with the mock
 /// entry point and a fake JS path. Most tests just need `(service, signalExit)`.
