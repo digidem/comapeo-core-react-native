@@ -117,6 +117,15 @@ android {
         "**/libc++_shared.so",
         "**/libfbjni.so",
         ]
+        // Filter prebuilt jniLibs to the requested ABIs. AGP does *not*
+        // apply `defaultConfig.ndk.abiFilters` to prebuilt content from
+        // `jniLibs.srcDirs` in library modules, so without explicit
+        // excludes here the AAR ships all three supported ABIs even
+        // when the consumer requested a narrower set via
+        // `reactNativeArchitectures`.
+        (supportedAbis - comapeoAbiFilters).each { abi ->
+            excludes += "lib/${abi}/**".toString()
+        }
         // Keep `.so` files uncompressed and aligned in the APK so
         // Bionic's per-app linker namespace can mmap them in place
         // when the manifest sets `extractNativeLibs="false"`. Without
