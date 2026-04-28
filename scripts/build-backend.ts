@@ -255,9 +255,17 @@ await Promise.all(
           nodeAbi: usesNapi ? undefined : NODE_ABI,
         });
 
+        // `--retry 5 --retry-all-errors --retry-delay 2`: GitHub's
+        // releases CDN occasionally serves transient 5xx responses; one
+        // 502 was enough to fail an entire CI run on this PR. Retrying
+        // up to 5× with a 2 s base delay (curl backs off exponentially)
+        // lets the build absorb spurious upstream blips without
+        // re-running the workflow. `--retry-all-errors` is what makes
+        // 5xx responses retryable — by default curl only retries
+        // network-level failures.
         await $({
           cwd: targetDir,
-        })`curl --fail --location ${artifactInfo.url} --output ${artifactInfo.name}`;
+        })`curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 ${artifactInfo.url} --output ${artifactInfo.name}`;
 
         await $({
           cwd: targetDir,
