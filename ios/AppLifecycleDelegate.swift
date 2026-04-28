@@ -79,69 +79,33 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             }
         },
         resolveJSEntryPoint: {
-            // The unified backend bundle is ESM (`index.mjs`). Both Android
-            // and iOS resolve the same entry filename now — Android's
-            // NodeJSService.kt has used `index.mjs` since the rollup build
-            // landed; iOS catches up here.
+            // The unified backend bundle is ESM (`index.mjs`). Both
+            // Android and iOS resolve the same entry filename now —
+            // Android's `NodeJSService.kt` has used `index.mjs` since
+            // the rollup build landed; iOS catches up here.
             //
-            // The rolled-up backend ships read-only inside the .app
-            // bundle, but nodejs-mobile wants a filesystem path it can
-            // mutate (drizzle migrations are `fs.readFile`d at runtime
-            // from `node_modules/@comapeo/core/drizzle/*.sql`, and
-            // anything else that `fs.writeFile`s siblings to the entry
-            // would otherwise hit EROFS). Copy the tree into Application
-            // Support and return the writable `index.mjs` path.
+            // Hand nodejs-mobile the read-only path inside the .app
+            // bundle directly. Nothing in the rolled-up backend writes
+            // back into `nodejs-project/` at runtime: native `.node`
+            // files live in `<App>.app/Frameworks/<name>__<version>.framework/`
+            // (loaded via `process.dlopen` against `NATIVE_LIB_DIR`,
+            // set in the `nodeEntryPoint` closure above), drizzle
+            // migrations are `fs.readFile`d, and SQLite/blobs/indexes
+            // go to `privateStorageDir`. Read access against the .app
+            // bundle is fine; we save ~24 MB / 50 files of
+            // copy-on-cold-start work that earlier iterations of this
+            // file did into Application Support.
             //
-            // Phase 2: native `.node` files no longer live alongside
-            // the JS — they ship as `<App>.app/Frameworks/<name>.framework/`
-            // and load via `process.dlopen` against `NATIVE_LIB_DIR`
-            // (set in the `nodeEntryPoint` closure above). The Phase 1
-            // arch-slice merge is gone.
-            AppLifecycleDelegate.prepareNodeBundle()
+            // Android still has to extract on first launch because the
+            // APK doesn't expose a filesystem-readable path to its
+            // assets the way `<App>.app/<name>/` does on iOS.
+            let bundleEntry = (Bundle.main.bundlePath as NSString)
+                .appendingPathComponent("nodejs-project/index.mjs")
+            return FileManager.default.fileExists(atPath: bundleEntry)
+                ? bundleEntry
+                : nil
         }
     )
-
-    /// Copies the bundled `nodejs-project/` tree into Application Support
-    /// and returns the path to the `index.mjs` inside. nodejs-mobile needs
-    /// a filesystem entry path; the .app bundle is read-only, so we stage
-    /// to a writable location every cold start. Phase 2.5 will add a
-    /// `CFBundleVersion`-based stamp to skip the copy when the bundle
-    /// hasn't changed (mirrors Android's `shouldCopyAssets` pattern in
-    /// NodeJSService.kt).
-    private static func prepareNodeBundle() -> String? {
-        let fm = FileManager.default
-        let bundleProjectDir = (Bundle.main.bundlePath as NSString)
-            .appendingPathComponent("nodejs-project")
-
-        guard fm.fileExists(atPath: bundleProjectDir) else {
-            log("Cannot prepare node bundle: missing nodejs-project")
-            return nil
-        }
-
-        let appSupport = (try? fm.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )) ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        let runtimeRoot = appSupport
-            .appendingPathComponent("comapeo-runtime", isDirectory: true).path
-        let runtimeProject = (runtimeRoot as NSString)
-            .appendingPathComponent("nodejs-project")
-
-        do {
-            if fm.fileExists(atPath: runtimeProject) {
-                try fm.removeItem(atPath: runtimeProject)
-            }
-            try fm.createDirectory(atPath: runtimeRoot, withIntermediateDirectories: true)
-            try fm.copyItem(atPath: bundleProjectDir, toPath: runtimeProject)
-        } catch {
-            log("Failed to prepare node bundle: \(error)")
-            return nil
-        }
-
-        return (runtimeProject as NSString).appendingPathComponent("index.mjs")
-    }
 
     /// Resolves the directory that holds the Unix-domain socket files
     /// the backend listens on. See the `nodeService` doc above for why
