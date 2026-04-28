@@ -1,3 +1,4 @@
+import { cpSync, existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
@@ -10,11 +11,25 @@ import addonLoaderPlugin, {
   androidAddonLoaderBanner,
   iosAddonLoaderBanner,
 } from "./rollup-plugins/rollup-plugin-addon-loader.js";
+import { NATIVE_MODULES } from "./native-modules.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const MAPS_STUB_PATH = path.join(__dirname, "lib", "maps-stub.js");
+
+/**
+ * Per-platform output dirs. `scripts/build-backend.ts` sets these env
+ * vars to write directly into the final native-asset trees
+ * (`android/src/main/assets/nodejs-project/` and `ios/nodejs-project/`),
+ * skipping the intermediate staging tree the script used to maintain.
+ * Falls back to `backend/dist/<platform>/` so `cd backend && npm run build`
+ * still produces inspectable output for standalone debugging.
+ */
+const ANDROID_OUT =
+  process.env.OUTPUT_DIR_ANDROID ?? path.join(__dirname, "dist/android");
+const IOS_OUT =
+  process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
 
 /**
  * Resolves `@comapeo/core`'s `./fastify-plugins/maps.js` import to the
@@ -40,10 +55,66 @@ function stubComapeoMapsPlugin() {
 }
 
 /**
- * @param {{ platform: 'android' | 'ios' }} options
+ * Files copied alongside the rollup output into the per-platform output
+ * dir. Identical for Android and iOS: only the bundled JS differs (the
+ * iOS bundle has the maps fastify plugin stubbed out — see
+ * `stubComapeoMapsPlugin` above).
+ *
+ *   - `package.json`: required by Node's module resolver in the
+ *     unpacked nodejs-project tree.
+ *   - `@comapeo/core/drizzle/`: SQL migration files referenced at
+ *     runtime by drizzle-orm.
+ *   - `@comapeo/default-categories/.../*.comapeocat`: the default
+ *     project config zip.
+ *   - `@comapeo/fallback-smp/`: offline fallback map.
+ *   - For each native module: top-level `package.json` (and
+ *     `binding.gyp` when present). Bare's `require.addon()` resolves
+ *     against the package.json; even though our addon-loader rewrite
+ *     replaces every loader callsite, leaving the metadata in place
+ *     keeps the unpacked tree internally consistent with what Bare's
+ *     resolver expects to find.
+ */
+function staticAssetPaths() {
+  const baseAssets = [
+    "package.json",
+    "node_modules/@comapeo/core/drizzle",
+    "node_modules/@comapeo/default-categories/dist/comapeo-default-categories.comapeocat",
+    "node_modules/@comapeo/fallback-smp",
+  ];
+  const nativeAssets = NATIVE_MODULES.flatMap(({ name }) => {
+    const pkg = `node_modules/${name}/package.json`;
+    const gyp = `node_modules/${name}/binding.gyp`;
+    return existsSync(path.join(__dirname, gyp)) ? [pkg, gyp] : [pkg];
+  });
+  return [...baseAssets, ...nativeAssets];
+}
+
+/**
+ * Copies the static asset paths from `backend/` into `outDir` after the
+ * rollup write completes. Replaces the per-platform staging copy that
+ * `scripts/build-backend.ts` used to do.
+ *
+ * @param {string} outDir
+ * @returns {import('rollup').Plugin}
+ */
+function copyStaticAssetsPlugin(outDir) {
+  return {
+    name: "copy-static-assets",
+    writeBundle() {
+      for (const rel of staticAssetPaths()) {
+        cpSync(path.join(__dirname, rel), path.join(outDir, rel), {
+          recursive: true,
+        });
+      }
+    },
+  };
+}
+
+/**
+ * @param {{ platform: 'android' | 'ios', outDir: string }} options
  * @returns {import('rollup').RollupOptions['plugins']}
  */
-function buildPlugins({ platform }) {
+function buildPlugins({ platform, outDir }) {
   return [
     alias({
       entries: [
@@ -71,7 +142,26 @@ function buildPlugins({ platform }) {
     nodeResolve({ preferBuiltins: true }),
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
     json(),
+    copyStaticAssetsPlugin(outDir),
   ];
+}
+
+/**
+ * Wipes `dir` before rollup writes — keeps successive builds idempotent
+ * (rollup overwrites bundle files but `copyStaticAssetsPlugin` is purely
+ * additive, so a stale entry from a previous run could otherwise leak
+ * into the output tree).
+ *
+ * @param {string} dir
+ * @returns {import('rollup').Plugin}
+ */
+function cleanOutputDirPlugin(dir) {
+  return {
+    name: "clean-output-dir",
+    buildStart() {
+      rmSync(dir, { force: true, recursive: true });
+    },
+  };
 }
 
 const sharedInput = {
@@ -90,34 +180,40 @@ const sharedOutput = {
  * fastify plugin) loads cleanly. iOS gets the same bundle but with
  * `@comapeo/core`'s maps plugin swapped for a no-op (see lib/maps-stub.js)
  * because nodejs-mobile iOS runs V8 with `--jitless` and undici's
- * WebAssembly init would crash module load. The platform-specific dist
- * directories are consumed by `scripts/build-backend.ts`.
+ * WebAssembly init would crash module load.
+ *
+ * Each output's `banner` defines `__loadAddon(name, version)` with the
+ * platform-appropriate `process.dlopen` target — Android does
+ * bare-name dlopen against the APK mmap region, iOS dlopen's the
+ * Embed-&-Sign'd xcframework binary at NATIVE_LIB_DIR/<key>.framework/<key>.
+ * See `rollup-plugin-addon-loader.js` for the helper bodies.
  *
  * @type {import('rollup').RollupOptions[]}
  */
-// Each output's `banner` defines `__loadAddon(name, version)` with the
-// platform-appropriate `process.dlopen` target — Android does
-// bare-name dlopen against the APK mmap region, iOS dlopen's the
-// Embed-&-Sign'd xcframework binary at NATIVE_LIB_DIR/<key>.framework/<key>.
-// See `rollup-plugin-addon-loader.js` for the helper bodies.
 const config = [
   {
     input: sharedInput,
     output: {
       ...sharedOutput,
-      dir: path.join(__dirname, "dist/android"),
+      dir: ANDROID_OUT,
       banner: androidAddonLoaderBanner,
     },
-    plugins: buildPlugins({ platform: "android" }),
+    plugins: [
+      cleanOutputDirPlugin(ANDROID_OUT),
+      ...buildPlugins({ platform: "android", outDir: ANDROID_OUT }),
+    ],
   },
   {
     input: sharedInput,
     output: {
       ...sharedOutput,
-      dir: path.join(__dirname, "dist/ios"),
+      dir: IOS_OUT,
       banner: iosAddonLoaderBanner,
     },
-    plugins: buildPlugins({ platform: "ios" }),
+    plugins: [
+      cleanOutputDirPlugin(IOS_OUT),
+      ...buildPlugins({ platform: "ios", outDir: IOS_OUT }),
+    ],
   },
 ];
 
