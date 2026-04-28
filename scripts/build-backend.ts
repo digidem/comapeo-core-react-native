@@ -2,6 +2,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   unlinkSync,
@@ -70,6 +71,68 @@ const NATIVE_MODULES = [
   { name: "simdle-native", usesNapi: true },
   { name: "sodium-native", usesNapi: true },
 ];
+
+/**
+ * Walk `<TEMP_NODEJS_ASSETS_BACKEND_DIR>/node_modules` for every installed
+ * instance of `name` (top-level + every nested copy npm couldn't dedupe),
+ * returning each as an `NativeModuleInstance`. Used by both the
+ * prebuild-fetch loop and the iOS xcframework wrap loop so multi-version
+ * dep trees ship one `<name>__<version>.xcframework` per concrete
+ * `(name, version)` pair, not per `name` only — which would silently
+ * shadow the lower version with the higher one.
+ */
+type NativeModuleInstance = {
+  name: string;
+  version: string;
+  /**
+   * Absolute path to the package's directory (where `package.json` lives).
+   */
+  packageDir: string;
+  /**
+   * True iff this is the hoisted top-level install at
+   * `node_modules/<name>/`. Phase-1 Android still uses only the top-level
+   * version per name; iOS takes every instance.
+   */
+  isTopLevel: boolean;
+};
+
+function findNativeModuleInstances(name: string): NativeModuleInstance[] {
+  const instances: NativeModuleInstance[] = [];
+  const seen = new Set<string>();
+  const stack: string[] = [join(TEMP_NODEJS_ASSETS_BACKEND_DIR, "node_modules")];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    const candidate = join(dir, name, "package.json");
+    if (existsSync(candidate)) {
+      const packageDir = dirname(candidate);
+      if (!seen.has(packageDir)) {
+        seen.add(packageDir);
+        const { version } = JSON.parse(readFileSync(candidate, "utf-8"));
+        instances.push({
+          name,
+          version,
+          packageDir,
+          isTopLevel:
+            dir === join(TEMP_NODEJS_ASSETS_BACKEND_DIR, "node_modules"),
+        });
+      }
+    }
+    // Descend into nested node_modules dirs anywhere under this one.
+    const entries = (() => {
+      try {
+        return readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return [];
+      }
+    })();
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const nested = join(dir, entry.name, "node_modules");
+      if (existsSync(nested)) stack.push(nested);
+    }
+  }
+  return instances;
+}
 
 // Files copied from the backend into every nodejs-project directory.
 // Platform-specific bundles (`dist/android`, `dist/ios`) are flattened
@@ -153,29 +216,42 @@ const PREBUILD_TARGETS = [
   ...IOS_ARCHS.map((arch) => ({ platform: "ios" as const, arch })),
 ];
 
+// Enumerate every concrete (name, version) instance of every native
+// module — top-level + every nested copy npm couldn't dedupe.
+const NATIVE_INSTANCES = NATIVE_MODULES.flatMap(({ name, usesNapi }) =>
+  findNativeModuleInstances(name).map((inst) => ({ ...inst, usesNapi })),
+);
+
+// Distinct (name, version) pairs. Multiple disk locations can share the
+// same version (e.g. four nested `sodium-native@5.1.0` copies in the
+// current dep tree) — they all share one prebuild and, on iOS, one
+// xcframework. Per-callsite version-aware `__loadAddon` rewrite in
+// backend/rollup-plugins/rollup-plugin-ios-addon-loader.js loads the
+// right one per importer; build-side dedup avoids racing four parallel
+// fetches into the same temp dir.
+const NATIVE_PAIRS = (() => {
+  const seen = new Map<string, (typeof NATIVE_INSTANCES)[number]>();
+  for (const inst of NATIVE_INSTANCES) {
+    const key = `${inst.name}__${inst.version}`;
+    if (!seen.has(key)) seen.set(key, inst);
+  }
+  return [...seen.values()];
+})();
+
+const { abi: NODE_ABI } = getNodeJsMobileNodeVersions();
+
 await Promise.all(
-  NATIVE_MODULES.map(async ({ name, usesNapi }) => {
-    const packageJsonPath = join(
-      TEMP_NODEJS_ASSETS_BACKEND_DIR,
-      "node_modules",
-      name,
-      "package.json",
-    );
-
-    const { version } = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
-
-    const { abi: NODE_ABI } = getNodeJsMobileNodeVersions();
-
-    const prebuildsDir = join(
+  NATIVE_PAIRS.map(async ({ name, version, usesNapi }) => {
+    const instanceDir = join(
       TEMP_NODEJS_NATIVE_ASSETS_DIR,
-      `node_modules/${name}/prebuilds/`,
+      `${name}__${version}`,
     );
 
-    rmSync(prebuildsDir, { recursive: true, force: true });
+    rmSync(instanceDir, { recursive: true, force: true });
 
     await Promise.all(
       PREBUILD_TARGETS.map(async ({ platform, arch }) => {
-        const targetDir = join(prebuildsDir, `${platform}-${arch}`);
+        const targetDir = join(instanceDir, `${platform}-${arch}`);
 
         mkdirSync(targetDir, { recursive: true });
 
@@ -241,47 +317,66 @@ const ANDROID_NATIVE_ASSETS_DIR = join(ANDROID_ASSETS_DIR, "nodejs-native");
 rmSync(ANDROID_NATIVE_ASSETS_DIR, { force: true, recursive: true });
 mkdirSync(ANDROID_NATIVE_ASSETS_DIR, { recursive: true });
 
+// Android prebuild placement: top-level version per name only. Phase 1
+// behaviour preserved verbatim — `nodejs-native/<abi>/node_modules/<name>/`
+// (no version suffix). The per-callsite multi-version handling that
+// iOS gets via xcframework + `__loadAddon(name, version)` doesn't
+// exist on Android yet; that lands with the Android jniLibs migration
+// (see docs/phase-2-android-jnilibs-plan.md). Until then nested
+// versions of a native module collapse to the top-level version's
+// .so on Android — historically this has worked by coincidence
+// because the addons we depend on have stable NAPI surfaces across
+// minor/major bumps.
+const TOP_LEVEL_INSTANCES = NATIVE_INSTANCES.filter((i) => i.isTopLevel);
+
 await Promise.all(
   ANDROID_ARCHS.map(async (arch) => {
-    let androidAbi: string;
-    switch (arch) {
-      case "arm": {
-        androidAbi = "armeabi-v7a";
-        break;
+    const androidAbi = (() => {
+      switch (arch) {
+        case "arm":
+          return "armeabi-v7a";
+        case "arm64":
+          return "arm64-v8a";
+        case "x64":
+          return "x86_64";
       }
-      case "arm64": {
-        androidAbi = "arm64-v8a";
-        break;
-      }
-      case "x64": {
-        androidAbi = "x86_64";
-        break;
-      }
-      default: {
-        throw new Error(`Unsupported arch ${arch}`);
-      }
-    }
+    })();
 
-    // Copy native assets from temp folder to relevant Android native assets directory
-    {
+    for (const { name, version } of TOP_LEVEL_INSTANCES) {
+      const srcArchDir = join(
+        TEMP_NODEJS_NATIVE_ASSETS_DIR,
+        `${name}__${version}`,
+        `android-${arch}`,
+      );
       const nodeFiles = await Array.fromAsync(
-        glob(`node_modules/**/android-${arch}/**/*.node`, {
-          cwd: TEMP_NODEJS_NATIVE_ASSETS_DIR,
-        }),
+        glob(`**/*.node`, { cwd: srcArchDir }),
       );
 
       for (const entry of nodeFiles) {
-        // better-sqlite3 expects a different directory structure for locating the binding
-        const nativeTargetDir = entry.startsWith("node_modules/better-sqlite3/")
-          ? join(
-              ANDROID_NATIVE_ASSETS_DIR,
-              androidAbi,
-              "node_modules/better-sqlite3/build",
-              basename(entry),
-            )
-          : join(ANDROID_NATIVE_ASSETS_DIR, androidAbi, entry);
+        // better-sqlite3 expects `node_modules/<name>/build/<binary>.node`
+        // (its own loader walks that path); other addons use the
+        // standard prebuilds layout the upstream tarball already has.
+        const nativeTargetPath =
+          name === "better-sqlite3"
+            ? join(
+                ANDROID_NATIVE_ASSETS_DIR,
+                androidAbi,
+                "node_modules",
+                name,
+                "build",
+                basename(entry),
+              )
+            : join(
+                ANDROID_NATIVE_ASSETS_DIR,
+                androidAbi,
+                "node_modules",
+                name,
+                "prebuilds",
+                `android-${arch}`,
+                basename(entry),
+              );
 
-        await cp(join(TEMP_NODEJS_NATIVE_ASSETS_DIR, entry), nativeTargetDir, {
+        await cp(join(srcArchDir, entry), nativeTargetPath, {
           force: true,
           recursive: true,
         });
@@ -323,65 +418,76 @@ const TEMP_FRAMEWORKS_WORK_DIR = join(TEMP_NODEJS_ASSETS_DIR, "frameworks");
 mkdirSync(TEMP_FRAMEWORKS_WORK_DIR, { recursive: true });
 
 await Promise.all(
-  NATIVE_MODULES.map(async ({ name }) => {
-    // Per-arch frameworks first; assemble into the multi-slice xcframework
-    // after lipo'ing the simulator pair.
-    const moduleWorkDir = join(TEMP_FRAMEWORKS_WORK_DIR, name);
+  NATIVE_PAIRS.map(async ({ name, version }) => {
+    // Per-instance directory: `<name>__<version>` so two versions of
+    // the same addon (e.g. sodium-native@4.3.3 + @5.1.0 in the
+    // current dep tree) each get a distinct xcframework. Underscore-
+    // separator instead of `@` because `@` in framework dir names
+    // and Mach-O install names is unvalidated territory; double
+    // underscore is filesystem-safe and unambiguous.
+    const instanceKey = `${name}__${version}`;
+    const moduleWorkDir = join(TEMP_FRAMEWORKS_WORK_DIR, instanceKey);
     mkdirSync(moduleWorkDir, { recursive: true });
 
     /**
-     * Build one `<name>.framework/` directory for the given arch.
-     * Returns the absolute path to the framework directory so it can be
-     * fed back into `lipo`/`xcodebuild` downstream.
+     * Build one `<instanceKey>.framework/` directory for the given
+     * arch. Returns the absolute path to the framework directory so
+     * it can be fed back into `lipo`/`xcodebuild` downstream.
      *
-     * `install_name_tool -id` rewrites the Mach-O's `LC_ID_DYLIB` from
-     * the upstream prebuild's `<name>.node` (a name dyld cannot resolve
-     * inside `<App>.app/Frameworks/`) to
-     * `@rpath/<name>.framework/<name>`. Without this, `LC_LOAD_DYLIB`
-     * self-references in the same binary cause an "image not found"
-     * abort at app launch — Embed & Sign + the regular dyld load
-     * command walk hits the original install name *before* our
-     * runtime `process.dlopen` ever runs. The validated harness
-     * (`digidem/nodejs-mobile-bare-prebuilds@feat/jnilibs-xcframework-packaging`)
+     * `install_name_tool -id` rewrites the Mach-O's `LC_ID_DYLIB`
+     * from the upstream prebuild's `<name>.node` (a name dyld cannot
+     * resolve inside `<App>.app/Frameworks/`) to
+     * `@rpath/<instanceKey>.framework/<instanceKey>`. Without this,
+     * `LC_LOAD_DYLIB` self-references in the same binary cause an
+     * "image not found" abort at app launch — Embed & Sign + the
+     * regular dyld load command walk hits the original install name
+     * *before* our runtime `process.dlopen` ever runs. The validated
+     * harness (`digidem/nodejs-mobile-bare-prebuilds@feat/jnilibs-xcframework-packaging`)
      * skipped this because its test apps `dlopen` directly without
      * embedding the framework into a fully-linked .app bundle.
      */
     const buildPerArchFramework = async (arch: string, srcNode: string) => {
       const archDir = join(moduleWorkDir, arch);
-      const frameworkDir = join(archDir, `${name}.framework`);
+      const frameworkDir = join(archDir, `${instanceKey}.framework`);
       mkdirSync(frameworkDir, { recursive: true });
-      // Mach-O exec name = npm package name. Lets the runtime helper
-      // `process.dlopen('<NATIVE_LIB_DIR>/<name>.framework/<name>')`
-      // work uniformly across modules — even better-sqlite3, whose
+      // Mach-O exec name matches the framework dir name so the
+      // runtime helper's `process.dlopen('<NATIVE_LIB_DIR>/<instanceKey>.framework/<instanceKey>')`
+      // resolves uniformly across addons — even better-sqlite3, whose
       // .node tarball ships as `better_sqlite3.node` (underscore).
-      const dstBinary = join(frameworkDir, name);
+      const dstBinary = join(frameworkDir, instanceKey);
       await cp(srcNode, dstBinary);
       await $({
         stdio: "inherit",
-      })`install_name_tool -id @rpath/${name}.framework/${name} ${dstBinary}`;
-      writeFileSync(join(frameworkDir, "Info.plist"), buildFrameworkPlist(name));
+      })`install_name_tool -id @rpath/${instanceKey}.framework/${instanceKey} ${dstBinary}`;
+      writeFileSync(
+        join(frameworkDir, "Info.plist"),
+        buildFrameworkPlist(instanceKey),
+      );
       return frameworkDir;
     };
 
     /**
-     * Locate the .node file inside the prebuilds tree for the given
-     * iOS arch. Bare-style modules ship at
-     * `prebuilds/ios-<arch>/<name>.node`; better-sqlite3 ships under
-     * `build/better_sqlite3.node` (no `prebuilds/`, underscore name).
-     * Glob covers both layouts.
+     * Locate the .node file inside the per-instance prebuild tree
+     * for the given iOS arch. Bare-style modules ship at
+     * `<instanceKey>/<platform>-<arch>/<name>.node`; better-sqlite3
+     * ships at `<instanceKey>/<platform>-<arch>/better_sqlite3.node`
+     * (underscore). Glob covers both layouts.
      */
     const findNodeForArch = async (arch: string) => {
+      const archDir = join(
+        TEMP_NODEJS_NATIVE_ASSETS_DIR,
+        instanceKey,
+        `ios-${arch}`,
+      );
       const matches = await Array.fromAsync(
-        glob(`node_modules/${name}/**/ios-${arch}/**/*.node`, {
-          cwd: TEMP_NODEJS_NATIVE_ASSETS_DIR,
-        }),
+        glob(`**/*.node`, { cwd: archDir }),
       );
       if (matches.length !== 1) {
         throw new Error(
-          `Expected exactly one .node file for ${name} on ios-${arch}; found ${matches.length}: ${matches.join(", ")}`,
+          `Expected exactly one .node file for ${instanceKey} on ios-${arch}; found ${matches.length}: ${matches.join(", ")}`,
         );
       }
-      return join(TEMP_NODEJS_NATIVE_ASSETS_DIR, matches[0]);
+      return join(archDir, matches[0]);
     };
 
     const [deviceNode, armSimNode, x64SimNode] = await Promise.all([
@@ -404,17 +510,20 @@ await Promise.all(
     );
 
     const simFatDir = join(moduleWorkDir, "simulator");
-    const simFatFramework = join(simFatDir, `${name}.framework`);
+    const simFatFramework = join(simFatDir, `${instanceKey}.framework`);
     mkdirSync(simFatFramework, { recursive: true });
     writeFileSync(
       join(simFatFramework, "Info.plist"),
-      buildFrameworkPlist(name),
+      buildFrameworkPlist(instanceKey),
     );
     await $({
       stdio: "inherit",
-    })`lipo -create ${join(armSimFramework, name)} ${join(x64SimFramework, name)} -output ${join(simFatFramework, name)}`;
+    })`lipo -create ${join(armSimFramework, instanceKey)} ${join(x64SimFramework, instanceKey)} -output ${join(simFatFramework, instanceKey)}`;
 
-    const xcframeworkPath = join(IOS_FRAMEWORKS_DIR, `${name}.xcframework`);
+    const xcframeworkPath = join(
+      IOS_FRAMEWORKS_DIR,
+      `${instanceKey}.xcframework`,
+    );
     await $$`xcodebuild -create-xcframework -framework ${deviceFramework} -framework ${simFatFramework} -output ${xcframeworkPath}`;
   }),
 );
@@ -448,12 +557,20 @@ function getNodeJsMobileNodeVersions() {
  * Embed & Sign at app build time.
  */
 function buildFrameworkPlist(name: string): string {
+  // CFBundleIdentifier accepts only [A-Za-z0-9.-] per Apple's spec —
+  // underscores are rejected at app codesign time. Our `instanceKey`
+  // form `<name>__<version>` puts a `__` in there, so the bundle ID
+  // gets a sanitised variant: `__` collapses to a single `-`. The
+  // result is still unique per (name, version) because the version's
+  // dots stay (`sodium-native__5.1.0` → `com.digidem.sodium-native-5.1.0`),
+  // distinguishing it from any other version of the same addon.
+  const bundleId = `com.digidem.${name.replace(/__/g, "-")}`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleExecutable</key><string>${name}</string>
-  <key>CFBundleIdentifier</key><string>com.digidem.${name}</string>
+  <key>CFBundleIdentifier</key><string>${bundleId}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>${name}</string>
   <key>CFBundlePackageType</key><string>FMWK</string>
