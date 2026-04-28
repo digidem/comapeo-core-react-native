@@ -39,7 +39,6 @@
     "typescript": "5.9.3"
   },
   "overrides": {
-    "mirror-drive": "1.4.0",
     "require-addon": "1.1.0"
   }
 }
