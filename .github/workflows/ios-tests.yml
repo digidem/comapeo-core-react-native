@@ -61,7 +61,13 @@ jobs:
         run: npm install && cd example && npm install
 
       - name: Download NodeMobile
-        run: npm run download:nodejs-mobile -- --platform ios
+        # Both platforms: `scripts/build-backend.ts#getNodeJsMobileNodeVersions`
+        # reads `android/libnode/include/node/node_version.h` to derive the
+        # Node ABI used in non-NAPI prebuild URLs (better-sqlite3 today). The
+        # iOS xcframework doesn't ship that header, so the iOS-only run was
+        # missing it. Two-platform download adds ~30 s; cheaper than carrying
+        # the ABI as a hard-coded constant that drifts when nodejs-mobile bumps.
+        run: npm run download:nodejs-mobile
 
       # Generates ios/nodejs-project/ + ios/nodejs-native/ from backend/
       # via the same rollup pipeline that produces the Android assets.
