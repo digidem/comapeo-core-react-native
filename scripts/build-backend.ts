@@ -5,7 +5,6 @@ import {
   readFileSync,
   rmSync,
   unlinkSync,
-  writeFileSync,
 } from "node:fs";
 import { cp, glob } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
@@ -24,10 +23,6 @@ const IOS_NODEJS_NATIVE_DIR = join(PROJECT_ROOT, "ios/nodejs-native");
 const TEMP_NODEJS_ASSETS_DIR = join(PROJECT_ROOT, "nodejs-assets");
 
 const TEMP_NODEJS_ASSETS_BACKEND_DIR = join(TEMP_NODEJS_ASSETS_DIR, "backend");
-const TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR = join(
-  TEMP_NODEJS_ASSETS_DIR,
-  "nodejs-project",
-);
 const TEMP_NODEJS_NATIVE_ASSETS_DIR = join(TEMP_NODEJS_ASSETS_DIR, "native");
 
 rmSync(TEMP_NODEJS_ASSETS_DIR, { force: true, recursive: true });
@@ -46,31 +41,10 @@ await $$({
   cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR,
 })`npm ci --ignore-scripts`;
 
-// Replace @comapeo/core's maps fastify plugin with a no-op before rollup
-// runs. The plugin's only job is fetching map style.json over HTTP via
-// `undici`, whose `lazyllhttp()` calls `WebAssembly.compile` at module-init.
-// nodejs-mobile iOS runs V8 with `--jitless` (Apple's no-JIT policy), so the
-// `WebAssembly` global is absent and undici crashes the process before our
-// entry runs. Stripping the import here keeps undici out of the rolled-up
-// bundle entirely. The `plugin` export is still consumed by mapeo-manager,
-// so we keep the named exports — register-time becomes a no-op fastify
-// plugin. Tile fetching is out of scope for Phase 1; comapeo-mobile will
-// re-introduce it on iOS via a non-WASM HTTP client in a later phase.
-const mapsPluginPath = join(
-  TEMP_NODEJS_ASSETS_BACKEND_DIR,
-  "node_modules/@comapeo/core/src/fastify-plugins/maps.js",
-);
-writeFileSync(
-  mapsPluginPath,
-  [
-    "export const CUSTOM_MAP_PREFIX = 'custom'",
-    "export const FALLBACK_MAP_PREFIX = 'fallback'",
-    "/** @type {import('fastify').FastifyPluginAsync<any>} */",
-    "export async function plugin() {}",
-    "",
-  ].join("\n"),
-);
-
+// Rollup writes per-platform bundles to dist/android and dist/ios.
+// The iOS bundle has @comapeo/core's maps fastify plugin swapped for a
+// no-op stub so undici (which crashes nodejs-mobile iOS at module-init)
+// stays out. See backend/rollup.config.js + backend/lib/maps-stub.js.
 await $$({ cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR })`npm run build`;
 
 const NATIVE_MODULES = [
@@ -85,10 +59,12 @@ const NATIVE_MODULES = [
   { name: "sodium-native", usesNapi: true },
 ];
 
+// Files copied from the backend into every nodejs-project directory.
+// Platform-specific bundles (`dist/android`, `dist/ios`) are flattened
+// into each per-platform tree below — they don't appear here because they
+// differ per target.
 const KEEP_THESE_FROM_BACKEND = [
   "package.json",
-  // Packaged backend code
-  "dist",
   // Static folders referenced by @comapeo/core code
   "node_modules/@comapeo/core/drizzle",
   // zip file that is the default config
@@ -120,16 +96,31 @@ const KEEP_THESE_FROM_BACKEND = [
   }),
 ];
 
-for (const name of KEEP_THESE_FROM_BACKEND) {
-  const source = join(TEMP_NODEJS_ASSETS_BACKEND_DIR, name);
+const PLATFORM_NODEJS_PROJECT_DIRS = {
+  android: join(TEMP_NODEJS_ASSETS_DIR, "nodejs-project-android"),
+  ios: join(TEMP_NODEJS_ASSETS_DIR, "nodejs-project-ios"),
+} as const;
 
-  const destination =
-    // Flatten dist into top-level of nodejs-assets directory
-    name === "dist"
-      ? TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR
-      : join(TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR, name);
+for (const platformDir of Object.values(PLATFORM_NODEJS_PROJECT_DIRS)) {
+  for (const name of KEEP_THESE_FROM_BACKEND) {
+    cpSync(
+      join(TEMP_NODEJS_ASSETS_BACKEND_DIR, name),
+      join(platformDir, name),
+      { recursive: true },
+    );
+  }
+}
 
-  cpSync(source, destination, { recursive: true });
+// Flatten each platform-specific rollup output (dist/<platform>) into the
+// top of its nodejs-project tree. The two bundles share the same input
+// graph; only `@comapeo/core/src/fastify-plugins/maps.js` differs (real on
+// Android, stub on iOS — see backend/rollup.config.js).
+for (const platform of ["android", "ios"] as const) {
+  cpSync(
+    join(TEMP_NODEJS_ASSETS_BACKEND_DIR, "dist", platform),
+    PLATFORM_NODEJS_PROJECT_DIRS[platform],
+    { recursive: true },
+  );
 }
 
 // ------------------------------------------------
@@ -213,18 +204,19 @@ const ANDROID_ASSETS_NODEJS_PROJECT_DIR = join(
 );
 
 cpSync(
-  TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR,
+  PLATFORM_NODEJS_PROJECT_DIRS.android,
   ANDROID_ASSETS_NODEJS_PROJECT_DIR,
   { force: true, recursive: true },
 );
 
-// Copy bundled backend into the iOS resources tree as well — same source dir,
-// two destinations. This is the unified-bundle deliverable: a single rolled-up
-// `index.mjs` (plus KEEP_THESE_FROM_BACKEND) drives both platforms.
+// Copy the iOS-specific rolled-up bundle into the iOS resources tree.
+// Diverges from Android only by virtue of the maps-plugin stub baked into
+// dist/ios; everything else (KEEP_THESE_FROM_BACKEND, native module
+// package.json/binding.gyp) is identical.
 
 rmSync(IOS_NODEJS_PROJECT_DIR, { force: true, recursive: true });
 
-cpSync(TEMP_NODEJS_ASSETS_NODEJS_PROJECT_DIR, IOS_NODEJS_PROJECT_DIR, {
+cpSync(PLATFORM_NODEJS_PROJECT_DIRS.ios, IOS_NODEJS_PROJECT_DIR, {
   force: true,
   recursive: true,
 });
