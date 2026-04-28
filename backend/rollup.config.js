@@ -1,4 +1,4 @@
-import { cpSync, existsSync, rmSync } from "node:fs";
+import { cpSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
@@ -11,7 +11,6 @@ import addonLoaderPlugin, {
   androidAddonLoaderBanner,
   iosAddonLoaderBanner,
 } from "./rollup-plugins/rollup-plugin-addon-loader.js";
-import { NATIVE_MODULES } from "./native-modules.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,39 +54,32 @@ function stubComapeoMapsPlugin() {
 }
 
 /**
- * Files copied alongside the rollup output into the per-platform output
- * dir. Identical for Android and iOS: only the bundled JS differs (the
- * iOS bundle has the maps fastify plugin stubbed out — see
+ * Runtime data files copied alongside the rollup output into the per-
+ * platform output dir. Identical for Android and iOS: only the bundled
+ * JS differs (iOS has the maps fastify plugin stubbed out — see
  * `stubComapeoMapsPlugin` above).
  *
- *   - `package.json`: required by Node's module resolver in the
- *     unpacked nodejs-project tree.
- *   - `@comapeo/core/drizzle/`: SQL migration files referenced at
- *     runtime by drizzle-orm.
- *   - `@comapeo/default-categories/.../*.comapeocat`: the default
- *     project config zip.
- *   - `@comapeo/fallback-smp/`: offline fallback map.
- *   - For each native module: top-level `package.json` (and
- *     `binding.gyp` when present). Bare's `require.addon()` resolves
- *     against the package.json; even though our addon-loader rewrite
- *     replaces every loader callsite, leaving the metadata in place
- *     keeps the unpacked tree internally consistent with what Bare's
- *     resolver expects to find.
+ *   - `package.json`: required by Node's module resolver to set the
+ *     unpacked nodejs-project tree's module type.
+ *   - `@comapeo/core/drizzle/`: SQL migration files read at runtime by
+ *     drizzle-orm.
+ *   - `@comapeo/default-categories/.../*.comapeocat`: default project
+ *     config zip read at runtime.
+ *   - `@comapeo/fallback-smp/`: offline fallback map data.
+ *
+ * Native module `package.json`/`binding.gyp` are NOT copied. Every
+ * loader callsite (`require('bindings')`, `require('node-gyp-build')`,
+ * `require.addon()`) is rewritten by `rollup-plugin-addon-loader.js`
+ * to `__loadAddon(name, version)` at bundle time, so Bare's addon
+ * resolver — the only thing that ever consulted those files — never
+ * runs at runtime.
  */
-function staticAssetPaths() {
-  const baseAssets = [
-    "package.json",
-    "node_modules/@comapeo/core/drizzle",
-    "node_modules/@comapeo/default-categories/dist/comapeo-default-categories.comapeocat",
-    "node_modules/@comapeo/fallback-smp",
-  ];
-  const nativeAssets = NATIVE_MODULES.flatMap(({ name }) => {
-    const pkg = `node_modules/${name}/package.json`;
-    const gyp = `node_modules/${name}/binding.gyp`;
-    return existsSync(path.join(__dirname, gyp)) ? [pkg, gyp] : [pkg];
-  });
-  return [...baseAssets, ...nativeAssets];
-}
+const STATIC_ASSET_PATHS = [
+  "package.json",
+  "node_modules/@comapeo/core/drizzle",
+  "node_modules/@comapeo/default-categories/dist/comapeo-default-categories.comapeocat",
+  "node_modules/@comapeo/fallback-smp",
+];
 
 /**
  * Copies the static asset paths from `backend/` into `outDir` after the
@@ -101,7 +93,7 @@ function copyStaticAssetsPlugin(outDir) {
   return {
     name: "copy-static-assets",
     writeBundle() {
-      for (const rel of staticAssetPaths()) {
+      for (const rel of STATIC_ASSET_PATHS) {
         cpSync(path.join(__dirname, rel), path.join(outDir, rel), {
           recursive: true,
         });
