@@ -310,77 +310,34 @@ cpSync(PLATFORM_NODEJS_PROJECT_DIRS.ios, IOS_NODEJS_PROJECT_DIR, {
   recursive: true,
 });
 
-// Copy native prebuilds into assets
-
-const ANDROID_NATIVE_ASSETS_DIR = join(ANDROID_ASSETS_DIR, "nodejs-native");
-
-rmSync(ANDROID_NATIVE_ASSETS_DIR, { force: true, recursive: true });
-mkdirSync(ANDROID_NATIVE_ASSETS_DIR, { recursive: true });
-
-// Android prebuild placement: top-level version per name only. Phase 1
-// behaviour preserved verbatim — `nodejs-native/<abi>/node_modules/<name>/`
-// (no version suffix). The per-callsite multi-version handling that
-// iOS gets via xcframework + `__loadAddon(name, version)` doesn't
-// exist on Android yet; that lands with the Android jniLibs migration
-// (see docs/phase-2-android-jnilibs-plan.md). Until then nested
-// versions of a native module collapse to the top-level version's
-// .so on Android — historically this has worked by coincidence
-// because the addons we depend on have stable NAPI surfaces across
-// minor/major bumps.
-const TOP_LEVEL_INSTANCES = NATIVE_INSTANCES.filter((i) => i.isTopLevel);
+// Android native packaging: every (name, version) instance gets its
+// own versioned `.so` under `jniLibs/<abi>/` so a multi-version dep
+// tree can address each callsite uniquely (same naming convention as
+// iOS xcframeworks below — `<name>__<version>`). Bionic's per-app
+// linker namespace mmaps these from the APK at load time when the
+// manifest sets `extractNativeLibs="false"` and AGP keeps them
+// uncompressed via `useLegacyPackaging=false`. The runtime helper
+// (`androidAddonLoaderBanner` from rollup-plugin-addon-loader.js) does
+// `process.dlopen('lib<name>__<version>.so')` — bare filename, no
+// path — and Bionic resolves against the APK's `lib/<abi>/` segment.
+//
+// Phase 1 wrote `.node` files into `assets/nodejs-native/<abi>/...`
+// for runtime extraction; that path is gone. The bundled JS (still
+// extracted from `assets/nodejs-project/`) loads addons via the
+// `__loadAddon` rewrite at the same versioned key.
+const ANDROID_JNILIBS_DIR = join(PROJECT_ROOT, "android/src/main/jniLibs");
+rmSync(ANDROID_JNILIBS_DIR, { force: true, recursive: true });
 
 await Promise.all(
   ANDROID_ARCHS.map(async (arch) => {
-    const androidAbi = (() => {
-      switch (arch) {
-        case "arm":
-          return "armeabi-v7a";
-        case "arm64":
-          return "arm64-v8a";
-        case "x64":
-          return "x86_64";
-      }
-    })();
+    const androidAbi = androidAbiForArch(arch);
+    const abiDir = join(ANDROID_JNILIBS_DIR, androidAbi);
+    mkdirSync(abiDir, { recursive: true });
 
-    for (const { name, version } of TOP_LEVEL_INSTANCES) {
-      const srcArchDir = join(
-        TEMP_NODEJS_NATIVE_ASSETS_DIR,
-        `${name}__${version}`,
-        `android-${arch}`,
-      );
-      const nodeFiles = await Array.fromAsync(
-        glob(`**/*.node`, { cwd: srcArchDir }),
-      );
-
-      for (const entry of nodeFiles) {
-        // better-sqlite3 expects `node_modules/<name>/build/<binary>.node`
-        // (its own loader walks that path); other addons use the
-        // standard prebuilds layout the upstream tarball already has.
-        const nativeTargetPath =
-          name === "better-sqlite3"
-            ? join(
-                ANDROID_NATIVE_ASSETS_DIR,
-                androidAbi,
-                "node_modules",
-                name,
-                "build",
-                basename(entry),
-              )
-            : join(
-                ANDROID_NATIVE_ASSETS_DIR,
-                androidAbi,
-                "node_modules",
-                name,
-                "prebuilds",
-                `android-${arch}`,
-                basename(entry),
-              );
-
-        await cp(join(srcArchDir, entry), nativeTargetPath, {
-          force: true,
-          recursive: true,
-        });
-      }
+    for (const { name, version } of NATIVE_PAIRS) {
+      const srcNode = await findNodeForArch(name, version, `android-${arch}`);
+      const dst = join(abiDir, `lib${name}__${version}.so`);
+      await cp(srcNode, dst, { force: true });
     }
   }),
 );
@@ -466,34 +423,10 @@ await Promise.all(
       return frameworkDir;
     };
 
-    /**
-     * Locate the .node file inside the per-instance prebuild tree
-     * for the given iOS arch. Bare-style modules ship at
-     * `<instanceKey>/<platform>-<arch>/<name>.node`; better-sqlite3
-     * ships at `<instanceKey>/<platform>-<arch>/better_sqlite3.node`
-     * (underscore). Glob covers both layouts.
-     */
-    const findNodeForArch = async (arch: string) => {
-      const archDir = join(
-        TEMP_NODEJS_NATIVE_ASSETS_DIR,
-        instanceKey,
-        `ios-${arch}`,
-      );
-      const matches = await Array.fromAsync(
-        glob(`**/*.node`, { cwd: archDir }),
-      );
-      if (matches.length !== 1) {
-        throw new Error(
-          `Expected exactly one .node file for ${instanceKey} on ios-${arch}; found ${matches.length}: ${matches.join(", ")}`,
-        );
-      }
-      return join(archDir, matches[0]);
-    };
-
     const [deviceNode, armSimNode, x64SimNode] = await Promise.all([
-      findNodeForArch("arm64"),
-      findNodeForArch("arm64-simulator"),
-      findNodeForArch("x64-simulator"),
+      findNodeForArch(name, version, "ios-arm64"),
+      findNodeForArch(name, version, "ios-arm64-simulator"),
+      findNodeForArch(name, version, "ios-x64-simulator"),
     ]);
 
     const deviceFramework = await buildPerArchFramework("arm64", deviceNode);
@@ -580,6 +513,50 @@ function buildFrameworkPlist(name: string): string {
   <key>MinimumOSVersion</key><string>15.1</string>
 </dict></plist>
 `;
+}
+
+/**
+ * Locate the single `.node` file inside the per-instance prebuild
+ * tree for the given target string (e.g. `ios-arm64`,
+ * `android-arm64`). Bare-style addons ship at
+ * `<instanceKey>/<target>/<name>.node`; better-sqlite3 ships at
+ * `<instanceKey>/<target>/better_sqlite3.node` (underscore). The glob
+ * covers both layouts. Throws if zero or more than one matches —
+ * either means the prebuild tarball changed shape upstream.
+ */
+async function findNodeForArch(
+  name: string,
+  version: string,
+  target: string,
+): Promise<string> {
+  const archDir = join(
+    TEMP_NODEJS_NATIVE_ASSETS_DIR,
+    `${name}__${version}`,
+    target,
+  );
+  const matches = await Array.fromAsync(glob(`**/*.node`, { cwd: archDir }));
+  if (matches.length !== 1) {
+    throw new Error(
+      `Expected exactly one .node file for ${name}__${version} on ${target}; found ${matches.length}: ${matches.join(", ")}`,
+    );
+  }
+  return join(archDir, matches[0]);
+}
+
+/**
+ * Map our internal Android arch tags (the ones in the prebuild
+ * tarball name's `android-<arch>` suffix) to AGP's ABI directory
+ * names used in `jniLibs/<abi>/`.
+ */
+function androidAbiForArch(arch: (typeof ANDROID_ARCHS)[number]): string {
+  switch (arch) {
+    case "arm":
+      return "armeabi-v7a";
+    case "arm64":
+      return "arm64-v8a";
+    case "x64":
+      return "x86_64";
+  }
 }
 
 function getArtifactInfo({

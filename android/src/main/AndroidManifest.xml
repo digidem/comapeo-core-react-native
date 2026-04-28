@@ -5,7 +5,19 @@
     <!--  Request notification permission to be able to show the foreground service notification  -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <application>
+    <!--
+        `extractNativeLibs="false"`: native libraries (libnode.so + every
+        per-addon `lib<name>__<version>.so` in `jniLibs/<abi>/`) ship
+        uncompressed and aligned inside the APK and Bionic mmaps them in
+        place at load time — no extraction to nativeLibraryDir. Required
+        by the rolled-up backend's bare-name `process.dlopen` calls
+        (canonical `build-architecture-plan.md` §0.1: a *full-path*
+        dlopen would fail because nativeLibraryDir is empty under this
+        configuration). Pairs with `packagingOptions.jniLibs.useLegacyPackaging
+        = false` in build.gradle.
+    -->
+    <application
+        android:extractNativeLibs="false">
         <!-- android:name should not change (see http://android-developers.blogspot.com/2011/06/things-that-cannot-change.html) -->
         <!-- android:process is used to run the service in a separate process -->
         <!-- android:exported stops other apps from starting this service -->

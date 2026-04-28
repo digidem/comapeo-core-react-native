@@ -469,25 +469,25 @@ Exit criterion: backend boots on iOS simulator with all six addons loadable
 
 ### Phase 2 — Packaging migration: assets → jniLibs/xcframework (3–5 days)
 
-> **2026-04-28, split execution:** Phase 2 is being delivered in two
-> branches because the iOS xcframework work and the Android jniLibs
-> work share a goal but no actual code, and the Android side risks
-> regressing currently-passing instrumented tests in ways the iOS side
-> doesn't.
+> **2026-04-28, complete:** Phase 2 ended up landing on a single
+> branch (PR #16 grew to cover both halves) after a mid-stream
+> simplification removed the @comapeo/core patch + free-form
+> `__loadAddon` plumbing on iOS, which made the Android delta
+> small enough to ride along.
 >
-> - **iOS portion shipped** via PR #16 / commit `e34505d` on `main`.
->   Per-addon `<name>.xcframework` (device + fat simulator), Embed &
->   Sign, `__loadAddon(name)` rollup rewrite + banner injection,
->   `betterSqlite3NativeBinding` plumbed through `@comapeo/core` via
->   patch-package. Detailed branch plan:
+> - **iOS:** per-addon `<name>__<version>.xcframework` (device + fat
+>   simulator), Embed & Sign, multi-version `__loadAddon(name, version)`
+>   rollup rewrite + banner. Detailed plan:
 >   [`phase-2-xcframework-plan.md`](./phase-2-xcframework-plan.md).
-> - **Android portion deferred** to a follow-up branch. Detailed plan:
+> - **Android:** symmetric `jniLibs/<abi>/lib<name>__<version>.so`
+>   layout with `extractNativeLibs="false"` + `useLegacyPackaging=false`.
+>   Rollup loader plugin unified across platforms (one transform,
+>   per-platform banner). Detailed plan:
 >   [`phase-2-android-jnilibs-plan.md`](./phase-2-android-jnilibs-plan.md).
->   Covers the symmetric jniLibs work + the rollup loader plugin
->   unification + dropping the `nodejs-native/<abi>/` overlay extraction.
-> - **Step 5 (JNI stdio drain fix)** is also deferred — recommended
->   as its own follow-up PR after the Android jniLibs branch lands;
->   tracked in `phase-2-android-jnilibs-plan.md` §0.
+> - **Step 5 (JNI stdio drain fix)** stays deferred — packaging is
+>   landed; the stdio drain fix is its own concern with a different
+>   failure mode. Tracked in `phase-2-android-jnilibs-plan.md` §0
+>   "What this branch deliberately doesn't ship".
 
 The actual architectural shift. No longer depends on iOS build-backend parity
 from phase 1 being _packaging-final_, just that JS loads.
