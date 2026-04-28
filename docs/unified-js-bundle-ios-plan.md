@@ -251,9 +251,18 @@ Items called out during review of Phase 1 that are deliberately deferred. Treat 
 
 ### Phase 2 (xcframework + device support)
 
-- [ ] **Replace `#if arch(arm64)` with `#if targetEnvironment(simulator)`** in `AppLifecycleDelegate.prepareNodeBundle()`. The current compile-time arch switch picks `arm64-simulator` on Mac Catalyst Apple Silicon and any future device-arm64 build, which doesn't have a `nodejs-native/arm64-simulator/` slice. The failure is "Could not find nodejs-project/index.mjs" (misleading) when it should say "no native slice for this build configuration". Phase 2 ships device + simulator slices in a single xcframework, so the selector needs both axes.
-- [ ] **Drop `nodejs-native/<arch>/` resource layout in favour of xcframework Embed & Sign.** Removes the Swift-side merge/extract step; Apple's loader picks the right slice automatically. `prepareNodeBundle()` collapses to "copy `nodejs-project/` once" — see version-stamp item below.
-- [ ] **Smoke test on a real device.** Phase 1 covers simulator only. Once xcframework lands, add a separate device test job (or matrix axis) so we don't re-introduce simulator-only assumptions.
+> **Status (2026-04-28):** Shipped via PR #16 / `e34505d`. See
+> [`phase-2-xcframework-plan.md`](./phase-2-xcframework-plan.md) for
+> the implementation. Per-addon xcframeworks now ship via Embed & Sign,
+> the runtime overlay step is gone, and device + simulator are both
+> supported in one artifact per addon. Real-device runtime test still
+> open (see Phase 2.5 below). The Android counterpart is split into a
+> dedicated plan:
+> [`phase-2-android-jnilibs-plan.md`](./phase-2-android-jnilibs-plan.md).
+
+- [x] ~~**Replace `#if arch(arm64)` with `#if targetEnvironment(simulator)`** in `AppLifecycleDelegate.prepareNodeBundle()`.~~ Moot — `prepareNodeBundle()` no longer does arch selection. The `#if` block was deleted along with `mergeDirectory()`; xcframeworks ship both arches and Xcode's selector handles per-destination slice picking.
+- [x] ~~**Drop `nodejs-native/<arch>/` resource layout in favour of xcframework Embed & Sign.**~~ Done.
+- [ ] **Smoke test on a real device.** Phase 1 covers simulator only; PR #16 added a CI device-build (codesign verification) but didn't add a runtime-on-device test. Keep open for Phase 2.5; needs provisioned hardware in CI.
 
 ### Phase 2.5 — runtime ergonomics
 
@@ -264,6 +273,14 @@ Items called out during review of Phase 1 that are deliberately deferred. Treat 
 
 ### Phase 2.5 — defensive cleanup
 
-- [ ] **Reorder smoke-test handler install (already done in Phase 1).** Listed for completeness: `service.onStateChange` is installed before reading `service.state` to avoid the synchronous-on-node-thread transition slipping between read and assign. Keep this pattern in any future test that watches `NodeJSService` state from another thread.
-- [ ] **Bound symlink follow in `mergeDirectory()`.** `FileManager.fileExists(atPath:isDirectory:)` follows symlinks; a self-referential symlink in the resource tree would infinite-loop. The asset tree has no symlinks today, so this is theoretical, but switching to `attributesOfItem(atPath:)[.type]` (or tracking visited inodes) is cheap insurance.
+- [x] ~~**Reorder smoke-test handler install (already done in Phase 1).**~~ Done in the Phase 1 review-fix PR.
+- [x] ~~**Bound symlink follow in `mergeDirectory()`.**~~ Moot — `mergeDirectory()` was deleted in Phase 2 along with the rest of the runtime overlay.
 - [ ] **Drop the silent dropping of `MapsPluginOpts` in the stub.** Once fetch is polyfilled (Phase 2.5), the stub can become a real (if minimal) plugin. Until then, surface unexpected register-time options as `console.warn` rather than silently discarding them.
+
+### Cross-references for the deferred bucket
+
+- The Phase 2 work itself: [`phase-2-xcframework-plan.md`](./phase-2-xcframework-plan.md) (iOS, shipped) + [`phase-2-android-jnilibs-plan.md`](./phase-2-android-jnilibs-plan.md) (Android, planned).
+- The above Phase 2.5 list combined with the items in
+  [`phase-2-xcframework-plan.md` §7](./phase-2-xcframework-plan.md#7-defer--out-of-scope)
+  forms the full open backlog. When picking the next item to land,
+  start there.

@@ -1,5 +1,11 @@
 # Phase 2 plan — iOS xcframework Embed & Sign for native addons
 
+> **Status (2026-04-28):** ✅ Shipped via PR #16 (`e34505d` on `main`).
+> All §5 acceptance items ticked; pre-release sanity items (one
+> real-device run, one TestFlight upload) remain open. The Android
+> jniLibs migration that was deferred from this branch is now planned
+> in [`phase-2-android-jnilibs-plan.md`](./phase-2-android-jnilibs-plan.md).
+
 Companion to [`build-architecture-plan.md`](./build-architecture-plan.md) §5
 Phase 2. The canonical Phase 2 covers BOTH platforms — Android `jniLibs/`
 + iOS xcframework + Android stdio JNI fix + a unified `__loadAddon`
@@ -454,27 +460,44 @@ inside the `.app` bundle.
 
 ## 5. Acceptance criteria
 
-- [ ] `npm run backend:build` produces `ios/Frameworks/<name>@<version>.xcframework`
+> **Status (2026-04-28):** All items below ticked; Phase 2 (iOS)
+> shipped via PR #16, `e34505d` on `main`. Remaining
+> Phase-2-but-Android work is tracked in
+> [`phase-2-android-jnilibs-plan.md`](./phase-2-android-jnilibs-plan.md).
+> Acceptance items use the unversioned framework name
+> (`<name>.framework`) the branch actually shipped, not the
+> `<name>@<version>.framework` proposed earlier — see §0 "Skipped for
+> now".
+
+- [x] `npm run backend:build` produces `ios/Frameworks/<name>.xcframework`
       for each of the 7 native modules.
-- [ ] `git ls-files ios/Frameworks/` returns nothing (gitignored).
-- [ ] `git ls-files ios/nodejs-native/` returns nothing AND the
+- [x] `git ls-files ios/Frameworks/` returns nothing (gitignored).
+- [x] `git ls-files ios/nodejs-native/` returns nothing AND the
       directory is no longer produced (build-backend.ts emits no
       `ios/nodejs-native/`; .gitignore entry remains as a guard rail).
-- [ ] `cd example && npx expo prebuild --platform ios && cd ios && pod install`
+- [x] `cd example && npx expo prebuild --platform ios && cd ios && pod install`
       succeeds with the new podspec; `<App>.app/Frameworks/` contains
-      one `<name>@<version>.framework/` per native module after
-      `xcodebuild build`.
-- [ ] `otool -l <App>.app/Frameworks/sodium-native@5.1.0.framework/sodium-native@5.1.0 | grep LC_ID_DYLIB`
-      prints
-      `name @rpath/sodium-native@5.1.0.framework/sodium-native@5.1.0`.
-- [ ] `CoreManagerSmokeTest` passes on iOS simulator.
-- [ ] `ServiceLifecycleTest` passes on iOS simulator.
-- [ ] iOS device build job (new CI matrix axis) succeeds; codesign
+      one `<name>.framework/` per native module after `xcodebuild build`.
+- [x] `otool -D <App>.app/Frameworks/sodium-native.framework/sodium-native`
+      prints `@rpath/sodium-native.framework/sodium-native`.
+- [x] `CoreManagerSmokeTest` passes on iOS simulator.
+- [x] `ServiceLifecycleTest` passes on iOS simulator.
+- [x] iOS device build job (new CI matrix axis) succeeds; codesign
       succeeds for all xcframework slices.
-- [ ] `AppLifecycleDelegate.prepareNodeBundle()` no longer references
+- [x] `AppLifecycleDelegate.prepareNodeBundle()` no longer references
       `nodejs-native` and `mergeDirectory()` is deleted.
-- [ ] Android instrumented tests still pass — confirms iOS-only scope
-      did not regress the platform we're not touching.
+- [x] Android instrumented tests still pass — confirms iOS-only scope
+      did not regress the platform we weren't touching.
+
+Pre-release sanity checks (still open, not blocking the merge):
+
+- [ ] **One real-device run.** Currently CI device-build is codesign
+      verification only — no runtime exercise. `npx expo run:ios -d`
+      against any provisioned device covers what differs at runtime
+      (entitlements, real codesigning enforcement, sandbox).
+- [ ] **One TestFlight upload.** Catches a class of distribution-only
+      validation issues (missing `MinimumOSVersion` matches,
+      `Info.plist` schema, signing) that local builds don't surface.
 
 ---
 
@@ -506,16 +529,51 @@ rail).
 
 ## 7. Defer / out of scope
 
-- Android `jniLibs/` migration. Tracked by canonical Phase 2; will be
-  its own branch.
-- `NodeJSService.kt` JNI stdio fix. Same.
-- Unified `__loadAddon` helper across both platforms. Becomes
-  meaningful once Android also moves off `rollup-plugin-native-paths`.
-- Real-device smoke test (an XCTest that runs on a device, not just a
-  build). Phase 2.5.
-- Version-stamp gate on `prepareNodeBundle()`. Phase 2.5; gated on the
-  Phase 2 simplification of that function landing first so the
-  optimisation has a smaller surface to gate.
-- iOS map-tile fetching, fetch polyfill, maps-stub `console.warn`. All
-  unrelated to packaging; tracked in
-  [unified-js-bundle-ios-plan.md §7](./unified-js-bundle-ios-plan.md#7-phase-2-follow-ups).
+This branch was deliberately iOS-only. The deferred items below are
+either covered by the dedicated Android plan or pushed to Phase 2.5.
+
+**Tracked by [`phase-2-android-jnilibs-plan.md`](./phase-2-android-jnilibs-plan.md):**
+
+- Android `jniLibs/` migration (the symmetric counterpart of this
+  branch's iOS xcframework work).
+- Unified `__loadAddon` helper across both platforms (the iOS plugin
+  rename + per-platform banner dispatch).
+- Android-side `betterSqlite3NativeBinding` activation (the patch
+  already supports it; only Android-side path was a no-op).
+
+**Adjacent and separable, recommend a follow-up PR each:**
+
+- `NodeJSService.kt` JNI stdio pump drain fix (canonical §0.4 / §8).
+  Important for diagnostics; orthogonal to packaging. Best landed
+  immediately after the Android jniLibs branch by the same author.
+
+**Phase 2.5 — runtime ergonomics (not blocked on the Android branch):**
+
+- Real-device iOS smoke test (an XCTest that *runs* on a provisioned
+  device, beyond the codesign-only `xcodebuild build` CI verifies
+  today).
+- Version-stamp gate on `prepareNodeBundle()` cold-start copy. Mirrors
+  Android's `lastUpdateTime` SharedPreference pattern; uses
+  `CFBundleVersion` + `UserDefaults` on iOS.
+- `globalThis.fetch` polyfill via `node-fetch@3` (so
+  `@comapeo/core/src/member-api.js#L496` doesn't crash on iOS when
+  invite hosting is exercised — currently dead code on iOS).
+- Re-introduce the iOS maps fastify plugin (today stubbed via
+  `backend/lib/maps-stub.js` because undici crashes nodejs-mobile
+  iOS at module-init).
+- `console.warn` inside the maps stub so a stray `/maps/*` request
+  to the stubbed plugin isn't a silent 404.
+
+**Phase 3+:**
+
+- 16 KB page alignment audit (`readelf -l | grep LOAD` on each
+  shipped `.so`/Mach-O — should already be green via the
+  `-Wl,-z,max-page-size=16384` flag in `nodejs-mobile-bare-prebuilds`,
+  but worth one explicit confirmation before Android 15 becomes the
+  minimum target).
+- Versioned filenames (`lib<name>.<version>.so` /
+  `<name>@<version>.framework`) once a real multi-version dep graph
+  appears. Mechanical to add on top of either platform's work.
+
+For a long-form pre-Phase-2 backlog inherited from Phase 1's review,
+see [`unified-js-bundle-ios-plan.md` §7](./unified-js-bundle-ios-plan.md#7-phase-2-follow-ups).
