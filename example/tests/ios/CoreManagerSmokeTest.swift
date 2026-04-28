@@ -46,15 +46,15 @@ final class CoreManagerSmokeTest: XCTestCase {
         // Signal 2: Loads. Drive start if the app's lifecycle didn't already.
         if service.state == .stopped { service.start() }
         let started = expectation(description: "service reaches .started")
-        // Capture in case the service is already started (stateChange will
-        // not fire). Fulfill immediately if so.
-        if service.state == .started {
-            started.fulfill()
-        } else {
-            service.onStateChange = { state in
-                if state == .started { started.fulfill() }
-            }
+        started.assertForOverFulfill = false
+        // Install the handler BEFORE checking state. `transitionState(to:)`
+        // fires synchronously on the node thread inside `runNode()`, so a
+        // check-then-install order can lose the transition between the read
+        // and the assignment and then wait the full timeout.
+        service.onStateChange = { state in
+            if state == .started { started.fulfill() }
         }
+        if service.state == .started { started.fulfill() }
         wait(for: [started], timeout: 30)
         XCTAssertEqual(service.state, .started)
 

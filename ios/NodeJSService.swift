@@ -179,7 +179,7 @@ class NodeJSService {
 
     private func runNode() {
         guard let jsPath = resolveJSEntryPoint() else {
-            log("Error: Could not find nodejs-project/index.js in app bundle")
+            log("Error: Could not find nodejs-project/index.mjs in app bundle")
             lock.lock()
             let sem = nodeCompletionSemaphore
             lock.unlock()
