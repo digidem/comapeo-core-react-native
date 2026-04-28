@@ -107,7 +107,7 @@ final class RootKeyStore {
             return SecRandomCopyBytes(
                 kSecRandomDefault,
                 RootKeyStore.rootKeyByteLength,
-                baseAddress,
+                baseAddress
             )
         }
         guard status == errSecSuccess else {

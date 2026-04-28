@@ -47,12 +47,9 @@ class ComapeoCoreModule : Module() {
             val controlSocketFile =
                 File(appContext.persistentFilesDirectory, ComapeoCoreService.CONTROL_SOCKET_FILENAME)
 
-            ipc = NodeJSIPC(
-                socketFile,
-                onMessage = { message ->
-                    sendEvent("message", mapOf("data" to message))
-                },
-            )
+            ipc = NodeJSIPC(socketFile) { message ->
+                sendEvent("message", mapOf("data" to message))
+            }
 
             // Derive JS-visible state from control-channel messages and the
             // IPC's own connection state. The control socket replays

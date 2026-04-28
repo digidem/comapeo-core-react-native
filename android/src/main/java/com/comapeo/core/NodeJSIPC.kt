@@ -27,8 +27,15 @@ import java.nio.ByteOrder
 @OptIn(ExperimentalCoroutinesApi::class)
 class NodeJSIPC(
     private val socketFile: File,
-    private val onMessage: (String) -> Unit,
+    // Optional first so the trailing-lambda call form
+    // `NodeJSIPC(file) { msg -> ... }` keeps binding to `onMessage` (the
+    // last function-type parameter). Reordering after `onMessage` would
+    // silently capture every existing single-callback callsite as the
+    // state observer, which the kotlinc reports as
+    // "Argument type mismatch: actual type is 'NodeJSIPC.State', but
+    //  'String!' was expected." in CI.
     private val onConnectionStateChange: ((State) -> Unit)? = null,
+    private val onMessage: (String) -> Unit,
 ) {
     private val socketAddress =
         LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM)
