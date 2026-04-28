@@ -1,0 +1,86 @@
+diff --git a/node_modules/@comapeo/core/src/mapeo-manager.js b/node_modules/@comapeo/core/src/mapeo-manager.js
+index 6cb84fb..afc00e3 100644
+--- a/node_modules/@comapeo/core/src/mapeo-manager.js
++++ b/node_modules/@comapeo/core/src/mapeo-manager.js
+@@ -161,6 +161,7 @@ export class MapeoManager extends TypedEmitter {
+   #defaultConfigPath
+   #makeWebsocket
+   #defaultIsArchiveDevice
++  #betterSqlite3NativeBinding
+ 
+   /**
+    * @param {Object} opts
+@@ -176,6 +177,7 @@ export class MapeoManager extends TypedEmitter {
+    * @param {string} [opts.defaultOnlineStyleUrl] URL for an online-hosted StyleJSON asset.
+    * @param {boolean} [opts.defaultIsArchiveDevice] Whether the node is an archive device by default
+    * @param {(url: string) => WebSocket} [opts.makeWebsocket]
++   * @param {object} [opts.betterSqlite3NativeBinding] Pre-loaded better-sqlite3 native addon module. When set, every `new Database(...)` call routes around `require('bindings')('better_sqlite3.node')` and uses this addon directly. nodejs-mobile callers (iOS in particular) need this because the default `bindings` lookup walks the filesystem expecting a `.node` next to the JS — but our native code ships inside a code-signed iOS xcframework loaded via `process.dlopen` at app start. Threaded through to MapeoProject so per-project DBs use the same addon.
+    */
+   constructor({
+     rootKey,
+@@ -190,6 +192,7 @@ export class MapeoManager extends TypedEmitter {
+     defaultOnlineStyleUrl = DEFAULT_ONLINE_STYLE_URL,
+     defaultIsArchiveDevice = DEFAULT_IS_ARCHIVE_DEVICE,
+     makeWebsocket = (url) => new WebSocket(url),
++    betterSqlite3NativeBinding,
+   }) {
+     super()
+     this.#keyManager = new KeyManager(rootKey)
+@@ -201,10 +204,14 @@ export class MapeoManager extends TypedEmitter {
+     this.#l = Logger.create('manager', logger)
+     this.#dbFolder = dbFolder
+     this.#projectMigrationsFolder = projectMigrationsFolder
++    this.#betterSqlite3NativeBinding = betterSqlite3NativeBinding
+     const sqlite = new Database(
+       dbFolder === ':memory:'
+         ? ':memory:'
+-        : path.join(dbFolder, CLIENT_SQLITE_FILE_NAME)
++        : path.join(dbFolder, CLIENT_SQLITE_FILE_NAME),
++      betterSqlite3NativeBinding
++        ? { nativeBinding: betterSqlite3NativeBinding }
++        : undefined
+     )
+     sqlite.pragma('journal_mode=WAL')
+     this.#db = drizzle(sqlite)
+@@ -617,6 +624,7 @@ export class MapeoManager extends TypedEmitter {
+       getMediaBaseUrl: this.#getMediaBaseUrl.bind(this),
+       isArchiveDevice,
+       makeWebsocket: this.#makeWebsocket,
++      betterSqlite3NativeBinding: this.#betterSqlite3NativeBinding,
+       getFallbackProjectInfo: () => {
+         return this.#db
+           .select({ projectInfo: projectKeysTable.projectInfo })
+diff --git a/node_modules/@comapeo/core/src/mapeo-project.js b/node_modules/@comapeo/core/src/mapeo-project.js
+index 44e3be1..9c19f84 100644
+--- a/node_modules/@comapeo/core/src/mapeo-project.js
++++ b/node_modules/@comapeo/core/src/mapeo-project.js
+@@ -177,6 +177,7 @@ export class MapeoProject extends ReadyResource {
+    * @param {boolean} opts.isArchiveDevice Whether this device is an archive device
+    * @param {() => import('./schema/client.js').ProjectInfo | undefined} opts.getFallbackProjectInfo
+    * @param {Logger} [opts.logger]
++   * @param {object} [opts.betterSqlite3NativeBinding] Pre-loaded better-sqlite3 native addon module. Threaded down from MapeoManager so per-project SQLite databases reuse the same iOS xcframework-loaded binding rather than letting better-sqlite3's `bindings` lookup walk the filesystem. See MapeoManager constructor docs.
+    *
+    */
+   constructor({
+@@ -195,6 +196,7 @@ export class MapeoProject extends ReadyResource {
+     logger,
+     isArchiveDevice,
+     getFallbackProjectInfo,
++    betterSqlite3NativeBinding,
+   }) {
+     super()
+ 
+@@ -208,7 +210,12 @@ export class MapeoProject extends ReadyResource {
+ 
+     ///////// 1. Setup database
+ 
+-    this.#sqlite = new Database(dbPath)
++    this.#sqlite = new Database(
++      dbPath,
++      betterSqlite3NativeBinding
++        ? { nativeBinding: betterSqlite3NativeBinding }
++        : undefined
++    )
+     this.#sqlite.pragma('journal_mode=WAL')
+     const db = drizzle(this.#sqlite)
+     this.#db = db

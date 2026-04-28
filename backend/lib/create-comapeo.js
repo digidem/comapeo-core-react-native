@@ -35,6 +35,18 @@ export function createComapeo({
   mkdirSync(indexFolder, { recursive: true });
   mkdirSync(customMapsDir, { recursive: true });
 
+  // `__loadAddon` is injected at the top of the iOS rollup output by
+  // `rollup-plugin-ios-addon-loader.js`. It does `process.dlopen` against
+  // the embedded xcframework at NATIVE_LIB_DIR/<name>.framework/<name>
+  // and caches the result. On Android the helper isn't defined; this
+  // optional chain leaves the option undefined and better-sqlite3 falls
+  // back to its default `require('bindings')('better_sqlite3.node')`
+  // resolution path against the .node extracted to nodejs-project's
+  // node_modules tree.
+  /** @type {object | undefined} */
+  const betterSqlite3NativeBinding =
+    /** @type {any} */ (globalThis).__loadAddon?.("better-sqlite3");
+
   return new MapeoManager({
     dbFolder,
     coreStorage: indexFolder,
@@ -44,5 +56,6 @@ export function createComapeo({
     fastify,
     defaultOnlineStyleUrl: DEFAULT_ONLINE_MAP_STYLE_URL,
     customMapPath: path.join(customMapsDir, DEFAULT_CUSTOM_MAP_FILE_NAME),
+    betterSqlite3NativeBinding,
   });
 }
