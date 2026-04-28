@@ -296,22 +296,28 @@ await Promise.all(
 // (`assemble-test-project/action.yml#Wrap addons as xcframeworks`):
 //
 //   1. For each iOS arch, copy the .node binary as the framework's
-//      Mach-O exec inside <work>/<arch>/<name>.framework/<name> and
+//      Mach-O exec inside <work>/<arch>/<name>.framework/<name>, rewrite
+//      its install name with `install_name_tool -id @rpath/...`, and
 //      write a minimal Info.plist next to it.
 //   2. lipo the two simulator binaries into one fat Mach-O so a single
 //      simulator slice covers both Apple Silicon and Intel hosts.
 //   3. xcodebuild -create-xcframework with the device framework and
 //      the lipo'd simulator framework → ios/Frameworks/<name>.xcframework.
 //
-// We deliberately omit `install_name_tool -id @rpath/...` (the harness
-// does too): we always hand `process.dlopen` a full path, so the Mach-O's
-// internal install name is never consulted. Versioned framework names
-// (<name>@<version>.framework) are likewise deferred — the seven native
-// modules ship as a single version each in our backend's dep tree
-// today; multi-version handling can be added when a real need surfaces.
-
-rmSync(IOS_FRAMEWORKS_DIR, { force: true, recursive: true });
-mkdirSync(IOS_FRAMEWORKS_DIR, { recursive: true });
+// `xcodebuild`, `lipo`, and `install_name_tool` are macOS-only Xcode
+// command-line tools, so this whole pass is gated on `process.platform`.
+// Linux CI runners (Android workflow) skip it cleanly — the Android
+// instrumented job doesn't consume `ios/Frameworks/` and would otherwise
+// fail at `install_name_tool: spawn ENOENT` before the rollup output it
+// actually wants gets copied into Android's resource tree.
+if (process.platform !== "darwin") {
+  console.log(
+    "Skipping iOS xcframework wrapping — requires macOS Xcode toolchain (xcodebuild/lipo/install_name_tool). " +
+      `Current platform: ${process.platform}.`,
+  );
+} else {
+  rmSync(IOS_FRAMEWORKS_DIR, { force: true, recursive: true });
+  mkdirSync(IOS_FRAMEWORKS_DIR, { recursive: true });
 
 const TEMP_FRAMEWORKS_WORK_DIR = join(TEMP_NODEJS_ASSETS_DIR, "frameworks");
 mkdirSync(TEMP_FRAMEWORKS_WORK_DIR, { recursive: true });
@@ -413,7 +419,8 @@ await Promise.all(
   }),
 );
 
-rmSync(TEMP_FRAMEWORKS_WORK_DIR, { force: true, recursive: true });
+  rmSync(TEMP_FRAMEWORKS_WORK_DIR, { force: true, recursive: true });
+}
 
 // ------------------------------------------------
 // Helpers
