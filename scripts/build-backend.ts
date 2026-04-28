@@ -49,10 +49,12 @@ await $$({ cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR })`npm run build`;
 
 const NATIVE_MODULES = [
   { name: "better-sqlite3", usesNapi: false },
-  // Native module seems to cause issues so do not need for now: https://github.com/digidem/comapeo-mobile/issues/1096
-  // {name: 'crc-native', usesNapi: true},
+  // Native module seems may cause issues on some devices. If so, exclude from list to use JS version.
+  // https://github.com/digidem/comapeo-mobile/issues/1096
+  { name: "crc-native", usesNapi: true },
   { name: "fs-native-extensions", usesNapi: true },
   { name: "quickbit-native", usesNapi: true },
+  { name: "rabin-native", usesNapi: true },
   { name: "simdle-native", usesNapi: true },
   { name: "sodium-native", usesNapi: true },
 ];
