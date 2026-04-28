@@ -46,14 +46,6 @@ await $$({
   cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR,
 })`npm ci --ignore-scripts`;
 
-// `--ignore-scripts` keeps native gyp builds (better-sqlite3) from running,
-// but it also skips patch-package's postinstall. Apply patches explicitly
-// so backend/patches/*.patch lands on the freshly-installed tree before
-// rollup reads it.
-await $$({
-  cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR,
-})`npx patch-package`;
-
 // Rollup writes per-platform bundles to dist/android and dist/ios.
 // The iOS bundle has @comapeo/core's maps fastify plugin swapped for a
 // no-op stub so undici (which crashes nodejs-mobile iOS at module-init)

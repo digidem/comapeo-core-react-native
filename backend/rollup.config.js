@@ -47,8 +47,9 @@ function buildPlugins({ platform }) {
   // Native addon loader rewrite differs per platform:
   //   Android: rewrite to bare-resolver paths so the bundled
   //     loaders walk into nodejs-project/node_modules/<pkg>/prebuilds/<abi>/.
-  //   iOS: rewrite to __loadAddon(name) which process.dlopens the
-  //     embedded xcframework binary at NATIVE_LIB_DIR/<name>.framework/<name>.
+  //   iOS: rewrite to __loadAddon(name, version) which process.dlopens
+  //     the embedded xcframework binary at
+  //     NATIVE_LIB_DIR/<name>__<version>.framework/<name>__<version>.
   //     The runtime helper itself is injected via output.banner.
   const addonLoaderPlugin =
     platform === "ios" ? iosAddonLoaderPlugin() : nativePaths();
@@ -110,10 +111,10 @@ const config = [
     output: {
       ...sharedOutput,
       dir: path.join(__dirname, "dist/ios"),
-      // Defines `__loadAddon(name)` (and exposes it on globalThis) at the
-      // top of the bundle so module-level loader-pattern rewrites
-      // performed by `rollup-plugin-ios-addon-loader.js` have a callable
-      // helper from the very first line of the bundle.
+      // Defines `__loadAddon(name, version)` at the top of the bundle
+      // so module-level loader-pattern rewrites performed by
+      // `rollup-plugin-ios-addon-loader.js` have a callable helper
+      // from the very first line of the bundle.
       banner: iosAddonLoaderBanner,
     },
     plugins: buildPlugins({ platform: "ios" }),

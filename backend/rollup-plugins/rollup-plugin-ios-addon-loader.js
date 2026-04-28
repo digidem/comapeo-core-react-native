@@ -1,6 +1,5 @@
 import MagicString from "magic-string";
 import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 
 /**
@@ -28,25 +27,21 @@ import path from "node:path";
  * under several deps in the current `backend/`), each callsite is
  * rewritten with the version that npm's resolution actually picked for
  * THAT importer. The version comes from the package.json that owns the
- * file being transformed — not a hand-maintained map. Top-level free-
- * form `__loadAddon(literal-name)` calls (currently only one, in
- * `backend/lib/create-comapeo.js`, for `better-sqlite3`'s
- * `nativeBinding` plumbing) resolve via Node's normal module resolution
- * from the importer; same answer Node would give at runtime if it ran
- * `require.resolve('better-sqlite3')`.
+ * file being transformed — not a hand-maintained map.
+ *
+ * Better-sqlite3 specifically: its `database.js` does
+ * `require('bindings')('better_sqlite3.node')` lazily, on first
+ * `new Database(...)` call. The rewrite catches that callsite at
+ * bundle time so when the lazy initialization runs at runtime, it
+ * loads our xcframework via `__loadAddon('better-sqlite3', '<ver>')`.
+ * No special handling needed beyond the standard loader-pattern rewrite
+ * — the underscore-vs-hyphen mismatch (`better_sqlite3.node` filename
+ * vs. `better-sqlite3` package name) only mattered when we let the
+ * original call run; the rewrite replaces the call entirely.
  *
  * The runtime helper itself ships via the bundle's `output.banner` (see
  * `iosAddonLoaderBanner`) so it lives at the top of the rolled-up file
  * and exists before any module-level loader call runs.
- *
- * Better-sqlite3 is a special case: it doesn't load eagerly via these
- * patterns. We patch `@comapeo/core` (see `backend/patches/`) to pass
- * an externally-loaded addon into better-sqlite3's existing
- * `nativeBinding` constructor option, bypassing its internal
- * node-bindings lookup entirely. The rollup rewrite below still runs
- * over `database.js`'s `require('bindings')(...)` call because the dead
- * branch is still present in the bundle, but it never executes when
- * the patched callsite supplies the addon.
  *
  * @returns {import('rollup').Plugin}
  */
@@ -71,38 +66,6 @@ export default function iosAddonLoaderPlugin() {
     },
   ];
 
-  // Free-form `__loadAddon('name')` — single string-literal argument,
-  // any receiver context (optional chain, JSDoc cast, etc). Used in
-  // `backend/lib/create-comapeo.js` to hand the better-sqlite3 addon
-  // module to MapeoManager's `betterSqlite3NativeBinding` option.
-  // Source code can't know the version; the plugin injects it by
-  // resolving the name from the importer's location at transform time.
-  //
-  // The single-arg shape disambiguates from the two-arg form the
-  // loader-pattern rewrites above produce (`__loadAddon('n', 'v')`),
-  // so order doesn't matter — we won't double-rewrite.
-  const FREE_FORM_LOAD_ADDON =
-    /\b__loadAddon(\?\.)?\(\s*(['"])([^'"]+)\2\s*\)/g;
-
-  // Module name → resolved version cache, keyed per importer dir to
-  // honour Node's cascading node_modules lookup for multi-version
-  // graphs. Resolution goes through `createRequire(importerFile)` so
-  // it follows the same algorithm Node would at runtime.
-  /** @type {Map<string, string>} */
-  const resolvedVersionCache = new Map();
-  function resolveModuleVersion(moduleName, importerFile) {
-    const cacheKey = `${importerFile}::${moduleName}`;
-    const cached = resolvedVersionCache.get(cacheKey);
-    if (cached !== undefined) return cached;
-    const requireFromImporter = createRequire(importerFile);
-    const pkgJsonPath = requireFromImporter.resolve(
-      `${moduleName}/package.json`,
-    );
-    const version = JSON.parse(readFileSync(pkgJsonPath, "utf-8")).version;
-    resolvedVersionCache.set(cacheKey, version);
-    return version;
-  }
-
   return {
     name: "rollup-plugin-ios-addon-loader",
 
@@ -112,37 +75,15 @@ export default function iosAddonLoaderPlugin() {
      */
     transform(code, id) {
       const containingPackage = readContainingPackage(id);
+      if (!containingPackage) return null;
 
+      const { name, version } = containingPackage;
       const magicString = new MagicString(code);
-
-      // Loader-pattern rewrites: name + version come from the file's
-      // own containing package (the addon is loading itself).
-      if (containingPackage) {
-        const { name, version } = containingPackage;
-        for (const { pattern, replacement } of replacements) {
-          magicString.replaceAll(pattern, replacement(name, version));
-        }
+      for (const { pattern, replacement } of replacements) {
+        magicString.replaceAll(pattern, replacement(name, version));
       }
-
-      // Free-form `__loadAddon('name')` rewrites: version resolved
-      // from the importer's perspective. Run on every file whether
-      // it's inside a package or not (catches our own backend/lib/*
-      // sources).
-      FREE_FORM_LOAD_ADDON.lastIndex = 0;
-      let match;
-      while ((match = FREE_FORM_LOAD_ADDON.exec(code)) !== null) {
-        const [full, optionalChain = "", , moduleName] = match;
-        const start = match.index;
-        const end = start + full.length;
-        const version = resolveModuleVersion(moduleName, id);
-        magicString.overwrite(
-          start,
-          end,
-          `__loadAddon${optionalChain}('${moduleName}', '${version}')`,
-        );
-      }
-
       if (!magicString.hasChanged()) return null;
+
       return {
         code: magicString.toString(),
         map: magicString.generateMap({ hires: true }),
@@ -153,9 +94,8 @@ export default function iosAddonLoaderPlugin() {
 
 /**
  * Banner for the iOS rollup output. Defines `__loadAddon(name, version)`
- * and exposes it on `globalThis` so non-bundled code (e.g. our patched
- * `@comapeo/core` reaching for it via `globalThis.__loadAddon` from
- * `backend/lib/create-comapeo.js`) can also reach the cached addons.
+ * so the loader-pattern rewrites run at the top of the bundle have a
+ * callable helper from the very first line.
  *
  * `process.dlopen` lands in
  * `<App>.app/Frameworks/<name>__<version>.framework/<name>__<version>`
@@ -168,10 +108,11 @@ export default function iosAddonLoaderPlugin() {
  * Cache key is `name + '__' + version` so two callsites that resolve
  * to different versions of the same addon don't share a slot. Using
  * `__` rather than `@` because `@` in framework dir names + Mach-O
- * install names is unvalidated territory (the canonical plan
- * proposes it; the Phase 2 harness used unversioned names); double
- * underscore is filesystem-safe and unambiguous on every Apple tool
- * we touch.
+ * install names is unvalidated territory; double underscore is
+ * filesystem-safe and unambiguous on every Apple tool we touch
+ * (with one carve-out: `CFBundleIdentifier` rejects underscores, so
+ * `buildFrameworkPlist` in scripts/build-backend.ts substitutes `__`
+ * for `-` there only).
  *
  * Using string concatenation rather than `path.join` avoids needing a
  * `createRequire`/`import` dance in the banner — iOS is POSIX, so `/`
@@ -191,14 +132,12 @@ export const iosAddonLoaderBanner = [
   "  __addonCache.set(key, mod.exports);",
   "  return mod.exports;",
   "}",
-  "globalThis.__loadAddon = __loadAddon;",
 ].join("\n");
 
 /**
  * Returns the npm package directly containing the file at `id`, by
  * walking parent directories looking for the nearest `package.json`
- * that doesn't sit alongside a `node_modules/` (i.e. the package's
- * own root, not a parent that happens to have node_modules).
+ * with both `name` and `version` fields.
  *
  * @param {string} id Absolute path to a JS source file.
  * @returns {{ name: string, version: string, dir: string } | null}
