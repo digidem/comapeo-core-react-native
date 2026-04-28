@@ -6,7 +6,6 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Base64
-import androidx.core.content.edit
 import org.json.JSONObject
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -115,10 +114,15 @@ class RootKeyStore(private val context: Context) {
         // commit() over apply() — synchronous durable write before the FGS
         // proceeds. apply()'s async semantics are unacceptable: if the
         // process is killed between apply() and the write hitting disk,
-        // we'd be left with the keystore alias but no envelope.
+        // we'd be left with the keystore alias but no envelope. Use the
+        // raw editor (rather than the `edit { }` extension) so we can
+        // observe `commit()`'s Boolean return and surface persistence
+        // failures explicitly.
         @Suppress("ApplySharedPref")
         val written = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit(commit = true) { putString(PREFS_KEY, envelopeJson) }
+            .edit()
+            .putString(PREFS_KEY, envelopeJson)
+            .commit()
         if (!written) throw RootKeyException("Failed to persist rootkey envelope")
 
         // Cheap paranoia: read it back and byte-compare before declaring

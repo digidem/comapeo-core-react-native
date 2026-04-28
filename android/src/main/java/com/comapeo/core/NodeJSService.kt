@@ -112,9 +112,10 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
             // frame with the bytes from RootKeyStore; on `ready` we
             // promote to STARTED.
             ipcDeferred.complete(
-                NodeJSIPC(controlSocketFile) { message ->
-                    handleControlMessage(message)
-                },
+                NodeJSIPC(
+                    controlSocketFile,
+                    onMessage = { message -> handleControlMessage(message) },
+                ),
             )
         }
     }
