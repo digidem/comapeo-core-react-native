@@ -40,7 +40,6 @@
   },
   "overrides": {
     "mirror-drive": "1.4.0",
-    "require-addon": "1.1.0",
-    "simdle-native": "1.3.7"
+    "require-addon": "1.1.0"
   }
 }
