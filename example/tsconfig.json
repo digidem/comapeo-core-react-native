@@ -1,10 +1,12 @@
 {
-  "extends": "expo/tsconfig.base",
-  "compilerOptions": {
-    "strict": true,
-    "paths": {
-      "@comapeo/core-react-native": ["../src/index"],
-      "@comapeo/core-react-native/*": ["../src/*"]
-    }
-  }
+	"extends": "expo/tsconfig.base",
+	"compilerOptions": {
+		"strict": true,
+		"paths": {
+			"@comapeo/core-react-native": ["../src/index"],
+			"@comapeo/core-react-native/*": ["../src/*"]
+		}
+	},
+	"include": ["index.ts", "src", "types"],
+	"exclude": ["node_modules", "android", "ios"]
 }
