@@ -52,16 +52,30 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # `scripts/build-backend.ts` runs as TS via Node's native type
+          # stripping (>=22.6 with `--experimental-strip-types`, default-on
+          # in 24). Match the runtime declared in `package.json#devEngines`.
+          node-version-file: package.json
 
       - name: Install dependencies
         run: npm install && cd example && npm install
 
       - name: Download NodeMobile
-        run: npm run download:nodejs-mobile -- --platform ios
+        # Both platforms: `scripts/build-backend.ts#getNodeJsMobileNodeVersions`
+        # reads `android/libnode/include/node/node_version.h` to derive the
+        # Node ABI used in non-NAPI prebuild URLs (better-sqlite3 today). The
+        # iOS xcframework doesn't ship that header, so the iOS-only run was
+        # missing it. Two-platform download adds ~30 s; cheaper than carrying
+        # the ABI as a hard-coded constant that drifts when nodejs-mobile bumps.
+        run: npm run download:nodejs-mobile
 
-      - name: Install Node.js project dependencies
-        run: cd ios/nodejs-project && npm install --omit=dev
+      # Generates ios/nodejs-project/ + ios/nodejs-native/ from backend/
+      # via the same rollup pipeline that produces the Android assets.
+      # Replaces the previous "cd ios/nodejs-project && npm install" step,
+      # which only worked because ios/nodejs-project/ used to be a
+      # hand-maintained npm root with its own lockfile.
+      - name: Build backend bundle
+        run: npm run backend:build
 
       - name: Expo prebuild
         run: cd example && npx expo prebuild --platform ios --no-install

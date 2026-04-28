@@ -25,12 +25,21 @@ func makeMockNodeEntryPoint() -> (entryPoint: NodeJSService.NodeEntryPoint, sign
 
 /// Convenience wrapper that also constructs the `NodeJSService` with the mock
 /// entry point and a fake JS path. Most tests just need `(service, signalExit)`.
-func makeMockNodeService(filesDir: String) -> (service: NodeJSService, signalExit: () -> Void) {
+///
+/// `privateStorageDir` defaults to a sibling of `filesDir` so callers don't
+/// have to thread two paths through every test. Tests that exercise the
+/// backend's filesystem state can override it.
+func makeMockNodeService(
+    filesDir: String,
+    privateStorageDir: String? = nil
+) -> (service: NodeJSService, signalExit: () -> Void) {
     let (entryPoint, signal) = makeMockNodeEntryPoint()
     let service = NodeJSService(
         filesDir: filesDir,
+        privateStorageDir: privateStorageDir
+            ?? (filesDir as NSString).appendingPathComponent("private-storage"),
         nodeEntryPoint: entryPoint,
-        resolveJSEntryPoint: { "/fake/index.js" }
+        resolveJSEntryPoint: { "/fake/index.mjs" }
     )
     return (service, signal)
 }

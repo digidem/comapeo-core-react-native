@@ -112,9 +112,9 @@ final class NodeJSServiceTests: XCTestCase {
         waitForExpectations(timeout: 5)
 
         // Create mock state server AFTER start() so deleteSocketFiles() doesn't remove it.
-        // The stateIPC is already polling via waitForFile() and will connect once
+        // The controlIPC is already polling via waitForFile() and will connect once
         // the server creates the socket file.
-        let stateServer = MockNodeServer(socketPath: service.stateSocketPath)
+        let stateServer = MockNodeServer(socketPath: service.controlSocketPath)
         try stateServer.start()
         defer { stateServer.stop() }
 
@@ -217,7 +217,7 @@ final class NodeJSServiceTests: XCTestCase {
 
         let fm = FileManager.default
         XCTAssertFalse(fm.fileExists(atPath: service.comapeoSocketPath), "comapeo.sock should be deleted")
-        XCTAssertFalse(fm.fileExists(atPath: service.stateSocketPath), "state.sock should be deleted")
+        XCTAssertFalse(fm.fileExists(atPath: service.controlSocketPath), "control.sock should be deleted")
     }
 
     // MARK: - Cleanup Tests
@@ -331,7 +331,7 @@ final class NodeJSServiceTests: XCTestCase {
     /// `.error` instead.
     ///
     /// Incidentally exercises the state-IPC-still-connecting path: the mock service
-    /// has no real state socket server, so `stateIPC` never connects. The shutdown
+    /// has no real state socket server, so `controlIPC` never connects. The shutdown
     /// frame `stop()` sends via `sendMessageSync` lands in the IPC's pre-connect
     /// pending list rather than reaching a peer — that's the actual production
     /// failure mode this test guards against.

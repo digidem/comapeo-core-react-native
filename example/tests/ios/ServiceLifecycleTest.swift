@@ -70,7 +70,7 @@ final class ServiceLifecycleTest: XCTestCase {
         }
 
         XCTContext.runActivity(named: "state socket is listening") { _ in
-            let ipc = NodeJSIPC(socketPath: service.stateSocketPath) { _ in }
+            let ipc = NodeJSIPC(socketPath: service.controlSocketPath) { _ in }
             defer { ipc.disconnect() }
             waitUntil(timeout: 15, "IPC should reach .connected", ipc.state == .connected)
             XCTAssertEqual(ipc.state, .connected)
@@ -97,7 +97,7 @@ final class ServiceLifecycleTest: XCTestCase {
             var messages: [String] = []
             let messagesLock = NSLock()
 
-            let ipc = NodeJSIPC(socketPath: service.stateSocketPath) { message in
+            let ipc = NodeJSIPC(socketPath: service.controlSocketPath) { message in
                 messagesLock.lock()
                 messages.append(message)
                 messagesLock.unlock()

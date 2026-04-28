@@ -20,12 +20,18 @@ class NodeJSService {
     typealias NodeEntryPoint = (_ arguments: [String]) -> Int32
 
     static let comapeoSocketFilename = "comapeo.sock"
-    static let stateSocketFilename = "state.sock"
+    static let controlSocketFilename = "control.sock"
 
     private let filesDir: String
+    /// Backend's `privateStorageDir` argv positional. Mirrors Android's
+    /// `dataDir` (see NodeJSService.kt). The embedded ComapeoManager opens
+    /// SQLite files and other on-disk state under here, so it must be a
+    /// writable, app-private location that survives across process restarts
+    /// (e.g. `~/Library/Application Support/comapeo` on iOS).
+    private let privateStorageDir: String
     let comapeoSocketPath: String
-    let stateSocketPath: String
-    private var stateIPC: NodeJSIPC?
+    let controlSocketPath: String
+    private var controlIPC: NodeJSIPC?
     private var nodeThread: Thread?
     private let lock = NSLock()
 
@@ -51,23 +57,28 @@ class NodeJSService {
     /// Creates a NodeJSService with a custom directory.
     /// - Parameters:
     ///   - filesDir: Directory for socket files and working data.
+    ///   - privateStorageDir: App-private writable directory passed to the
+    ///     backend as the third argv positional. The embedded ComapeoManager
+    ///     keeps SQLite, blobs, and other on-disk state here.
     ///   - nodeEntryPoint: Blocking function that runs Node.js.
     ///   - resolveJSEntryPoint: Returns the path to the JS entry file.
     init(
         filesDir: String,
+        privateStorageDir: String,
         nodeEntryPoint: @escaping NodeEntryPoint,
         resolveJSEntryPoint: @escaping () -> String?
     ) {
         self.filesDir = filesDir
+        self.privateStorageDir = privateStorageDir
         self.comapeoSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
-        self.stateSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.stateSocketFilename)
+        self.controlSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.controlSocketFilename)
 
         // Fail loudly if either socket path won't fit in sockaddr_un.sun_path
         // (104 bytes on Darwin, including the null terminator). A silently
         // truncated path causes bind() to succeed against a different file —
         // surfacing later as a mysterious connection-refused or hang.
         let sunPathMax = 104
-        for path in [comapeoSocketPath, stateSocketPath] {
+        for path in [comapeoSocketPath, controlSocketPath] {
             let needed = path.utf8.count + 1
             precondition(
                 needed <= sunPathMax,
@@ -79,6 +90,7 @@ class NodeJSService {
         self.resolveJSEntryPoint = resolveJSEntryPoint
 
         try? FileManager.default.createDirectory(atPath: filesDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: privateStorageDir, withIntermediateDirectories: true)
         deleteSocketFiles()
     }
 
@@ -107,9 +119,11 @@ class NodeJSService {
 
         deleteSocketFiles()
 
-        // Initialize the state IPC connection (connects asynchronously, waits for socket file)
-        stateIPC = NodeJSIPC(socketPath: stateSocketPath) { message in
-            log("State IPC received: \(message)")
+        // Initialize the control IPC connection (connects asynchronously, waits for socket file).
+        // Receives broadcast `started`/`ready` messages from the backend's
+        // SimpleRpcServer once both UDS servers are listening.
+        controlIPC = NodeJSIPC(socketPath: controlSocketPath) { message in
+            log("Control IPC received: \(message)")
         }
 
         // Start Node.js on a background thread
@@ -140,15 +154,15 @@ class NodeJSService {
         // Send shutdown message — this causes Node.js JS code to exit,
         // which unblocks node_start() in runNode().
         //
-        // If stateIPC is still in .connecting (Node hasn't started listening on
-        // state.sock yet), sendMessageSync enqueues the message in IPC's
-        // pendingMessages list. cleanup() then calls stateIPC.disconnect(), which
+        // If controlIPC is still in .connecting (Node hasn't started listening on
+        // control.sock yet), sendMessageSync enqueues the message in IPC's
+        // pendingMessages list. cleanup() then calls controlIPC.disconnect(), which
         // discards pending messages without flushing them. The message is lost,
         // the semaphore wait below times out, and the service transitions to .error.
         // This is intentional: if Node hasn't connected within `timeout` seconds,
         // there's nothing we can do but declare the shutdown failed.
         let shutdownMessage = "{\"type\":\"shutdown\"}"
-        if let ipc = stateIPC {
+        if let ipc = controlIPC {
             ipc.sendMessageSync(shutdownMessage)
             log("Sent shutdown message to Node.js")
         }
@@ -165,7 +179,7 @@ class NodeJSService {
 
     private func runNode() {
         guard let jsPath = resolveJSEntryPoint() else {
-            log("Error: Could not find nodejs-project/index.js in app bundle")
+            log("Error: Could not find nodejs-project/index.mjs in app bundle")
             lock.lock()
             let sem = nodeCompletionSemaphore
             lock.unlock()
@@ -179,7 +193,29 @@ class NodeJSService {
         lock.unlock()
         transitionState(to: .started)
 
-        let args = ["node", jsPath, comapeoSocketPath, stateSocketPath]
+        // argv shape matches Android's NodeJSService.kt:
+        //   [node, indexPath, comapeoSocketPath, controlSocketPath, privateStorageDir]
+        // The third positional is consumed by backend/index.js as
+        // `privateStorageDir` and handed to createComapeo({privateStorageDir,...}).
+        //
+        // `--no-experimental-fetch` disables Node's built-in `globalThis.fetch`
+        // (and thus the lazy-loaded undici under it). nodejs-mobile iOS runs
+        // V8 with `--jitless` for App Store compliance, which suppresses the
+        // `WebAssembly` global; undici's HTTP/1.1 client calls
+        // `WebAssembly.compile` at module-init and crashes the process. The
+        // bundled backend already strips its only direct undici user (the
+        // maps fastify plugin); this flag prevents anything that calls the
+        // global `fetch` from re-introducing the same load path. Android
+        // doesn't need it (JIT is permitted), but the flag is harmless on
+        // both platforms so we keep argv parity.
+        let args = [
+            "node",
+            "--no-experimental-fetch",
+            jsPath,
+            comapeoSocketPath,
+            controlSocketPath,
+            privateStorageDir,
+        ]
         let exitCode = nodeEntryPoint(args)
         log("Node.js exited with code \(exitCode)")
 
@@ -197,8 +233,8 @@ class NodeJSService {
     ///   constraint of `NodeMobileStartNode`. When `true`, the service is
     ///   fully stopped and transitions to `.stopped`.
     func cleanup(threadExited: Bool = true) {
-        stateIPC?.disconnect()
-        stateIPC = nil
+        controlIPC?.disconnect()
+        controlIPC = nil
         deleteSocketFiles()
 
         lock.lock()
@@ -214,7 +250,7 @@ class NodeJSService {
     private func deleteSocketFiles() {
         let fm = FileManager.default
         try? fm.removeItem(atPath: comapeoSocketPath)
-        try? fm.removeItem(atPath: stateSocketPath)
+        try? fm.removeItem(atPath: controlSocketPath)
     }
 
 }
