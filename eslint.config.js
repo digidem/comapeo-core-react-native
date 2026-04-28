@@ -24,7 +24,7 @@ export default defineConfig([
   includeIgnoreFile(gitExcludePath),
   {
     name: "ignores",
-    ignores: ["android/**/*", "example/**/*", "ios/**/*"],
+    ignores: ["android/**/*", "example/**/*", "ios/**/*", "apps/**/*"],
   },
   js.configs.recommended,
   tseslint.configs.recommended,

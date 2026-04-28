@@ -1,0 +1,61 @@
+import XCTest
+@testable internal import ComapeoCore
+
+/// Unit tests for the `ComapeoCoreModule` static testable seams.
+///
+/// These tests assert two invariants that the module's public API depends on:
+///   1. `resolveSocketPath()` must return the same path `NodeJSService` binds to.
+///      If they diverge, the IPC client connects to a nonexistent socket and
+///      every `postMessage` call silently drops.
+///   2. `stateString(for:ipc:)` must reflect the `NodeJSService` state — the same
+///      source used by the `stateChange` event. If push and pull APIs diverge,
+///      JS callers get inconsistent readings during startup races and shutdown.
+final class ComapeoCoreModuleTests: XCTestCase {
+
+    func testModuleSocketPathMatchesServicePath() {
+        // Use the static accessor directly. Going through `.shared` would
+        // re-introduce the off-main-thread `@MainActor`-init regression if a
+        // future `async` test, `Task { }`, or `XCTContext.runActivity` block
+        // happened to evaluate this expression off the main thread.
+        let servicePath = AppLifecycleDelegate.nodeService.comapeoSocketPath
+        XCTAssertEqual(
+            ComapeoCoreModule.resolveSocketPath(),
+            servicePath,
+            "Module's IPC client path must equal the path NodeJSService binds to"
+        )
+    }
+
+    func testStateStringDerivesFromServiceArgumentNotIPC() {
+        // Drive a mock service to `.started`. With `ipc: nil` passed in, any
+        // correct implementation must derive the string from the service state
+        // (matching what the `stateChange` event emits).
+        let shortID = UUID().uuidString.prefix(8)
+        let testDir = "/tmp/cms-module-\(shortID)"
+        try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: testDir) }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        let mockEntry: NodeJSService.NodeEntryPoint = { _ in semaphore.wait(); return 0 }
+        let service = NodeJSService(
+            filesDir: testDir,
+            privateStorageDir: (testDir as NSString).appendingPathComponent("private-storage"),
+            nodeEntryPoint: mockEntry,
+            resolveJSEntryPoint: { "/fake/index.mjs" }
+        )
+
+        let started = expectation(description: "mock service reached .started")
+        service.onStateChange = { if $0 == .started { started.fulfill() } }
+        service.start()
+        waitForExpectations(timeout: 5)
+
+        XCTAssertEqual(
+            ComapeoCoreModule.stateString(for: service, ipc: nil),
+            "STARTED",
+            "stateString() must derive from service state, not IPC state"
+        )
+
+        // Release the mock entry point and clean up so the test thread exits.
+        semaphore.signal()
+        service.cleanup()
+    }
+}
