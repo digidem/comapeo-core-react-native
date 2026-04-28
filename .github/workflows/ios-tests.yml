@@ -69,11 +69,13 @@ jobs:
         # the ABI as a hard-coded constant that drifts when nodejs-mobile bumps.
         run: npm run download:nodejs-mobile
 
-      # Generates ios/nodejs-project/ + ios/nodejs-native/ from backend/
-      # via the same rollup pipeline that produces the Android assets.
-      # Replaces the previous "cd ios/nodejs-project && npm install" step,
-      # which only worked because ios/nodejs-project/ used to be a
-      # hand-maintained npm root with its own lockfile.
+      # Generates ios/nodejs-project/ (rolled-up backend) and
+      # ios/Frameworks/<name>.xcframework (one per native addon) from
+      # backend/. Same rollup pipeline that produces the Android assets,
+      # plus an xcodebuild -create-xcframework wrapping pass per addon
+      # — see scripts/build-backend.ts. Phase 2: replaces the Phase 1
+      # ios/nodejs-native/ resource bundle with code-signed xcframeworks
+      # embedded by Xcode's standard Embed & Sign phase.
       - name: Build backend bundle
         run: npm run backend:build
 
@@ -137,4 +139,58 @@ jobs:
             -scheme corereactnativeexample \
             -sdk iphonesimulator \
             -destination "id=${{ steps.simulator.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED='NO'
+
+  device-build:
+    name: iOS Device Build (xcframework codesign verification)
+    # Phase 2 ships device + simulator slices in one xcframework per
+    # addon. The simulator integration tests above exercise the runtime
+    # path; this job verifies the device slice actually links and
+    # codesigns. CI runners can't run on real iOS hardware, so we only
+    # `xcodebuild build` (not `test`) against the generic iOS device
+    # destination — a successful build proves dyld can resolve every
+    # `@rpath/<name>.framework/<name>` install name and Apple's
+    # Embed & Sign phase doesn't reject any framework's structure.
+    # Same Xcode/macos versions as the integration job: xcframework
+    # selection is deterministic per destination, so a separate runner
+    # isn't needed, but keeping the job separate gives a focused
+    # failure signal when the device slice breaks while the simulator
+    # slice is still fine.
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+
+      - name: Install dependencies
+        run: npm install && cd example && npm install
+
+      - name: Download NodeMobile
+        run: npm run download:nodejs-mobile
+
+      - name: Build backend bundle
+        run: npm run backend:build
+
+      - name: Expo prebuild
+        run: cd example && npx expo prebuild --platform ios --no-install
+
+      - name: Pod install
+        run: cd example/ios && pod install
+
+      - name: Build for iOS device (no run)
+        run: |
+          cd example/ios
+          xcodebuild build \
+            -workspace corereactnativeexample.xcworkspace \
+            -scheme corereactnativeexample \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED='NO'
