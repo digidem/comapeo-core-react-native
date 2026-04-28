@@ -22,7 +22,7 @@ class NodeJSService {
     static let comapeoSocketFilename = "comapeo.sock"
     static let controlSocketFilename = "control.sock"
 
-    private let filesDir: String
+    private let socketDir: String
     /// Backend's `privateStorageDir` argv positional. Mirrors Android's
     /// `dataDir` (see NodeJSService.kt). The embedded ComapeoManager opens
     /// SQLite files and other on-disk state under here, so it must be a
@@ -56,22 +56,25 @@ class NodeJSService {
 
     /// Creates a NodeJSService with a custom directory.
     /// - Parameters:
-    ///   - filesDir: Directory for socket files and working data.
+    ///   - socketDir: Directory holding the Unix-domain socket files
+    ///     `NodeJSService` binds. Path is constrained to the 104-byte
+    ///     `sockaddr_un.sun_path` limit (Darwin); the precondition in
+    ///     `init` enforces it loudly.
     ///   - privateStorageDir: App-private writable directory passed to the
     ///     backend as the third argv positional. The embedded ComapeoManager
     ///     keeps SQLite, blobs, and other on-disk state here.
     ///   - nodeEntryPoint: Blocking function that runs Node.js.
     ///   - resolveJSEntryPoint: Returns the path to the JS entry file.
     init(
-        filesDir: String,
+        socketDir: String,
         privateStorageDir: String,
         nodeEntryPoint: @escaping NodeEntryPoint,
         resolveJSEntryPoint: @escaping () -> String?
     ) {
-        self.filesDir = filesDir
+        self.socketDir = socketDir
         self.privateStorageDir = privateStorageDir
-        self.comapeoSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
-        self.controlSocketPath = (filesDir as NSString).appendingPathComponent(NodeJSService.controlSocketFilename)
+        self.comapeoSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
+        self.controlSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.controlSocketFilename)
 
         // Fail loudly if either socket path won't fit in sockaddr_un.sun_path
         // (104 bytes on Darwin, including the null terminator). A silently
@@ -89,7 +92,7 @@ class NodeJSService {
         self.nodeEntryPoint = nodeEntryPoint
         self.resolveJSEntryPoint = resolveJSEntryPoint
 
-        try? FileManager.default.createDirectory(atPath: filesDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: socketDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: privateStorageDir, withIntermediateDirectories: true)
         deleteSocketFiles()
     }

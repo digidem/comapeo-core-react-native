@@ -36,9 +36,9 @@ final class NodeJSServiceTests: XCTestCase {
 
     /// Builds a service wired to a blocking mock node entry point.
     /// Thin wrapper over the shared `makeMockNodeService` helper so callsites
-    /// don't have to repeat `filesDir: testDir`.
+    /// don't have to repeat `socketDir: testDir`.
     private func makeTestService() -> (service: NodeJSService, signalExit: () -> Void) {
-        return makeMockNodeService(filesDir: testDir)
+        return makeMockNodeService(socketDir: testDir)
     }
 
     // MARK: - Startup Tests

@@ -28,10 +28,22 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// `ComapeoCoreModule` does, since Expo runs it on the React Native JS
     /// thread.
     ///
-    /// Use `/tmp` for socket files so the path stays within the 104-byte
-    /// `sockaddr_un.sun_path` limit. The app's Documents/tmp directory can
-    /// exceed it on iOS Simulator runners; on a real iOS device, `/tmp` is
-    /// sandboxed to the app's container.
+    /// `socketDir` is constrained by Darwin's 104-byte
+    /// `sockaddr_un.sun_path` limit, which rules out every standard
+    /// iOS sandbox location except the per-app `tmp` directory:
+    /// `Documents/`, `Library/Application Support/`, and
+    /// `Library/Caches/` all push the path over 104 bytes once a
+    /// 12-byte socket basename is appended. `tmp/` is the only fit on
+    /// device.
+    ///
+    /// On iOS Simulator the equivalent sandbox `tmp` is also too long
+    /// (~130-byte CoreSimulator container path); but the simulator's
+    /// system `/tmp` IS the host Mac's `/tmp` and is writable from any
+    /// process, so we land sockets there. On real device the system
+    /// `/tmp` is NOT in the app sandbox — bind() returns `EACCES` —
+    /// so we use `NSTemporaryDirectory()` (the per-app sandbox tmp,
+    /// ~89 bytes) which fits one 12-byte basename with no nesting.
+    /// See `resolveSocketDir()` for the per-environment dispatch.
     ///
     /// `privateStorageDir` is the analogue of Android's `getFilesDir()`: an
     /// app-private writable directory that survives across process restarts
@@ -39,7 +51,7 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// Application Support). The embedded ComapeoManager opens its SQLite
     /// database and writes blobs/projects under here.
     static let nodeService = NodeJSService(
-        filesDir: "/tmp/comapeo",
+        socketDir: AppLifecycleDelegate.resolveSocketDir(),
         privateStorageDir: AppLifecycleDelegate.resolvePrivateStorageDir(),
         nodeEntryPoint: { arguments in
             // Frameworks directory inside the .app bundle. Xcode's
@@ -129,6 +141,39 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         }
 
         return (runtimeProject as NSString).appendingPathComponent("index.mjs")
+    }
+
+    /// Resolves the directory that holds the Unix-domain socket files
+    /// the backend listens on. See the `nodeService` doc above for why
+    /// the simulator and device branches differ.
+    ///
+    /// **Simulator** uses the host Mac's `/tmp`, namespaced by host
+    /// PID. The host `/tmp` is shared with every process on the box,
+    /// so a fixed `/tmp/comapeo/` would collide between two
+    /// concurrently-booted simulators running the same app. PID is
+    /// unique per launched app instance at the host kernel level,
+    /// so two sim devices each get a distinct
+    /// `/tmp/comapeo-<pid>/`. PIDs can be reused after the app exits;
+    /// `NodeJSService.deleteSocketFiles()` cleans up at start and at
+    /// stop, and the host's standard `/tmp` cleanup eventually
+    /// collects any stragglers from a hard crash. We don't try to
+    /// gc stale `/tmp/comapeo-*` directories ourselves — the cost of
+    /// getting that wrong (deleting a peer simulator's live socket)
+    /// outweighs the cost of a few KB of orphaned dirs.
+    ///
+    /// **Device** uses the per-app sandbox tmp directly. Each app has
+    /// its own sandbox so cross-instance collisions can't happen; we
+    /// drop the namespace dir entirely because adding nesting would
+    /// push the path over 104 bytes.
+    private static func resolveSocketDir() -> String {
+        #if targetEnvironment(simulator)
+        return "/tmp/comapeo-\(getpid())"
+        #else
+        // Drop trailing slash for consistency with the simulator branch
+        // and with `NSString.appendingPathComponent` callsites that
+        // assume no trailing slash on the parent.
+        return (NSTemporaryDirectory() as NSString).standardizingPath
+        #endif
     }
 
     /// Resolves the app-private writable directory passed to the backend as

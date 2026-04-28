@@ -37,7 +37,7 @@ final class IPCLifecycleTests: XCTestCase {
     /// Builds a service wired to the shared mock harness and stores the
     /// signal-exit closure on `self` so `tearDown` can always release it.
     private func makeTestService() -> NodeJSService {
-        let (service, signal) = makeMockNodeService(filesDir: testDir)
+        let (service, signal) = makeMockNodeService(socketDir: testDir)
         signalNodeExit = signal
         return service
     }
