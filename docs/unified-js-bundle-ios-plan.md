@@ -243,4 +243,27 @@ Each commit is individually buildable and reviewable; (4) is the load-bearing on
 - [ ] Example app on iOS simulator (both `arm64-simulator` on Apple Silicon and `x86_64-simulator` on Intel/CI): `comapeo.listProjects()` returns `[]` (not a hang, not an error). _(pending end-to-end run)_
 - [ ] Device build (`-sdk iphoneos`) deliberately fails with a missing-arch error — confirms Phase 1 scoping is honest. (Phase 2 fixes this.) _(unverified)_
 - [x] `ios/ComapeoCore.podspec` no longer contains the `script_phase` block.
-- [x] No new asset-extraction logic on iOS (the rolled-up bundle ships pre-populated `node_modules`; CocoaPods' resource copy is the only "extraction" and is unchanged from before).
+- [~] ~~No new asset-extraction logic on iOS~~ — superseded. The rolled-up bundle and per-module `prebuilds/` ship as separate read-only resource trees; Node's addon resolver expects them merged. `AppLifecycleDelegate.prepareNodeBundle()` extracts both into Application Support and overlays the active simulator slice. Mirrors Android's runtime asset copy in `NodeJSService.kt`.
+
+## 7. Phase 2+ follow-ups
+
+Items called out during review of Phase 1 that are deliberately deferred. Treat this as a backlog seed — convert into issues when each becomes top-of-stack.
+
+### Phase 2 (xcframework + device support)
+
+- [ ] **Replace `#if arch(arm64)` with `#if targetEnvironment(simulator)`** in `AppLifecycleDelegate.prepareNodeBundle()`. The current compile-time arch switch picks `arm64-simulator` on Mac Catalyst Apple Silicon and any future device-arm64 build, which doesn't have a `nodejs-native/arm64-simulator/` slice. The failure is "Could not find nodejs-project/index.mjs" (misleading) when it should say "no native slice for this build configuration". Phase 2 ships device + simulator slices in a single xcframework, so the selector needs both axes.
+- [ ] **Drop `nodejs-native/<arch>/` resource layout in favour of xcframework Embed & Sign.** Removes the Swift-side merge/extract step; Apple's loader picks the right slice automatically. `prepareNodeBundle()` collapses to "copy `nodejs-project/` once" — see version-stamp item below.
+- [ ] **Smoke test on a real device.** Phase 1 covers simulator only. Once xcframework lands, add a separate device test job (or matrix axis) so we don't re-introduce simulator-only assumptions.
+
+### Phase 2.5 — runtime ergonomics
+
+- [ ] **Gate `prepareNodeBundle()` on a version stamp.** Currently it deletes and re-copies the runtime tree on every cold start (~50 files / ~24 MB). Mirror Android's pattern: read `CFBundleVersion` (or the bundle executable mtime) on first launch, compare against a value in `UserDefaults`, skip the copy if they match. Saves tens of ms on every cold start.
+- [ ] **Polyfill `globalThis.fetch` with `node-fetch@3`.** `--no-experimental-fetch` keeps Node's built-in undici-backed fetch out, but `@comapeo/core/src/member-api.js:496` calls the global `fetch` for invite hosting. Today that path crashes with `ReferenceError: fetch is not defined` if exercised on iOS. Wire `node-fetch` in via a banner-style init module so the polyfill runs before any module-level code that closes over `globalThis.fetch`. Smoke test does not exercise this; flag it in code review when invite flow lands on iOS.
+- [ ] **Re-introduce the maps fastify plugin on iOS.** Currently the iOS rollup output stubs `@comapeo/core/src/fastify-plugins/maps.js` to a no-op (see `backend/lib/maps-stub.js`). Tile fetching is broken on iOS until either: (a) a non-WASM HTTP client replaces undici inside the maps plugin upstream, or (b) we ship a small iOS-specific maps plugin that uses the same `node-fetch` polyfill from the previous bullet. Decide upstream-or-downstream when stakeholders need iOS map tiles.
+- [ ] **Stub a `console.warn` inside `backend/lib/maps-stub.js#plugin()`.** Today the no-op is silent — anyone routing a `/maps/*` request hits a 404 on iOS with no log indication that the plugin was stubbed at build time. One-line warn-on-register makes it observable.
+
+### Phase 2.5 — defensive cleanup
+
+- [ ] **Reorder smoke-test handler install (already done in Phase 1).** Listed for completeness: `service.onStateChange` is installed before reading `service.state` to avoid the synchronous-on-node-thread transition slipping between read and assign. Keep this pattern in any future test that watches `NodeJSService` state from another thread.
+- [ ] **Bound symlink follow in `mergeDirectory()`.** `FileManager.fileExists(atPath:isDirectory:)` follows symlinks; a self-referential symlink in the resource tree would infinite-loop. The asset tree has no symlinks today, so this is theoretical, but switching to `attributesOfItem(atPath:)[.type]` (or tracking visited inodes) is cheap insurance.
+- [ ] **Drop the silent dropping of `MapsPluginOpts` in the stub.** Once fetch is polyfilled (Phase 2.5), the stub can become a real (if minimal) plugin. Until then, surface unexpected register-time options as `console.warn` rather than silently discarding them.

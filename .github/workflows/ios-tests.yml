@@ -52,7 +52,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # `scripts/build-backend.ts` runs as TS via Node's native type
+          # stripping (>=22.6 with `--experimental-strip-types`, default-on
+          # in 24). Match the runtime declared in `package.json#devEngines`.
+          node-version-file: package.json
 
       - name: Install dependencies
         run: npm install && cd example && npm install
