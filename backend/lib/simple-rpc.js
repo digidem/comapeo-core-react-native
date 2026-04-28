@@ -18,11 +18,11 @@ import { SocketMessagePort } from "./message-port.js";
  *     A late-connecting client (one whose accept() lands after the broadcast)
  *     receives both replayed messages on connect, in order.
  *
- * The settle window is what makes the iOS Swift state-IPC client reliable:
- * `NodeJSIPC.connect()` polls for the socket file with `waitForFile()` and
- * then runs `connectWithRetry()`, which on simulator runs can take ~50 ms
- * after the file appears. Without the replay, any IPC client that finishes
- * its retry handshake after the one-shot broadcast lost the message.
+ * The settle window is what makes the native control-IPC clients reliable:
+ * `NodeJSIPC.connect()` polls for the socket file and then retries the
+ * connect, which on simulator runs can take ~50 ms after the file
+ * appears. Without the replay, any IPC client that finishes its retry
+ * handshake after the one-shot broadcast would lose the message.
  *
  * @template {Record<string, (...args: any[]) => any>} TMethods
  */
@@ -55,9 +55,8 @@ export class SimpleRpcServer extends ServerHelper {
     messagePort.start();
 
     // Replay readiness for late-connecting clients. Order matters:
-    // `started` always before `ready` — Swift tests assert on contains() so
-    // both can ride along on the same accept, but a client that intends to
-    // act on `started` separately needs to see it first.
+    // `started` always before `ready`, so a client that watches for
+    // `started` separately sees it before the `ready` follow-up.
     if (this.#readinessPhase === "started" || this.#readinessPhase === "ready") {
       messagePort.postMessage({ type: "started" });
     }

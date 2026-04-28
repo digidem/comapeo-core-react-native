@@ -55,16 +55,16 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         privateStorageDir: AppLifecycleDelegate.resolvePrivateStorageDir(),
         nodeEntryPoint: { arguments in
             // Frameworks directory inside the .app bundle. Xcode's
-            // Embed & Sign phase places one `<name>.framework/`
+            // Embed & Sign phase places one `<name>__<version>.framework/`
             // subdirectory here at app build time, populated from each
-            // `Frameworks/<name>.xcframework` emitted by
+            // `Frameworks/<name>__<version>.xcframework` emitted by
             // `scripts/build-backend.ts`. The rolled-up backend reads
             // this via `process.env.NATIVE_LIB_DIR` (see
-            // `backend/rollup-plugins/rollup-plugin-ios-addon-loader.js`)
+            // `backend/rollup-plugins/rollup-plugin-addon-loader.js`)
             // and `process.dlopen`s
-            // `<NATIVE_LIB_DIR>/<name>.framework/<name>` for each
-            // native addon. Setenv'd before `NodeMobileStartNode` so
-            // the value is visible from V8's first tick — bundle-level
+            // `<NATIVE_LIB_DIR>/<name>__<version>.framework/<name>__<version>`
+            // for each native addon. Setenv'd before `NodeMobileStartNode`
+            // so the value is visible from V8's first tick — bundle-level
             // addon-loader rewrites run inside that V8 evaluation.
             let frameworksDir = (Bundle.main.bundlePath as NSString)
                 .appendingPathComponent("Frameworks")
@@ -79,11 +79,6 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             }
         },
         resolveJSEntryPoint: {
-            // The unified backend bundle is ESM (`index.mjs`). Both
-            // Android and iOS resolve the same entry filename now —
-            // Android's `NodeJSService.kt` has used `index.mjs` since
-            // the rollup build landed; iOS catches up here.
-            //
             // Hand nodejs-mobile the read-only path inside the .app
             // bundle directly. Nothing in the rolled-up backend writes
             // back into `nodejs-project/` at runtime: native `.node`
@@ -91,14 +86,11 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // (loaded via `process.dlopen` against `NATIVE_LIB_DIR`,
             // set in the `nodeEntryPoint` closure above), drizzle
             // migrations are `fs.readFile`d, and SQLite/blobs/indexes
-            // go to `privateStorageDir`. Read access against the .app
-            // bundle is fine; we save ~24 MB / 50 files of
-            // copy-on-cold-start work that earlier iterations of this
-            // file did into Application Support.
+            // go to `privateStorageDir`.
             //
-            // Android still has to extract on first launch because the
-            // APK doesn't expose a filesystem-readable path to its
-            // assets the way `<App>.app/<name>/` does on iOS.
+            // Android extracts on first launch instead because the APK
+            // doesn't expose a filesystem-readable path to its assets
+            // the way `<App>.app/<name>/` does on iOS.
             let bundleEntry = (Bundle.main.bundlePath as NSString)
                 .appendingPathComponent("nodejs-project/index.mjs")
             return FileManager.default.fileExists(atPath: bundleEntry)

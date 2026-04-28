@@ -22,8 +22,7 @@ const IOS_NODEJS_PROJECT_DIR = join(PROJECT_ROOT, "ios/nodejs-project");
 // One xcframework per native module. CocoaPods picks them up via
 // `vendored_frameworks` in ComapeoCore.podspec; Xcode's standard
 // Embed & Sign phase places + codesigns them into <App>.app/Frameworks/
-// at app build time. Validated end-to-end by
-// digidem/nodejs-mobile-bare-prebuilds@feat/jnilibs-xcframework-packaging.
+// at app build time.
 const IOS_FRAMEWORKS_DIR = join(PROJECT_ROOT, "ios/Frameworks");
 const TEMP_NODEJS_ASSETS_DIR = join(PROJECT_ROOT, "nodejs-assets");
 
@@ -67,11 +66,10 @@ const NATIVE_MODULES = [
 /**
  * Walk `<TEMP_NODEJS_ASSETS_BACKEND_DIR>/node_modules` for every installed
  * instance of `name` (top-level + every nested copy npm couldn't dedupe),
- * returning each as an `NativeModuleInstance`. Used by both the
- * prebuild-fetch loop and the iOS xcframework wrap loop so multi-version
- * dep trees ship one `<name>__<version>.xcframework` per concrete
- * `(name, version)` pair, not per `name` only — which would silently
- * shadow the lower version with the higher one.
+ * returning each as an `NativeModuleInstance`. Multi-version dep trees
+ * ship one `<name>__<version>.xcframework` / `lib<name>__<version>.so`
+ * per concrete `(name, version)` pair, not per `name` only — otherwise
+ * the lower version would be silently shadowed by the higher one.
  */
 type NativeModuleInstance = {
   name: string;
@@ -82,8 +80,7 @@ type NativeModuleInstance = {
   packageDir: string;
   /**
    * True iff this is the hoisted top-level install at
-   * `node_modules/<name>/`. Phase-1 Android still uses only the top-level
-   * version per name; iOS takes every instance.
+   * `node_modules/<name>/`.
    */
   isTopLevel: boolean;
 };
@@ -197,9 +194,9 @@ for (const platform of ["android", "ios"] as const) {
 rmSync(TEMP_NODEJS_NATIVE_ASSETS_DIR, { force: true, recursive: true });
 
 const ANDROID_ARCHS = ["arm", "arm64", "x64"] as const;
-// Phase 2: device + both simulator slices. xcframework packaging combines
-// them into one multi-slice artifact per addon — Xcode picks the right
-// slice at app build time based on the build destination.
+// Device + both simulator slices. xcframework packaging combines them
+// into one multi-slice artifact per addon — Xcode picks the right slice
+// at app build time based on the build destination.
 const IOS_ARCHS = ["arm64", "arm64-simulator", "x64-simulator"] as const;
 
 /** target = `${platform}-${arch}` (e.g. "android-arm64", "ios-arm64-simulator") */
@@ -215,12 +212,11 @@ const NATIVE_INSTANCES = NATIVE_MODULES.flatMap(({ name, usesNapi }) =>
 );
 
 // Distinct (name, version) pairs. Multiple disk locations can share the
-// same version (e.g. four nested `sodium-native@5.1.0` copies in the
-// current dep tree) — they all share one prebuild and, on iOS, one
-// xcframework. Per-callsite version-aware `__loadAddon` rewrite in
-// backend/rollup-plugins/rollup-plugin-ios-addon-loader.js loads the
-// right one per importer; build-side dedup avoids racing four parallel
-// fetches into the same temp dir.
+// same version — they all share one prebuild and one xcframework / `.so`.
+// Per-callsite version-aware `__loadAddon` rewrite in
+// backend/rollup-plugins/rollup-plugin-addon-loader.js loads the right
+// one per importer; build-side dedup avoids racing parallel fetches into
+// the same temp dir.
 const NATIVE_PAIRS = (() => {
   const seen = new Map<string, (typeof NATIVE_INSTANCES)[number]>();
   for (const inst of NATIVE_INSTANCES) {
@@ -255,14 +251,10 @@ await Promise.all(
           nodeAbi: usesNapi ? undefined : NODE_ABI,
         });
 
-        // `--retry 5 --retry-all-errors --retry-delay 2`: GitHub's
-        // releases CDN occasionally serves transient 5xx responses; one
-        // 502 was enough to fail an entire CI run on this PR. Retrying
-        // up to 5× with a 2 s base delay (curl backs off exponentially)
-        // lets the build absorb spurious upstream blips without
-        // re-running the workflow. `--retry-all-errors` is what makes
-        // 5xx responses retryable — by default curl only retries
-        // network-level failures.
+        // GitHub's releases CDN occasionally serves transient 5xx
+        // responses. `--retry-all-errors` makes 5xx retryable (by
+        // default curl only retries network-level failures); curl
+        // backs off exponentially between attempts.
         await $({
           cwd: targetDir,
         })`curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 ${artifactInfo.url} --output ${artifactInfo.name}`;
@@ -320,11 +312,6 @@ cpSync(PLATFORM_NODEJS_PROJECT_DIRS.ios, IOS_NODEJS_PROJECT_DIR, {
 // (`androidAddonLoaderBanner` from rollup-plugin-addon-loader.js) does
 // `process.dlopen('lib<name>__<version>.so')` — bare filename, no
 // path — and Bionic resolves against the APK's `lib/<abi>/` segment.
-//
-// Phase 1 wrote `.node` files into `assets/nodejs-native/<abi>/...`
-// for runtime extraction; that path is gone. The bundled JS (still
-// extracted from `assets/nodejs-project/`) loads addons via the
-// `__loadAddon` rewrite at the same versioned key.
 const ANDROID_JNILIBS_DIR = join(PROJECT_ROOT, "android/src/main/jniLibs");
 rmSync(ANDROID_JNILIBS_DIR, { force: true, recursive: true });
 
@@ -343,9 +330,7 @@ await Promise.all(
 );
 
 // iOS native packaging: wrap each addon's per-arch .node files into a
-// single multi-slice xcframework. Recipe lifted from the validated
-// harness in digidem/nodejs-mobile-bare-prebuilds@feat/jnilibs-xcframework-packaging
-// (`assemble-test-project/action.yml#Wrap addons as xcframeworks`):
+// single multi-slice xcframework. Per addon:
 //
 //   1. For each iOS arch, copy the .node binary as the framework's
 //      Mach-O exec inside <work>/<arch>/<name>.framework/<name>, rewrite
@@ -359,9 +344,7 @@ await Promise.all(
 // `xcodebuild`, `lipo`, and `install_name_tool` are macOS-only Xcode
 // command-line tools, so this whole pass is gated on `process.platform`.
 // Linux CI runners (Android workflow) skip it cleanly — the Android
-// instrumented job doesn't consume `ios/Frameworks/` and would otherwise
-// fail at `install_name_tool: spawn ENOENT` before the rollup output it
-// actually wants gets copied into Android's resource tree.
+// instrumented job doesn't consume `ios/Frameworks/`.
 if (process.platform !== "darwin") {
   console.log(
     "Skipping iOS xcframework wrapping — requires macOS Xcode toolchain (xcodebuild/lipo/install_name_tool). " +
@@ -398,10 +381,7 @@ await Promise.all(
      * `LC_LOAD_DYLIB` self-references in the same binary cause an
      * "image not found" abort at app launch — Embed & Sign + the
      * regular dyld load command walk hits the original install name
-     * *before* our runtime `process.dlopen` ever runs. The validated
-     * harness (`digidem/nodejs-mobile-bare-prebuilds@feat/jnilibs-xcframework-packaging`)
-     * skipped this because its test apps `dlopen` directly without
-     * embedding the framework into a fully-linked .app bundle.
+     * *before* our runtime `process.dlopen` ever runs.
      */
     const buildPerArchFramework = async (arch: string, srcNode: string) => {
       const archDir = join(moduleWorkDir, arch);
@@ -485,9 +465,8 @@ function getNodeJsMobileNodeVersions() {
 
 /**
  * Minimal Info.plist for a synthetic iOS framework wrapping a single
- * `.node` Mach-O. Mirrors the harness recipe verbatim — Apple's loader
- * + codesign require these specific keys; trimming further breaks
- * Embed & Sign at app build time.
+ * `.node` Mach-O. Apple's loader + codesign require these specific
+ * keys; trimming further breaks Embed & Sign at app build time.
  */
 function buildFrameworkPlist(name: string): string {
   // CFBundleIdentifier accepts only [A-Za-z0-9.-] per Apple's spec —

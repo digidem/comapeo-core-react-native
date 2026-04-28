@@ -5,43 +5,33 @@ import path from "node:path";
 /**
  * Native-addon loader-pattern rewrite plugin. Platform-agnostic.
  *
- * Phase 1 (both platforms) shipped native `.node` files at known paths
- * under `nodejs-project/node_modules/<pkg>/prebuilds/...`, and the
- * legacy `rollup-plugin-native-paths.js` patched the three loader
- * patterns (`require('bindings')(...)`, `require('node-gyp-build')(...)`,
- * `require.addon(...)`) so they walked into those paths via the bare
- * resolvers. `process.dlopen` ended up loading from `filesDir` after
- * a runtime asset extraction.
- *
- * Phase 2 ships native code via the platform's standard packaging
- * (Android `jniLibs/<abi>/lib<name>__<version>.so` mmap'd from the
- * APK, iOS `<name>__<version>.xcframework` Embed-&-Sign'd into
- * `<App>.app/Frameworks/`). The bare resolvers can't reach either
- * location — neither is on a module-resolution search path Node knows
- * about. So instead of *adjusting* the loader call to walk into the
- * right node_modules path, we *replace* it: each loader pattern
- * becomes a call to `__loadAddon(<package-name>, <package-version>)`,
- * which the platform-specific runtime helper `process.dlopen`s
- * appropriately. See `iosAddonLoaderBanner` /
- * `androidAddonLoaderBanner` below — those wire the helper into the
- * top of each platform's bundle.
+ * Native code ships via the platform's standard packaging (Android
+ * `jniLibs/<abi>/lib<name>__<version>.so` mmap'd from the APK, iOS
+ * `<name>__<version>.xcframework` Embed-&-Sign'd into
+ * `<App>.app/Frameworks/`). The bare addon resolvers (`bindings`,
+ * `node-gyp-build`, `require.addon`) can't reach either location —
+ * neither is on a module-resolution search path Node knows about. So
+ * instead of *adjusting* the loader call to walk into the right
+ * node_modules path, we *replace* it: each loader pattern becomes a
+ * call to `__loadAddon(<package-name>, <package-version>)`, which the
+ * platform-specific runtime helper `process.dlopen`s appropriately.
+ * See `iosAddonLoaderBanner` / `androidAddonLoaderBanner` below —
+ * those wire the helper into the top of each platform's bundle.
  *
  * Multi-version safety: when the dep tree carries two versions of the
- * same addon (e.g. `sodium-native@4.3.3` top-level + `@5.1.0` nested
- * under several deps in the current `backend/`), each callsite is
- * rewritten with the version that npm's resolution actually picked for
- * THAT importer. The version comes from the package.json that owns the
- * file being transformed — not a hand-maintained map.
+ * same addon, each callsite is rewritten with the version that npm's
+ * resolution actually picked for THAT importer. The version comes
+ * from the package.json that owns the file being transformed — not a
+ * hand-maintained map.
  *
  * Better-sqlite3 specifically: its `database.js` does
  * `require('bindings')('better_sqlite3.node')` lazily, on first
  * `new Database(...)` call. The rewrite catches that callsite at
  * bundle time so when the lazy initialization runs at runtime, it
- * loads our prebuilt addon via `__loadAddon('better-sqlite3', '<ver>')`.
- * No special handling needed beyond the standard loader-pattern rewrite
+ * loads our prebuilt addon via `__loadAddon('better-sqlite3', '<ver>')`
  * — the underscore-vs-hyphen mismatch (`better_sqlite3.node` filename
- * vs. `better-sqlite3` package name) only mattered when we let the
- * original call run; the rewrite replaces the call entirely.
+ * vs. `better-sqlite3` package name) becomes moot because the rewrite
+ * replaces the call entirely.
  *
  * @returns {import('rollup').Plugin}
  */
@@ -145,13 +135,10 @@ export const iosAddonLoaderBanner = [
  * namespace resolves the bare name against the APK's `lib/<abi>/`
  * mmap region when the manifest has `extractNativeLibs="false"` and
  * AGP keeps the libs uncompressed via `useLegacyPackaging=false`.
- * Validated end-to-end by
- * `digidem/nodejs-mobile-bare-prebuilds@feat/jnilibs-xcframework-packaging`'s
- * Android test harness (canonical plan §0.1: a *full-path* `dlopen`
- * against `getApplicationInfo().nativeLibraryDir` would *fail* under
- * `extractNativeLibs="false"` because no `.so` is on disk at any
- * resolvable path — bare-name dlopen against the APK mmap is the
- * only thing that works).
+ * A *full-path* `dlopen` against `getApplicationInfo().nativeLibraryDir`
+ * would *fail* under that configuration because no `.so` is on disk at
+ * any resolvable path — bare-name dlopen against the APK mmap is the
+ * only thing that works.
  *
  * Same `__` separator as iOS for symmetry. `.so` filenames take it
  * fine; AGP doesn't impose an alphanumeric-only rule the way Apple's
