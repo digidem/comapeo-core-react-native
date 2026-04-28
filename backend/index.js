@@ -5,9 +5,11 @@ import { ComapeoRpcServer } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 
-// We define this here so we don't need to do additional bundling adjustments to get the path correct when running on the device
-// This assumes that we keep the relevant directory as part of the built assets when building for nodejs mobile
-// (see `KEEP_THESE` variable in build-backend.mjs)
+// Resolved relative to this file at evaluation time. The drizzle
+// migrations directory is kept alongside the bundle by
+// `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` so this path
+// is valid both at npm-install time and inside the staged
+// `nodejs-project/` resource tree on device.
 const MIGRATIONS_FOLDER_PATH = fileURLToPath(
   new URL("./node_modules/@comapeo/core/drizzle", import.meta.url),
 );
@@ -43,10 +45,10 @@ const controlIpcServer = new SimpleRpcServer({
 // after a 1 s settle window for callers that want a stronger "I won't see
 // startup races" signal. Late-connecting clients receive both replayed.
 //
-// See SimpleRpcServer for why the settle window exists. The Swift state-IPC
-// client polls for the socket file plus retries, which can land its first
-// successful accept several tens of ms after the broadcast — without the
-// replay it sees nothing.
+// See SimpleRpcServer for why the settle window exists. Native control-IPC
+// clients (Swift, Kotlin) poll for the socket file plus retry, which can
+// land their first successful accept several tens of ms after the
+// broadcast — without the replay they would see nothing.
 Promise.all([
   controlIpcServer.listen(controlSocketPath),
   comapeoRpcServer.listen(comapeoSocketPath),

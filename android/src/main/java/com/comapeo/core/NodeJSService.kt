@@ -82,11 +82,6 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                         nodeProjectDir.deleteRecursively()
                         copyAssetFolder(NODEJS_PROJECT_DIRNAME, nodeProjectDir)
                         log("Copied $NODEJS_PROJECT_DIRNAME into data directory")
-                        // Phase 2: native `.so` files no longer extract here.
-                        // They ship in `jniLibs/<abi>/` and Bionic mmaps them
-                        // from the APK at `dlopen` time — see the
-                        // `androidAddonLoaderBanner` runtime helper baked
-                        // into the rolled-up backend.
                     }
                 }
 

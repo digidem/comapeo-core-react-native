@@ -9,8 +9,8 @@
 // (JIT is permitted) and gets the real plugin via the Android-specific
 // rollup output.
 //
-// Tile fetching is deferred to a later phase; once a non-WASM HTTP client
-// is wired in for iOS, this file goes away.
+// Tile fetching on iOS is broken until a non-WASM HTTP client is wired
+// in — see issues #22 and #23.
 
 export const CUSTOM_MAP_PREFIX = "custom";
 export const FALLBACK_MAP_PREFIX = "fallback";
