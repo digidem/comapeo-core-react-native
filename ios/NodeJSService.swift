@@ -197,8 +197,20 @@ class NodeJSService {
         //   [node, indexPath, comapeoSocketPath, controlSocketPath, privateStorageDir]
         // The third positional is consumed by backend/index.js as
         // `privateStorageDir` and handed to createComapeo({privateStorageDir,...}).
+        //
+        // `--no-experimental-fetch` disables Node's built-in `globalThis.fetch`
+        // (and thus the lazy-loaded undici under it). nodejs-mobile iOS runs
+        // V8 with `--jitless` for App Store compliance, which suppresses the
+        // `WebAssembly` global; undici's HTTP/1.1 client calls
+        // `WebAssembly.compile` at module-init and crashes the process. The
+        // bundled backend already strips its only direct undici user (the
+        // maps fastify plugin); this flag prevents anything that calls the
+        // global `fetch` from re-introducing the same load path. Android
+        // doesn't need it (JIT is permitted), but the flag is harmless on
+        // both platforms so we keep argv parity.
         let args = [
             "node",
+            "--no-experimental-fetch",
             jsPath,
             comapeoSocketPath,
             controlSocketPath,
