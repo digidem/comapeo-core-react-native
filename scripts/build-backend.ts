@@ -5,6 +5,7 @@ import {
   readFileSync,
   rmSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { cp, glob } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
@@ -16,10 +17,13 @@ const $$ = $({ stdio: "inherit" });
 const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BACKEND_SRC_DIR = join(PROJECT_ROOT, "backend");
 const ANDROID_ASSETS_DIR = join(PROJECT_ROOT, "android/src/main/assets");
-// iOS Phase 1 ships simulator-only. Device support arrives with the
-// xcframework migration in Phase 2. See docs/unified-js-bundle-ios-plan.md.
 const IOS_NODEJS_PROJECT_DIR = join(PROJECT_ROOT, "ios/nodejs-project");
-const IOS_NODEJS_NATIVE_DIR = join(PROJECT_ROOT, "ios/nodejs-native");
+// One xcframework per native module. CocoaPods picks them up via
+// `vendored_frameworks` in ComapeoCore.podspec; Xcode's standard
+// Embed & Sign phase places + codesigns them into <App>.app/Frameworks/
+// at app build time. Validated end-to-end by
+// digidem/nodejs-mobile-bare-prebuilds@feat/jnilibs-xcframework-packaging.
+const IOS_FRAMEWORKS_DIR = join(PROJECT_ROOT, "ios/Frameworks");
 const TEMP_NODEJS_ASSETS_DIR = join(PROJECT_ROOT, "nodejs-assets");
 
 const TEMP_NODEJS_ASSETS_BACKEND_DIR = join(TEMP_NODEJS_ASSETS_DIR, "backend");
@@ -40,6 +44,14 @@ cpSync(BACKEND_SRC_DIR, TEMP_NODEJS_ASSETS_BACKEND_DIR, {
 await $$({
   cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR,
 })`npm ci --ignore-scripts`;
+
+// `--ignore-scripts` keeps native gyp builds (better-sqlite3) from running,
+// but it also skips patch-package's postinstall. Apply patches explicitly
+// so backend/patches/*.patch lands on the freshly-installed tree before
+// rollup reads it.
+await $$({
+  cwd: TEMP_NODEJS_ASSETS_BACKEND_DIR,
+})`npx patch-package`;
 
 // Rollup writes per-platform bundles to dist/android and dist/ios.
 // The iOS bundle has @comapeo/core's maps fastify plugin swapped for a
@@ -130,9 +142,10 @@ for (const platform of ["android", "ios"] as const) {
 rmSync(TEMP_NODEJS_NATIVE_ASSETS_DIR, { force: true, recursive: true });
 
 const ANDROID_ARCHS = ["arm", "arm64", "x64"] as const;
-// Simulator-only for Phase 1. Device slice (`arm64`) is added in Phase 2 when
-// xcframework packaging gives us a single multi-slice artifact per addon.
-const IOS_ARCHS = ["arm64-simulator", "x64-simulator"] as const;
+// Phase 2: device + both simulator slices. xcframework packaging combines
+// them into one multi-slice artifact per addon — Xcode picks the right
+// slice at app build time based on the build destination.
+const IOS_ARCHS = ["arm64", "arm64-simulator", "x64-simulator"] as const;
 
 /** target = `${platform}-${arch}` (e.g. "android-arm64", "ios-arm64-simulator") */
 const PREBUILD_TARGETS = [
@@ -228,9 +241,6 @@ const ANDROID_NATIVE_ASSETS_DIR = join(ANDROID_ASSETS_DIR, "nodejs-native");
 rmSync(ANDROID_NATIVE_ASSETS_DIR, { force: true, recursive: true });
 mkdirSync(ANDROID_NATIVE_ASSETS_DIR, { recursive: true });
 
-rmSync(IOS_NODEJS_NATIVE_DIR, { force: true, recursive: true });
-mkdirSync(IOS_NODEJS_NATIVE_DIR, { recursive: true });
-
 await Promise.all(
   ANDROID_ARCHS.map(async (arch) => {
     let androidAbi: string;
@@ -280,53 +290,130 @@ await Promise.all(
   }),
 );
 
-// iOS prebuild placement. Same source tree as Android (`PREBUILD_TARGETS`
-// fetched both platforms in one pass above); the layout under
-// `ios/nodejs-native/<arch>/` mirrors `android/.../nodejs-native/<abi>/` 1:1
-// so the resource extraction code on each platform speaks the same shape.
+// iOS native packaging: wrap each addon's per-arch .node files into a
+// single multi-slice xcframework. Recipe lifted from the validated
+// harness in digidem/nodejs-mobile-bare-prebuilds@feat/jnilibs-xcframework-packaging
+// (`assemble-test-project/action.yml#Wrap addons as xcframeworks`):
 //
-// Phase 2 of the source plan replaces this with `<name>@<version>.xcframework`
-// embedded via Xcode's Embed & Sign phase. For Phase 1 the loose `.node`
-// files ship inside the `ios/nodejs-native` resource bundle directory and are
-// extracted at first launch alongside `nodejs-project/`.
-await Promise.all(
-  IOS_ARCHS.map(async (arch) => {
-    // Drop the `-simulator` suffix from the inner `prebuilds/ios-…` path.
-    // The simulator/device split is meaningful for tarball naming, but Bare's
-    // addon resolver uses `process.platform` + `process.arch` at runtime —
-    // both of which yield e.g. `ios-arm64` regardless of simulator vs device.
-    // The outer `<IOS_NODEJS_NATIVE_DIR>/<arch>/` directory still keeps the
-    // suffix so the iOS Swift extractor can pick the right slice for the
-    // current build.
-    const runtimeArch = arch.replace(/-simulator$/, "");
+//   1. For each iOS arch, copy the .node binary as the framework's
+//      Mach-O exec inside <work>/<arch>/<name>.framework/<name> and
+//      write a minimal Info.plist next to it.
+//   2. lipo the two simulator binaries into one fat Mach-O so a single
+//      simulator slice covers both Apple Silicon and Intel hosts.
+//   3. xcodebuild -create-xcframework with the device framework and
+//      the lipo'd simulator framework → ios/Frameworks/<name>.xcframework.
+//
+// We deliberately omit `install_name_tool -id @rpath/...` (the harness
+// does too): we always hand `process.dlopen` a full path, so the Mach-O's
+// internal install name is never consulted. Versioned framework names
+// (<name>@<version>.framework) are likewise deferred — the seven native
+// modules ship as a single version each in our backend's dep tree
+// today; multi-version handling can be added when a real need surfaces.
 
-    const nodeFiles = await Array.fromAsync(
-      glob(`node_modules/**/ios-${arch}/**/*.node`, {
-        cwd: TEMP_NODEJS_NATIVE_ASSETS_DIR,
-      }),
+rmSync(IOS_FRAMEWORKS_DIR, { force: true, recursive: true });
+mkdirSync(IOS_FRAMEWORKS_DIR, { recursive: true });
+
+const TEMP_FRAMEWORKS_WORK_DIR = join(TEMP_NODEJS_ASSETS_DIR, "frameworks");
+mkdirSync(TEMP_FRAMEWORKS_WORK_DIR, { recursive: true });
+
+await Promise.all(
+  NATIVE_MODULES.map(async ({ name }) => {
+    // Per-arch frameworks first; assemble into the multi-slice xcframework
+    // after lipo'ing the simulator pair.
+    const moduleWorkDir = join(TEMP_FRAMEWORKS_WORK_DIR, name);
+    mkdirSync(moduleWorkDir, { recursive: true });
+
+    /**
+     * Build one `<name>.framework/` directory for the given arch.
+     * Returns the absolute path to the framework directory so it can be
+     * fed back into `lipo`/`xcodebuild` downstream.
+     *
+     * `install_name_tool -id` rewrites the Mach-O's `LC_ID_DYLIB` from
+     * the upstream prebuild's `<name>.node` (a name dyld cannot resolve
+     * inside `<App>.app/Frameworks/`) to
+     * `@rpath/<name>.framework/<name>`. Without this, `LC_LOAD_DYLIB`
+     * self-references in the same binary cause an "image not found"
+     * abort at app launch — Embed & Sign + the regular dyld load
+     * command walk hits the original install name *before* our
+     * runtime `process.dlopen` ever runs. The validated harness
+     * (`digidem/nodejs-mobile-bare-prebuilds@feat/jnilibs-xcframework-packaging`)
+     * skipped this because its test apps `dlopen` directly without
+     * embedding the framework into a fully-linked .app bundle.
+     */
+    const buildPerArchFramework = async (arch: string, srcNode: string) => {
+      const archDir = join(moduleWorkDir, arch);
+      const frameworkDir = join(archDir, `${name}.framework`);
+      mkdirSync(frameworkDir, { recursive: true });
+      // Mach-O exec name = npm package name. Lets the runtime helper
+      // `process.dlopen('<NATIVE_LIB_DIR>/<name>.framework/<name>')`
+      // work uniformly across modules — even better-sqlite3, whose
+      // .node tarball ships as `better_sqlite3.node` (underscore).
+      const dstBinary = join(frameworkDir, name);
+      await cp(srcNode, dstBinary);
+      await $({
+        stdio: "inherit",
+      })`install_name_tool -id @rpath/${name}.framework/${name} ${dstBinary}`;
+      writeFileSync(join(frameworkDir, "Info.plist"), buildFrameworkPlist(name));
+      return frameworkDir;
+    };
+
+    /**
+     * Locate the .node file inside the prebuilds tree for the given
+     * iOS arch. Bare-style modules ship at
+     * `prebuilds/ios-<arch>/<name>.node`; better-sqlite3 ships under
+     * `build/better_sqlite3.node` (no `prebuilds/`, underscore name).
+     * Glob covers both layouts.
+     */
+    const findNodeForArch = async (arch: string) => {
+      const matches = await Array.fromAsync(
+        glob(`node_modules/${name}/**/ios-${arch}/**/*.node`, {
+          cwd: TEMP_NODEJS_NATIVE_ASSETS_DIR,
+        }),
+      );
+      if (matches.length !== 1) {
+        throw new Error(
+          `Expected exactly one .node file for ${name} on ios-${arch}; found ${matches.length}: ${matches.join(", ")}`,
+        );
+      }
+      return join(TEMP_NODEJS_NATIVE_ASSETS_DIR, matches[0]);
+    };
+
+    const [deviceNode, armSimNode, x64SimNode] = await Promise.all([
+      findNodeForArch("arm64"),
+      findNodeForArch("arm64-simulator"),
+      findNodeForArch("x64-simulator"),
+    ]);
+
+    const deviceFramework = await buildPerArchFramework("arm64", deviceNode);
+
+    // Per-arch simulator frameworks live alongside the device one for
+    // debuggability; we then lipo their binaries into the fat sim slice.
+    const armSimFramework = await buildPerArchFramework(
+      "arm64-simulator",
+      armSimNode,
+    );
+    const x64SimFramework = await buildPerArchFramework(
+      "x64-simulator",
+      x64SimNode,
     );
 
-    for (const entry of nodeFiles) {
-      const runtimeEntry = entry.replaceAll(
-        `ios-${arch}`,
-        `ios-${runtimeArch}`,
-      );
-      const nativeTargetDir = entry.startsWith("node_modules/better-sqlite3/")
-        ? join(
-            IOS_NODEJS_NATIVE_DIR,
-            arch,
-            "node_modules/better-sqlite3/build",
-            basename(entry),
-          )
-        : join(IOS_NODEJS_NATIVE_DIR, arch, runtimeEntry);
+    const simFatDir = join(moduleWorkDir, "simulator");
+    const simFatFramework = join(simFatDir, `${name}.framework`);
+    mkdirSync(simFatFramework, { recursive: true });
+    writeFileSync(
+      join(simFatFramework, "Info.plist"),
+      buildFrameworkPlist(name),
+    );
+    await $({
+      stdio: "inherit",
+    })`lipo -create ${join(armSimFramework, name)} ${join(x64SimFramework, name)} -output ${join(simFatFramework, name)}`;
 
-      await cp(join(TEMP_NODEJS_NATIVE_ASSETS_DIR, entry), nativeTargetDir, {
-        force: true,
-        recursive: true,
-      });
-    }
+    const xcframeworkPath = join(IOS_FRAMEWORKS_DIR, `${name}.xcframework`);
+    await $$`xcodebuild -create-xcframework -framework ${deviceFramework} -framework ${simFatFramework} -output ${xcframeworkPath}`;
   }),
 );
+
+rmSync(TEMP_FRAMEWORKS_WORK_DIR, { force: true, recursive: true });
 
 // ------------------------------------------------
 // Helpers
@@ -345,6 +432,30 @@ function getNodeJsMobileNodeVersions() {
   const abi = content.match(/#define NODE_MODULE_VERSION (.+)/)?.[1];
 
   return { major, minor, patch, abi };
+}
+
+/**
+ * Minimal Info.plist for a synthetic iOS framework wrapping a single
+ * `.node` Mach-O. Mirrors the harness recipe verbatim — Apple's loader
+ * + codesign require these specific keys; trimming further breaks
+ * Embed & Sign at app build time.
+ */
+function buildFrameworkPlist(name: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleExecutable</key><string>${name}</string>
+  <key>CFBundleIdentifier</key><string>com.digidem.${name}</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>${name}</string>
+  <key>CFBundlePackageType</key><string>FMWK</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleSignature</key><string>????</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>MinimumOSVersion</key><string>15.1</string>
+</dict></plist>
+`;
 }
 
 function getArtifactInfo({
