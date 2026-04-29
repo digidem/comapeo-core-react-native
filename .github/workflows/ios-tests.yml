@@ -139,16 +139,7 @@ jobs:
             -scheme corereactnativeexample \
             -sdk iphonesimulator \
             -destination "id=${{ steps.simulator.outputs.udid }}" \
-            CODE_SIGNING_ALLOWED='NO' 2>&1 | tee xcodebuild-test.log
-
-      - name: Print xcodebuild log on failure
-        if: failure()
-        run: |
-          echo "=== xcodebuild test failure summary ==="
-          grep -E "error:|FAIL|Test Case|Assertion|XCTAssert|timed out|fatal error" example/ios/xcodebuild-test.log | head -100 || true
-          echo ""
-          echo "=== last 300 lines of log ==="
-          tail -300 example/ios/xcodebuild-test.log || true
+            CODE_SIGNING_ALLOWED='NO'
 
   device-build:
     name: iOS Device Build (xcframework codesign verification)
