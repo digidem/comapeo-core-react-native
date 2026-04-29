@@ -9,6 +9,7 @@
     "expo-module.config.json",
     "android/build.gradle",
     "android/CMakeLists.txt",
+    "android/src/debug/",
     "android/src/main/",
     "android/libnode/",
     "build/",
@@ -30,7 +31,7 @@
   "scripts": {
     "build": "expo-module build --watch false",
     "clean": "expo-module clean",
-    "lint": "expo-module lint",
+    "lint": "expo-module lint --cache .",
     "test": "expo-module test",
     "prepare": "expo-module prepare",
     "prepublishOnly": "expo-module prepublishOnly",
@@ -38,6 +39,8 @@
     "open:ios": "xed example/ios",
     "open:android": "open -a \"Android Studio\" example/android",
     "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh",
+    "backend:install": "npm ci --ignore-scripts --prefix backend",
+    "prebackend:build": "npm run backend:install",
     "backend:build": "node ./scripts/build-backend.ts"
   },
   "keywords": [
@@ -54,6 +57,7 @@
   "license": "MIT",
   "homepage": "https://github.com/digidem/comapeo-core-react-native#readme",
   "devDependencies": {
+    "@eslint/compat": "2.0.5",
     "@eslint/js": "9.39.4",
     "@types/node": "24.12.2",
     "@types/react": "19.2.14",
