@@ -68,5 +68,13 @@ public class ComapeoCoreModule: Module {
                 ipc: self.ipc
             )
         }
+
+        // Mirror of the Android Function so the JS bridge in `src/mediaUrl.ts`
+        // can call the same name on both platforms. Returns the empty string
+        // on iOS — there is no per-app authority because iOS uses a fixed
+        // `comapeo://media/...` scheme registered by `MediaURLProtocol`.
+        Function("getMediaContentAuthority") { () -> String in
+            return ""
+        }
     }
 }

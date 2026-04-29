@@ -16,8 +16,20 @@ const MIGRATIONS_FOLDER_PATH = fileURLToPath(
 
 console.log("Starting Comapeo Node server...");
 
-const [comapeoSocketPath, controlSocketPath, privateStorageDir] =
-  process.argv.slice(2);
+const [
+  comapeoSocketPath,
+  controlSocketPath,
+  privateStorageDir,
+  mediaSocketPath,
+] = process.argv.slice(2);
+
+if (!mediaSocketPath) {
+  console.error(
+    "Missing media socket path argv. The native NodeJSService must pass " +
+      "[node, indexPath, comapeoSocketPath, controlSocketPath, privateStorageDir, mediaSocketPath].",
+  );
+  process.exit(1);
+}
 
 const fastify = Fastify();
 
@@ -39,23 +51,32 @@ const controlIpcServer = new SimpleRpcServer({
   },
 });
 
-// Listen on both sockets in parallel, then drive the readiness state machine.
-// `started` fires as soon as both `listen()` promises resolve so a control
-// client knows the comapeo socket is accepting connections; `ready` fires
-// after a 1 s settle window for callers that want a stronger "I won't see
-// startup races" signal. Late-connecting clients receive both replayed.
+// Listen on all three sockets in parallel, then drive the readiness state
+// machine. `started` fires as soon as the listen() promises resolve so a
+// control client knows the sockets are accepting connections; `ready`
+// fires after a 1 s settle window for callers that want a stronger
+// "I won't see startup races" signal. Late-connecting clients receive both
+// replayed.
 //
 // See SimpleRpcServer for why the settle window exists. Native control-IPC
 // clients (Swift, Kotlin) poll for the socket file plus retry, which can
 // land their first successful accept several tens of ms after the
 // broadcast — without the replay they would see nothing.
+//
+// The media socket carries blob/icon HTTP responses streamed by the Fastify
+// plugins registered in `@comapeo/core`. Binding to a UDS instead of a TCP
+// port keeps the bytes inside the app sandbox: only the native module can
+// connect (Android via LocalSocket from the MediaContentProvider, iOS via
+// AF_UNIX from MediaURLProtocol), so no other app on the device can read
+// the URLs.
 Promise.all([
   controlIpcServer.listen(controlSocketPath),
   comapeoRpcServer.listen(comapeoSocketPath),
+  fastify.listen({ path: mediaSocketPath }),
 ])
   .then(async () => {
     console.log(
-      `Node server listening on ${controlSocketPath} and ${comapeoSocketPath}`,
+      `Node server listening on ${controlSocketPath}, ${comapeoSocketPath}, ${mediaSocketPath}`,
     );
     controlIpcServer.setReadinessPhase("started");
     await new Promise((resolve) => setTimeout(resolve, 1000));

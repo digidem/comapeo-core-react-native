@@ -28,5 +28,22 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+
+        <!--
+            Streams blob/icon bytes from the backend's UDS-bound HTTP server
+            as `content://${applicationId}.comapeo.media/...` URIs.
+            `exported=false`: only this app can target the provider.
+            `grantUriPermissions=true`: a future share-sheet flow can hand a
+            one-shot read grant to another app via FLAG_GRANT_READ_URI_PERMISSION
+            without reopening the provider.
+            Runs in the **main** app process (no `android:process`) — the
+            ComapeoCore service process binds the socket; the main process
+            connects to it from this provider.
+        -->
+        <provider
+            android:name="com.comapeo.core.media.MediaContentProvider"
+            android:authorities="${applicationId}.comapeo.media"
+            android:exported="false"
+            android:grantUriPermissions="true"/>
     </application>
 </manifest>

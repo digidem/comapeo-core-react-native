@@ -21,6 +21,7 @@ class NodeJSService {
 
     static let comapeoSocketFilename = "comapeo.sock"
     static let controlSocketFilename = "control.sock"
+    static let mediaSocketFilename = "media.sock"
 
     private let socketDir: String
     /// Backend's `privateStorageDir` argv positional. Mirrors Android's
@@ -31,6 +32,10 @@ class NodeJSService {
     private let privateStorageDir: String
     let comapeoSocketPath: String
     let controlSocketPath: String
+    /// Unix-domain socket the backend's Fastify HTTP server binds to,
+    /// serving streamed blob/icon bytes. Read by `MediaURLProtocol` on
+    /// the React Native side to satisfy `comapeo://media/...` URL loads.
+    let mediaSocketPath: String
     private var controlIPC: NodeJSIPC?
     private var nodeThread: Thread?
     private let lock = NSLock()
@@ -75,13 +80,14 @@ class NodeJSService {
         self.privateStorageDir = privateStorageDir
         self.comapeoSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
         self.controlSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.controlSocketFilename)
+        self.mediaSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.mediaSocketFilename)
 
-        // Fail loudly if either socket path won't fit in sockaddr_un.sun_path
+        // Fail loudly if any socket path won't fit in sockaddr_un.sun_path
         // (104 bytes on Darwin, including the null terminator). A silently
         // truncated path causes bind() to succeed against a different file —
         // surfacing later as a mysterious connection-refused or hang.
         let sunPathMax = 104
-        for path in [comapeoSocketPath, controlSocketPath] {
+        for path in [comapeoSocketPath, controlSocketPath, mediaSocketPath] {
             let needed = path.utf8.count + 1
             precondition(
                 needed <= sunPathMax,
@@ -197,9 +203,11 @@ class NodeJSService {
         transitionState(to: .started)
 
         // argv shape matches Android's NodeJSService.kt:
-        //   [node, indexPath, comapeoSocketPath, controlSocketPath, privateStorageDir]
+        //   [node, indexPath, comapeoSocketPath, controlSocketPath, privateStorageDir, mediaSocketPath]
         // The third positional is consumed by backend/index.js as
         // `privateStorageDir` and handed to createComapeo({privateStorageDir,...}).
+        // The fourth positional is the path of the Unix-domain socket the
+        // bundled Fastify HTTP server (blobs + icons) binds to.
         //
         // `--no-experimental-fetch` disables Node's built-in `globalThis.fetch`
         // (and thus the lazy-loaded undici under it). nodejs-mobile iOS runs
@@ -218,6 +226,7 @@ class NodeJSService {
             comapeoSocketPath,
             controlSocketPath,
             privateStorageDir,
+            mediaSocketPath,
         ]
         let exitCode = nodeEntryPoint(args)
         log("Node.js exited with code \(exitCode)")
@@ -254,6 +263,7 @@ class NodeJSService {
         let fm = FileManager.default
         try? fm.removeItem(atPath: comapeoSocketPath)
         try? fm.removeItem(atPath: controlSocketPath)
+        try? fm.removeItem(atPath: mediaSocketPath)
     }
 
 }
