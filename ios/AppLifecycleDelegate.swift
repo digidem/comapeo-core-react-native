@@ -23,13 +23,22 @@ import UIKit
 /// results, see `src/mediaUrl.ts`) stream straight from the backend's
 /// UDS-bound HTTP server into React Native image components.
 public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
-    /// Idempotent installer for the global URL protocol — `static let`
+    /// Idempotent installer for the media URL fetch path — `static let`
     /// guarantees at-most-one registration regardless of how many
     /// `AppLifecycleDelegate` instances Expo creates. Side-effect happens
     /// the first time anything reads this property; the value itself is
     /// only there to make the body run.
+    ///
+    /// Two consumers wire up here:
+    ///   - `MediaFetcher.socketPathProvider` — read by the Obj-C
+    ///     `ComapeoMediaImageLoader` (`RCTImageURLLoader`) which RN's
+    ///     `<Image>` looks up by scheme, AND by the streaming
+    ///     `MediaURLProtocol` below.
+    ///   - `URLProtocol.registerClass(MediaURLProtocol.self)` — picks up
+    ///     `URLSession.shared` callers (share sheet, third-party libs)
+    ///     for which the RCTImageURLLoader path is irrelevant.
     private static let _mediaUrlProtocolInstalled: Bool = {
-        MediaURLProtocol.mediaSocketPathProvider = {
+        MediaFetcher.socketPathProvider = {
             AppLifecycleDelegate.nodeService.mediaSocketPath
         }
         URLProtocol.registerClass(MediaURLProtocol.self)
