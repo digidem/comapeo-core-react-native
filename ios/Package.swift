@@ -25,7 +25,6 @@ let package = Package(
                 "NodeJSIPC.swift",
                 "NodeJSService.swift",
                 "ControlFrame.swift",
-                "JSReloadObserver.swift",
                 "Log.swift",
             ]
         ),
