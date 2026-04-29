@@ -1,6 +1,5 @@
 // @ts-check
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { includeIgnoreFile } from "@eslint/compat";
 import js from "@eslint/js";
 import { defineConfig } from "eslint/config";
@@ -11,13 +10,10 @@ import tseslint from "typescript-eslint";
 const require = createRequire(import.meta.url);
 const expo = require("expo-module-scripts/eslint.config.base");
 
-const gitignorePath = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  ".gitignore",
-);
+const gitignorePath = path.join(import.meta.dirname, ".gitignore");
 
 const gitExcludePath = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
+  import.meta.dirname,
   ".git",
   "info",
   "exclude",
