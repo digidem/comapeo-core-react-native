@@ -8,6 +8,8 @@ import commonjs from "@rollup/plugin-commonjs";
 import { default as esmShim } from "@rollup/plugin-esm-shim";
 import json from "@rollup/plugin-json";
 import type { OutputOptions, Plugin, RollupOptions } from "rollup";
+import { minify } from "rollup-plugin-esbuild";
+
 import addonLoaderPlugin, {
   androidAddonLoaderBanner,
   iosAddonLoaderBanner,
@@ -21,13 +23,19 @@ const MAPS_STUB_PATH = path.join(__dirname, "lib", "maps-stub.js");
 /**
  * Per-platform output dirs. `scripts/build-backend.ts` sets these env
  * vars to write directly into the final native-asset trees
- * (`android/src/main/assets/nodejs-project/` and `ios/nodejs-project/`),
- * skipping the intermediate staging tree the script used to maintain.
+ * (`android/src/debug/assets/nodejs-project/`, `android/src/main/assets/nodejs-project/`, and
+ * `ios/nodejs-project/`), skipping the intermediate staging tree the script used to maintain.
  * Falls back to `backend/dist/<platform>/` so `cd backend && npm run build`
  * still produces inspectable output for standalone debugging.
  */
-const ANDROID_OUT =
-  process.env.OUTPUT_DIR_ANDROID ?? path.join(__dirname, "dist/android");
+const ANDROID_OUT_DEBUG =
+  process.env.OUTPUT_DIR_ANDROID_DEBUG ??
+  path.join(__dirname, "dist/android/debug");
+
+const ANDROID_OUT_MAIN =
+  process.env.OUTPUT_DIR_ANDROID_MAIN ??
+  path.join(__dirname, "dist/android/main");
+
 const IOS_OUT = process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
 
 /**
@@ -102,9 +110,11 @@ function copyStaticAssetsPlugin(outDir: string): Plugin {
 function buildPlugins({
   platform,
   outDir,
+  shouldMinify,
 }: {
   platform: "android" | "ios";
   outDir: string;
+  shouldMinify: boolean;
 }): Plugin[] {
   return [
     alias({
@@ -133,6 +143,7 @@ function buildPlugins({
     nodeResolve({ preferBuiltins: true }),
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
     json(),
+    shouldMinify ? minify() : undefined,
     copyStaticAssetsPlugin(outDir),
   ];
 }
@@ -163,9 +174,9 @@ const sharedOutput: OutputOptions = {
 };
 
 /**
- * Two outputs from the same source tree. Android gets the full bundle —
- * its nodejs-mobile build permits JIT, so undici (and therefore the maps
- * fastify plugin) loads cleanly. iOS gets the same bundle but with
+ * Three outputs from the same source tree: Android debug, Android release, and iOS.
+ * Android gets the full bundle — its nodejs-mobile build permits JIT, so undici
+ * (and therefore the maps fastify plugin) loads cleanly. iOS gets the same bundle but with
  * `@comapeo/core`'s maps plugin swapped for a no-op (see lib/maps-stub.js)
  * because nodejs-mobile iOS runs V8 with `--jitless` and undici's
  * WebAssembly init would crash module load.
@@ -181,12 +192,33 @@ const config: RollupOptions[] = [
     input: sharedInput,
     output: {
       ...sharedOutput,
-      dir: ANDROID_OUT,
+      dir: ANDROID_OUT_DEBUG,
       banner: androidAddonLoaderBanner,
     },
     plugins: [
-      cleanOutputDirPlugin(ANDROID_OUT),
-      ...buildPlugins({ platform: "android", outDir: ANDROID_OUT }),
+      cleanOutputDirPlugin(ANDROID_OUT_DEBUG),
+      ...buildPlugins({
+        platform: "android",
+        outDir: ANDROID_OUT_DEBUG,
+        // Android debug does not minify the bundle.
+        shouldMinify: false,
+      }),
+    ],
+  },
+  {
+    input: sharedInput,
+    output: {
+      ...sharedOutput,
+      dir: ANDROID_OUT_MAIN,
+      banner: androidAddonLoaderBanner,
+    },
+    plugins: [
+      cleanOutputDirPlugin(ANDROID_OUT_MAIN),
+      ...buildPlugins({
+        platform: "android",
+        outDir: ANDROID_OUT_MAIN,
+        shouldMinify: true,
+      }),
     ],
   },
   {
@@ -198,7 +230,11 @@ const config: RollupOptions[] = [
     },
     plugins: [
       cleanOutputDirPlugin(IOS_OUT),
-      ...buildPlugins({ platform: "ios", outDir: IOS_OUT }),
+      ...buildPlugins({
+        platform: "ios",
+        outDir: IOS_OUT,
+        shouldMinify: true,
+      }),
     ],
   },
 ];

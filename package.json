@@ -9,6 +9,7 @@
     "expo-module.config.json",
     "android/build.gradle",
     "android/CMakeLists.txt",
+    "android/src/debug/",
     "android/src/main/",
     "android/libnode/",
     "build/",

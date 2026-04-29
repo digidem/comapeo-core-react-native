@@ -20,7 +20,11 @@ const BACKEND_SRC_DIR = join(PROJECT_ROOT, "backend");
 // targets. Rollup writes the bundled JS + static assets directly here
 // (see `backend/rollup.config.js`); the per-platform packagers below
 // fill in the native-binary side.
-const ANDROID_NODEJS_PROJECT_DIR = join(
+const ANDROID_DEBUG_NODEJS_PROJECT_DIR = join(
+  PROJECT_ROOT,
+  "android/src/debug/assets/nodejs-project",
+);
+const ANDROID_MAIN_NODEJS_PROJECT_DIR = join(
   PROJECT_ROOT,
   "android/src/main/assets/nodejs-project",
 );
@@ -66,7 +70,8 @@ await $({
   stdio: "inherit",
   env: {
     ...process.env,
-    OUTPUT_DIR_ANDROID: ANDROID_NODEJS_PROJECT_DIR,
+    OUTPUT_DIR_ANDROID_DEBUG: ANDROID_DEBUG_NODEJS_PROJECT_DIR,
+    OUTPUT_DIR_ANDROID_MAIN: ANDROID_MAIN_NODEJS_PROJECT_DIR,
     OUTPUT_DIR_IOS: IOS_NODEJS_PROJECT_DIR,
   },
 })`npm run build`;
