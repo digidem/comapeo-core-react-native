@@ -72,7 +72,14 @@ class ComapeoCoreModule : Module() {
 
     private fun parseFrame(message: String): JSONObject? = try {
         JSONObject(message)
-    } catch (_: JSONException) {
+    } catch (e: JSONException) {
+        // The control socket protocol is JSON-only — non-JSON traffic
+        // means either a backend bug or a corrupt frame. Log loudly so
+        // it's visible in adb logcat / Sentry, but don't transition to
+        // ERROR: a single garbled frame shouldn't tear down a working
+        // session. The watchdog covers the case where the protocol has
+        // genuinely broken (no `ready` ever arrives).
+        log("ComapeoCoreModule: ignoring non-JSON control frame: ${e.message}")
         null
     }
 
@@ -96,7 +103,8 @@ class ComapeoCoreModule : Module() {
                 controlSocketFile,
                 onMessage = { message ->
                     val parsed = parseFrame(message) ?: return@NodeJSIPC
-                    when (parsed.optString("type", "")) {
+                    val type = parsed.optString("type", "")
+                    when (type) {
                         "ready" -> setState(JsState.STARTED)
                         "started" -> setState(JsState.STARTING)
                         "error" -> setState(
@@ -106,6 +114,14 @@ class ComapeoCoreModule : Module() {
                                 "errorMessage" to parsed.optString("message", "(no message)"),
                             ),
                         )
+                        else -> {
+                            // Forward-compat: a newer backend may emit
+                            // frame types this build doesn't recognise.
+                            // Log so it's discoverable, but don't error
+                            // — the watchdog covers genuine protocol
+                            // breakage (no `ready` within timeout).
+                            log("ComapeoCoreModule: ignoring unknown control frame type=\"$type\"")
+                        }
                     }
                 },
                 onConnectionStateChange = { connState ->

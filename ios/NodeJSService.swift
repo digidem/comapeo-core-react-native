@@ -266,7 +266,11 @@ class NodeJSService {
             let msg = (frame["message"] as? String) ?? "(no message)"
             transitionToError(phase: phase, message: msg)
         default:
-            break
+            // Forward-compat: a newer backend may emit frame types this
+            // build doesn't recognise. Log so it's discoverable but don't
+            // transition to .error — the startup watchdog covers genuine
+            // protocol breakage where `ready` never arrives.
+            log("NodeJSService: ignoring unknown control frame type=\"\(type)\"")
         }
     }
 

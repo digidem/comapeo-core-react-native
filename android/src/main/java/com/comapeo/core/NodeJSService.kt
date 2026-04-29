@@ -233,7 +233,8 @@ class NodeJSService(
     private fun handleControlMessage(message: String) {
         log("Control IPC received: $message")
         val parsed = parseFrame(message) ?: return
-        when (parsed.optString("type", "")) {
+        val type = parsed.optString("type", "")
+        when (type) {
             "started" -> sendInitFrame()
             "ready" -> {
                 if (state == State.STARTING) transitionState(State.STARTED)
@@ -242,6 +243,16 @@ class NodeJSService(
                 val phase = parsed.optString("phase", "unknown")
                 val msg = parsed.optString("message", "(no message)")
                 transitionToError(phase, msg)
+            }
+            else -> {
+                // Forward-compat: a newer backend may emit frame types
+                // this build doesn't recognise. Log so it's discoverable
+                // but don't transition to ERROR — the startup watchdog
+                // covers genuine protocol breakage where `ready` never
+                // arrives. An empty `type` field is also caught here,
+                // so a malformed frame doesn't silently desync the
+                // handshake.
+                log("NodeJSService: ignoring unknown control frame type=\"$type\"")
             }
         }
     }
