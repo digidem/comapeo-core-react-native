@@ -170,14 +170,24 @@ class NodeJSService {
         if changed { onStateChange?(newState) }
     }
 
-    /// Records error detail and transitions to .error. Callers must NOT
-    /// hold `lock` (same reason as `transitionState`).
+    /// Atomically records error detail and transitions to .error. The
+    /// `_lastError` write and the state mutation share a single critical
+    /// section so an observer reading `getLastError()` from the
+    /// `onStateChange` callback always sees the matching pair, even if
+    /// two threads race transitionToError simultaneously. Callers must
+    /// NOT hold `lock` (same reason as `transitionState`).
     private func transitionToError(phase: String, message: String) {
         lock.lock()
         _lastError = ErrorInfo(phase: phase, message: message)
+        let changed = state != .error
+        let leavingStarting = changed && state == .starting
+        if changed { state = .error }
+        let watchdog = leavingStarting ? startupWatchdog : nil
+        if leavingStarting { startupWatchdog = nil }
         lock.unlock()
         log("NodeJSService error (\(phase)): \(message)")
-        transitionState(to: .error)
+        watchdog?.cancel()
+        if changed { onStateChange?(.error) }
     }
 
     func start() {

@@ -111,32 +111,74 @@ class NodeJSService(
     @Volatile
     var onStateChange: ((State) -> Unit)? = null
 
-    @Volatile
+    /**
+     * Single mutex protecting `state`, `lastError`, and the
+     * `startupWatchdogJob` slot. `transitionState` and
+     * `transitionToError` are callable from multiple coroutines (the
+     * `nodeJob` body, the startup watchdog, the control-socket receive
+     * coroutine via `handleControlMessage`, plus FGS lifecycle calls).
+     * Without serialisation, two near-simultaneous transitions could
+     * both observe the pre-write `state`, both proceed past the
+     * idempotence guard, and emit conflicting `onStateChange` callbacks.
+     * `lastError` paired with an ERROR transition has the same problem:
+     * a later transition could overwrite the field before the original
+     * observer reads `getLastError()`.
+     *
+     * The lock is held only for the read-modify-write; `onStateChange`
+     * is invoked outside it so an observer that re-enters another
+     * locked method can't deadlock.
+     */
+    private val stateLock = Any()
     private var state: State = State.STOPPED
-
-    @Volatile
     private var lastError: ErrorInfo? = null
 
-    fun getState(): State = state
+    fun getState(): State = synchronized(stateLock) { state }
 
-    fun getLastError(): ErrorInfo? = lastError
+    fun getLastError(): ErrorInfo? = synchronized(stateLock) { lastError }
 
     private fun transitionState(to: State) {
-        if (state == to) return
-        val leavingStarting = (state == State.STARTING)
-        log("NodeJSService state: $state -> $to")
-        state = to
-        if (leavingStarting) {
-            startupWatchdogJob?.cancel()
-            startupWatchdogJob = null
+        var notifyState: State? = null
+        var watchdogToCancel: Job? = null
+        synchronized(stateLock) {
+            if (state == to) return
+            val leavingStarting = (state == State.STARTING)
+            log("NodeJSService state: $state -> $to")
+            state = to
+            if (leavingStarting) {
+                watchdogToCancel = startupWatchdogJob
+                startupWatchdogJob = null
+            }
+            notifyState = to
         }
-        onStateChange?.invoke(to)
+        watchdogToCancel?.cancel()
+        notifyState?.let { onStateChange?.invoke(it) }
     }
 
+    /**
+     * Sets `lastError` and transitions to ERROR atomically — both fields
+     * land in a single critical section so observers always see the
+     * matching pair. If we're already in ERROR, the captured detail is
+     * still updated (a second error in the same session is observable
+     * via `getLastError()`) but `onStateChange` is not re-invoked.
+     */
     private fun transitionToError(phase: String, message: String) {
-        lastError = ErrorInfo(phase, message)
-        log("NodeJSService error ($phase): $message")
-        transitionState(State.ERROR)
+        var notifyState: State? = null
+        var watchdogToCancel: Job? = null
+        synchronized(stateLock) {
+            lastError = ErrorInfo(phase, message)
+            log("NodeJSService error ($phase): $message")
+            if (state == State.ERROR) return
+            val leavingStarting = (state == State.STARTING)
+            log("NodeJSService state: $state -> ${State.ERROR}")
+            state = State.ERROR
+            if (leavingStarting) {
+                watchdogToCancel = startupWatchdogJob
+                startupWatchdogJob = null
+            }
+            notifyState = State.ERROR
+        }
+        watchdogToCancel?.cancel()
+        notifyState?.let { onStateChange?.invoke(it) }
     }
 
     companion object {
@@ -183,7 +225,10 @@ class NodeJSService(
         // where the watchdog can fire after we've already moved on.
         startupWatchdogJob = serviceScope.launch {
             delay(startupTimeoutMs)
-            if (state == State.STARTING) {
+            // getState() takes stateLock — without it the read could
+            // race with a concurrent transition and produce a phantom
+            // timeout immediately after a successful STARTED.
+            if (getState() == State.STARTING) {
                 transitionToError(
                     "starting-timeout",
                     "Service did not reach STARTED within ${startupTimeoutMs}ms",
@@ -217,7 +262,7 @@ class NodeJSService(
                 callback.onError(e)
             } finally {
                 deleteSocketFiles()
-                if (state != State.ERROR) transitionState(State.STOPPED)
+                if (getState() != State.ERROR) transitionState(State.STOPPED)
             }
         }
     }
@@ -237,7 +282,7 @@ class NodeJSService(
         when (type) {
             "started" -> sendInitFrame()
             "ready" -> {
-                if (state == State.STARTING) transitionState(State.STARTED)
+                if (getState() == State.STARTING) transitionState(State.STARTED)
             }
             "error" -> {
                 val phase = parsed.optString("phase", "unknown")
