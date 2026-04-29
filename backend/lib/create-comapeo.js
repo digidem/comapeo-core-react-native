@@ -1,9 +1,6 @@
 import path from "node:path";
 import { MapeoManager } from "@comapeo/core";
-import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
-
-const require = createRequire(import.meta.url);
 
 const DEFAULT_CUSTOM_MAP_FILE_NAME = "default.smp";
 
