@@ -64,6 +64,18 @@ class NodeJSService {
     /// macOS swift-test target never touches the real keychain.
     private let rootKeyProvider: RootKeyProvider
 
+    /// Maximum time the service may stay in `.starting` before the
+    /// watchdog forces a transition to `.error`. Configurable so tests
+    /// (and slow CI environments) can tighten or relax it. The watchdog
+    /// guards against backend hangs that leave Node parked without ever
+    /// emitting `ready` — without it, `.starting` would be a black hole.
+    private let startupTimeout: TimeInterval
+
+    /// Active watchdog work item. Set in `start()`, cancelled when the
+    /// service transitions out of `.starting` (to `.started`, `.error`,
+    /// `.stopping`, or `.stopped`). Stored under `lock`.
+    private var startupWatchdog: DispatchWorkItem?
+
     var onStateChange: ((State) -> Void)?
 
     private(set) var state: State = .stopped {
@@ -99,12 +111,17 @@ class NodeJSService {
     ///   - resolveJSEntryPoint: Returns the path to the JS entry file.
     ///   - rootKeyProvider: Returns the 16-byte device rootkey. Invoked
     ///     during `starting` after the backend's `started` broadcast.
+    ///   - startupTimeout: Maximum seconds in `.starting` before the
+    ///     watchdog forces `.error`. Default 30s covers cold simulator
+    ///     boots plus addon dlopens with margin; production callers may
+    ///     widen for slow devices, tests may tighten.
     init(
         socketDir: String,
         privateStorageDir: String,
         nodeEntryPoint: @escaping NodeEntryPoint,
         resolveJSEntryPoint: @escaping () -> String?,
-        rootKeyProvider: @escaping RootKeyProvider
+        rootKeyProvider: @escaping RootKeyProvider,
+        startupTimeout: TimeInterval = 30
     ) {
         self.socketDir = socketDir
         self.privateStorageDir = privateStorageDir
@@ -127,6 +144,7 @@ class NodeJSService {
         self.nodeEntryPoint = nodeEntryPoint
         self.resolveJSEntryPoint = resolveJSEntryPoint
         self.rootKeyProvider = rootKeyProvider
+        self.startupTimeout = startupTimeout
 
         try? FileManager.default.createDirectory(atPath: socketDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: privateStorageDir, withIntermediateDirectories: true)
@@ -140,8 +158,15 @@ class NodeJSService {
     private func transitionState(to newState: State) {
         lock.lock()
         let changed = state != newState
+        let leavingStarting = changed && state == .starting
         state = newState
+        let watchdog = leavingStarting ? startupWatchdog : nil
+        if leavingStarting { startupWatchdog = nil }
         lock.unlock()
+        // Cancel the watchdog outside the lock — `cancel()` doesn't take
+        // any of our locks but the principle (no callbacks under lock)
+        // holds for any future addition here.
+        watchdog?.cancel()
         if changed { onStateChange?(newState) }
     }
 
@@ -165,6 +190,32 @@ class NodeJSService {
         nodeCompletionSemaphore = DispatchSemaphore(value: 0)
         lock.unlock()
         transitionState(to: .starting)
+
+        // Arm the startup watchdog. Captured `[weak self]` to avoid a
+        // retain cycle holding the service alive past its natural
+        // lifetime if the watchdog outlives the observer (it shouldn't,
+        // but cheap insurance). Re-checks state under lock in case a
+        // racing transition already left .starting between the timer
+        // firing and us getting scheduled.
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock()
+            let stillStarting = (self.state == .starting)
+            self.lock.unlock()
+            if stillStarting {
+                self.transitionToError(
+                    phase: "starting-timeout",
+                    message: "Service did not reach .started within \(Int(self.startupTimeout))s"
+                )
+            }
+        }
+        lock.lock()
+        startupWatchdog = watchdog
+        lock.unlock()
+        DispatchQueue.global().asyncAfter(
+            deadline: .now() + startupTimeout,
+            execute: watchdog
+        )
 
         deleteSocketFiles()
 

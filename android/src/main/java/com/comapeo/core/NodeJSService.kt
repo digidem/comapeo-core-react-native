@@ -13,6 +13,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -29,7 +30,18 @@ const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
 const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
 
 @Suppress("KotlinJniMissingFunction")
-class NodeJSService(context: android.content.Context) : ContextWrapper(context) {
+class NodeJSService(
+    context: android.content.Context,
+    /**
+     * Maximum milliseconds the service may stay in STARTING before the
+     * watchdog forces ERROR. Configurable so tests (and slow CI) can
+     * tighten or relax it. Default 30 s covers cold device boot plus
+     * addon dlopens (sodium-native + better-sqlite3 dominate) with
+     * margin; without the watchdog, a backend hang would leave STARTING
+     * as a black hole.
+     */
+    private val startupTimeoutMs: Long = 30_000,
+) : ContextWrapper(context) {
     /**
      * Public lifecycle state mirroring iOS's `NodeJSService.State`. The FGS's
      * `ComapeoCoreService` forwards transitions to the JS layer via the
@@ -71,6 +83,16 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var nodeJob: Job? = null
+
+    /**
+     * Active startup-watchdog job. Launched in `start()`; cancelled when
+     * the service transitions out of STARTING (to STARTED, ERROR,
+     * STOPPING, or STOPPED). `@Volatile` so cross-thread reads in
+     * `transitionState` see the latest assignment without needing the
+     * JVM monitor.
+     */
+    @Volatile
+    private var startupWatchdogJob: Job? = null
     private val dataDir: String = filesDir.absolutePath
     private val nodeProjectDir: File = File(filesDir, NODEJS_PROJECT_DIRNAME)
     private val jsFile: File = File(nodeProjectDir, NODEJS_PROJECT_INDEX_FILENAME)
@@ -101,8 +123,13 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
 
     private fun transitionState(to: State) {
         if (state == to) return
+        val leavingStarting = (state == State.STARTING)
         log("NodeJSService state: $state -> $to")
         state = to
+        if (leavingStarting) {
+            startupWatchdogJob?.cancel()
+            startupWatchdogJob = null
+        }
         onStateChange?.invoke(to)
     }
 
@@ -150,6 +177,19 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
         }
         log("Starting NodeJS service")
         transitionState(State.STARTING)
+        // Arm the startup watchdog. delay() respects coroutine
+        // cancellation, so transitionState's startupWatchdogJob?.cancel()
+        // when leaving STARTING is sufficient — there's no race window
+        // where the watchdog can fire after we've already moved on.
+        startupWatchdogJob = serviceScope.launch {
+            delay(startupTimeoutMs)
+            if (state == State.STARTING) {
+                transitionToError(
+                    "starting-timeout",
+                    "Service did not reach STARTED within ${startupTimeoutMs}ms",
+                )
+            }
+        }
         nodeJob = serviceScope.launch {
             try {
                 if (shouldCopyAssets()) {
