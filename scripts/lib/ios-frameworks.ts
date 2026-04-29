@@ -86,10 +86,7 @@ export async function packageIosFrameworks({
         stdio: "inherit",
       })`lipo -create ${join(armSimFramework, instanceKey)} ${join(x64SimFramework, instanceKey)} -output ${join(simFatFramework, instanceKey)}`;
 
-      const xcframeworkPath = join(
-        frameworksDir,
-        `${instanceKey}.xcframework`,
-      );
+      const xcframeworkPath = join(frameworksDir, `${instanceKey}.xcframework`);
       await $$`xcodebuild -create-xcframework -framework ${deviceFramework} -framework ${simFatFramework} -output ${xcframeworkPath}`;
     }),
   );
@@ -154,8 +151,8 @@ function buildFrameworkPlist(name: string): string {
   // form `<name>__<version>` puts a `__` in there, so the bundle ID
   // gets a sanitised variant: `__` collapses to a single `-`. The
   // result is still unique per (name, version) because the version's
-  // dots stay (`sodium-native__5.1.0` → `com.digidem.sodium-native-5.1.0`).
-  const bundleId = `com.digidem.${name.replace(/__/g, "-")}`;
+  // dots stay (`sodium-native__5.1.0` → `com.comapeo.core.frameworks.sodium-native-5.1.0`).
+  const bundleId = `com.comapeo.core.frameworks.${name.replace(/__/g, "-")}`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
