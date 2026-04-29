@@ -152,15 +152,32 @@ class RootKeyStore(private val context: Context) {
     private fun generateAndPersist(): ByteArray {
         val plaintext = ByteArray(ROOTKEY_BYTE_LENGTH).also { SecureRandom().nextBytes(it) }
         val wrapperKey = createOrLoadWrapperKey()
-        val iv = ByteArray(GCM_IV_LENGTH_BYTES).also { SecureRandom().nextBytes(it) }
+        // AndroidKeyStore-managed AES/GCM keys with
+        // `setRandomizedEncryptionRequired(true)` (which we set in
+        // `createOrLoadWrapperKey`) require the keystore to generate
+        // the IV itself. Passing a `GCMParameterSpec` to `init()` on
+        // encryption throws
+        // `InvalidAlgorithmParameterException: Caller-provided IV not
+        // permitted` on hardware-backed keystores (observed on API 30+).
+        // We read the keystore-generated IV from `cipher.iv` after
+        // `init()` and persist it in the envelope as before. Decryption
+        // still requires the IV from the envelope — that's required by
+        // GCM and allowed by the keystore.
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-            init(
-                Cipher.ENCRYPT_MODE,
-                wrapperKey,
-                GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv),
-            )
+            init(Cipher.ENCRYPT_MODE, wrapperKey)
         }
         val ct = cipher.doFinal(plaintext)
+        val iv = cipher.iv
+        if (iv == null || iv.size != GCM_IV_LENGTH_BYTES) {
+            // Defensive: AndroidKeyStore should produce a 12-byte
+            // GCM IV, but `loadExisting` enforces the same length on
+            // read so writing a different-length IV would silently
+            // produce an unreadable envelope. Throw at write time.
+            throw RootKeyException(
+                "Keystore returned unexpected IV length: ${iv?.size} " +
+                    "(expected $GCM_IV_LENGTH_BYTES)",
+            )
+        }
         val envelopeJson = JSONObject().apply {
             put("v", ENVELOPE_VERSION)
             put("alias", WRAPPER_KEY_ALIAS)
