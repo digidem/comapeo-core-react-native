@@ -205,6 +205,16 @@ class RootKeyStore(private val context: Context) {
         if (alias.isEmpty() || ivStr.isEmpty() || ctStr.isEmpty()) {
             throw RootKeyException("Rootkey envelope missing required fields")
         }
+        // Pinned to the only alias the v1 envelope can describe. If we ever
+        // rotate to a v2 wrapper key, the version bump above gates the
+        // mismatch path; this assertion catches a stored envelope whose
+        // alias was tampered with or whose version field was truthful but
+        // whose alias points at a key the keystore can't load.
+        if (alias != WRAPPER_KEY_ALIAS) {
+            throw RootKeyException(
+                "Envelope alias mismatch: $alias (expected $WRAPPER_KEY_ALIAS)",
+            )
+        }
         val iv = Base64.decode(ivStr, Base64.NO_WRAP)
         val ct = Base64.decode(ctStr, Base64.NO_WRAP)
         return Envelope(v, alias, iv, ct)
