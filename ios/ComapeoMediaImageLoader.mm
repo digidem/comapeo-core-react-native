@@ -21,25 +21,27 @@
 #import <UIKit/UIKit.h>
 #import <React/RCTImageURLLoader.h>
 
-// `ComapeoCore-Swift.h` (auto-generated below) re-exposes every `@objc`
-// Swift class in this module to Obj-C, including `AppLifecycleDelegate`
-// which extends `BaseExpoAppDelegateSubscriber` from `ExpoModulesCore`.
-// Without ExpoModulesCore in scope, the generated header references
-// `EXBaseAppDelegateSubscriber` / `EXAppDelegateSubscriberProtocol`
-// without a definition and the build fails. Module-import
-// (`@import ExpoModulesCore;`) keeps the dependency self-documenting.
-@import ExpoModulesCore;
-
-// The auto-generated Swift bridging header lands in different paths
-// depending on whether CocoaPods built ComapeoCore as a framework or a
-// static library; cover both. `__has_include` is a Clang preprocessor
-// check that resolves at compile time without erroring on the unmet
-// branch.
-#if __has_include(<ComapeoCore/ComapeoCore-Swift.h>)
-#import <ComapeoCore/ComapeoCore-Swift.h>
-#elif __has_include("ComapeoCore-Swift.h")
-#import "ComapeoCore-Swift.h"
-#endif
+// Forward declaration for the @objc-renamed Swift class
+// (`@objc(ComapeoMediaFetcher) public final class MediaFetcher`).
+//
+// We deliberately do NOT `#import "ComapeoCore-Swift.h"`. The generated
+// header re-exposes EVERY `@objc` Swift class in the module, including
+// `AppLifecycleDelegate`, which extends `BaseExpoAppDelegateSubscriber`
+// from `ExpoModulesCore`. Importing the bridging header drags in those
+// transitive Expo types, which aren't part of this Pod's public header
+// surface — Clang errors with "cannot find interface declaration for
+// EXBaseAppDelegateSubscriber".
+//
+// `@import ExpoModulesCore;` would fix it but is rejected by this Pod's
+// compile flags ("use of '@import' when C++ modules are disabled"). A
+// forward declaration of just the symbol we call into is the smallest
+// surface that satisfies the compiler. Linking is fine: Swift's @objc
+// emits the methods at the runtime names we declare here.
+@interface ComapeoMediaFetcher : NSObject
++ (BOOL)canHandle:(nonnull NSURL *)url;
++ (void)fetchURL:(nonnull NSURL *)url
+      completion:(void (^_Nonnull)(NSData * _Nullable, NSError * _Nullable))completion;
+@end
 
 @interface ComapeoMediaImageLoader : NSObject <RCTImageURLLoader>
 @end
