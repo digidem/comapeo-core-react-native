@@ -26,9 +26,15 @@ final class ComapeoCoreModuleTests: XCTestCase {
     }
 
     func testStateStringDerivesFromServiceArgumentNotIPC() {
-        // Drive a mock service to `.started`. With `ipc: nil` passed in, any
-        // correct implementation must derive the string from the service state
-        // (matching what the `stateChange` event emits).
+        // Drive a mock service into a non-stopped state. With `ipc: nil`
+        // passed in, any correct implementation must derive the string from
+        // the service state (matching what the `stateChange` event emits).
+        // We assert against `.starting` rather than `.started` because
+        // `.started` now requires a control-socket handshake (backend
+        // sends `started` → service replies with init frame → backend
+        // sends `ready`) that the example-app test target has no scaffold
+        // for. The contract under test is "stateString reflects
+        // `service.state.rawValue`" — the choice of state is incidental.
         let shortID = UUID().uuidString.prefix(8)
         let testDir = "/tmp/cms-module-\(shortID)"
         try? FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
@@ -40,17 +46,18 @@ final class ComapeoCoreModuleTests: XCTestCase {
             socketDir: testDir,
             privateStorageDir: (testDir as NSString).appendingPathComponent("private-storage"),
             nodeEntryPoint: mockEntry,
-            resolveJSEntryPoint: { "/fake/index.mjs" }
+            resolveJSEntryPoint: { "/fake/index.mjs" },
+            rootKeyProvider: { Data(repeating: 0xAB, count: 16) }
         )
 
-        let started = expectation(description: "mock service reached .started")
-        service.onStateChange = { if $0 == .started { started.fulfill() } }
+        let starting = expectation(description: "mock service reached .starting")
+        service.onStateChange = { if $0 == .starting { starting.fulfill() } }
         service.start()
         waitForExpectations(timeout: 5)
 
         XCTAssertEqual(
             ComapeoCoreModule.stateString(for: service, ipc: nil),
-            "STARTED",
+            "STARTING",
             "stateString() must derive from service state, not IPC state"
         )
 

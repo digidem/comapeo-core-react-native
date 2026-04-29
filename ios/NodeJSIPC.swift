@@ -399,6 +399,19 @@ func connectSocket(path: String) throws -> Int32 {
         throw NodeJSIPC.IPCError.connectionFailed("socket() failed: \(errno)")
     }
 
+    // Suppress SIGPIPE for writes to this fd. Without this, a write
+    // to a closed peer — a routine failure mode during shutdown
+    // races (e.g. `service.stop()` sending the shutdown frame after
+    // the backend already closed) — would deliver SIGPIPE to the
+    // process and kill it. `writeFully` already handles `EPIPE` in
+    // its error path; SO_NOSIGPIPE turns the kernel signal into a
+    // normal `errno` so the existing path runs.
+    var noSigPipe: Int32 = 1
+    _ = setsockopt(
+        fd, SOL_SOCKET, SO_NOSIGPIPE,
+        &noSigPipe, socklen_t(MemoryLayout<Int32>.size)
+    )
+
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
 

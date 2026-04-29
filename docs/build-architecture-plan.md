@@ -697,8 +697,13 @@ per-module repos.
 - **16KB page alignment**. [android/build.gradle](../android/build.gradle)
   already sets `-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON` for its own native
   code, and `prebuild/action.yml` passes `-Wl,-z,max-page-size=16384` at addon
-  build time. Verify Android 15+ 16KB-page device compatibility with
-  `readelf -l | grep LOAD`.
+  build time. `scripts/build-backend.ts` audits every shipped `.so` against
+  the 0x4000 PT_LOAD requirement on every build via
+  [scripts/lib/check-16k-alignment.ts](../scripts/lib/check-16k-alignment.ts);
+  any regression in upstream prebuilds fails the build. libnode.so is
+  downloaded from the [digidem/nodejs-mobile](https://github.com/digidem/nodejs-mobile)
+  fork's 16 KB-aligned build pending upstream
+  [nodejs-mobile/nodejs-mobile#155](https://github.com/nodejs-mobile/nodejs-mobile/pull/155).
 
 - **Do not port to Bare as part of this work.** Treat it as a downstream option
   the plan preserves, not a current goal. The `socket-transport.js` extraction

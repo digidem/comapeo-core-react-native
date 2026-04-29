@@ -23,8 +23,55 @@ npm install @comapeo/core-react-native
 
 ### Configure for Android
 
+#### Backup-rules merge conflict (manifest-merger)
 
+The library's `AndroidManifest.xml` sets two `<application>` attributes
+that exclude the rootkey-bearing SharedPreferences from cloud backup
+and device-to-device transfer:
 
+```xml
+<application
+    android:dataExtractionRules="@xml/comapeo_data_extraction_rules"
+    android:fullBackupContent="@xml/comapeo_backup_rules">
+```
+
+If your host app's `AndroidManifest.xml` already declares either
+attribute (a fairly common case in shipping apps), the manifest merger
+will fail at build time with a "different value declared" error. The
+fix is two steps:
+
+1. **Merge our exclusions into your existing rules XML.** Add an
+   `<exclude domain="sharedpref" path="comapeo-core.xml" />` entry
+   under both `<cloud-backup>` and `<device-transfer>` in your
+   `dataExtractionRules` resource, and the same `<exclude>` under
+   `<full-backup-content>` in your `fullBackupContent` resource. The
+   library's defaults are at
+   [`android/src/main/res/xml/comapeo_data_extraction_rules.xml`](android/src/main/res/xml/comapeo_data_extraction_rules.xml)
+   and
+   [`android/src/main/res/xml/comapeo_backup_rules.xml`](android/src/main/res/xml/comapeo_backup_rules.xml)
+   for reference.
+
+2. **Tell the merger that your manifest wins.** Add `tools:replace` to
+   your app's `<application>` tag:
+
+   ```xml
+   <application
+       xmlns:tools="http://schemas.android.com/tools"
+       android:dataExtractionRules="@xml/your_app_extraction_rules"
+       android:fullBackupContent="@xml/your_app_backup_rules"
+       tools:replace="android:dataExtractionRules,android:fullBackupContent">
+   ```
+
+#### Why the exclusion matters
+
+The rootkey is encrypted with a wrapper key from AndroidKeyStore.
+That wrapper key is device-bound and non-exportable, so a backed-up
+envelope is useless on any other device. The exclusion is
+defense-in-depth (the encrypted blob shouldn't sit in cloud backups
+even when it's useless to attackers) and UX (without the exclusion,
+restore-to-new-device flows appear to succeed but then fail at first
+launch with `RootKeyException("Wrapper key alias missing")`, which
+is a confusing state to end up in).
 
 ### Configure for iOS
 

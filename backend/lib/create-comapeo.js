@@ -1,9 +1,6 @@
 import path from "node:path";
 import { MapeoManager } from "@comapeo/core";
-import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
-
-const require = createRequire(import.meta.url);
 
 const DEFAULT_CUSTOM_MAP_FILE_NAME = "default.smp";
 
@@ -11,15 +8,22 @@ const DEFAULT_CUSTOM_MAP_FILE_NAME = "default.smp";
  * @param {Object} options
  * @param {string} options.privateStorageDir
  * @param {string} options.migrationsFolderPath
- * @param {Buffer} [options.rootKey]
+ * @param {Buffer} options.rootKey 16-byte device identity supplied by native code.
  * @param {import('fastify').FastifyInstance} options.fastify
  */
 export function createComapeo({
   privateStorageDir,
   migrationsFolderPath,
-  rootKey = Buffer.from("488b706e61390df200df6018389a32bd", "hex"),
+  rootKey,
   fastify,
 }) {
+  if (!Buffer.isBuffer(rootKey) || rootKey.byteLength !== 16) {
+    throw new Error(
+      `createComapeo: rootKey must be a 16-byte Buffer, got ${
+        Buffer.isBuffer(rootKey) ? `${rootKey.byteLength} bytes` : typeof rootKey
+      }`,
+    );
+  }
   // Do not touch these!
   const DB_DIR_NAME = "sqlite-dbs";
   const CORE_STORAGE_DIR_NAME = "core-storage";

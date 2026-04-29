@@ -18,21 +18,14 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
-
-enum class ServiceState {
-    STOPPED, STARTING, STARTED, STOPPING, ERROR
-}
 
 class ComapeoCoreService : Service() {
 
     private var isServiceStarted: Boolean = false
     private lateinit var nodeJSService: NodeJSService
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-
-    private val _serviceState = MutableStateFlow(ServiceState.STOPPED)
 
     companion object {
         const val CHANNEL_ID = "ComapeoServiceChannel"

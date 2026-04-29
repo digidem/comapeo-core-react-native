@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pre-Android-12 backup exclusion for the rootkey-bearing
+  SharedPreferences. Wired via android:fullBackupContent in
+  AndroidManifest.xml. Android 12+ also honours
+  comapeo_data_extraction_rules.xml.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="comapeo-core.xml" />
+</full-backup-content>

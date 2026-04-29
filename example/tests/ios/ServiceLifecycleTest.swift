@@ -83,12 +83,14 @@ final class ServiceLifecycleTest: XCTestCase {
         // Fixed in commit b3634de.
         XCTContext.runActivity(named: "late state-IPC receives started/ready") { _ in
             // Deliberate sleep, not a poll: the test's premise is that we
-            // connect *after* Node has already broadcast started/ready. Node
-            // resolves its Promise.all and waits 1 s before posting `ready`,
-            // so 2 s ensures we're past that window. There's no observable
-            // condition that means "Node has finished broadcasting" without
-            // racing the very thing we're trying to test.
-            Thread.sleep(forTimeInterval: 2)
+            // connect *after* Node has already broadcast started/ready. By
+            // this phase the service has already reached `.started` (which
+            // requires `ready` to have arrived on the control socket), so a
+            // short sleep guarantees the broadcast window has closed. There
+            // is no observable condition that means "Node has finished
+            // broadcasting" without racing the very thing we're trying to
+            // test.
+            Thread.sleep(forTimeInterval: 1)
 
             let received = expectation(description: "state IPC received started/ready")
             // A late client may see both `started` and `ready` replayed in

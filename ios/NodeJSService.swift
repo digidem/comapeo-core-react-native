@@ -6,6 +6,15 @@ import Foundation
 /// Node.js in-process. Graceful shutdown is triggered when the app is about to be
 /// terminated (`applicationWillTerminate`).
 class NodeJSService {
+    /// Lifecycle states. Mirrors Android's `NodeJSService.State` 1:1.
+    ///
+    /// **`.error` is per-instance terminal.** `start()` and `stop()`
+    /// are refused once the service has entered `.error`; the only way
+    /// out is `cleanup()` (which lands in `.stopped` if the node thread
+    /// has actually exited, or `.error` again if it hasn't) followed
+    /// by creating a fresh `NodeJSService` instance. The node thread
+    /// may still be alive when `.error` is set (this layer does not
+    /// tear it down on error); `cleanup()` is what releases it.
     enum State: String {
         case stopped = "STOPPED"
         case starting = "STARTING"
@@ -14,10 +23,26 @@ class NodeJSService {
         case error = "ERROR"
     }
 
+    /// Structured detail attached to .error transitions sourced from the
+    /// backend's `{type:"error",phase,message,stack?}` control frame, or
+    /// from local rootkey-load / startup failures. `phase` mirrors the
+    /// backend's phase strings (`listen-control`, `init`, `construct`,
+    /// `runtime`) plus the local `rootkey` and `node-runtime`.
+    struct ErrorInfo: Equatable {
+        let phase: String
+        let message: String
+    }
+
     /// A blocking function that runs the Node.js runtime.
     /// Takes an array of arguments (e.g. ["node", jsPath, ...]) and blocks until Node exits.
     /// Returns the exit code.
     typealias NodeEntryPoint = (_ arguments: [String]) -> Int32
+
+    /// Throws-or-returns the 16-byte rootkey. Native code reads from a
+    /// keychain-backed `RootKeyStore` in production; tests inject a fixed
+    /// vector. Called once per `start()`, off the main thread, after the
+    /// control IPC has connected and Node has broadcast `started`.
+    typealias RootKeyProvider = () throws -> Data
 
     static let comapeoSocketFilename = "comapeo.sock"
     static let controlSocketFilename = "control.sock"
@@ -49,7 +74,30 @@ class NodeJSService {
     /// How to locate the bundled JS entry point. Can be replaced for testing.
     private let resolveJSEntryPoint: () -> String?
 
+    /// Reads the rootkey on demand. Can be replaced for testing so the
+    /// macOS swift-test target never touches the real keychain.
+    private let rootKeyProvider: RootKeyProvider
+
+    /// Maximum time the service may stay in `.starting` before the
+    /// watchdog forces a transition to `.error`. Configurable so tests
+    /// (and slow CI environments) can tighten or relax it. The watchdog
+    /// guards against backend hangs that leave Node parked without ever
+    /// emitting `ready` — without it, `.starting` would be a black hole.
+    private let startupTimeout: TimeInterval
+
+    /// Active watchdog work item. Set in `start()`, cancelled when the
+    /// service transitions out of `.starting` (to `.started`, `.error`,
+    /// `.stopping`, or `.stopped`). Stored under `lock`.
+    private var startupWatchdog: DispatchWorkItem?
+
     var onStateChange: ((State) -> Void)?
+
+    /// Fires for control-socket frames the receiver can't process
+    /// (non-JSON, unknown / empty `type`). Mirrors DOM `MessagePort`'s
+    /// `messageerror`: a malformed frame is reported on a separate
+    /// channel rather than transitioning to `.error`. Subscribed by
+    /// `ComapeoCoreModule` to forward as a JS-visible event.
+    var onMessageError: ((String) -> Void)?
 
     private(set) var state: State = .stopped {
         didSet {
@@ -57,6 +105,18 @@ class NodeJSService {
                 log("NodeJSService state: \(oldValue.rawValue) -> \(state.rawValue)")
             }
         }
+    }
+
+    /// Last error detail observed during this service's lifetime. Set
+    /// alongside an .error transition by `transitionToError`. Reads are
+    /// guarded by `lock`; consumers should call `getLastError()` rather
+    /// than reading the storage directly.
+    private var _lastError: ErrorInfo?
+
+    func getLastError() -> ErrorInfo? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _lastError
     }
 
     /// Creates a NodeJSService with a custom directory.
@@ -70,11 +130,19 @@ class NodeJSService {
     ///     keeps SQLite, blobs, and other on-disk state here.
     ///   - nodeEntryPoint: Blocking function that runs Node.js.
     ///   - resolveJSEntryPoint: Returns the path to the JS entry file.
+    ///   - rootKeyProvider: Returns the 16-byte device rootkey. Invoked
+    ///     during `starting` after the backend's `started` broadcast.
+    ///   - startupTimeout: Maximum seconds in `.starting` before the
+    ///     watchdog forces `.error`. Default 30s covers cold simulator
+    ///     boots plus addon dlopens with margin; production callers may
+    ///     widen for slow devices, tests may tighten.
     init(
         socketDir: String,
         privateStorageDir: String,
         nodeEntryPoint: @escaping NodeEntryPoint,
-        resolveJSEntryPoint: @escaping () -> String?
+        resolveJSEntryPoint: @escaping () -> String?,
+        rootKeyProvider: @escaping RootKeyProvider,
+        startupTimeout: TimeInterval = 30
     ) {
         self.socketDir = socketDir
         self.privateStorageDir = privateStorageDir
@@ -97,6 +165,8 @@ class NodeJSService {
 
         self.nodeEntryPoint = nodeEntryPoint
         self.resolveJSEntryPoint = resolveJSEntryPoint
+        self.rootKeyProvider = rootKeyProvider
+        self.startupTimeout = startupTimeout
 
         try? FileManager.default.createDirectory(atPath: socketDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: privateStorageDir, withIntermediateDirectories: true)
@@ -110,9 +180,36 @@ class NodeJSService {
     private func transitionState(to newState: State) {
         lock.lock()
         let changed = state != newState
+        let leavingStarting = changed && state == .starting
         state = newState
+        let watchdog = leavingStarting ? startupWatchdog : nil
+        if leavingStarting { startupWatchdog = nil }
         lock.unlock()
+        // Cancel the watchdog outside the lock — `cancel()` doesn't take
+        // any of our locks but the principle (no callbacks under lock)
+        // holds for any future addition here.
+        watchdog?.cancel()
         if changed { onStateChange?(newState) }
+    }
+
+    /// Atomically records error detail and transitions to .error. The
+    /// `_lastError` write and the state mutation share a single critical
+    /// section so an observer reading `getLastError()` from the
+    /// `onStateChange` callback always sees the matching pair, even if
+    /// two threads race transitionToError simultaneously. Callers must
+    /// NOT hold `lock` (same reason as `transitionState`).
+    private func transitionToError(phase: String, message: String) {
+        lock.lock()
+        _lastError = ErrorInfo(phase: phase, message: message)
+        let changed = state != .error
+        let leavingStarting = changed && state == .starting
+        if changed { state = .error }
+        let watchdog = leavingStarting ? startupWatchdog : nil
+        if leavingStarting { startupWatchdog = nil }
+        lock.unlock()
+        log("NodeJSService error (\(phase)): \(message)")
+        watchdog?.cancel()
+        if changed { onStateChange?(.error) }
     }
 
     func start() {
@@ -126,13 +223,41 @@ class NodeJSService {
         lock.unlock()
         transitionState(to: .starting)
 
+        // Arm the startup watchdog. Captured `[weak self]` to avoid a
+        // retain cycle holding the service alive past its natural
+        // lifetime if the watchdog outlives the observer (it shouldn't,
+        // but cheap insurance). Re-checks state under lock in case a
+        // racing transition already left .starting between the timer
+        // firing and us getting scheduled.
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock()
+            let stillStarting = (self.state == .starting)
+            self.lock.unlock()
+            if stillStarting {
+                self.transitionToError(
+                    phase: "starting-timeout",
+                    message: "Service did not reach .started within \(Int(self.startupTimeout))s"
+                )
+            }
+        }
+        lock.lock()
+        startupWatchdog = watchdog
+        lock.unlock()
+        DispatchQueue.global().asyncAfter(
+            deadline: .now() + startupTimeout,
+            execute: watchdog
+        )
+
         deleteSocketFiles()
 
-        // Initialize the control IPC connection (connects asynchronously, waits for socket file).
-        // Receives broadcast `started`/`ready` messages from the backend's
-        // SimpleRpcServer once both UDS servers are listening.
-        controlIPC = NodeJSIPC(socketPath: controlSocketPath) { message in
-            log("Control IPC received: \(message)")
+        // Initialize the control IPC connection (connects asynchronously,
+        // waits for socket file). Drives the rootkey handshake: on `started`
+        // we ship the init frame; on `ready` we transition to `.started`.
+        // The backend's SimpleRpcServer replays both messages to late
+        // clients, so even a slow connect is safe.
+        controlIPC = NodeJSIPC(socketPath: controlSocketPath) { [weak self] message in
+            self?.handleControlMessage(message)
         }
 
         // Start Node.js on a background thread
@@ -144,6 +269,78 @@ class NodeJSService {
         thread.stackSize = 2 * 1024 * 1024 // 2MB stack required by nodejs-mobile
         nodeThread = thread
         thread.start()
+    }
+
+    /// Routes raw control-socket frames into lifecycle transitions.
+    ///
+    /// Frames are JSON of the shape `{"type":"<name>",…}` (well-known
+    /// names: `started`, `ready`, `error`). We're already on the IPC's
+    /// receive queue and the init-frame send dispatches async on the
+    /// IPC's send queue, so a real parser costs nothing in latency or
+    /// ordering and gains us forward-compat for additional fields.
+    private func handleControlMessage(_ message: String) {
+        log("Control IPC received: \(message)")
+        switch ControlFrame.parse(message) {
+        case .started:
+            sendInitFrame()
+        case .ready:
+            // Don't downgrade from .stopping back to .started — stop() may
+            // have raced ahead of the backend's `ready` broadcast.
+            lock.lock()
+            let canPromote = (state == .starting)
+            lock.unlock()
+            if canPromote { transitionState(to: .started) }
+        case .error(let phase, let message):
+            transitionToError(phase: phase, message: message)
+        case .malformed(let detail):
+            // Logged + forwarded via `onMessageError` (the JS bridge
+            // wires it to the `messageerror` event). Not raised to
+            // `.error`: single bad frame shouldn't take down a working
+            // session.
+            log("NodeJSService: \(detail)")
+            onMessageError?(detail)
+        }
+    }
+
+    /// Reads the rootkey, base64-encodes, and ships the init frame on the
+    /// control socket. Called exactly once per start cycle, in response to
+    /// the backend's `started` broadcast.
+    ///
+    /// Failures transition to `.error` and capture the cause via
+    /// `transitionToError`. We deliberately do **not** tear down the node
+    /// thread here: `.error` is observable by the application (via the
+    /// JS `stateChange` event), and recovery — calling `stop()`+`cleanup()`
+    /// then re-creating the service, prompting the user, etc. — is the
+    /// application's responsibility. Tearing down inside this layer would
+    /// race with the application's own ERROR observation.
+    ///
+    /// See the `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` note in
+    /// `RootKeyStore`: a device that has never been unlocked since reboot
+    /// will throw here. The application can re-attempt by tearing down
+    /// the service and creating a new one once the device is unlocked.
+    private func sendInitFrame() {
+        guard let ipc = controlIPC else { return }
+        var keyBytes: Data
+        do {
+            keyBytes = try rootKeyProvider()
+        } catch {
+            transitionToError(phase: "rootkey", message: error.localizedDescription)
+            return
+        }
+        defer {
+            // Best-effort zeroing. Swift `Data` doesn't guarantee single
+            // ownership of its backing buffer, so this is a hygiene measure
+            // not a security guarantee.
+            keyBytes.withUnsafeMutableBytes { rawBuf in
+                if let base = rawBuf.baseAddress {
+                    memset(base, 0, rawBuf.count)
+                }
+            }
+        }
+        let b64 = keyBytes.base64EncodedString()
+        let frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
+        ipc.sendMessage(frame)
+        log("Sent init frame to backend")
     }
 
     /// Gracefully stops the Node.js process by sending a shutdown message.
@@ -188,11 +385,13 @@ class NodeJSService {
 
     private func runNode() {
         guard let jsPath = resolveJSEntryPoint() else {
-            log("Error: Could not find nodejs-project/index.mjs in app bundle")
             lock.lock()
             let sem = nodeCompletionSemaphore
             lock.unlock()
-            transitionState(to: .error)
+            transitionToError(
+                phase: "node-runtime",
+                message: "Could not find nodejs-project/index.mjs in app bundle"
+            )
             sem?.signal()
             return
         }
@@ -200,7 +399,9 @@ class NodeJSService {
         lock.lock()
         let completionSem = nodeCompletionSemaphore
         lock.unlock()
-        transitionState(to: .started)
+        // Stay in `.starting` while Node spins up — the transition to
+        // `.started` now waits for the backend's `ready` broadcast (after
+        // ComapeoManager is constructed), driven by `handleControlMessage`.
 
         // argv shape matches Android's NodeJSService.kt:
         //   [node, indexPath, comapeoSocketPath, controlSocketPath, privateStorageDir, mediaSocketPath]
@@ -256,7 +457,14 @@ class NodeJSService {
         nodeThread = nil
         lock.unlock()
 
-        transitionState(to: threadExited ? .stopped : .error)
+        if threadExited {
+            transitionState(to: .stopped)
+        } else {
+            transitionToError(
+                phase: "shutdown-timeout",
+                message: "Graceful shutdown timed out — node thread still alive"
+            )
+        }
     }
 
     private func deleteSocketFiles() {

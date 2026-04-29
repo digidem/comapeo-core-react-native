@@ -77,6 +77,13 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// (and, on iOS, is excluded from iCloud backup by default for
     /// Application Support). The embedded ComapeoManager opens its SQLite
     /// database and writes blobs/projects under here.
+    /// Lazy keychain-backed rootkey store. Lazy because Swift's static
+    /// initialisation order doesn't guarantee `Bundle.main.bundleIdentifier`
+    /// is available before the first reference; lazily binding it to the
+    /// `nodeService` rootKeyProvider closure defers the read to handshake
+    /// time, which is always after `application(_:didFinishLaunchingWithOptions:)`.
+    private static let rootKeyStore = RootKeyStore()
+
     static let nodeService = NodeJSService(
         socketDir: AppLifecycleDelegate.resolveSocketDir(),
         privateStorageDir: AppLifecycleDelegate.resolvePrivateStorageDir(),
@@ -123,6 +130,14 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             return FileManager.default.fileExists(atPath: bundleEntry)
                 ? bundleEntry
                 : nil
+        },
+        rootKeyProvider: {
+            // Reads on first call generate-and-persist; subsequent calls in
+            // the same install return the same bytes. Throws if the
+            // keychain is unavailable (device locked since reboot) — the
+            // service will surface that as `.error` and the next foreground
+            // (which fires `applicationDidBecomeActive` again) retries.
+            try AppLifecycleDelegate.rootKeyStore.loadOrInitialize()
         }
     )
 

@@ -1,0 +1,111 @@
+import Foundation
+
+/// Stands in for the Node.js backend during macOS swift-test runs.
+///
+/// Wraps a `MockNodeServer` bound to the service's control socket and runs
+/// the same readiness handshake the real backend does:
+///
+/// 1. Accept the service's `NodeJSIPC` connection.
+/// 2. Send `{"type":"started"}`.
+/// 3. Read the service's `{"type":"init","rootKey":"<b64>"}` response.
+/// 4. Send `{"type":"ready"}`.
+///
+/// This is what flips `NodeJSService` from `.starting` to `.started` now that
+/// the transition is gated on receiving `ready` rather than on `runNode()`
+/// being scheduled. Tests that don't need to inspect the init frame can call
+/// `start()` and forget; tests that want to assert on the rootkey can read
+/// `receivedRootKey` afterwards.
+final class MockBackend {
+    private let server: MockNodeServer
+    private let queue = DispatchQueue(label: "com.comapeo.core.tests.mock-backend")
+    private let lock = NSLock()
+    private var clientFd: Int32 = -1
+    /// Captured init-frame `rootKey` bytes (base64-decoded). Set after the
+    /// handshake completes; nil if no init frame was received.
+    private(set) var receivedRootKey: Data?
+    /// Set when the service sends `{"type":"shutdown"}` after the handshake.
+    private(set) var receivedShutdown = false
+    private var handshakeComplete = DispatchSemaphore(value: 0)
+
+    init(controlSocketPath: String) {
+        self.server = MockNodeServer(socketPath: controlSocketPath)
+    }
+
+    deinit {
+        stop()
+    }
+
+    /// Binds the control socket and runs the handshake loop on a background
+    /// queue. Returns once the server is listening; the actual handshake
+    /// happens asynchronously as the service's IPC connects.
+    func start() throws {
+        try server.start()
+        queue.async { [weak self] in
+            self?.runLoop()
+        }
+    }
+
+    /// Blocks until the handshake completes (the `init` frame has been read
+    /// and `ready` sent), or `timeout` elapses.
+    @discardableResult
+    func waitForHandshake(timeout: TimeInterval = 5) -> Bool {
+        return handshakeComplete.wait(timeout: .now() + timeout) == .success
+    }
+
+    func stop() {
+        lock.lock()
+        let fd = clientFd
+        clientFd = -1
+        lock.unlock()
+        if fd >= 0 { close(fd) }
+        server.stop()
+    }
+
+    /// Accepts the client, runs the handshake, then keeps reading frames so
+    /// tests can observe shutdown messages. Errors silently — production
+    /// code already covers the failure modes; this exists to unblock tests.
+    private func runLoop() {
+        let fd = server.acceptClient()
+        guard fd >= 0 else {
+            handshakeComplete.signal()
+            return
+        }
+        lock.lock()
+        clientFd = fd
+        lock.unlock()
+
+        MockNodeServer.sendFramedMessage(fd: fd, message: #"{"type":"started"}"#)
+
+        if let initFrame = MockNodeServer.receiveFramedMessage(fd: fd) {
+            receivedRootKey = MockBackend.extractRootKey(fromInitFrame: initFrame)
+        }
+        MockNodeServer.sendFramedMessage(fd: fd, message: #"{"type":"ready"}"#)
+        handshakeComplete.signal()
+
+        // Continue reading so a subsequent shutdown frame is observed by
+        // tests that drive `service.stop()`.
+        while true {
+            guard let frame = MockNodeServer.receiveFramedMessage(fd: fd) else { return }
+            if frame.contains("\"shutdown\"") {
+                lock.lock()
+                receivedShutdown = true
+                lock.unlock()
+                return
+            }
+        }
+    }
+
+    /// Extracts the base64-decoded rootKey from a string like
+    /// `{"type":"init","rootKey":"<b64>"}`. Cheap manual parse — the format
+    /// is fixed-shape (Swift writes the JSON itself with no whitespace).
+    private static func extractRootKey(fromInitFrame frame: String) -> Data? {
+        guard frame.contains("\"init\"") else { return nil }
+        guard let range = frame.range(of: "\"rootKey\":\"") else { return nil }
+        let valueStart = range.upperBound
+        guard let endQuote = frame.range(of: "\"", range: valueStart..<frame.endIndex) else {
+            return nil
+        }
+        let b64 = String(frame[valueStart..<endQuote.lowerBound])
+        return Data(base64Encoded: b64)
+    }
+}

@@ -379,7 +379,6 @@ Tracked as GitHub issues. Highlights:
 - iOS real-device runtime smoke test (#20) and TestFlight ritual (#21)
 - iOS `globalThis.fetch` polyfill (#22) and maps plugin re-introduction (#23, #24)
 - IPC backpressure / flow control (#27)
-- 16KB page alignment audit on shipped `.so` files (#28)
 - Android lifecycle-state parity with iOS + TS bindings (#29)
 - `abiFilters` from consuming app (#30); blobs/icons over UDS (#31); web platform (#32)
 - Rootkey storage migration from `expo-secure-store` (see `docs/root-key-storage-and-migration-plan.md`)
