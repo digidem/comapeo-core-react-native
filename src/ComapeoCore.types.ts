@@ -13,8 +13,13 @@ export type OnLoadEventPayload = {
  *                broadcast.
  * - `STARTED`  — `MapeoManager` is constructed and RPC is safe to use.
  * - `STOPPING` — graceful shutdown initiated.
- * - `ERROR`    — terminal: rootkey load failed, or shutdown timed out with
- *                the node thread still alive.
+ * - `ERROR`    — observable failure (rootkey load, backend boot, shutdown
+ *                timeout, IPC connect). The native layer does not tear
+ *                down the node thread on ERROR — recovery is the
+ *                application's responsibility (e.g. restart the FGS on
+ *                Android, recreate the service / restart on iOS, prompt
+ *                the user, log a report). `state.getLastError()` carries
+ *                structured detail.
  */
 export type ComapeoState =
   | "STOPPED"

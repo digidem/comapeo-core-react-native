@@ -231,13 +231,20 @@ class NodeJSService {
 
     /// Reads the rootkey, base64-encodes, and ships the init frame on the
     /// control socket. Called exactly once per start cycle, in response to
-    /// the backend's `started` broadcast. Failures here are terminal: we
-    /// transition to `.error` rather than letting Node sit forever waiting
-    /// for an init frame that will never arrive. See the
-    /// `kSecAttrAccessibleAfterFirstUnlock` note in `RootKeyStore`: a
-    /// device that has never been unlocked since reboot will throw here, and
-    /// retry-on-foreground is the right UX (handled by the next
-    /// `applicationDidBecomeActive` call).
+    /// the backend's `started` broadcast.
+    ///
+    /// Failures transition to `.error` and capture the cause via
+    /// `transitionToError`. We deliberately do **not** tear down the node
+    /// thread here: `.error` is observable by the application (via the
+    /// JS `stateChange` event), and recovery — calling `stop()`+`cleanup()`
+    /// then re-creating the service, prompting the user, etc. — is the
+    /// application's responsibility. Tearing down inside this layer would
+    /// race with the application's own ERROR observation.
+    ///
+    /// See the `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` note in
+    /// `RootKeyStore`: a device that has never been unlocked since reboot
+    /// will throw here. The application can re-attempt by tearing down
+    /// the service and creating a new one once the device is unlocked.
     private func sendInitFrame() {
         guard let ipc = controlIPC else { return }
         var keyBytes: Data

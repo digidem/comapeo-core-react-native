@@ -45,8 +45,12 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
      *              and replies with `ready`.
      * - STARTED  — RPC is safe to use. The comapeo socket is bound.
      * - STOPPING — graceful shutdown initiated.
-     * - ERROR    — terminal: rootkey load failed, or shutdown timed out
-     *              with the node thread still alive.
+     * - ERROR    — observable failure (rootkey load failed, backend boot
+     *              error, shutdown timed out, IPC connect error). The
+     *              node thread may still be alive — this layer does not
+     *              tear it down. Recovery (restart the FGS, prompt the
+     *              user, log a report) is the application's call;
+     *              `getLastError()` carries the structured detail.
      */
     enum class State {
         STOPPED, STARTING, STARTED, STOPPING, ERROR
@@ -211,11 +215,17 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
 
     /**
      * Reads the rootkey via `RootKeyStore`, base64-encodes, and ships the
-     * init frame on the control socket. Failures here are terminal: the
-     * service transitions to `ERROR` rather than letting Node sit waiting
-     * for a frame that will never arrive. The ByteArray is zeroed after
-     * encoding — best-effort, since the encoded base64 string still lives
-     * in the JVM string pool until GC.
+     * init frame on the control socket. Failures here transition the
+     * service to ERROR but deliberately do **not** tear down the node
+     * thread: ERROR is observable by the application (via the JS
+     * `stateChange` event) and recovery — restarting the FGS, prompting
+     * the user, etc. — is the application's responsibility, not this
+     * layer's. Tearing down here would mask the failure from any UI that
+     * expects to read `getLastError()` between observing ERROR and
+     * deciding what to do.
+     *
+     * The ByteArray is zeroed after encoding — best-effort, since the
+     * encoded base64 string still lives in the JVM string pool until GC.
      */
     private fun sendInitFrame() {
         val rootKeyBytes: ByteArray = try {
@@ -223,9 +233,6 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load rootkey", e)
             transitionToError("rootkey", e.message ?: e.javaClass.simpleName)
-            // Best-effort: try to abort the node process. nodeJob will
-            // observe the cancellation.
-            nodeJob?.cancel()
             return
         }
         val b64 = Base64.encodeToString(rootKeyBytes, Base64.NO_WRAP)
