@@ -700,10 +700,10 @@ per-module repos.
   build time. `scripts/build-backend.ts` audits every shipped `.so` against
   the 0x4000 PT_LOAD requirement on every build via
   [scripts/lib/check-16k-alignment.ts](../scripts/lib/check-16k-alignment.ts);
-  any regression in upstream prebuilds fails the build. libnode.so v18.20.4
-  is currently allowlisted there pending a 16 KB-aligned build from the
-  [digidem/nodejs-mobile](https://github.com/digidem/nodejs-mobile) fork
-  (tracking [nodejs-mobile/nodejs-mobile#155](https://github.com/nodejs-mobile/nodejs-mobile/pull/155)).
+  any regression in upstream prebuilds fails the build. libnode.so is
+  downloaded from the [digidem/nodejs-mobile](https://github.com/digidem/nodejs-mobile)
+  fork's 16 KB-aligned build pending upstream
+  [nodejs-mobile/nodejs-mobile#155](https://github.com/nodejs-mobile/nodejs-mobile/pull/155).
 
 - **Do not port to Bare as part of this work.** Treat it as a downstream option
   the plan preserves, not a current goal. The `socket-transport.js` extraction

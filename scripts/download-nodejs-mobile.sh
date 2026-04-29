@@ -29,7 +29,12 @@ VERSION="${VERSION:-${NODEJS_MOBILE_VERSION:-v18.20.4}}"
 TAG="$VERSION"
 [[ "$TAG" != v* ]] && TAG="v$TAG"
 FILE_VERSION="${TAG#v}"
-BASE_URL="https://github.com/nodejs-mobile/nodejs-mobile/releases/download/${TAG}"
+# Fork that ships 16 KB-aligned libnode for Android 15+ 16 KB-page
+# devices. Tracks upstream nodejs-mobile/nodejs-mobile and adds the
+# `-Wl,-z,max-page-size=16384` flag (upstream PR
+# nodejs-mobile/nodejs-mobile#155). Switch back to upstream once
+# that PR is merged + released.
+BASE_URL="https://github.com/digidem/nodejs-mobile/releases/download/${TAG}"
 
 # Downloads and extracts a release zip into the project tree.
 #

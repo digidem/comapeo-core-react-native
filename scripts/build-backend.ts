@@ -95,28 +95,16 @@ await packageAndroidJniLibs({
 
 // 6. Audit 16 KB page alignment on every Android .so we ship.
 //    Android 15+ rejects APKs whose native libraries have a PT_LOAD
-//    segment with p_align < 0x4000. The per-addon prebuilds are
-//    already linked with -Wl,-z,max-page-size=16384 (see
-//    nodejs-mobile-bare-prebuilds/prebuild/action.yml); this audit
-//    verifies it every build so an upstream regression can't slip a
-//    misaligned .so into the APK.
-//
-//    libnode.so v18.20.4 (downloaded by `download:nodejs-mobile`) is
-//    *not* yet 16 KB-aligned upstream — fix is in flight at
-//    nodejs-mobile/nodejs-mobile#155, and a 16 KB-aligned build is
-//    being produced from the digidem/nodejs-mobile fork pending the
-//    upstream release. Allowlisted here until we point the
-//    downloader at the fork's tag and bump NODEJS_MOBILE_VERSION;
-//    the audit refuses allowlist entries that pass, so the carve-out
-//    fails the build the moment the bumped libnode is in tree.
+//    segment with p_align < 0x4000. Both the per-addon prebuilds and
+//    libnode are linked with `-Wl,-z,max-page-size=16384`
+//    (nodejs-mobile-bare-prebuilds/prebuild/action.yml for addons,
+//    digidem/nodejs-mobile fork for libnode pending upstream
+//    nodejs-mobile/nodejs-mobile#155). This audit verifies it every
+//    build so an upstream regression can't slip a misaligned .so
+//    into the APK.
 await audit16kAlignment({
   roots: [ANDROID_JNILIBS_DIR, ANDROID_LIBNODE_DIR].filter(existsSync),
   cwd: PROJECT_ROOT,
-  expectedMisaligned: [
-    "android/libnode/bin/arm64-v8a/libnode.so",
-    "android/libnode/bin/armeabi-v7a/libnode.so",
-    "android/libnode/bin/x86_64/libnode.so",
-  ],
 });
 
 // 7. iOS: wrap each (name, version) as `<name>__<version>.xcframework`
