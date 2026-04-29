@@ -35,6 +35,12 @@ FILE_VERSION="${TAG#v}"
 # nodejs-mobile/nodejs-mobile#155). Switch back to upstream once
 # that PR is merged + released.
 BASE_URL="https://github.com/digidem/nodejs-mobile/releases/download/${TAG}"
+# Short fingerprint of BASE_URL so swapping the source repo
+# invalidates both the `/tmp` zip cache and the per-target marker.
+# Same TAG from a different repo would otherwise silently reuse a
+# cached zip from the wrong source (this exact bug bit CI when we
+# pointed BASE_URL at the digidem fork without bumping the tag).
+SOURCE_HASH="$(printf '%s' "$BASE_URL" | shasum | cut -c1-8)"
 
 # Downloads and extracts a release zip into the project tree.
 #
@@ -56,17 +62,20 @@ BASE_URL="https://github.com/digidem/nodejs-mobile/releases/download/${TAG}"
 download() {
   local name="$1" target="$2" extract_into="$3" verify="$4" exclude="${5:-}"
   local marker="$target/.version"
+  # Marker stores tag + source fingerprint so a stale tree from a
+  # different BASE_URL is treated as a cache miss.
+  local source_id="${TAG}@${SOURCE_HASH}"
 
-  if [ -f "$marker" ] && [ "$(cat "$marker")" = "$TAG" ]; then
-    echo "==> $name: already $TAG, skipping"
+  if [ -f "$marker" ] && [ "$(cat "$marker")" = "$source_id" ]; then
+    echo "==> $name: already $TAG from $BASE_URL, skipping"
     return
   fi
 
-  local zip="/tmp/nodejs-mobile-${name}-${FILE_VERSION}.zip"
+  local zip="/tmp/nodejs-mobile-${SOURCE_HASH}-${name}-${FILE_VERSION}.zip"
   if [ -f "$zip" ]; then
     echo "==> $name: using cached $zip"
   else
-    echo "==> $name: downloading $TAG"
+    echo "==> $name: downloading $TAG from $BASE_URL"
     curl -fSL --retry 3 --retry-delay 5 \
       -o "$zip" \
       "${BASE_URL}/nodejs-mobile-v${FILE_VERSION}-${name}.zip"
@@ -85,7 +94,7 @@ download() {
     exit 1
   fi
 
-  echo "$TAG" > "$marker"
+  echo "$source_id" > "$marker"
   echo "==> $name: $TAG ready"
 }
 
