@@ -89,35 +89,94 @@ const controlIpcServer = new SimpleRpcServer({
   },
 });
 
+/**
+ * Routes any startup failure or uncaught throw through a single exit
+ * handler. Tagged with the boot `phase` so native (which receives the
+ * frame on the control socket) can surface a precise error to the user.
+ *
+ * Centralising failure here means the boot IIFE below can stay
+ * straight-line: each `await` either succeeds or throws, and the catch
+ * funnels into the same broadcast-then-exit machinery as
+ * `uncaughtException` / `unhandledRejection`.
+ *
+ * @param {string} phase
+ * @param {unknown} error
+ */
+async function handleFatal(phase, error) {
+  const err = error instanceof Error ? error : new Error(String(error));
+  console.error(`Fatal during ${phase}:`, err);
+  try {
+    controlIpcServer.broadcastError({
+      phase,
+      message: err.message,
+      stack: err.stack,
+    });
+  } catch (broadcastErr) {
+    console.error("Failed to broadcast error frame", broadcastErr);
+  }
+  // Give the broadcast a moment to flush over the socket before we
+  // tear the process down. The control socket is local AF_UNIX so the
+  // kernel buffer flush is fast; a 100ms cap is generous and bounds
+  // the worst case where the peer is slow to drain.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  process.exit(1);
+}
+
+// Async handlers are supported here. Node will not auto-exit while the
+// handler's microtasks/timers are pending, so the broadcast above gets
+// a chance to flush before our explicit `process.exit(1)`.
+process.on("uncaughtException", (error) => {
+  handleFatal("runtime", error);
+});
+process.on("unhandledRejection", (reason) => {
+  handleFatal("runtime", reason);
+});
+
 (async () => {
   try {
     // 1. Bind the control socket. Native is already polling for it; once
     // bound, the `started` broadcast tells native it can send the init frame.
-    await controlIpcServer.listen(controlSocketPath);
+    try {
+      await controlIpcServer.listen(controlSocketPath);
+    } catch (e) {
+      throw Object.assign(e, { phase: "listen-control" });
+    }
     console.log(`Control socket listening on ${controlSocketPath}`);
     controlIpcServer.setReadinessPhase("started");
 
     // 2. Wait for native to send the rootKey. `initPromise` resolves on the
     // first valid init frame; rejects on a malformed one.
-    const rootKey = await initPromise;
+    let rootKey;
+    try {
+      rootKey = await initPromise;
+    } catch (e) {
+      throw Object.assign(e, { phase: "init" });
+    }
 
     // 3. Construct the manager and bind the comapeo RPC socket.
-    comapeo = createComapeo({
-      privateStorageDir,
-      fastify,
-      migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
-      rootKey,
-    });
-    comapeoRpcServer = new ComapeoRpcServer(comapeo);
-    await comapeoRpcServer.listen(comapeoSocketPath);
+    try {
+      comapeo = createComapeo({
+        privateStorageDir,
+        fastify,
+        migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
+        rootKey,
+      });
+      comapeoRpcServer = new ComapeoRpcServer(comapeo);
+      await comapeoRpcServer.listen(comapeoSocketPath);
+    } catch (e) {
+      throw Object.assign(e, { phase: "construct" });
+    }
     console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
 
     // 4. Announce ready. The settle-window-then-ready dance is gone now
     // that `ready` carries actual meaning (manager exists, RPC is safe).
     controlIpcServer.setReadinessPhase("ready");
   } catch (error) {
-    console.error("Failed to start servers", error);
-    process.exit(1);
+    const phase =
+      (error && typeof error === "object" && "phase" in error
+        ? /** @type {{phase: string}} */ (error).phase
+        : null) ?? "boot";
+    handleFatal(phase, error);
   }
 })();
 

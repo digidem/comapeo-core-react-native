@@ -114,4 +114,29 @@ export class SimpleRpcServer extends ServerHelper {
   get readinessPhase() {
     return this.#readinessPhase;
   }
+
+  /**
+   * Broadcast `{type:"error", phase, message, stack?}` to every connected
+   * client. Used by the host's uncaughtException handler and by explicit
+   * boot-failure paths so native can transition to its `error` state.
+   *
+   * Non-replayed: a client connecting after this fires gets nothing,
+   * because the process is about to exit and the socket will close
+   * shortly anyway. Native's existing connection-close handling covers
+   * that case.
+   *
+   * @param {{ phase: string, message: string, stack?: string }} payload
+   */
+  broadcastError(payload) {
+    const frame = { type: "error", ...payload };
+    for (const client of this.#clients) {
+      try {
+        client.postMessage(frame);
+      } catch (e) {
+        // Best-effort: a single client whose socket already errored
+        // shouldn't block the rest from seeing the error frame.
+        console.error("broadcastError: client postMessage threw", e);
+      }
+    }
+  }
 }
