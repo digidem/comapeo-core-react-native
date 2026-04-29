@@ -12,12 +12,15 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 
 @Serializable
 data class ShutdownMessage(val type: String = "shutdown")
@@ -82,6 +85,18 @@ class NodeJSService(
      */
     data class ErrorInfo(val phase: String, val message: String)
 
+    /**
+     * Atomic snapshot of the lifecycle state plus the most recent error
+     * detail. Stored together in a single `MutableStateFlow` so the
+     * pair-update in `transitionToError` is naturally atomic — no
+     * separate lock or two-step write is needed for observers to see a
+     * consistent (state, lastError) view.
+     */
+    private data class StateSnapshot(
+        val state: State,
+        val lastError: ErrorInfo? = null,
+    )
+
     interface Callback {
         fun onComplete(exitCode: Int)
         fun onError(e: Exception)
@@ -91,14 +106,14 @@ class NodeJSService(
     private var nodeJob: Job? = null
 
     /**
-     * Active startup-watchdog job. Launched in `start()`; cancelled when
-     * the service transitions out of STARTING (to STARTED, ERROR,
-     * STOPPING, or STOPPED). `@Volatile` so cross-thread reads in
-     * `transitionState` see the latest assignment without needing the
-     * JVM monitor.
+     * Active startup-watchdog job slot. Launched in `start()`, cancelled
+     * by `cancelWatchdog()` whenever the service leaves STARTING.
+     * Holds an `AtomicReference` so `getAndSet(null)` is a single
+     * thread-safe operation pairing "take ownership of the current
+     * watchdog ref" with "clear the slot" — avoids any window where
+     * two threads could both observe and try to cancel the same job.
      */
-    @Volatile
-    private var startupWatchdogJob: Job? = null
+    private val startupWatchdogJob = AtomicReference<Job?>(null)
     private val dataDir: String = filesDir.absolutePath
     private val nodeProjectDir: File = File(filesDir, NODEJS_PROJECT_DIRNAME)
     private val jsFile: File = File(nodeProjectDir, NODEJS_PROJECT_INDEX_FILENAME)
@@ -118,73 +133,57 @@ class NodeJSService(
     var onStateChange: ((State) -> Unit)? = null
 
     /**
-     * Single mutex protecting `state`, `lastError`, and the
-     * `startupWatchdogJob` slot. `transitionState` and
-     * `transitionToError` are callable from multiple coroutines (the
-     * `nodeJob` body, the startup watchdog, the control-socket receive
-     * coroutine via `handleControlMessage`, plus FGS lifecycle calls).
-     * Without serialisation, two near-simultaneous transitions could
-     * both observe the pre-write `state`, both proceed past the
-     * idempotence guard, and emit conflicting `onStateChange` callbacks.
-     * `lastError` paired with an ERROR transition has the same problem:
-     * a later transition could overwrite the field before the original
-     * observer reads `getLastError()`.
-     *
-     * The lock is held only for the read-modify-write; `onStateChange`
-     * is invoked outside it so an observer that re-enters another
-     * locked method can't deadlock.
+     * Atomic state container. `MutableStateFlow.getAndUpdate` is a
+     * CAS-loop, so concurrent transitions resolve in a defined order
+     * and the `(state, lastError)` pair is always observed as a
+     * matching unit. Replaces the explicit `synchronized` block that
+     * the previous implementation used to coordinate the two fields.
      */
-    private val stateLock = Any()
-    private var state: State = State.STOPPED
-    private var lastError: ErrorInfo? = null
+    private val stateFlow = MutableStateFlow(StateSnapshot(State.STOPPED))
 
-    fun getState(): State = synchronized(stateLock) { state }
+    fun getState(): State = stateFlow.value.state
 
-    fun getLastError(): ErrorInfo? = synchronized(stateLock) { lastError }
+    fun getLastError(): ErrorInfo? = stateFlow.value.lastError
 
     private fun transitionState(to: State) {
-        var notifyState: State? = null
-        var watchdogToCancel: Job? = null
-        synchronized(stateLock) {
-            if (state == to) return
-            val leavingStarting = (state == State.STARTING)
-            log("NodeJSService state: $state -> $to")
-            state = to
-            if (leavingStarting) {
-                watchdogToCancel = startupWatchdogJob
-                startupWatchdogJob = null
-            }
-            notifyState = to
+        val prev = stateFlow.getAndUpdate { snap ->
+            if (snap.state == to) snap else snap.copy(state = to)
         }
-        watchdogToCancel?.cancel()
-        notifyState?.let { onStateChange?.invoke(it) }
+        if (prev.state == to) return
+        log("NodeJSService state: ${prev.state} -> $to")
+        if (prev.state == State.STARTING) cancelStartupWatchdog()
+        onStateChange?.invoke(to)
     }
 
     /**
-     * Sets `lastError` and transitions to ERROR atomically — both fields
-     * land in a single critical section so observers always see the
-     * matching pair. If we're already in ERROR, the captured detail is
-     * still updated (a second error in the same session is observable
-     * via `getLastError()`) but `onStateChange` is not re-invoked.
+     * Sets `lastError` and transitions to ERROR atomically. The
+     * `getAndUpdate` block is a CAS-loop so the (state, lastError)
+     * pair always lands together. If already in ERROR, the captured
+     * detail is still refreshed (a second error in the same session is
+     * observable via `getLastError()`) but `onStateChange` is not
+     * re-invoked.
      */
     private fun transitionToError(phase: String, message: String) {
-        var notifyState: State? = null
-        var watchdogToCancel: Job? = null
-        synchronized(stateLock) {
-            lastError = ErrorInfo(phase, message)
-            log("NodeJSService error ($phase): $message")
-            if (state == State.ERROR) return
-            val leavingStarting = (state == State.STARTING)
-            log("NodeJSService state: $state -> ${State.ERROR}")
-            state = State.ERROR
-            if (leavingStarting) {
-                watchdogToCancel = startupWatchdogJob
-                startupWatchdogJob = null
-            }
-            notifyState = State.ERROR
+        val info = ErrorInfo(phase, message)
+        val prev = stateFlow.getAndUpdate { snap ->
+            snap.copy(state = State.ERROR, lastError = info)
         }
-        watchdogToCancel?.cancel()
-        notifyState?.let { onStateChange?.invoke(it) }
+        log("NodeJSService error ($phase): $message")
+        if (prev.state == State.ERROR) return
+        log("NodeJSService state: ${prev.state} -> ${State.ERROR}")
+        if (prev.state == State.STARTING) cancelStartupWatchdog()
+        onStateChange?.invoke(State.ERROR)
+    }
+
+    /**
+     * Atomically swaps the watchdog slot to null and cancels whatever
+     * was there. Safe under concurrent calls because `getAndSet` is a
+     * single atomic operation: only one thread takes ownership of the
+     * pre-swap reference, so a job is never cancelled twice and the
+     * slot never re-references a cancelled job.
+     */
+    private fun cancelStartupWatchdog() {
+        startupWatchdogJob.getAndSet(null)?.cancel()
     }
 
     companion object {
@@ -239,22 +238,21 @@ class NodeJSService(
         }
         log("Starting NodeJS service")
         transitionState(State.STARTING)
-        // Arm the startup watchdog. delay() respects coroutine
-        // cancellation, so transitionState's startupWatchdogJob?.cancel()
-        // when leaving STARTING is sufficient — there's no race window
-        // where the watchdog can fire after we've already moved on.
-        startupWatchdogJob = serviceScope.launch {
+        // Arm the startup watchdog. `delay()` respects coroutine
+        // cancellation, so `cancelStartupWatchdog()` (called from
+        // `transitionState` when leaving STARTING) reliably aborts the
+        // job before it fires. The `getState()` recheck inside the
+        // delay'd body covers the narrow window where the timer wakes
+        // up after delay() but before its cancellation has propagated.
+        startupWatchdogJob.set(serviceScope.launch {
             delay(startupTimeoutMs)
-            // getState() takes stateLock — without it the read could
-            // race with a concurrent transition and produce a phantom
-            // timeout immediately after a successful STARTED.
             if (getState() == State.STARTING) {
                 transitionToError(
                     "starting-timeout",
                     "Service did not reach STARTED within ${startupTimeoutMs}ms",
                 )
             }
-        }
+        })
         nodeJob = serviceScope.launch {
             try {
                 if (shouldCopyAssets()) {
