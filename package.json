@@ -31,7 +31,7 @@
   "scripts": {
     "build": "expo-module build --watch false",
     "clean": "expo-module clean",
-    "lint": "eslint --cache .",
+    "lint": "expo-module lint --cache .",
     "test": "expo-module test",
     "prepare": "expo-module prepare",
     "prepublishOnly": "expo-module prepublishOnly",
