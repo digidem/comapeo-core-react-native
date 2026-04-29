@@ -108,8 +108,3 @@ if (process.platform !== "darwin") {
     workDir: IOS_FRAMEWORKS_WORK_DIR,
   });
 }
-
-// 7. Drop the prebuild scratch tree once the per-platform packagers
-//    have consumed it. The bundled JS lives at its final destination,
-//    not here.
-rmSync(SCRATCH_DIR, { force: true, recursive: true });
