@@ -4,8 +4,6 @@ import android.content.ContextWrapper
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.edit
-import org.json.JSONException
-import org.json.JSONObject
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -299,41 +297,22 @@ class NodeJSService(
      */
     private fun handleControlMessage(message: String) {
         log("Control IPC received: $message")
-        val parsed = parseFrame(message)
-        if (parsed == null) {
-            // Non-JSON control frame. Logged but not raised to ERROR:
-            // the FGS-side state derives from the backend's structured
-            // frames, and a single bad frame should not tear down the
-            // FGS lifecycle. The main-app-process Module surfaces
-            // `messageerror` separately so application code can
-            // observe protocol issues without losing service state.
-            log("NodeJSService: non-JSON control frame: ${message.take(100)}")
-            return
-        }
-        val type = parsed.optString("type", "")
-        when (type) {
-            "started" -> sendInitFrame()
-            "ready" -> {
+        when (val frame = ControlFrame.parse(message)) {
+            ControlFrame.Started -> sendInitFrame()
+            ControlFrame.Ready -> {
                 if (getState() == State.STARTING) transitionState(State.STARTED)
             }
-            "error" -> {
-                val phase = parsed.optString("phase", "unknown")
-                val msg = parsed.optString("message", "(no message)")
-                transitionToError(phase, msg)
-            }
-            else -> {
-                // Unknown / empty `type`: same handling as non-JSON.
-                // The `messageerror` event on the main-app Module is
-                // the JS-visible surface for this; FGS-side just logs.
-                log("NodeJSService: unknown control frame type=\"$type\"")
+            is ControlFrame.Error -> transitionToError(frame.phase, frame.message)
+            is ControlFrame.Malformed -> {
+                // Logged but not raised to ERROR: the FGS-side state
+                // derives from the backend's structured frames, and a
+                // single bad frame should not tear down the FGS
+                // lifecycle. The main-app Module surfaces `messageerror`
+                // separately so application code can observe protocol
+                // issues without losing service state.
+                log("NodeJSService: ${frame.detail}")
             }
         }
-    }
-
-    private fun parseFrame(message: String): JSONObject? = try {
-        JSONObject(message)
-    } catch (_: JSONException) {
-        null
     }
 
     /**

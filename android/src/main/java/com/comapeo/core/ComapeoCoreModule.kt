@@ -2,8 +2,6 @@ package com.comapeo.core
 
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
-import org.json.JSONException
-import org.json.JSONObject
 import java.io.File
 
 /**
@@ -88,12 +86,6 @@ class ComapeoCoreModule : Module() {
         return payload
     }
 
-    private fun parseFrame(message: String): JSONObject? = try {
-        JSONObject(message)
-    } catch (_: JSONException) {
-        null
-    }
-
     /**
      * Emits a `messageerror` event mirroring the DOM `MessagePort`
      * counterpart: a frame the receiver can't process (non-JSON, missing
@@ -126,34 +118,17 @@ class ComapeoCoreModule : Module() {
             controlIpc = NodeJSIPC(
                 controlSocketFile,
                 onMessage = { message ->
-                    val parsed = parseFrame(message)
-                    if (parsed == null) {
-                        // Non-JSON frame on the control socket. Surfaced
-                        // as `messageerror` (mirroring DOM MessagePort),
-                        // not as an ERROR transition: a single garbled
-                        // frame shouldn't tear down a working session.
-                        emitMessageError("Non-JSON control frame: ${message.take(100)}")
-                        return@NodeJSIPC
-                    }
-                    val type = parsed.optString("type", "")
-                    when (type) {
-                        "ready" -> setState(JsState.STARTED)
-                        "started" -> setState(JsState.STARTING)
-                        "error" -> setState(
+                    when (val frame = ControlFrame.parse(message)) {
+                        ControlFrame.Started -> setState(JsState.STARTING)
+                        ControlFrame.Ready -> setState(JsState.STARTED)
+                        is ControlFrame.Error -> setState(
                             JsState.ERROR,
                             mapOf(
-                                "errorPhase" to parsed.optString("phase", "unknown"),
-                                "errorMessage" to parsed.optString("message", "(no message)"),
+                                "errorPhase" to frame.phase,
+                                "errorMessage" to frame.message,
                             ),
                         )
-                        else -> {
-                            // Backend and native ship together — unknown
-                            // / empty `type` is a genuine protocol bug,
-                            // surfaced via `messageerror` so a debug
-                            // listener can capture it without affecting
-                            // the lifecycle state.
-                            emitMessageError("Unknown control frame type=\"$type\"")
-                        }
+                        is ControlFrame.Malformed -> emitMessageError(frame.detail)
                     }
                 },
                 onConnectionStateChange = { connState ->

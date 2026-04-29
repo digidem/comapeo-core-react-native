@@ -274,45 +274,26 @@ class NodeJSService {
     /// ordering and gains us forward-compat for additional fields.
     private func handleControlMessage(_ message: String) {
         log("Control IPC received: \(message)")
-        guard let frame = parseFrame(message) else {
-            // Non-JSON frame: surfaced via `onMessageError`, not raised
-            // to `.error`. Single bad frame shouldn't take down a
-            // working session.
-            let detail = "Non-JSON control frame: \(message.prefix(100))"
-            log("NodeJSService: \(detail)")
-            onMessageError?(detail)
-            return
-        }
-        let type = (frame["type"] as? String) ?? ""
-        switch type {
-        case "started":
+        switch ControlFrame.parse(message) {
+        case .started:
             sendInitFrame()
-        case "ready":
+        case .ready:
             // Don't downgrade from .stopping back to .started — stop() may
             // have raced ahead of the backend's `ready` broadcast.
             lock.lock()
             let canPromote = (state == .starting)
             lock.unlock()
             if canPromote { transitionState(to: .started) }
-        case "error":
-            let phase = (frame["phase"] as? String) ?? "unknown"
-            let msg = (frame["message"] as? String) ?? "(no message)"
-            transitionToError(phase: phase, message: msg)
-        default:
-            // Unknown / empty `type`: same treatment as non-JSON.
-            let detail = "Unknown control frame type=\"\(type)\""
+        case .error(let phase, let message):
+            transitionToError(phase: phase, message: message)
+        case .malformed(let detail):
+            // Logged + forwarded via `onMessageError` (the JS bridge
+            // wires it to the `messageerror` event). Not raised to
+            // `.error`: single bad frame shouldn't take down a working
+            // session.
             log("NodeJSService: \(detail)")
             onMessageError?(detail)
         }
-    }
-
-    private func parseFrame(_ message: String) -> [String: Any]? {
-        guard let data = message.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return nil
-        }
-        return obj
     }
 
     /// Reads the rootkey, base64-encodes, and ships the init frame on the

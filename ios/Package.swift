@@ -21,7 +21,12 @@ let package = Package(
                 "AppLifecycleDelegate.swift",
                 "RootKeyStore.swift",
             ],
-            sources: ["NodeJSIPC.swift", "NodeJSService.swift", "Log.swift"]
+            sources: [
+                "NodeJSIPC.swift",
+                "NodeJSService.swift",
+                "ControlFrame.swift",
+                "Log.swift",
+            ]
         ),
         .testTarget(
             name: "ComapeoCoreTests",
