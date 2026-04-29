@@ -3,6 +3,7 @@ import jasmineRequire from 'jasmine-core/lib/jasmine-core/jasmine'
 import { Button, ScrollView, Text, View } from 'react-native'
 
 import { test as basicTest } from './tests/basic'
+import { test as crudTest } from './tests/crud'
 
 export function TestRunner() {
 	const [isRunning, setIsRunning] = useState(false)
@@ -12,7 +13,7 @@ export function TestRunner() {
 			id: string
 			name: string
 			passed: boolean
-			errors: Array<string>
+			errors: Array<{ message: string; stack: string }>
 		}>
 	>([])
 
@@ -30,22 +31,34 @@ export function TestRunner() {
 
 			jasmineEnv.addReporter({
 				specDone: (result) => {
+					const describeText = result.fullName.replaceAll(
+						result.description,
+						'',
+					)
+
 					setResults((prev) => [
 						...prev,
 						{
 							id: result.id,
-							name: result.fullName,
+							name: describeText
+								? `${describeText} > ${result.description}`
+								: result.description,
 							passed: result.status === 'passed',
-							errors: result.failedExpectations.map((err) => err.message),
+							errors: result.failedExpectations.map((err) => ({
+								message: err.message,
+								stack: err.stack,
+							})),
 						},
 					])
 				},
 			})
 
-			const { it, expect } = jasmineRequire.interface(jasmineCore, jasmineEnv)
+			const { describe, it, expect, expectAsync, jasmine } =
+				jasmineRequire.interface(jasmineCore, jasmineEnv)
 
 			// 👇 Register tests here!
-			basicTest({ it, expect })
+			basicTest({ describe, it, expect, expectAsync, jasmine })
+			crudTest({ describe, it, expect, expectAsync, jasmine })
 
 			await jasmineEnv.execute()
 		} catch (err) {
@@ -70,7 +83,7 @@ export function TestRunner() {
 
 					{result.errors.map((e, j) => (
 						<Text key={j} style={{ color: 'red', marginLeft: 16 }}>
-							{e}
+							{e.message}
 						</Text>
 					))}
 				</View>

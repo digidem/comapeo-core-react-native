@@ -204,7 +204,7 @@ declare module 'jasmine-core/lib/jasmine-core/jasmine' {
 
 	// ─── Env ──────────────────────────────────────────────────────────────────
 
-	export interface Env {
+	interface Env {
 		configure(config: Configuration): void
 		configuration(): Required<Configuration>
 		execute(runablesToRun?: string[]): Promise<JasmineDoneInfo>
@@ -313,7 +313,7 @@ declare module 'jasmine-core/lib/jasmine-core/jasmine' {
 
 	// ─── JasmineInterface — returned by jasmineRequire.interface() ───────────
 
-	interface JasmineInterface {
+	export interface JasmineInterface {
 		describe(description: string, fn: () => void): Suite
 		xdescribe(description: string, fn: () => void): Suite
 		fdescribe(description: string, fn: () => void): Suite
@@ -347,7 +347,28 @@ declare module 'jasmine-core/lib/jasmine-core/jasmine' {
 		getSpecProperty(key: string): unknown
 		setSpecProperty(key: string, value: unknown): void
 		setSuiteProperty(key: string, value: unknown): void
-		jasmine: { DEFAULT_TIMEOUT_INTERVAL: number; [key: string]: unknown }
+		jasmine: {
+			DEFAULT_TIMEOUT_INTERVAL: number
+			any(
+				constructor: new (...args: unknown[]) => unknown,
+			): AsymmetricEqualityTester
+			anything(): AsymmetricEqualityTester
+			allOf(...matchers: AsymmetricEqualityTester[]): AsymmetricEqualityTester
+			arrayContaining(sample: unknown[]): AsymmetricEqualityTester
+			arrayWithExactContents(sample: unknown[]): AsymmetricEqualityTester
+			empty(): AsymmetricEqualityTester
+			falsy(): AsymmetricEqualityTester
+			is(value: unknown): AsymmetricEqualityTester
+			mapContaining(sample: Map<unknown, unknown>): AsymmetricEqualityTester
+			notEmpty(): AsymmetricEqualityTester
+			objectContaining(
+				sample: Record<string, unknown>,
+			): AsymmetricEqualityTester
+			setContaining(sample: Set<unknown>): AsymmetricEqualityTester
+			stringContaining(value: string): AsymmetricEqualityTester
+			stringMatching(pattern: string | RegExp): AsymmetricEqualityTester
+			truthy(): AsymmetricEqualityTester
+		}
 		[key: string]: unknown
 	}
 
