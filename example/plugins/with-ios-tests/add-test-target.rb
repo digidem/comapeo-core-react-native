@@ -15,16 +15,10 @@ project      = Xcodeproj::Project.open(project_path)
 app_target = project.targets.find { |t| t.name == app_name } \
   or abort("with-ios-tests: app target '#{app_name}' not found")
 
-unless project.targets.any? { |t| t.name == test_name }
-  test_target = project.new_target(:unit_test_bundle, test_name, :ios, deployment)
+test_target = project.targets.find { |t| t.name == test_name }
 
-  # Register the on-disk source files. Expo's prebuild + this plugin's
-  # mod hook has already copied them into ios/<test_name>/.
-  group = project.main_group.new_group(test_name, test_name)
-  Dir[File.join(test_name, '*.swift')].sort.each do |src|
-    file_ref = group.new_reference(File.basename(src))
-    test_target.add_file_references([file_ref])
-  end
+if test_target.nil?
+  test_target = project.new_target(:unit_test_bundle, test_name, :ios, deployment)
 
   test_target.build_configurations.each do |config|
     bs = config.build_settings
@@ -46,6 +40,31 @@ unless project.targets.any? { |t| t.name == test_name }
   end
 
   test_target.add_dependency(app_target)
+end
+
+# Register on-disk source files (idempotent). Runs every time — not just
+# on first target creation — so newly added .swift files in
+# example/tests/ios/ get wired up on subsequent prebuilds without
+# requiring a full --clean rebuild. Skips files already present in the
+# group AND already in the build phase.
+group = project.main_group.find_subpath(test_name, true)
+group.set_source_tree('<group>') if group.source_tree != '<group>'
+group.set_path(test_name) if group.path != test_name
+
+existing_paths = group.files.map(&:path)
+sources_phase = test_target.source_build_phase
+existing_phase_paths = sources_phase.files.map { |bf| bf.file_ref&.path }.compact
+
+Dir[File.join(test_name, '*.swift')].sort.each do |src|
+  basename = File.basename(src)
+  file_ref = if existing_paths.include?(basename)
+               group.files.find { |f| f.path == basename }
+             else
+               group.new_reference(basename)
+             end
+  unless existing_phase_paths.include?(basename)
+    test_target.add_file_references([file_ref])
+  end
 end
 
 project.save

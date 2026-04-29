@@ -51,25 +51,15 @@ final class IPCLifecycleTests: XCTestCase {
         // servers must be created afterwards or their socket files get removed.
         let started = expectation(description: "Service started")
         service.onStateChange = { if $0 == .started { started.fulfill() } }
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
-        // Create mock servers after start() so deleteSocketFiles() doesn't remove them.
-        // The controlIPC is already polling via waitForFile(), so it will connect once
-        // the server creates the socket file.
+        // Create comapeo mock server after start() so deleteSocketFiles() doesn't
+        // remove it. The state socket is already owned by `backend`.
         let comapeoServer = MockNodeServer(socketPath: service.comapeoSocketPath)
-        let stateServer = MockNodeServer(socketPath: service.controlSocketPath)
         try comapeoServer.start()
-        try stateServer.start()
-        defer {
-            comapeoServer.stop()
-            stateServer.stop()
-        }
-
-        // Accept state IPC connection (service connects to this on start)
-        let stateClientFd = stateServer.acceptClient()
-        XCTAssertGreaterThanOrEqual(stateClientFd, 0, "State server should accept connection")
-        defer { if stateClientFd >= 0 { close(stateClientFd) } }
+        defer { comapeoServer.stop() }
 
         // Create app-level IPC (like ComapeoCoreModule would)
         let responseReceived = expectation(description: "Response received from mock server")
@@ -114,17 +104,9 @@ final class IPCLifecycleTests: XCTestCase {
         // Start service first so deleteSocketFiles() runs before servers are created
         let started = expectation(description: "Service started")
         service.onStateChange = { if $0 == .started { started.fulfill() } }
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
-
-        let stateServer = MockNodeServer(socketPath: service.controlSocketPath)
-        try stateServer.start()
-        defer { stateServer.stop() }
-
-        // Accept state IPC connection
-        let stateClientFd = stateServer.acceptClient()
-        XCTAssertGreaterThanOrEqual(stateClientFd, 0)
-        defer { if stateClientFd >= 0 { close(stateClientFd) } }
 
         // Stop the service asynchronously
         let stopped = expectation(description: "Service stopped")
@@ -133,15 +115,15 @@ final class IPCLifecycleTests: XCTestCase {
             stopped.fulfill()
         }
 
-        // Verify the mock server receives the shutdown message
-        let shutdownMsg = MockNodeServer.receiveFramedMessage(fd: stateClientFd)
-        XCTAssertEqual(shutdownMsg, #"{"type":"shutdown"}"#, "Should receive shutdown message")
-
         // Signal mock node to exit so stop() can complete
         signalNodeExit()
 
         waitForExpectations(timeout: 5)
         XCTAssertEqual(service.state, .stopped)
+        XCTAssertTrue(
+            backend.receivedShutdown,
+            "MockBackend should observe the shutdown frame"
+        )
     }
 
     /// Tests multiple message exchanges followed by graceful shutdown —
@@ -152,21 +134,13 @@ final class IPCLifecycleTests: XCTestCase {
         // Start service first so deleteSocketFiles() runs before servers are created
         let started = expectation(description: "Service started")
         service.onStateChange = { if $0 == .started { started.fulfill() } }
-        service.start()
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
         waitForExpectations(timeout: 5)
 
         let comapeoServer = MockNodeServer(socketPath: service.comapeoSocketPath)
-        let stateServer = MockNodeServer(socketPath: service.controlSocketPath)
         try comapeoServer.start()
-        try stateServer.start()
-        defer {
-            comapeoServer.stop()
-            stateServer.stop()
-        }
-
-        // Accept connections
-        let stateClientFd = stateServer.acceptClient()
-        defer { if stateClientFd >= 0 { close(stateClientFd) } }
+        defer { comapeoServer.stop() }
 
         let messageCount = 5
         let allReceived = expectation(description: "All responses received")
@@ -222,7 +196,7 @@ final class IPCLifecycleTests: XCTestCase {
 
             let started = expectation(description: "Started cycle \(cycle)")
             service.onStateChange = { if $0 == .started { started.fulfill() } }
-            service.start()
+            let backend = try startServiceWithMockBackend(service)
             waitForExpectations(timeout: 5)
 
             // Create mock server after start() so deleteSocketFiles() doesn't remove it
@@ -252,6 +226,7 @@ final class IPCLifecycleTests: XCTestCase {
             comapeoServer.stop()
             signalNodeExit()
             service.stop(timeout: 1)
+            backend.stop()
 
             XCTAssertEqual(service.state, .stopped, "Cycle \(cycle) should end stopped")
         }

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Excludes the rootkey-bearing SharedPreferences from cloud backup and
+  device-to-device transfer. The encrypted blob is useless without the
+  AndroidKeyStore wrapper key (which never leaves the device), but
+  excluding the file avoids leaking metadata and muddying restore
+  semantics. Android 12+ honours this file via
+  android:dataExtractionRules in AndroidManifest.xml.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="comapeo-core.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="comapeo-core.xml" />
+    </device-transfer>
+</data-extraction-rules>

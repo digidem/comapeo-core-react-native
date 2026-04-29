@@ -66,8 +66,22 @@ class MockNodeServer {
     }
 
     /// Blocks until a client connects. Returns the client file descriptor.
+    /// Suppresses SIGPIPE on the accepted fd so a `write` after the peer
+    /// closes returns `EPIPE` instead of killing the test process — this
+    /// matches the production `connectSocket` setup and prevents
+    /// shutdown-race tests (e.g. `testStopTimeoutTransitionsToErrorNotStopped`,
+    /// where the backend closes before the service writes its final
+    /// shutdown frame) from terminating the process under us.
     func acceptClient() -> Int32 {
-        return Darwin.accept(serverFd, nil, nil)
+        let clientFd = Darwin.accept(serverFd, nil, nil)
+        if clientFd >= 0 {
+            var noSigPipe: Int32 = 1
+            _ = setsockopt(
+                clientFd, SOL_SOCKET, SO_NOSIGPIPE,
+                &noSigPipe, socklen_t(MemoryLayout<Int32>.size)
+            )
+        }
+        return clientFd
     }
 
     /// Closes the server socket and removes the socket file.

@@ -14,12 +14,11 @@ import XCTest
 ///      rather than via the next test in the suite.
 ///   3. **Creates a core manager.** Backend `index.js` constructs
 ///      `ComapeoManager` (forcing drizzle migrations, sodium-native dlopen,
-///      better-sqlite3 dlopen + DB open) BEFORE it calls
-///      `comapeoRpcServer.listen()`. The control server's `ready` broadcast
-///      only fires after both `listen()` promises resolve. So observing
-///      `ready` on the control socket is sufficient proof that the manager
-///      instantiated without error. As a final sanity check we accept-test
-///      the comapeo socket.
+///      better-sqlite3 dlopen + DB open) only after it has received the
+///      `{type:"init",rootKey:...}` frame on the control socket — and only
+///      then does it bind the comapeo socket and broadcast `ready`. So
+///      observing `ready` proves the manager instantiated without error.
+///      As a final sanity check we accept-test the comapeo socket.
 ///
 /// Test order: name picks up XCTest's default alphabetic ordering and runs
 /// before `ServiceLifecycleTest`, whose terminal phase calls `service.stop()`
@@ -59,11 +58,11 @@ final class CoreManagerSmokeTest: XCTestCase {
         XCTAssertEqual(service.state, .started)
 
         // Signal 3a: control socket emits `ready`. Broadcast happens after
-        // backend/index.js's Promise.all([controlIpcServer.listen,
-        // comapeoRpcServer.listen]) resolves PLUS a 1 s settle window. The
-        // ComapeoManager has been constructed before that point — see
-        // backend/index.js:22 (createComapeo) which runs before line 41
-        // (comapeoRpcServer.listen).
+        // backend/index.js sequences: bind control → broadcast `started` →
+        // receive native's `{type:"init",rootKey:...}` frame → construct
+        // ComapeoManager → bind comapeo socket → broadcast `ready`. So by
+        // the time `ready` lands, the manager exists and the comapeo
+        // socket is accepting connections.
         let readyReceived = expectation(description: "control IPC saw `ready`")
         readyReceived.assertForOverFulfill = false
         let messagesLock = NSLock()
@@ -79,9 +78,9 @@ final class CoreManagerSmokeTest: XCTestCase {
         defer { controlIPC.disconnect() }
 
         // 30 s budget covers cold simulator boot + addon dlopens (sodium-native
-        // and better-sqlite3 dominate) + 1 s settle window. On a warm laptop
-        // this completes well under 5 s; the wide margin is for CI runners
-        // under contention.
+        // and better-sqlite3 dominate) plus the rootkey-handshake round-trip
+        // on the control socket. On a warm laptop this completes well under
+        // 5 s; the wide margin is for CI runners under contention.
         wait(for: [readyReceived], timeout: 30)
 
         // Signal 3b: comapeo socket actually accepts. If listen() succeeded
