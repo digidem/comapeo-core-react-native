@@ -65,31 +65,40 @@ public class ComapeoCoreModule: Module {
         }
 
         OnDestroy {
-            // OnDestroy now fires reliably on iOS JS reload as of
-            // expo-modules-core's PR #33760 (merged Dec 2024, in SDK
-            // 53+). That PR made `MainValueConverter.appContext` weak,
-            // breaking the strong-reference cycle that previously
-            // pinned `AppContext` across reloads — verified locally
-            // against the installed `expo-modules-core@55.0.23`:
+            // OnDestroy fires reliably on iOS JS reload as of
+            // expo-modules-core's PR #33760 (merged Dec 2024, shipped in
+            // SDK 53+). Previously, a strong-reference cycle through
+            // `MainValueConverter` kept `AppContext` alive across
+            // reloads — and as long as `AppContext` stayed alive, its
+            // `ModuleHolder`s stayed alive, their deinits never ran,
+            // and the `.moduleDestroy` event that triggers OnDestroy
+            // was never posted. PR #33760 changed
+            // `MainValueConverter.appContext` to a weak reference,
+            // which removes the cycle so `AppContext` can be released
+            // on reload. Verified against the installed
+            // `expo-modules-core@55.0.23`:
             //   ios/Core/MainValueConverter.swift:7
             //     `private(set) weak var appContext: AppContext?`
             //   ios/Core/ModuleHolder.swift:140
             //     `deinit { post(event: .moduleDestroy) }`
-            // With the cycle broken, AppContext deinits on reload, the
-            // module registry releases each ModuleHolder, and every
-            // ModuleHolder's deinit fires .moduleDestroy → this block.
+            // On reload: AppContext deinits → its module registry
+            // releases each ModuleHolder → each ModuleHolder's deinit
+            // fires `.moduleDestroy` → this block runs.
+            //
             // `disconnect()` is already synchronous on iOS
             // (`shutdown(2)` → join receive loop → `close(2)`), so the
             // backend observes EOF before the OnDestroy block returns
             // and the rpc-reflector subscription cleanup runs against
             // the prior session's connection.
             //
-            // If a future SDK upgrade reintroduces the leak, the
-            // workaround is to add an NSNotificationCenter observer
-            // for `RCTBridgeWillReloadNotification` /
+            // If a future SDK upgrade or a third-party module
+            // reintroduces a strong reference that pins `AppContext`,
+            // the fallback is to subscribe to
+            // `RCTBridgeWillReloadNotification` /
             // `RCTJavaScriptWillStartLoadingNotification` in OnCreate
-            // and disconnect from there. Keep it simple here unless
-            // there's evidence we need it.
+            // and call `disconnect()` from the notification handler.
+            // We don't pre-emptively wire that here — only one
+            // teardown path makes the lifecycle easier to reason about.
             self.ipc?.disconnect()
             self.ipc = nil
         }
