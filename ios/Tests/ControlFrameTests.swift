@@ -1,5 +1,5 @@
 import XCTest
-@testable internal import ComapeoCore
+@testable import ComapeoCore
 
 /// Pure unit tests for `ControlFrame.parse`. No simulator / device
 /// dependencies — runs as part of the swift-test target.
