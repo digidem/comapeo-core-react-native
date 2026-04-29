@@ -90,15 +90,15 @@ class ComapeoCoreModule : Module() {
 
     private fun parseFrame(message: String): JSONObject? = try {
         JSONObject(message)
-    } catch (e: JSONException) {
-        // The control socket protocol is JSON-only — non-JSON traffic
-        // means either a backend bug or a corrupt frame. Log loudly so
-        // it's visible in adb logcat / Sentry, but don't transition to
-        // ERROR: a single garbled frame shouldn't tear down a working
-        // session. The watchdog covers the case where the protocol has
-        // genuinely broken (no `ready` ever arrives).
-        log("ComapeoCoreModule: ignoring non-JSON control frame: ${e.message}")
+    } catch (_: JSONException) {
         null
+    }
+
+    private fun protocolError(detail: String) {
+        setState(
+            JsState.ERROR,
+            mapOf("errorPhase" to "protocol", "errorMessage" to detail),
+        )
     }
 
     override fun definition() = ModuleDefinition {
@@ -120,7 +120,17 @@ class ComapeoCoreModule : Module() {
             controlIpc = NodeJSIPC(
                 controlSocketFile,
                 onMessage = { message ->
-                    val parsed = parseFrame(message) ?: return@NodeJSIPC
+                    val parsed = parseFrame(message)
+                    if (parsed == null) {
+                        // Non-JSON frame on the control socket: the
+                        // backend ships bundled with this module, so a
+                        // frame the parser rejects is a genuine bug
+                        // (corrupt framing, backend regression, etc.)
+                        // not version skew. Surface as ERROR with the
+                        // frame snippet so the cause is discoverable.
+                        protocolError("Non-JSON control frame: ${message.take(100)}")
+                        return@NodeJSIPC
+                    }
                     val type = parsed.optString("type", "")
                     when (type) {
                         "ready" -> setState(JsState.STARTED)
@@ -133,12 +143,10 @@ class ComapeoCoreModule : Module() {
                             ),
                         )
                         else -> {
-                            // Forward-compat: a newer backend may emit
-                            // frame types this build doesn't recognise.
-                            // Log so it's discoverable, but don't error
-                            // — the watchdog covers genuine protocol
-                            // breakage (no `ready` within timeout).
-                            log("ComapeoCoreModule: ignoring unknown control frame type=\"$type\"")
+                            // Backend and native ship together — unknown
+                            // type means a genuine protocol bug. Empty
+                            // `type` is the same shape of bug.
+                            protocolError("Unknown control frame type=\"$type\"")
                         }
                     }
                 },

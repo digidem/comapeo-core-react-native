@@ -258,9 +258,18 @@ class NodeJSService {
     /// ordering and gains us forward-compat for additional fields.
     private func handleControlMessage(_ message: String) {
         log("Control IPC received: \(message)")
-        guard let frame = parseFrame(message),
-              let type = frame["type"] as? String, !type.isEmpty
-        else { return }
+        guard let frame = parseFrame(message) else {
+            // Non-JSON frame on the control socket: the backend ships
+            // bundled with this module, so a frame the parser rejects
+            // is a genuine bug (corrupt framing, backend regression,
+            // etc.) not version skew. Surface as .error.
+            transitionToError(
+                phase: "protocol",
+                message: "Non-JSON control frame: \(message.prefix(100))"
+            )
+            return
+        }
+        let type = (frame["type"] as? String) ?? ""
         switch type {
         case "started":
             sendInitFrame()
@@ -276,11 +285,13 @@ class NodeJSService {
             let msg = (frame["message"] as? String) ?? "(no message)"
             transitionToError(phase: phase, message: msg)
         default:
-            // Forward-compat: a newer backend may emit frame types this
-            // build doesn't recognise. Log so it's discoverable but don't
-            // transition to .error — the startup watchdog covers genuine
-            // protocol breakage where `ready` never arrives.
-            log("NodeJSService: ignoring unknown control frame type=\"\(type)\"")
+            // Backend and native ship together — unknown type means a
+            // genuine protocol bug, not version skew. Empty `type`
+            // (a frame missing the field) is the same shape of bug.
+            transitionToError(
+                phase: "protocol",
+                message: "Unknown control frame type=\"\(type)\""
+            )
         }
     }
 
@@ -288,7 +299,6 @@ class NodeJSService {
         guard let data = message.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
-            log("Ignoring non-JSON control frame")
             return nil
         }
         return obj

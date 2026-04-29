@@ -277,7 +277,19 @@ class NodeJSService(
      */
     private fun handleControlMessage(message: String) {
         log("Control IPC received: $message")
-        val parsed = parseFrame(message) ?: return
+        val parsed = parseFrame(message)
+        if (parsed == null) {
+            // Non-JSON frame on the control socket: the backend ships
+            // bundled with this module, so a frame the parser rejects
+            // is a real bug (corrupt framing, backend regression, etc.)
+            // not a forward-compat scenario. Surface as ERROR with the
+            // frame snippet so the cause is discoverable.
+            transitionToError(
+                "protocol",
+                "Non-JSON control frame: ${message.take(100)}",
+            )
+            return
+        }
         val type = parsed.optString("type", "")
         when (type) {
             "started" -> sendInitFrame()
@@ -290,22 +302,22 @@ class NodeJSService(
                 transitionToError(phase, msg)
             }
             else -> {
-                // Forward-compat: a newer backend may emit frame types
-                // this build doesn't recognise. Log so it's discoverable
-                // but don't transition to ERROR — the startup watchdog
-                // covers genuine protocol breakage where `ready` never
-                // arrives. An empty `type` field is also caught here,
-                // so a malformed frame doesn't silently desync the
-                // handshake.
-                log("NodeJSService: ignoring unknown control frame type=\"$type\"")
+                // Backend and native ship together — an unknown type
+                // means a genuine protocol bug, not version skew. Empty
+                // `type` (a frame missing the field entirely) is the
+                // same shape of bug. Surface with the offending value
+                // in the message.
+                transitionToError(
+                    "protocol",
+                    "Unknown control frame type=\"$type\"",
+                )
             }
         }
     }
 
     private fun parseFrame(message: String): JSONObject? = try {
         JSONObject(message)
-    } catch (e: JSONException) {
-        log("Ignoring non-JSON control frame: ${e.message}")
+    } catch (_: JSONException) {
         null
     }
 
