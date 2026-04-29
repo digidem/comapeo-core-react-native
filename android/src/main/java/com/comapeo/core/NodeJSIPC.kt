@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -230,6 +231,40 @@ class NodeJSIPC(
     fun sendMessage(message: String) {
         connect()
         sendChannel.trySend(message)
+    }
+
+    /**
+     * Synchronous, terminal teardown for module-destroy lifecycle.
+     *
+     * Unlike [disconnect] — which launches a coroutine and returns
+     * immediately — [close] closes the underlying [LocalSocket] on the
+     * calling thread before returning, so the peer (the Node.js backend
+     * over the AF_UNIX socket) observes EOF before [close] returns.
+     * That ordering is the point: it lets a caller running in a tight
+     * lifecycle window (e.g. the Expo module's `OnDestroy`, immediately
+     * before a fresh `OnCreate` opens a new connection) guarantee the
+     * old socket is gone before the new one is opened, so the backend's
+     * per-connection state (notably any rpc-reflector event-listener
+     * subscriptions registered against the long-lived handler) is torn
+     * down on the same reload that starts a fresh client.
+     *
+     * After [close] the instance must not be reused: the scope is
+     * cancelled and a fresh [NodeJSIPC] should be constructed.
+     */
+    fun close() {
+        // Cancel the scope first so the receive/send coroutines stop
+        // touching the streams as we close them. socket.close() will
+        // also unblock any in-flight read/write with an IOException;
+        // the cancelled scope means the coroutines exit without
+        // re-entering disconnect().
+        scope.cancel()
+        sendChannel.close()
+        try { dataOutputStream?.close() } catch (_: Exception) {}
+        try { dataInputStream?.close() } catch (_: Exception) {}
+        if (::socket.isInitialized) {
+            try { socket.close() } catch (_: Exception) {}
+        }
+        state.value = State.Disconnected
     }
 }
 

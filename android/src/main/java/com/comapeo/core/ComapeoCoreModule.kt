@@ -100,6 +100,17 @@ class ComapeoCoreModule : Module() {
     }
 
     override fun definition() = ModuleDefinition {
+        // OnCreate / OnDestroy are bound to the Expo `AppContext`, whose
+        // lifetime is the React Native JS runtime — not the Android
+        // Activity. They fire on every JS context tear-down/rebuild
+        // (dev reload, `DevSettings.reload()`, fast-refresh full
+        // reload), which is exactly the reconnect boundary we want for
+        // the RPC sockets: the previous JS session's rpc-reflector
+        // client is gone, but its event-listener subscriptions are
+        // still attached on the backend's MapeoManager. Closing the
+        // socket here forces the backend to observe the disconnect and
+        // tear those subscriptions down before the next JS session
+        // opens a fresh connection from a new OnCreate.
         OnCreate {
             val socketFile =
                 File(appContext.persistentFilesDirectory, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
@@ -190,8 +201,17 @@ class ComapeoCoreModule : Module() {
         }
 
         OnDestroy {
-            ipc.disconnect()
-            controlIpc.disconnect()
+            // Synchronous close so the AF_UNIX socket FD is released on
+            // this thread before OnDestroy returns. The fire-and-forget
+            // disconnect() would let the next OnCreate open a new
+            // connection while the old socket is still alive in a
+            // launched coroutine; a synchronous close means the backend
+            // sees EOF on the previous session before it accepts the
+            // new connection, so rpc-reflector's per-connection cleanup
+            // path (server.close → removeListener for every prior
+            // subscription) runs against the right connection.
+            ipc.close()
+            controlIpc.close()
         }
 
         OnActivityEntersForeground {
