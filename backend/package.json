@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "rollup -c",
+    "test": "node --test \"test/*.test.js\"",
     "types": "tsc"
   },
   "keywords": [],

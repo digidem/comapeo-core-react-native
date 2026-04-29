@@ -2,6 +2,13 @@ import ExpoModulesCore
 
 public class ComapeoCoreModule: Module {
     private var ipc: NodeJSIPC?
+    /// Observes RN-posted reload notifications and disconnects the IPC
+    /// when the JS context is about to be torn down. Required because
+    /// Expo's `OnDestroy` does not fire on iOS reload (expo/expo#33655),
+    /// so the lifecycle-only path that works on Android leaves stale
+    /// sockets attached on every reload here. See `JSReloadObserver`
+    /// for the full rationale and choice of notification names.
+    private var reloadObserver: JSReloadObserver?
 
     // MARK: - Testable seams
     //
@@ -35,6 +42,18 @@ public class ComapeoCoreModule: Module {
                 self?.sendEvent("message", ["data": message])
             }
 
+            // Subscribe to RN's reload notifications so the IPC closes
+            // before a fresh JS context opens its own connection. This
+            // is the iOS analogue of Android's `OnDestroy { close() }`
+            // — necessary because Expo's `OnDestroy` does not fire on
+            // iOS JS reload (expo/expo#33655). `disconnect()` is
+            // already synchronous on iOS (`shutdown(2)` → join receive
+            // loop → `close(2)`), so the backend observes EOF before
+            // the notification handler returns.
+            self.reloadObserver = JSReloadObserver { [weak self] in
+                self?.ipc?.disconnect()
+            }
+
             // Observe service state changes. `onStateChange` is a single-slot
             // callback — assigning here replaces any previous observer. In normal
             // app operation only one ComapeoCoreModule instance is alive at a time,
@@ -65,6 +84,14 @@ public class ComapeoCoreModule: Module {
         }
 
         OnDestroy {
+            // OnDestroy is unreliable on iOS reload (expo/expo#33655) —
+            // the equivalent teardown is wired via `reloadObserver`
+            // above. This block still runs on the regular paths it
+            // does fire on (e.g. final module deinit during process
+            // exit) and is kept idempotent so the two paths can race
+            // without harm: `disconnect()` early-returns when state
+            // is already `.disconnecting`/`.disconnected`.
+            self.reloadObserver = nil
             self.ipc?.disconnect()
             self.ipc = nil
         }
