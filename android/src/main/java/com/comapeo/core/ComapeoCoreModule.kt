@@ -2,6 +2,8 @@ package com.comapeo.core
 
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import org.json.JSONException
+import org.json.JSONObject
 import java.io.File
 
 /**
@@ -40,6 +42,12 @@ class ComapeoCoreModule : Module() {
         sendEvent("stateChange", mapOf("state" to next.raw))
     }
 
+    private fun parseFrameType(message: String): String? = try {
+        JSONObject(message).optString("type", "").takeIf { it.isNotEmpty() }
+    } catch (_: JSONException) {
+        null
+    }
+
     override fun definition() = ModuleDefinition {
         OnCreate {
             val socketFile =
@@ -59,9 +67,9 @@ class ComapeoCoreModule : Module() {
             controlIpc = NodeJSIPC(
                 controlSocketFile,
                 onMessage = { message ->
-                    when {
-                        message.contains("\"ready\"") -> setState(JsState.STARTED)
-                        message.contains("\"started\"") -> setState(JsState.STARTING)
+                    when (parseFrameType(message)) {
+                        "ready" -> setState(JsState.STARTED)
+                        "started" -> setState(JsState.STARTING)
                     }
                 },
                 onConnectionStateChange = { connState ->

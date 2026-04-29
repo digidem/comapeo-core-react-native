@@ -4,6 +4,8 @@ import android.content.ContextWrapper
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.edit
+import org.json.JSONException
+import org.json.JSONObject
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -159,19 +161,28 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
 
     /**
      * Routes raw control-socket frames into lifecycle transitions and the
-     * rootkey handshake. The frames are well-known JSON shapes
-     * (`{"type":"started"}`, `{"type":"ready"}`); a substring match keeps
-     * this synchronous so the init-frame send is ordered immediately after
-     * `started`.
+     * rootkey handshake. Frames are JSON of the shape `{"type":"<name>",…}`
+     * (well-known names: `started`, `ready`, `error`). Parsing happens on
+     * the IPC's receive coroutine; the parser cost is negligible and the
+     * init-frame send is already async via `serviceScope.launch`, so there
+     * is no ordering or throughput reason to avoid a real parser here.
      */
     private fun handleControlMessage(message: String) {
         log("Control IPC received: $message")
-        when {
-            message.contains("\"started\"") -> sendInitFrame()
-            message.contains("\"ready\"") -> {
+        val type = parseFrameType(message) ?: return
+        when (type) {
+            "started" -> sendInitFrame()
+            "ready" -> {
                 if (state == State.STARTING) transitionState(State.STARTED)
             }
         }
+    }
+
+    private fun parseFrameType(message: String): String? = try {
+        JSONObject(message).optString("type", "").takeIf { it.isNotEmpty() }
+    } catch (e: JSONException) {
+        log("Ignoring non-JSON control frame: ${e.message}")
+        null
     }
 
     /**

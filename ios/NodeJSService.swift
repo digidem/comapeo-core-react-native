@@ -158,23 +158,39 @@ class NodeJSService {
 
     /// Routes raw control-socket frames into lifecycle transitions.
     ///
-    /// Cheap message inspection (substring match) — the protocol's only
-    /// payloads on this channel are well-known JSON like `{"type":"started"}`
-    /// and `{"type":"ready"}`. A real parser would be overkill and would also
-    /// need a worker queue; we want this to stay synchronous so the
-    /// init-frame send is ordered immediately after `started`.
+    /// Frames are JSON of the shape `{"type":"<name>",…}` (well-known
+    /// names: `started`, `ready`, `error`). We're already on the IPC's
+    /// receive queue and the init-frame send dispatches async on the
+    /// IPC's send queue, so a real parser costs nothing in latency or
+    /// ordering and gains us forward-compat for additional fields.
     private func handleControlMessage(_ message: String) {
         log("Control IPC received: \(message)")
-        if message.contains("\"started\"") {
+        guard let type = parseFrameType(message) else { return }
+        switch type {
+        case "started":
             sendInitFrame()
-        } else if message.contains("\"ready\"") {
+        case "ready":
             // Don't downgrade from .stopping back to .started — stop() may
             // have raced ahead of the backend's `ready` broadcast.
             lock.lock()
             let canPromote = (state == .starting)
             lock.unlock()
             if canPromote { transitionState(to: .started) }
+        default:
+            break
         }
+    }
+
+    private func parseFrameType(_ message: String) -> String? {
+        guard let data = message.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = obj["type"] as? String,
+              !type.isEmpty
+        else {
+            log("Ignoring non-JSON or untyped control frame")
+            return nil
+        }
+        return type
     }
 
     /// Reads the rootkey, base64-encodes, and ships the init frame on the
