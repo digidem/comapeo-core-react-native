@@ -90,3 +90,6 @@ ios/Frameworks/
 # output
 build/
 *.tsbuildinfo
+
+# eslint
+.eslintcache
