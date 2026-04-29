@@ -1,4 +1,5 @@
-import { cpSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
+import { cp } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
@@ -92,12 +93,14 @@ const STATIC_ASSET_PATHS = [
 function copyStaticAssetsPlugin(outDir) {
   return {
     name: "copy-static-assets",
-    writeBundle() {
-      for (const rel of STATIC_ASSET_PATHS) {
-        cpSync(path.join(__dirname, rel), path.join(outDir, rel), {
-          recursive: true,
-        });
-      }
+    async writeBundle() {
+      await Promise.all(
+        STATIC_ASSET_PATHS.map((rel) =>
+          cp(path.join(__dirname, rel), path.join(outDir, rel), {
+            recursive: true,
+          }),
+        ),
+      );
     },
   };
 }

@@ -58,9 +58,9 @@ const nativePairs = collectNativePairs(BACKEND_SRC_DIR, NATIVE_MODULES);
 // 3. Rollup bundles backend/index.js into both per-platform output
 //    dirs in one pass. The `OUTPUT_DIR_*` env vars point rollup at
 //    the final native-asset trees, so there's no intermediate
-//    staging. Static assets (drizzle SQL, default config, native
-//    module package.json, etc.) are copied alongside the bundle by a
-//    plugin in rollup.config.js.
+//    staging. Static runtime assets (drizzle SQL, default config,
+//    fallback map) are copied alongside the bundle by a plugin in
+//    rollup.config.js.
 await $({
   cwd: BACKEND_SRC_DIR,
   stdio: "inherit",
