@@ -21,6 +21,15 @@
 #import <UIKit/UIKit.h>
 #import <React/RCTImageURLLoader.h>
 
+// `ComapeoCore-Swift.h` (auto-generated below) re-exposes every `@objc`
+// Swift class in this module to Obj-C, including `AppLifecycleDelegate`
+// which extends `BaseExpoAppDelegateSubscriber` from `ExpoModulesCore`.
+// Without ExpoModulesCore in scope, the generated header references
+// `EXBaseAppDelegateSubscriber` / `EXAppDelegateSubscriberProtocol`
+// without a definition and the build fails. Module-import
+// (`@import ExpoModulesCore;`) keeps the dependency self-documenting.
+@import ExpoModulesCore;
+
 // The auto-generated Swift bridging header lands in different paths
 // depending on whether CocoaPods built ComapeoCore as a framework or a
 // static library; cover both. `__has_include` is a Clang preprocessor
