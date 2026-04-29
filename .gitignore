@@ -81,6 +81,7 @@ ios/.swiftpm/
 #     xcframework into ios/Frameworks/.
 backend/dist
 nodejs-assets
+android/src/debug/assets/
 android/src/main/assets/
 android/src/main/jniLibs/
 ios/nodejs-project/

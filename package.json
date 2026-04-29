@@ -9,6 +9,7 @@
     "expo-module.config.json",
     "android/build.gradle",
     "android/CMakeLists.txt",
+    "android/src/debug/",
     "android/src/main/",
     "android/libnode/",
     "build/",
@@ -38,6 +39,8 @@
     "open:ios": "xed example/ios",
     "open:android": "open -a \"Android Studio\" example/android",
     "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh",
+    "backend:install": "npm ci --ignore-scripts --prefix backend",
+    "prebackend:build": "npm run backend:install",
     "backend:build": "node ./scripts/build-backend.ts"
   },
   "keywords": [
