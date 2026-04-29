@@ -68,8 +68,28 @@ const controlIpcServer = new SimpleRpcServer({
       initConsumed = true;
       return;
     }
+    // Strict base64 shape check. `Buffer.from(s, "base64")` is
+    // permissive — invalid characters are silently dropped, so a
+    // tampered string could still decode to 16 bytes that aren't the
+    // bytes the producer encoded. Both Android (`Base64.NO_WRAP`) and
+    // iOS (`base64EncodedString()`) emit standard base64 with `=`
+    // padding; for a 16-byte input that's exactly 22 base64 chars
+    // followed by `==`. Anything else is malformed.
+    if (!/^[A-Za-z0-9+/]{22}==$/.test(message.rootKey)) {
+      rejectInit(
+        new Error(
+          `init.rootKey is not strict-base64 of 16 bytes (expected ` +
+            `/^[A-Za-z0-9+/]{22}==$/, got ${message.rootKey.length} chars)`,
+        ),
+      );
+      initConsumed = true;
+      return;
+    }
     const rootKey = Buffer.from(message.rootKey, "base64");
     if (rootKey.byteLength !== 16) {
+      // Belt-and-braces: regex matched but decoded to wrong length.
+      // Shouldn't be reachable given the regex, but the check is
+      // free and the consequence of a bad rootKey is identity loss.
       rejectInit(
         new Error(
           `init.rootKey must decode to 16 bytes, got ${rootKey.byteLength}`,
