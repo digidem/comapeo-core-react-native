@@ -321,6 +321,37 @@ Three failure surfaces, all converging on `ERROR`:
    with phase `ipc`. Phase distinguishes "connection layer broke" from
    "backend reported an error".
 
+### 5.5 Protocol errors — separate channel
+
+Frames the native control-socket parser cannot process (non-JSON,
+missing `type`, or an unknown `type`) are **not** raised to `ERROR`.
+They fire a `messageerror` event on the JS `state` observer instead,
+mirroring the DOM `MessagePort` counterpart. Rationale: the lifecycle
+should reflect what the service is doing (running, ready, errored),
+not whether one frame was malformed. A single bad frame should be
+discoverable for debugging without taking down a working session;
+subsequent valid frames keep driving `stateChange` normally.
+
+The event payload is `{ data: string }` on the wire; the JS observer
+wraps it in `new Error(data)` for ergonomics. Listeners:
+
+```ts
+state.addListener("messageerror", (error: Error) => {
+  console.warn("control-socket protocol error:", error.message);
+});
+```
+
+Native plumbing:
+- **Android**: `ComapeoCoreModule.kt` calls `sendEvent("messageerror",
+  ...)` directly from its control-socket `onMessage` handler.
+- **iOS**: `NodeJSService.swift` exposes an `onMessageError` callback;
+  `ComapeoCoreModule.swift` wires it to `sendEvent("messageerror",
+  ...)`.
+- **Android FGS-side**: `NodeJSService.kt` logs the bad frame; it has
+  no JS bridge, so there is nowhere to forward to. The main-app
+  process's `controlIpc` receives the same broadcast and emits the
+  event there.
+
 ---
 
 ## 6. Known limitations & proposed direction

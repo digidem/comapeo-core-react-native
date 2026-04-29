@@ -87,6 +87,13 @@ class NodeJSService {
 
     var onStateChange: ((State) -> Void)?
 
+    /// Fires for control-socket frames the receiver can't process
+    /// (non-JSON, unknown / empty `type`). Mirrors DOM `MessagePort`'s
+    /// `messageerror`: a malformed frame is reported on a separate
+    /// channel rather than transitioning to `.error`. Subscribed by
+    /// `ComapeoCoreModule` to forward as a JS-visible event.
+    var onMessageError: ((String) -> Void)?
+
     private(set) var state: State = .stopped {
         didSet {
             if oldValue != state {
@@ -268,14 +275,12 @@ class NodeJSService {
     private func handleControlMessage(_ message: String) {
         log("Control IPC received: \(message)")
         guard let frame = parseFrame(message) else {
-            // Non-JSON frame on the control socket: the backend ships
-            // bundled with this module, so a frame the parser rejects
-            // is a genuine bug (corrupt framing, backend regression,
-            // etc.) not version skew. Surface as .error.
-            transitionToError(
-                phase: "protocol",
-                message: "Non-JSON control frame: \(message.prefix(100))"
-            )
+            // Non-JSON frame: surfaced via `onMessageError`, not raised
+            // to `.error`. Single bad frame shouldn't take down a
+            // working session.
+            let detail = "Non-JSON control frame: \(message.prefix(100))"
+            log("NodeJSService: \(detail)")
+            onMessageError?(detail)
             return
         }
         let type = (frame["type"] as? String) ?? ""
@@ -294,13 +299,10 @@ class NodeJSService {
             let msg = (frame["message"] as? String) ?? "(no message)"
             transitionToError(phase: phase, message: msg)
         default:
-            // Backend and native ship together — unknown type means a
-            // genuine protocol bug, not version skew. Empty `type`
-            // (a frame missing the field) is the same shape of bug.
-            transitionToError(
-                phase: "protocol",
-                message: "Unknown control frame type=\"\(type)\""
-            )
+            // Unknown / empty `type`: same treatment as non-JSON.
+            let detail = "Unknown control frame type=\"\(type)\""
+            log("NodeJSService: \(detail)")
+            onMessageError?(detail)
         }
     }
 

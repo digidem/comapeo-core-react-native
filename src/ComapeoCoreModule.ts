@@ -4,6 +4,7 @@ import {
   ComapeoCoreModuleEvents,
   type ComapeoErrorInfo,
   type ComapeoState,
+  type MessageErrorEventPayload,
   type MessageEventPayload,
   type StateChangeEventPayload,
 } from "./ComapeoCore.types";
@@ -72,6 +73,16 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort);
 
 type StateEvents = {
   stateChange: (state: ComapeoState, error: ComapeoErrorInfo | null) => void;
+  /**
+   * Fires when the native control-socket parser receives a frame it
+   * can't process (non-JSON, missing `type`, or unknown `type`).
+   * Mirrors DOM MessagePort's `messageerror`: a malformed frame is
+   * surfaced on a separate channel rather than transitioning to
+   * `ERROR`, so a debug listener can capture protocol issues without
+   * affecting the lifecycle state. The `Error.message` is a
+   * developer-facing description; do not display directly to users.
+   */
+  messageerror: (error: Error) => void;
 };
 
 /**
@@ -88,6 +99,9 @@ type StateEvents = {
  * `errorPhase`/`errorMessage`. Listeners receive a second argument with
  * the same detail; `getLastError()` returns the last captured error
  * (null if the service has not entered ERROR since process start).
+ *
+ * `messageerror` is a separate channel for control-socket parse
+ * failures. It does not change the lifecycle state.
  */
 class State extends EventEmitter<StateEvents> {
   getState(): ComapeoState {
@@ -99,13 +113,19 @@ class State extends EventEmitter<StateEvents> {
   }
 
   startObserving<EventName extends keyof StateEvents>(eventName: EventName): void {
-    if (eventName !== "stateChange") return;
-    nativeModule.addListener("stateChange", this.#handleStateChangeEvent);
+    if (eventName === "stateChange") {
+      nativeModule.addListener("stateChange", this.#handleStateChangeEvent);
+    } else if (eventName === "messageerror") {
+      nativeModule.addListener("messageerror", this.#handleMessageErrorEvent);
+    }
   }
 
   stopObserving<EventName extends keyof StateEvents>(eventName: EventName): void {
-    if (eventName !== "stateChange") return;
-    nativeModule.removeListener("stateChange", this.#handleStateChangeEvent);
+    if (eventName === "stateChange") {
+      nativeModule.removeListener("stateChange", this.#handleStateChangeEvent);
+    } else if (eventName === "messageerror") {
+      nativeModule.removeListener("messageerror", this.#handleMessageErrorEvent);
+    }
   }
 
   #handleStateChangeEvent = (event: StateChangeEventPayload) => {
@@ -114,6 +134,10 @@ class State extends EventEmitter<StateEvents> {
         ? { errorPhase: event.errorPhase, errorMessage: event.errorMessage }
         : null;
     this.emit("stateChange", event.state, error);
+  };
+
+  #handleMessageErrorEvent = (event: MessageErrorEventPayload) => {
+    this.emit("messageerror", new Error(event.data));
   };
 }
 

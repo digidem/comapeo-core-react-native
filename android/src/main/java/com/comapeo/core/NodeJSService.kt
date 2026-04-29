@@ -301,15 +301,13 @@ class NodeJSService(
         log("Control IPC received: $message")
         val parsed = parseFrame(message)
         if (parsed == null) {
-            // Non-JSON frame on the control socket: the backend ships
-            // bundled with this module, so a frame the parser rejects
-            // is a real bug (corrupt framing, backend regression, etc.)
-            // not a forward-compat scenario. Surface as ERROR with the
-            // frame snippet so the cause is discoverable.
-            transitionToError(
-                "protocol",
-                "Non-JSON control frame: ${message.take(100)}",
-            )
+            // Non-JSON control frame. Logged but not raised to ERROR:
+            // the FGS-side state derives from the backend's structured
+            // frames, and a single bad frame should not tear down the
+            // FGS lifecycle. The main-app-process Module surfaces
+            // `messageerror` separately so application code can
+            // observe protocol issues without losing service state.
+            log("NodeJSService: non-JSON control frame: ${message.take(100)}")
             return
         }
         val type = parsed.optString("type", "")
@@ -324,15 +322,10 @@ class NodeJSService(
                 transitionToError(phase, msg)
             }
             else -> {
-                // Backend and native ship together — an unknown type
-                // means a genuine protocol bug, not version skew. Empty
-                // `type` (a frame missing the field entirely) is the
-                // same shape of bug. Surface with the offending value
-                // in the message.
-                transitionToError(
-                    "protocol",
-                    "Unknown control frame type=\"$type\"",
-                )
+                // Unknown / empty `type`: same handling as non-JSON.
+                // The `messageerror` event on the main-app Module is
+                // the JS-visible surface for this; FGS-side just logs.
+                log("NodeJSService: unknown control frame type=\"$type\"")
             }
         }
     }

@@ -94,11 +94,17 @@ class ComapeoCoreModule : Module() {
         null
     }
 
-    private fun protocolError(detail: String) {
-        setState(
-            JsState.ERROR,
-            mapOf("errorPhase" to "protocol", "errorMessage" to detail),
-        )
+    /**
+     * Emits a `messageerror` event mirroring the DOM `MessagePort`
+     * counterpart: a frame the receiver can't process (non-JSON, missing
+     * `type`, or unknown `type`) is reported on a separate channel
+     * rather than tearing the lifecycle into ERROR. The malformed frame
+     * is a real bug — backend ships with native — but a single bad
+     * frame shouldn't take down a working session; subsequent valid
+     * frames continue to drive normal state.
+     */
+    private fun emitMessageError(detail: String) {
+        sendEvent("messageerror", mapOf("data" to detail))
     }
 
     override fun definition() = ModuleDefinition {
@@ -122,13 +128,11 @@ class ComapeoCoreModule : Module() {
                 onMessage = { message ->
                     val parsed = parseFrame(message)
                     if (parsed == null) {
-                        // Non-JSON frame on the control socket: the
-                        // backend ships bundled with this module, so a
-                        // frame the parser rejects is a genuine bug
-                        // (corrupt framing, backend regression, etc.)
-                        // not version skew. Surface as ERROR with the
-                        // frame snippet so the cause is discoverable.
-                        protocolError("Non-JSON control frame: ${message.take(100)}")
+                        // Non-JSON frame on the control socket. Surfaced
+                        // as `messageerror` (mirroring DOM MessagePort),
+                        // not as an ERROR transition: a single garbled
+                        // frame shouldn't tear down a working session.
+                        emitMessageError("Non-JSON control frame: ${message.take(100)}")
                         return@NodeJSIPC
                     }
                     val type = parsed.optString("type", "")
@@ -144,9 +148,11 @@ class ComapeoCoreModule : Module() {
                         )
                         else -> {
                             // Backend and native ship together — unknown
-                            // type means a genuine protocol bug. Empty
-                            // `type` is the same shape of bug.
-                            protocolError("Unknown control frame type=\"$type\"")
+                            // / empty `type` is a genuine protocol bug,
+                            // surfaced via `messageerror` so a debug
+                            // listener can capture it without affecting
+                            // the lifecycle state.
+                            emitMessageError("Unknown control frame type=\"$type\"")
                         }
                     }
                 },
@@ -203,7 +209,7 @@ class ComapeoCoreModule : Module() {
         Name("ComapeoCore")
 
         // Defines event names that the module can send to JavaScript.
-        Events("message", "stateChange")
+        Events("message", "messageerror", "stateChange")
 
         // Defines a JavaScript synchronous function that runs the native code on the JavaScript thread.
         Function("postMessage") { message: String ->

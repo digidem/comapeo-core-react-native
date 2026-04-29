@@ -27,7 +27,7 @@ public class ComapeoCoreModule: Module {
     public func definition() -> ModuleDefinition {
         Name("ComapeoCore")
 
-        Events("message", "stateChange")
+        Events("message", "messageerror", "stateChange")
 
         OnCreate {
             let socketPath = ComapeoCoreModule.resolveSocketPath()
@@ -53,6 +53,14 @@ public class ComapeoCoreModule: Module {
                     payload["errorMessage"] = info.message
                 }
                 self?.sendEvent("stateChange", payload)
+            }
+
+            // Forward control-frame parse failures to JS as a
+            // `messageerror` event (mirrors DOM MessagePort). Decoupled
+            // from `onStateChange` so a single garbled frame doesn't
+            // affect the lifecycle state.
+            AppLifecycleDelegate.nodeService.onMessageError = { [weak self] detail in
+                self?.sendEvent("messageerror", ["data": detail])
             }
         }
 

@@ -30,6 +30,7 @@ export type ComapeoState =
 
 export type ComapeoCoreModuleEvents = {
   message: (params: MessageEventPayload) => void;
+  messageerror: (params: MessageErrorEventPayload) => void;
   stateChange: (params: StateChangeEventPayload) => void;
 };
 
@@ -37,8 +38,19 @@ export type MessageEventPayload = {
   data: string;
 };
 
+/**
+ * Payload for the `messageerror` event. Mirrors the DOM MessagePort
+ * counterpart in spirit: fired when a frame the native side received
+ * on the control socket couldn't be processed (non-JSON, missing
+ * `type`, or unknown `type`). `data` is a developer-facing description
+ * of the offending frame; the JS-facing `state.messageerror` listener
+ * receives this wrapped in an `Error` for ergonomics.
+ *
+ * A `messageerror` event does NOT cause a lifecycle state transition —
+ * the control socket continues to drive `stateChange` independently.
+ */
 export type MessageErrorEventPayload = {
-  data: Error;
+  data: string;
 };
 
 export type StateChangeEventPayload = {
