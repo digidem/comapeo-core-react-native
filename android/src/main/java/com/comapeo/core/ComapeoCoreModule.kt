@@ -1,5 +1,6 @@
 package com.comapeo.core
 
+import com.comapeo.core.media.MediaContentProvider
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
@@ -200,6 +201,16 @@ class ComapeoCoreModule : Module() {
             // clean `null`, not an empty object that callers have to
             // sentinel-check.
             synchronized(stateLock) { lastError }
+        }
+
+        // The authority of the MediaContentProvider for the consuming app.
+        // Read once on the JS side at startup so blob/icon paths returned by
+        // the backend can be rewritten to `content://<authority>/...` URIs
+        // before they reach React Native's <Image>.
+        Function("getMediaContentAuthority") {
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException("React context not available")
+            MediaContentProvider.authorityFor(ctx)
         }
     }
 }

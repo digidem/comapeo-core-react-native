@@ -119,6 +119,7 @@ class NodeJSService(
     private val jsFile: File = File(nodeProjectDir, NODEJS_PROJECT_INDEX_FILENAME)
     private val comapeoSocketFile: File = File(filesDir, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
     private val controlSocketFile: File = File(filesDir, ComapeoCoreService.CONTROL_SOCKET_FILENAME)
+    private val mediaSocketFile: File = File(filesDir, ComapeoCoreService.MEDIA_SOCKET_FILENAME)
     private val sharedPrefsName = packageName + SHARED_PREFS_NAME_POSTFIX
     private val json = Json { encodeDefaults = true }
     private val ipcDeferred = CompletableDeferred<NodeJSIPC>()
@@ -270,6 +271,7 @@ class NodeJSService(
                         comapeoSocketFile.absolutePath,
                         controlSocketFile.absolutePath,
                         dataDir,
+                        mediaSocketFile.absolutePath,
                     )
                 )
                 log("NodeJS service completed with exit code $exitCode")
@@ -392,6 +394,7 @@ class NodeJSService(
     private fun deleteSocketFiles() {
         comapeoSocketFile.delete()
         controlSocketFile.delete()
+        mediaSocketFile.delete()
     }
 
     private fun shouldCopyAssets(): Boolean {

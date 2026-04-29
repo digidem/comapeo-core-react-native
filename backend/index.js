@@ -16,8 +16,20 @@ const MIGRATIONS_FOLDER_PATH = fileURLToPath(
 
 console.log("Starting Comapeo Node server...");
 
-const [comapeoSocketPath, controlSocketPath, privateStorageDir] =
-  process.argv.slice(2);
+const [
+  comapeoSocketPath,
+  controlSocketPath,
+  privateStorageDir,
+  mediaSocketPath,
+] = process.argv.slice(2);
+
+if (!mediaSocketPath) {
+  console.error(
+    "Missing media socket path argv. The native NodeJSService must pass " +
+      "[node, indexPath, comapeoSocketPath, controlSocketPath, privateStorageDir, mediaSocketPath].",
+  );
+  process.exit(1);
+}
 
 const fastify = Fastify();
 
@@ -173,7 +185,17 @@ process.on("unhandledRejection", (reason) => {
       throw Object.assign(e, { phase: "init" });
     }
 
-    // 3. Construct the manager and bind the comapeo RPC socket.
+    // 3. Construct the manager and bind the comapeo RPC + media sockets.
+    //
+    // The media socket carries blob/icon HTTP responses streamed by the
+    // Fastify plugins that `MapeoManager` registers (`BlobServerPlugin`,
+    // `IconServerPlugin`, …). Binding it AFTER `createComapeo` runs means
+    // the routes are wired before the socket starts accepting connections;
+    // binding to a UDS instead of a TCP port keeps the bytes inside the
+    // app sandbox so no other app on the device can read the URLs.
+    // Native side: `MediaContentProvider` (Android) and `MediaFetcher`
+    // (iOS, via `RCTImageURLLoader` and the global `URLProtocol`) are
+    // the only clients of this socket.
     try {
       comapeo = createComapeo({
         privateStorageDir,
@@ -182,11 +204,16 @@ process.on("unhandledRejection", (reason) => {
         rootKey,
       });
       comapeoRpcServer = new ComapeoRpcServer(comapeo);
-      await comapeoRpcServer.listen(comapeoSocketPath);
+      await Promise.all([
+        comapeoRpcServer.listen(comapeoSocketPath),
+        fastify.listen({ path: mediaSocketPath }),
+      ]);
     } catch (e) {
       throw Object.assign(e, { phase: "construct" });
     }
-    console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
+    console.log(
+      `Comapeo socket listening on ${comapeoSocketPath}, media socket on ${mediaSocketPath}`,
+    );
 
     // 4. Announce ready. The settle-window-then-ready dance is gone now
     // that `ready` carries actual meaning (manager exists, RPC is safe).

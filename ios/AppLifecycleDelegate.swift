@@ -16,7 +16,34 @@ import UIKit
 /// callbacks, but every instance routes through that single static — so
 /// `NodeMobileStartNode`'s once-per-process constraint is preserved no matter
 /// how many delegate instances exist.
+///
+/// On first instantiation by Expo's autolinking, this class also wires
+/// `MediaURLProtocol` into the global URL-loading system so `comapeo://media/...`
+/// URLs (the platform-native form of `BlobApi.getUrl()` / `IconApi.getIconUrl()`
+/// results, see `src/mediaUrl.ts`) stream straight from the backend's
+/// UDS-bound HTTP server into React Native image components.
 public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
+    /// Idempotent installer for the media URL fetch path — `static let`
+    /// guarantees at-most-one registration regardless of how many
+    /// `AppLifecycleDelegate` instances Expo creates. Side-effect happens
+    /// the first time anything reads this property; the value itself is
+    /// only there to make the body run.
+    ///
+    /// Two consumers wire up here:
+    ///   - `MediaFetcher.socketPathProvider` — read by the Obj-C
+    ///     `ComapeoMediaImageLoader` (`RCTImageURLLoader`) which RN's
+    ///     `<Image>` looks up by scheme, AND by the streaming
+    ///     `MediaURLProtocol` below.
+    ///   - `URLProtocol.registerClass(MediaURLProtocol.self)` — picks up
+    ///     `URLSession.shared` callers (share sheet, third-party libs)
+    ///     for which the RCTImageURLLoader path is irrelevant.
+    private static let _mediaUrlProtocolInstalled: Bool = {
+        MediaFetcher.socketPathProvider = {
+            AppLifecycleDelegate.nodeService.mediaSocketPath
+        }
+        URLProtocol.registerClass(MediaURLProtocol.self)
+        return true
+    }()
     /// Process-wide `NodeJSService`. Use this from any thread.
     ///
     /// Going through a delegate instance (e.g. via the DEBUG-only `shared`
@@ -178,6 +205,12 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
 
     public func applicationDidBecomeActive(_ application: UIApplication) {
         log("applicationDidBecomeActive")
+        // Force-evaluate the lazy `static let` so URLProtocol.registerClass
+        // runs exactly once for the lifetime of the process. Reading the
+        // value here (even unused) is the simplest way to drive Swift's
+        // dispatch_once-backed static init; we deliberately don't gate on
+        // a Bool because the language guarantees at-most-once already.
+        _ = Self._mediaUrlProtocolInstalled
         // Start is guarded by `state == .stopped`, so subsequent foreground
         // transitions in the same process are no-ops.
         Self.nodeService.start()
