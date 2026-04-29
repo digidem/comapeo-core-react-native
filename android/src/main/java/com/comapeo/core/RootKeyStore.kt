@@ -72,12 +72,35 @@ class RootKeyStore(private val context: Context) {
         val wrapperKey = loadWrapperKey()
             ?: throw RootKeyException("Wrapper key alias missing — keystore was wiped")
 
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-            init(
-                Cipher.DECRYPT_MODE,
-                wrapperKey,
-                GCMParameterSpec(GCM_TAG_LENGTH_BITS, envelope.iv),
+        // Validate the IV length before passing it to GCMParameterSpec.
+        // GCMParameterSpec's constructor and Cipher.init throw plain
+        // crypto-provider exceptions (e.g. InvalidAlgorithmParameter-
+        // Exception) on malformed input; without this guard those
+        // would escape the class as bare provider exceptions, breaking
+        // the contract that all rootkey failures surface as
+        // RootKeyException. Empty ciphertext is similarly caught here
+        // rather than letting doFinal's later try/catch handle it,
+        // because an empty `ct` field indicates envelope corruption,
+        // not a decrypt failure.
+        if (envelope.iv.size != GCM_IV_LENGTH_BYTES) {
+            throw RootKeyException(
+                "Envelope IV has wrong length: ${envelope.iv.size} (expected $GCM_IV_LENGTH_BYTES)",
             )
+        }
+        if (envelope.ct.isEmpty()) {
+            throw RootKeyException("Envelope ciphertext is empty")
+        }
+
+        val cipher = try {
+            Cipher.getInstance("AES/GCM/NoPadding").apply {
+                init(
+                    Cipher.DECRYPT_MODE,
+                    wrapperKey,
+                    GCMParameterSpec(GCM_TAG_LENGTH_BITS, envelope.iv),
+                )
+            }
+        } catch (e: Exception) {
+            throw RootKeyException("rootkey: decrypt setup failed", e)
         }
         val plaintext = try {
             cipher.doFinal(envelope.ct)
@@ -215,8 +238,17 @@ class RootKeyStore(private val context: Context) {
                 "Envelope alias mismatch: $alias (expected $WRAPPER_KEY_ALIAS)",
             )
         }
-        val iv = Base64.decode(ivStr, Base64.NO_WRAP)
-        val ct = Base64.decode(ctStr, Base64.NO_WRAP)
+        // Base64.decode throws IllegalArgumentException on malformed
+        // input. Without this catch, a tampered or truncated envelope
+        // would escape the class as IllegalArgumentException rather
+        // than RootKeyException, breaking the "all failures funnel
+        // through RootKeyException" contract that callers rely on to
+        // surface identity-load errors to the user.
+        val (iv, ct) = try {
+            Base64.decode(ivStr, Base64.NO_WRAP) to Base64.decode(ctStr, Base64.NO_WRAP)
+        } catch (e: IllegalArgumentException) {
+            throw RootKeyException("Failed to Base64-decode rootkey envelope iv/ct fields", e)
+        }
         return Envelope(v, alias, iv, ct)
     }
 }
