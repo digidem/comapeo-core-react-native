@@ -7,7 +7,7 @@ import alias from "@rollup/plugin-alias";
 import commonjs from "@rollup/plugin-commonjs";
 import { default as esmShim } from "@rollup/plugin-esm-shim";
 import json from "@rollup/plugin-json";
-
+import type { OutputOptions, Plugin, RollupOptions } from "rollup";
 import addonLoaderPlugin, {
   androidAddonLoaderBanner,
   iosAddonLoaderBanner,
@@ -28,17 +28,14 @@ const MAPS_STUB_PATH = path.join(__dirname, "lib", "maps-stub.js");
  */
 const ANDROID_OUT =
   process.env.OUTPUT_DIR_ANDROID ?? path.join(__dirname, "dist/android");
-const IOS_OUT =
-  process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
+const IOS_OUT = process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
 
 /**
  * Resolves `@comapeo/core`'s `./fastify-plugins/maps.js` import to the
  * iOS-only no-op stub. Scoped tightly to the `@comapeo/core/src/` importer
  * so unrelated packages with a similarly-named file aren't caught.
- *
- * @returns {import('rollup').Plugin}
  */
-function stubComapeoMapsPlugin() {
+function stubComapeoMapsPlugin(): Plugin {
   return {
     name: "stub-comapeo-maps-plugin",
     resolveId(source, importer) {
@@ -80,17 +77,14 @@ const STATIC_ASSET_PATHS = [
   "node_modules/@comapeo/core/drizzle",
   "node_modules/@comapeo/default-categories/dist/comapeo-default-categories.comapeocat",
   "node_modules/@comapeo/fallback-smp",
-];
+] as const;
 
 /**
  * Copies the static asset paths from `backend/` into `outDir` after the
  * rollup write completes. Replaces the per-platform staging copy that
  * `scripts/build-backend.ts` used to do.
- *
- * @param {string} outDir
- * @returns {import('rollup').Plugin}
  */
-function copyStaticAssetsPlugin(outDir) {
+function copyStaticAssetsPlugin(outDir: string): Plugin {
   return {
     name: "copy-static-assets",
     async writeBundle() {
@@ -105,11 +99,13 @@ function copyStaticAssetsPlugin(outDir) {
   };
 }
 
-/**
- * @param {{ platform: 'android' | 'ios', outDir: string }} options
- * @returns {import('rollup').RollupOptions['plugins']}
- */
-function buildPlugins({ platform, outDir }) {
+function buildPlugins({
+  platform,
+  outDir,
+}: {
+  platform: "android" | "ios";
+  outDir: string;
+}): Plugin[] {
   return [
     alias({
       entries: [
@@ -146,11 +142,8 @@ function buildPlugins({ platform, outDir }) {
  * (rollup overwrites bundle files but `copyStaticAssetsPlugin` is purely
  * additive, so a stale entry from a previous run could otherwise leak
  * into the output tree).
- *
- * @param {string} dir
- * @returns {import('rollup').Plugin}
  */
-function cleanOutputDirPlugin(dir) {
+function cleanOutputDirPlugin(dir: string): Plugin {
   return {
     name: "clean-output-dir",
     buildStart() {
@@ -163,8 +156,8 @@ const sharedInput = {
   index: path.join(__dirname, "index.js"),
 };
 
-const sharedOutput = {
-  format: /** @type {const} */ ("esm"),
+const sharedOutput: OutputOptions = {
+  format: "esm",
   sourcemap: true,
   entryFileNames: "[name].mjs",
 };
@@ -182,10 +175,8 @@ const sharedOutput = {
  * bare-name dlopen against the APK mmap region, iOS dlopen's the
  * Embed-&-Sign'd xcframework binary at NATIVE_LIB_DIR/<key>.framework/<key>.
  * See `rollup-plugin-addon-loader.js` for the helper bodies.
- *
- * @type {import('rollup').RollupOptions[]}
  */
-const config = [
+const config: RollupOptions[] = [
   {
     input: sharedInput,
     output: {
