@@ -40,10 +40,44 @@ class RootKeyStore(private val context: Context) {
     companion object {
         const val ROOTKEY_BYTE_LENGTH = 16
 
+        /**
+         * The three "v1" identifiers below describe **independent**
+         * versioning axes. They share the value `1` today because we are
+         * on the first release; they do not have to move together when
+         * we change one without changing the others.
+         *
+         * - [WRAPPER_KEY_ALIAS]: identifies the AndroidKeyStore-managed
+         *   wrapper key. Bump (`…-v2`) when the wrapper key's params
+         *   change in a way that is incompatible with v1 envelopes —
+         *   different algorithm, different key size, different
+         *   `setUserAuthenticationRequired` / `setUnlockedDeviceRequired`
+         *   flags, or any change that would invalidate existing v1
+         *   ciphertext.
+         *
+         * - [PREFS_KEY]: the SharedPreferences key under which the
+         *   encrypted envelope JSON is stored. Bump (`rootkey.v2`)
+         *   only when we need v1 and v2 envelopes to coexist on the
+         *   same install — e.g. a transitional migration that reads
+         *   v1, decrypts, re-wraps under a v2 wrapper key, and writes
+         *   to `rootkey.v2` while leaving v1 in place as a recovery
+         *   hatch (see `docs/root-key-storage-and-migration-plan.md`
+         *   §2.1). A simple format change that isn't migrating away
+         *   from a still-readable previous version does **not** need
+         *   to bump this.
+         *
+         * - [ENVELOPE_VERSION]: the integer in the envelope JSON's `v`
+         *   field. Bump when the JSON shape itself changes — fields
+         *   added, removed, renamed, or their semantics change.
+         *   Decoupled from [WRAPPER_KEY_ALIAS] because a JSON-shape
+         *   change doesn't necessarily require new ciphertext (and
+         *   vice versa: a wrapper key rotation could keep the same
+         *   envelope schema).
+         */
         const val WRAPPER_KEY_ALIAS = "comapeo-rootkey-wrapper-v1"
         const val PREFS_NAME = "comapeo-core"
         const val PREFS_KEY = "rootkey.v1"
         const val ENVELOPE_VERSION = 1
+
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
         const val GCM_TAG_LENGTH_BITS = 128
         const val GCM_IV_LENGTH_BYTES = 12
