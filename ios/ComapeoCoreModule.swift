@@ -43,7 +43,16 @@ public class ComapeoCoreModule: Module {
             // the new instance will receive stateChange events until the old one is
             // destroyed.
             AppLifecycleDelegate.nodeService.onStateChange = { [weak self] state in
-                self?.sendEvent("stateChange", ["state": state.rawValue])
+                var payload: [String: Any] = ["state": state.rawValue]
+                // Attach the captured error detail when the new state is .error
+                // so JS sees a single event with both the state and the cause,
+                // rather than having to follow up with getLastError().
+                if state == .error,
+                   let info = AppLifecycleDelegate.nodeService.getLastError() {
+                    payload["errorPhase"] = info.phase
+                    payload["errorMessage"] = info.message
+                }
+                self?.sendEvent("stateChange", payload)
             }
         }
 
@@ -67,6 +76,13 @@ public class ComapeoCoreModule: Module {
                 for: AppLifecycleDelegate.nodeService,
                 ipc: self.ipc
             )
+        }
+
+        Function("getLastError") { () -> [String: String]? in
+            guard let info = AppLifecycleDelegate.nodeService.getLastError() else {
+                return nil
+            }
+            return ["errorPhase": info.phase, "errorMessage": info.message]
         }
     }
 }

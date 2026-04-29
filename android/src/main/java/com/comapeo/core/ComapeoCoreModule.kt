@@ -36,14 +36,42 @@ class ComapeoCoreModule : Module() {
     @Volatile
     private var jsState: JsState = JsState.STOPPED
 
-    private fun setState(next: JsState) {
-        if (jsState == next) return
+    /**
+     * Last error captured from the backend's `{type:"error",…}` frame or
+     * derived from a connection-level `NodeJSIPC.State.Error`. Cleared on
+     * any non-ERROR transition so a fresh start cycle doesn't surface
+     * stale details. Exposed to JS via `getLastError()`.
+     */
+    @Volatile
+    private var lastError: Map<String, String>? = null
+
+    private fun setState(next: JsState, errorPayload: Map<String, String>? = null) {
+        if (jsState == next) {
+            // Even if state is unchanged, refresh error details when the
+            // caller has new ones — a second error frame in the same ERROR
+            // state should still be visible to JS.
+            if (next == JsState.ERROR && errorPayload != null) {
+                lastError = errorPayload
+                sendEvent("stateChange", buildEventPayload(next, errorPayload))
+            }
+            return
+        }
         jsState = next
-        sendEvent("stateChange", mapOf("state" to next.raw))
+        lastError = errorPayload
+        sendEvent("stateChange", buildEventPayload(next, errorPayload))
     }
 
-    private fun parseFrameType(message: String): String? = try {
-        JSONObject(message).optString("type", "").takeIf { it.isNotEmpty() }
+    private fun buildEventPayload(
+        state: JsState,
+        errorPayload: Map<String, String>?,
+    ): Map<String, Any> {
+        val payload = mutableMapOf<String, Any>("state" to state.raw)
+        errorPayload?.let { payload.putAll(it) }
+        return payload
+    }
+
+    private fun parseFrame(message: String): JSONObject? = try {
+        JSONObject(message)
     } catch (_: JSONException) {
         null
     }
@@ -67,9 +95,17 @@ class ComapeoCoreModule : Module() {
             controlIpc = NodeJSIPC(
                 controlSocketFile,
                 onMessage = { message ->
-                    when (parseFrameType(message)) {
+                    val parsed = parseFrame(message) ?: return@NodeJSIPC
+                    when (parsed.optString("type", "")) {
                         "ready" -> setState(JsState.STARTED)
                         "started" -> setState(JsState.STARTING)
+                        "error" -> setState(
+                            JsState.ERROR,
+                            mapOf(
+                                "errorPhase" to parsed.optString("phase", "unknown"),
+                                "errorMessage" to parsed.optString("message", "(no message)"),
+                            ),
+                        )
                     }
                 },
                 onConnectionStateChange = { connState ->
@@ -82,7 +118,14 @@ class ComapeoCoreModule : Module() {
                             // Don't downgrade ERROR (terminal until next start).
                             if (jsState != JsState.ERROR) setState(JsState.STOPPED)
                         }
-                        is NodeJSIPC.State.Error -> setState(JsState.ERROR)
+                        is NodeJSIPC.State.Error -> setState(
+                            JsState.ERROR,
+                            mapOf(
+                                "errorPhase" to "ipc",
+                                "errorMessage" to (connState.exception.message
+                                    ?: connState.exception.javaClass.simpleName),
+                            ),
+                        )
                         else -> {}
                     }
                 },
@@ -115,6 +158,13 @@ class ComapeoCoreModule : Module() {
 
         Function("getState") {
             jsState.raw
+        }
+
+        Function("getLastError") {
+            // Return null when there's no captured error so JS sees a
+            // clean `null`, not an empty object that callers have to
+            // sentinel-check.
+            lastError
         }
     }
 }

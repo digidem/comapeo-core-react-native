@@ -2,6 +2,7 @@ import { NativeModule, requireNativeModule, EventEmitter } from "expo";
 import { type JsonValue } from "type-fest";
 import {
   ComapeoCoreModuleEvents,
+  type ComapeoErrorInfo,
   type ComapeoState,
   type MessageEventPayload,
   type StateChangeEventPayload,
@@ -11,6 +12,7 @@ import { createMapeoClient, type MapeoClientApi } from "@comapeo/ipc/client.js";
 declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   postMessage(value: string): void;
   getState(): ComapeoState;
+  getLastError(): ComapeoErrorInfo | null;
 }
 
 // This call loads the native module object from the JSI.
@@ -69,7 +71,7 @@ const messagePort = new CoreMessagePort() as unknown as MessagePort;
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort);
 
 type StateEvents = {
-  stateChange: (state: ComapeoState) => void;
+  stateChange: (state: ComapeoState, error: ComapeoErrorInfo | null) => void;
 };
 
 /**
@@ -80,11 +82,20 @@ type StateEvents = {
  * State transitions are sourced from the native module's `stateChange`
  * event. iOS derives this from the in-process `NodeJSService.onStateChange`
  * callback. Android derives it from the control-socket messages
- * (`started`/`ready`) plus the IPC's connection-state stream.
+ * (`started`/`ready`/`error`) plus the IPC's connection-state stream.
+ *
+ * When the new state is `"ERROR"`, the event payload carries
+ * `errorPhase`/`errorMessage`. Listeners receive a second argument with
+ * the same detail; `getLastError()` returns the last captured error
+ * (null if the service has not entered ERROR since process start).
  */
 class State extends EventEmitter<StateEvents> {
   getState(): ComapeoState {
     return nativeModule.getState();
+  }
+
+  getLastError(): ComapeoErrorInfo | null {
+    return nativeModule.getLastError();
   }
 
   startObserving<EventName extends keyof StateEvents>(eventName: EventName): void {
@@ -98,7 +109,11 @@ class State extends EventEmitter<StateEvents> {
   }
 
   #handleStateChangeEvent = (event: StateChangeEventPayload) => {
-    this.emit("stateChange", event.state);
+    const error: ComapeoErrorInfo | null =
+      event.state === "ERROR" && event.errorPhase && event.errorMessage
+        ? { errorPhase: event.errorPhase, errorMessage: event.errorMessage }
+        : null;
+    this.emit("stateChange", event.state, error);
   };
 }
 

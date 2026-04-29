@@ -52,6 +52,14 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
         STOPPED, STARTING, STARTED, STOPPING, ERROR
     }
 
+    /**
+     * Structured detail attached to ERROR transitions sourced from the
+     * backend's `{type:"error",phase,message,stack?}` control frame.
+     * `phase` mirrors the boot phase strings the backend tags errors with
+     * (`listen-control`, `init`, `construct`, `runtime`).
+     */
+    data class ErrorInfo(val phase: String, val message: String)
+
     interface Callback {
         fun onComplete(exitCode: Int)
         fun onError(e: Exception)
@@ -80,13 +88,24 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
     @Volatile
     private var state: State = State.STOPPED
 
+    @Volatile
+    private var lastError: ErrorInfo? = null
+
     fun getState(): State = state
+
+    fun getLastError(): ErrorInfo? = lastError
 
     private fun transitionState(to: State) {
         if (state == to) return
         log("NodeJSService state: $state -> $to")
         state = to
         onStateChange?.invoke(to)
+    }
+
+    private fun transitionToError(phase: String, message: String) {
+        lastError = ErrorInfo(phase, message)
+        log("NodeJSService error ($phase): $message")
+        transitionState(State.ERROR)
     }
 
     companion object {
@@ -150,7 +169,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
                 callback.onComplete(exitCode)
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting node", e)
-                transitionState(State.ERROR)
+                transitionToError("node-runtime", e.message ?: e.javaClass.simpleName)
                 callback.onError(e)
             } finally {
                 deleteSocketFiles()
@@ -169,17 +188,22 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
      */
     private fun handleControlMessage(message: String) {
         log("Control IPC received: $message")
-        val type = parseFrameType(message) ?: return
-        when (type) {
+        val parsed = parseFrame(message) ?: return
+        when (parsed.optString("type", "")) {
             "started" -> sendInitFrame()
             "ready" -> {
                 if (state == State.STARTING) transitionState(State.STARTED)
             }
+            "error" -> {
+                val phase = parsed.optString("phase", "unknown")
+                val msg = parsed.optString("message", "(no message)")
+                transitionToError(phase, msg)
+            }
         }
     }
 
-    private fun parseFrameType(message: String): String? = try {
-        JSONObject(message).optString("type", "").takeIf { it.isNotEmpty() }
+    private fun parseFrame(message: String): JSONObject? = try {
+        JSONObject(message)
     } catch (e: JSONException) {
         log("Ignoring non-JSON control frame: ${e.message}")
         null
@@ -198,7 +222,7 @@ class NodeJSService(context: android.content.Context) : ContextWrapper(context) 
             RootKeyStore(applicationContext).loadOrInitialize()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load rootkey", e)
-            transitionState(State.ERROR)
+            transitionToError("rootkey", e.message ?: e.javaClass.simpleName)
             // Best-effort: try to abort the node process. nodeJob will
             // observe the cancellation.
             nodeJob?.cancel()

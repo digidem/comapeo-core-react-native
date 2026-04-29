@@ -14,6 +14,16 @@ class NodeJSService {
         case error = "ERROR"
     }
 
+    /// Structured detail attached to .error transitions sourced from the
+    /// backend's `{type:"error",phase,message,stack?}` control frame, or
+    /// from local rootkey-load / startup failures. `phase` mirrors the
+    /// backend's phase strings (`listen-control`, `init`, `construct`,
+    /// `runtime`) plus the local `rootkey` and `node-runtime`.
+    struct ErrorInfo: Equatable {
+        let phase: String
+        let message: String
+    }
+
     /// A blocking function that runs the Node.js runtime.
     /// Takes an array of arguments (e.g. ["node", jsPath, ...]) and blocks until Node exits.
     /// Returns the exit code.
@@ -62,6 +72,18 @@ class NodeJSService {
                 log("NodeJSService state: \(oldValue.rawValue) -> \(state.rawValue)")
             }
         }
+    }
+
+    /// Last error detail observed during this service's lifetime. Set
+    /// alongside an .error transition by `transitionToError`. Reads are
+    /// guarded by `lock`; consumers should call `getLastError()` rather
+    /// than reading the storage directly.
+    private var _lastError: ErrorInfo?
+
+    func getLastError() -> ErrorInfo? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _lastError
     }
 
     /// Creates a NodeJSService with a custom directory.
@@ -123,6 +145,16 @@ class NodeJSService {
         if changed { onStateChange?(newState) }
     }
 
+    /// Records error detail and transitions to .error. Callers must NOT
+    /// hold `lock` (same reason as `transitionState`).
+    private func transitionToError(phase: String, message: String) {
+        lock.lock()
+        _lastError = ErrorInfo(phase: phase, message: message)
+        lock.unlock()
+        log("NodeJSService error (\(phase)): \(message)")
+        transitionState(to: .error)
+    }
+
     func start() {
         lock.lock()
         guard state == .stopped else {
@@ -165,7 +197,9 @@ class NodeJSService {
     /// ordering and gains us forward-compat for additional fields.
     private func handleControlMessage(_ message: String) {
         log("Control IPC received: \(message)")
-        guard let type = parseFrameType(message) else { return }
+        guard let frame = parseFrame(message),
+              let type = frame["type"] as? String, !type.isEmpty
+        else { return }
         switch type {
         case "started":
             sendInitFrame()
@@ -176,21 +210,23 @@ class NodeJSService {
             let canPromote = (state == .starting)
             lock.unlock()
             if canPromote { transitionState(to: .started) }
+        case "error":
+            let phase = (frame["phase"] as? String) ?? "unknown"
+            let msg = (frame["message"] as? String) ?? "(no message)"
+            transitionToError(phase: phase, message: msg)
         default:
             break
         }
     }
 
-    private func parseFrameType(_ message: String) -> String? {
+    private func parseFrame(_ message: String) -> [String: Any]? {
         guard let data = message.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = obj["type"] as? String,
-              !type.isEmpty
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
-            log("Ignoring non-JSON or untyped control frame")
+            log("Ignoring non-JSON control frame")
             return nil
         }
-        return type
+        return obj
     }
 
     /// Reads the rootkey, base64-encodes, and ships the init frame on the
@@ -208,8 +244,7 @@ class NodeJSService {
         do {
             keyBytes = try rootKeyProvider()
         } catch {
-            log("Failed to load rootkey: \(error.localizedDescription)")
-            transitionState(to: .error)
+            transitionToError(phase: "rootkey", message: error.localizedDescription)
             return
         }
         defer {
@@ -270,11 +305,13 @@ class NodeJSService {
 
     private func runNode() {
         guard let jsPath = resolveJSEntryPoint() else {
-            log("Error: Could not find nodejs-project/index.mjs in app bundle")
             lock.lock()
             let sem = nodeCompletionSemaphore
             lock.unlock()
-            transitionState(to: .error)
+            transitionToError(
+                phase: "node-runtime",
+                message: "Could not find nodejs-project/index.mjs in app bundle"
+            )
             sem?.signal()
             return
         }
@@ -337,7 +374,14 @@ class NodeJSService {
         nodeThread = nil
         lock.unlock()
 
-        transitionState(to: threadExited ? .stopped : .error)
+        if threadExited {
+            transitionState(to: .stopped)
+        } else {
+            transitionToError(
+                phase: "shutdown-timeout",
+                message: "Graceful shutdown timed out — node thread still alive"
+            )
+        }
     }
 
     private func deleteSocketFiles() {

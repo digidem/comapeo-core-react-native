@@ -38,4 +38,23 @@ export type MessageErrorEventPayload = {
 
 export type StateChangeEventPayload = {
   state: ComapeoState;
+  /**
+   * Set when `state` is `"ERROR"`. `errorPhase` is one of the backend's
+   * boot phases (`listen-control`, `init`, `construct`, `runtime`) or a
+   * native-derived tag (`rootkey`, `node-runtime`, `shutdown-timeout`,
+   * `ipc`). `errorMessage` is the human-readable message suitable for
+   * developer logs; do not display it directly to end users without
+   * translation.
+   */
+  errorPhase?: string;
+  errorMessage?: string;
+};
+
+/**
+ * Detail captured from the most recent ERROR transition. `null` when the
+ * service has not entered ERROR since process start.
+ */
+export type ComapeoErrorInfo = {
+  errorPhase: string;
+  errorMessage: string;
 };
