@@ -97,7 +97,9 @@ described in §3 are how.
 ### 3.1 The two sockets
 
 Both sockets are AF_UNIX, length-prefixed JSON framing, bound by Node.js
-inside the backend process. Native code connects as a client.
+inside the backend process. Native code connects as a client. The
+control socket is also a write channel from native to Node for the
+init / shutdown / error-native frames listed in the table in §3.1.
 
 #### `comapeo.sock` — application RPC
 
@@ -125,8 +127,10 @@ before it can construct `MapeoManager`. Frames in current use:
 | Node → native | `{type:"started"}` | Control socket bound, backend awaiting init. |
 | Native → Node | `{type:"init",rootKey:"<base64>"}` | Native ships the rootkey from `RootKeyStore` (single-shot). |
 | Node → native | `{type:"ready"}` | `MapeoManager` constructed, comapeo socket bound. |
+| Node → native | `{type:"stopping"}` | Backend has begun graceful shutdown (sent before any close work). |
 | Node → native | `{type:"error",phase,message,stack?}` | Boot failure or uncaught throw at any phase. |
 | Native → Node | `{type:"shutdown"}` | Native requests graceful shutdown. |
+| Native → Node | `{type:"error-native",phase,message}` | FGS-side local failure (rootkey, watchdog) — backend re-broadcasts as an `error` frame and exits. |
 
 **Replay semantics.** `SimpleRpcServer` (`backend/lib/simple-rpc.js`)
 remembers its last readiness phase and replays `started` and `ready` to
@@ -253,75 +257,148 @@ trivial.
 
 ## 5. Lifecycle state machine
 
-This is where the architecture is honest: see §6 for known limitations.
+### 5.1 Per-component states + derivation
 
-### 5.1 Native state
-
-`NodeJSService.State` (both platforms) has five values:
+`NodeJSService.State` (both platforms) is a *derived* value with five
+possibilities — `STOPPED`, `STARTING`, `STARTED`, `STOPPING`, `ERROR`
+— computed by a pure function of three independently-stateful
+components:
 
 ```
-STOPPED   — initial; not running.
-STARTING  — Node spawned (or about to be). Awaiting `ready`.
-STARTED   — `MapeoManager` constructed; RPC safe.
-STOPPING  — graceful shutdown initiated.
-ERROR     — observable failure (rootkey load, backend boot,
-            shutdown timeout, IPC connect, control-socket error
-            frame, watchdog timeout).
+NodeRuntime    ∈ { NotRunning, Running, Exited(code, reason) }
+                 reason ∈ { Requested, Unexpected }
+
+BackendState   ∈ { Unknown, ControlBound, Ready, Stopping,
+                   Error{phase, message} }
+                 (sourced from control-socket frames)
+
+stopRequested  ∈ { false, true }
+                 (set by stop(); cleared on next start())
 ```
 
-Driven by:
-- `start()` → `STARTING`
-- control-socket `{type:"ready"}` → `STARTED`
-- control-socket `{type:"error"}` or local rootkey/init failure
-  or watchdog timeout (default 30s) → `ERROR` with `ErrorInfo{phase, message}`
-- `stop()` → `STOPPING`
-- node thread exit + clean shutdown path → `STOPPED`
-- `cleanup(threadExited: false)` (e.g. `stop()` timeout) → `ERROR`
+`deriveState(nodeRuntime, backendState, stopRequested)` is a small
+decision tree (top to bottom — earlier matches win):
+
+1. Backend reported error → `ERROR`.
+2. Runtime exited unexpectedly → `ERROR`.
+3. `stopRequested` is true → `STOPPED` if runtime is gone, else `STOPPING`.
+4. Backend announced stopping → `STOPPING`.
+5. Backend reached ready → `STARTED`.
+6. Runtime is running OR backend reached controlBound → `STARTING`.
+7. Otherwise → `STOPPED`.
+
+The model addresses three previously-broken paths:
+
+- **Node exits cleanly without an error frame** → `nodeRuntime`
+  becomes `Exited(_, Unexpected)` and the derivation produces `ERROR`
+  deterministically. Without per-component state, this used to land
+  in `STOPPED` (Android) or hang (iOS).
+- **Node crashes (non-zero exit) without an error frame** → same
+  path, same outcome.
+- **FGS-side local failure (rootkey, watchdog) before Node can
+  broadcast** → see §5.5 (Native→Node error forwarding). The FGS
+  ships an `error-native` frame to Node, the backend re-broadcasts
+  via `broadcastError`, and the main-app process gets a real `error`
+  frame with the actual phase rather than a generic disconnect.
+
+### 5.2 What feeds each component
+
+- `NodeRuntime` is set by `start()` (→ `Running`), the runtime exit
+  point in `runNode()` (→ `Exited(code, reason)`), and `cleanup()`
+  / `destroy()` (→ `Exited(0, Requested)` to force a clean STOPPED).
+  The exit reason is classified at exit time: `Requested` if
+  `stopRequested` was true OR `backendState` was `Stopping` or
+  `Error` (an in-flight graceful shutdown OR a backend error already
+  acknowledged). Anything else → `Unexpected`.
+
+- `BackendState` is set by `handleControlMessage` from the four
+  well-known frames (`started` → `ControlBound`, `ready` → `Ready`,
+  `stopping` → `Stopping`, `error` → `Error{phase,message}`) and
+  by local failure paths that share the same conceptual slot
+  (rootkey load failure, startup watchdog timeout, missing JS file
+  → `Error{phase,message}`).
+
+- `stopRequested` is set by `stop()` synchronously, before any I/O.
 
 `ERROR` is **observable but does not tear down the node thread**.
 Recovery is the application's responsibility (restart the FGS on
 Android, re-create the service on iOS, prompt the user, log a report).
+`ERROR` remains **per-instance terminal**: `start()` and `stop()`
+are refused; only `destroy()` (Android) or `cleanup()` (iOS) clears
+the slate, and after that a fresh `NodeJSService` instance is
+required.
 
-### 5.2 JS-visible state
+### 5.3 JS-visible state
 
 `ComapeoState` (`src/ComapeoCore.types.ts`) is the same union, exposed
 to React Native as `state.getState()` and the `stateChange` event. The
 event payload carries optional `errorPhase` / `errorMessage` when the
 state is `ERROR`; `state.getLastError()` returns the structured detail.
 
-### 5.3 Native ↔ JS plumbing
+### 5.4 Native ↔ JS plumbing
 
 **iOS** (`ios/ComapeoCoreModule.swift`): in-process callback —
 `AppLifecycleDelegate.nodeService.onStateChange = { state in
 sendEvent("stateChange", payload) }`. Payload includes
 `state.getLastError()` when the state is `.error`.
 
-**Android** (`ComapeoCoreModule.kt`, main app process): derived from
-the second `NodeJSIPC` connection's combination of:
-- Control-socket frames (`started`, `ready`, `error`).
+**Android** (`ComapeoCoreModule.kt`, main app process): the main app
+process is a separate process from the FGS, so it cannot read FGS-side
+component state directly. Instead it derives JS-visible state from a
+second `NodeJSIPC` connection to the control socket, combining:
+
+- Control-socket frames (`started`, `ready`, `stopping`, `error`).
 - The IPC's own connection state (`Connecting`, `Connected`,
   `Disconnecting`, `Disconnected`, `Error{cause}`).
 
-The derivation is in `setState(...)` and the two `controlIpc` callbacks
-in `OnCreate`. `getLastError()` is exposed via a native `Function`.
+The disconnect-reason logic mirrors the FGS-side derivation:
 
-### 5.4 Errors
+| Pre-disconnect JS state | Outcome |
+|---|---|
+| `ERROR` | stay (terminal) |
+| `STOPPING` or `STOPPED` | → `STOPPED` (graceful) |
+| `STARTING` or `STARTED` | → `ERROR` with phase `node-runtime-unexpected` |
+
+A `stopping` frame from the backend (sent by §5.5) drives the JS state
+to `STOPPING` *before* the socket close, so a graceful shutdown lands
+in `STOPPED`. An unannounced disconnect from a running state lands in
+`ERROR` — that's the cross-process equivalent of the FGS-side
+`NodeRuntime.Exited(_, Unexpected)` rule.
+
+### 5.5 Errors
 
 Three failure surfaces, all converging on `ERROR`:
 
-1. **Local native failures**: rootkey load, JS entry point not found,
-   stop timeout, watchdog timeout. Tagged with phases like `rootkey`,
-   `node-runtime`, `shutdown-timeout`, `starting-timeout`.
-2. **Backend-reported failures**: `process.on("uncaughtException")` and
-   `process.on("unhandledRejection")` route through `handleFatal(phase,
-   error)` which calls `controlIpcServer.broadcastError({phase, message,
-   stack})` and exits 1 after a 100 ms flush wait. Phases: `init`,
-   `listen-control`, `construct`, `runtime`.
-3. **IPC-level failures**: `NodeJSIPC.State.Error` is mapped to `ERROR`
-   with phase `ipc`. Phase distinguishes "connection layer broke" from
-   "backend reported an error".
+1. **Local FGS-side failures** (Android, in the FGS process): rootkey
+   load, JS entry point not found, shutdown timeout, watchdog timeout,
+   unexpected node exit. Tagged with phases like `rootkey`,
+   `node-runtime`, `shutdown-timeout`, `starting-timeout`,
+   `node-runtime-unexpected`. These set `BackendState.Error{phase,
+   message}` (or `NodeRuntime.Exited(_, Unexpected)`) which derives
+   to `ERROR` and populates `_lastError`.
 
-### 5.5 Protocol errors — separate channel
+   For cross-process attribution, the FGS additionally ships an
+   `error-native` frame to Node when the failure is local (rootkey,
+   watchdog) but Node is still alive: the backend's `error-native`
+   handler routes to `handleFatal`, which broadcasts an `error` frame
+   to all control clients (including the main-app process) and exits
+   1 after a 100ms flush. Without this, an FGS rootkey failure leaves
+   Node hanging on `await initPromise` indefinitely — the FGS knows
+   it has failed but has no way to tell the main-app process.
+
+2. **Backend-reported failures**: `process.on("uncaughtException")`
+   and `process.on("unhandledRejection")` route through
+   `handleFatal(phase, error)` which calls
+   `controlIpcServer.broadcastError({phase, message, stack})` and
+   exits 1 after a 100ms flush wait. Phases: `init`,
+   `listen-control`, `construct`, `runtime`. iOS has no separate
+   FGS so all "local" failures funnel through the same path.
+
+3. **IPC-level failures** (Android main-app side): `NodeJSIPC.State.Error`
+   maps to `ERROR` with phase `ipc`. Phase distinguishes "connection
+   layer broke" from "backend reported an error".
+
+### 5.6 Protocol errors — separate channel
 
 Frames the native control-socket parser cannot process (non-JSON,
 missing `type`, or an unknown `type`) are **not** raised to `ERROR`.
@@ -354,128 +431,31 @@ Native plumbing:
 
 ---
 
-## 6. Known limitations & proposed direction
+## 6. Residual limitations
 
-### 6.1 The state machine merges three independently-stateful layers
+The per-component lifecycle model in §5 closes the previously-known
+gaps. The remaining ones are inherent to the platform or out of scope:
 
-The current `NodeJSService.State` is one variable, but it is driven by
-three components whose states are not actually one thing:
+- **Hard Node crashes still lack in-band detail.** A SIGSEGV in a
+  native addon, an OOM kill by the OS, or `process.abort()` ends
+  the process before any code (ours or the backend's) can broadcast
+  an `error` frame. The control socket simply closes and the
+  derivation lands in `ERROR` with the synthetic phase
+  `node-runtime-unexpected` ("Backend disconnected unexpectedly").
+  That's honest — there is no in-band detail to surface — but it
+  means hard-crash diagnostics belong in a separate channel
+  (Sentry / Crashlytics native crash reporting), not in
+  `getLastError()`.
 
-1. **The Foreground Service container** (Android only) — running, not
-   running, stopped by user.
-2. **The Node runtime / thread** — `startNodeWithArguments` not yet
-   called; in flight; returned with exit code N. The runtime can exit
-   for reasons that do not cross the control socket (e.g. SIGSEGV in a
-   native addon, OOM, an unrecoverable `process.abort()`).
-3. **The backend JS code** — pre-listening, control-bound, ready,
-   errored. This is the only one whose state we currently surface.
-
-When these states agree, the merge is fine. When they disagree, the
-current implementation has gaps:
-
-- **Node exits cleanly without an error frame.** Today: state
-  transitions to `STOPPED` via the `finally` block in `start()` (Android)
-  / nothing happens (iOS, the runNode exit signals the completion sem
-  but no state transition happens unless someone calls `stop()` or
-  `cleanup()`). On the main app process (Android) the control socket
-  closes and we transition to `STOPPED` via `NodeJSIPC.State.Disconnected`.
-  All of these are wrong if the exit was unexpected.
-- **Node crashes (non-zero exit) without an error frame.** Same shape;
-  we don't distinguish "node threw an uncaught exception that bypassed
-  our handler" from "graceful shutdown".
-- **The FGS-side `NodeJSService` errors locally (rootkey load fails) but
-  the main app process doesn't see it directly.** This is now handled
-  by the recently-added `{type:"error"}` broadcast (see §5.4) — but the
-  transport is the control socket, which is itself a fragile signal: if
-  the FGS-side rootkey load fails before the control socket has bound,
-  there's no channel to broadcast on.
-
-### 6.2 Proposed direction: per-component state
-
-Model each of the three components as its own state, and derive the
-single `ComapeoState` exposed to JS as a pure function of those inputs:
-
-```
-  Intent        ∈ {Stopped, Starting, Stopping}
-                  (user-requested target — what we're aiming at)
-
-  FgsState      ∈ {NotRunning, Foreground, Stopped}
-                  (Android only; trivially Foreground on iOS)
-
-  NodeRuntime   ∈ {NotRunning, Running, Exited(code, reason)}
-                  (where reason ∈ {requested, unexpected})
-
-  BackendState  ∈ {Unknown, ControlBound, Ready, Error{phase,message}}
-                  (sourced from control-socket frames)
-
-  IpcState      ∈ {Disconnected, Connecting, Connected, Error{cause}}
-                  (per-socket — already exists in NodeJSIPC)
-```
-
-`deriveComapeoState(...)` is then a small decision tree:
-
-```
-  Intent.Stopped + NodeRuntime.NotRunning             → STOPPED
-  Intent.Starting + BackendState.Ready                → STARTED
-  Intent.Starting + BackendState.Error                → ERROR
-  Intent.Starting + NodeRuntime.Exited(_, unexpected) → ERROR
-  Intent.Starting + IpcState.Error                    → ERROR
-  Intent.Starting + (anything else)                   → STARTING
-  Intent.Stopping + NodeRuntime.Exited(_, requested)  → STOPPED
-  Intent.Stopping + (anything else)                   → STOPPING
-  // ... etc.
-```
-
-Benefits:
-
-- Errors are precisely attributable. An ERROR transition carries which
-  component's state caused it.
-- Node exit without an error frame is naturally handled — `NodeRuntime`
-  becomes `Exited(_, unexpected)` and the derivation produces `ERROR`.
-- Race conditions between components are reasoned about as
-  state-merging in a pure function rather than ad-hoc transitions.
-- Tests can drive each component's state independently; today they have
-  to drive a real (or mock) backend to exercise the merged state.
-
-Costs:
-
-- More state types and more transitions to maintain.
-- The derivation function needs to be carefully designed and tested.
-- The main app process (Android) currently has no way to observe
-  `NodeRuntime.Exited(_, unexpected)` — that information lives in the
-  FGS process. We'd need either a side channel (file write on exit,
-  Messenger, ContentProvider) or a control-socket convention (e.g.
-  backend broadcasts `{type:"stopping"}` before its shutdown handler
-  closes, so an unannounced disconnect is unambiguously unexpected).
-
-A simpler intermediate fix is option (a) below; the per-component model
-is option (b).
-
-#### 6.2.a Intermediate fix: announce shutdown-in-progress
-
-Backend's `shutdown` handler broadcasts `{type:"stopping"}` BEFORE
-closing servers. Native (both FGS-side and main-app-side on Android)
-tracks an `expectingDisconnect` flag set by either `stopping` or
-`error` frames. On `controlIpc.Disconnected`:
-
-- If `expectingDisconnect` was set, transition to `STOPPED`.
-- If not, transition to `ERROR` with phase `node-exit-unexpected`.
-
-This catches the "node exits without an error frame" case without
-introducing per-component state. ~30 LOC of Kotlin/Swift on each
-platform plus one broadcast in the backend.
-
-#### 6.2.b Bigger fix: per-component state
-
-The model above. Estimated cost: ~200 LOC of new Kotlin/Swift state
-types + a derivation function, tests for the derivation, refactor of
-the existing `transitionState` / `transitionToError` callers to update
-the appropriate component-state instead. The derivation function is
-shared across platforms in spirit but not in code (one each in Kotlin
-and Swift), and the JS layer doesn't change.
-
-This is a candidate for a follow-up PR; it does not block the current
-rootkey work shipping.
+- **`error-native` requires a connected control IPC.** The FGS-side
+  `error-native` channel (§5.5) preserves cross-process error
+  attribution for FGS-local failures (rootkey, watchdog) when Node
+  is alive. If the FGS fails *before* the control IPC has connected
+  (a very narrow window — the IPC connect runs in the FGS service's
+  init block alongside Node startup), the frame is dropped and the
+  main-app process falls back to the synthetic
+  `node-runtime-unexpected` phase. This is no worse than the
+  pre-refactor baseline.
 
 ---
 

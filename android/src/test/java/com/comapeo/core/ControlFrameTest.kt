@@ -27,6 +27,11 @@ class ControlFrameTest {
     }
 
     @Test
+    fun parsesStopping() {
+        assertEquals(ControlFrame.Stopping, ControlFrame.parse("""{"type":"stopping"}"""))
+    }
+
+    @Test
     fun parsesErrorWithPhaseAndMessage() {
         val frame = ControlFrame.parse(
             """{"type":"error","phase":"construct","message":"boom"}"""

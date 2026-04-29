@@ -83,13 +83,18 @@ final class MockBackend {
         handshakeComplete.signal()
 
         // Continue reading so a subsequent shutdown frame is observed by
-        // tests that drive `service.stop()`.
+        // tests that drive `service.stop()`. On shutdown, mirror the
+        // production backend's behavior: broadcast `stopping` BEFORE
+        // closing the connection. The service's exit-classification
+        // logic relies on this — without `stopping`, an exit during
+        // STARTED is classified as unexpected (= ERROR).
         while true {
             guard let frame = MockNodeServer.receiveFramedMessage(fd: fd) else { return }
             if frame.contains("\"shutdown\"") {
                 lock.lock()
                 receivedShutdown = true
                 lock.unlock()
+                MockNodeServer.sendFramedMessage(fd: fd, message: #"{"type":"stopping"}"#)
                 return
             }
         }

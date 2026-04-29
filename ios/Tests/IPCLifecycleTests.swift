@@ -103,22 +103,31 @@ final class IPCLifecycleTests: XCTestCase {
 
         // Start service first so deleteSocketFiles() runs before servers are created
         let started = expectation(description: "Service started")
-        service.onStateChange = { if $0 == .started { started.fulfill() } }
+        let stopping = expectation(description: "Service reached stopping")
+        let stopped = expectation(description: "Service stopped")
+        service.onStateChange = {
+            if $0 == .started { started.fulfill() }
+            if $0 == .stopping { stopping.fulfill() }
+            if $0 == .stopped { stopped.fulfill() }
+        }
         let backend = try startServiceWithMockBackend(service)
         defer { backend.stop() }
-        waitForExpectations(timeout: 5)
+        wait(for: [started], timeout: 5)
 
-        // Stop the service asynchronously
-        let stopped = expectation(description: "Service stopped")
+        // Stop the service asynchronously. stop() blocks waiting for
+        // the runtime to exit; signalNodeExit below is what unblocks
+        // it. We need to wait for STOPPING before signaling so that
+        // the runtime exit is classified as `.requested` (graceful)
+        // rather than `.unexpected` (which would derive to ERROR).
+        let stopReturned = expectation(description: "stop() returned")
         DispatchQueue.global().async {
             service.stop(timeout: 3)
-            stopped.fulfill()
+            stopReturned.fulfill()
         }
-
-        // Signal mock node to exit so stop() can complete
+        wait(for: [stopping], timeout: 5)
         signalNodeExit()
 
-        waitForExpectations(timeout: 5)
+        wait(for: [stopped, stopReturned], timeout: 5)
         XCTAssertEqual(service.state, .stopped)
         XCTAssertTrue(
             backend.receivedShutdown,

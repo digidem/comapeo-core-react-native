@@ -19,6 +19,11 @@ import Foundation
 enum ControlFrame {
     case started
     case ready
+    /// Backend has begun graceful shutdown. Sent before any close work so
+    /// peers can distinguish "expected disconnect" from "unexpected
+    /// disconnect" — a control socket that closes without a preceding
+    /// `.stopping` is unambiguously a crash or kill, not a graceful exit.
+    case stopping
     case error(phase: String, message: String)
     /// The frame could not be processed: not JSON, missing `type`, or
     /// `type` not in the well-known set. `detail` is a developer-facing
@@ -39,6 +44,8 @@ enum ControlFrame {
             return .started
         case "ready":
             return .ready
+        case "stopping":
+            return .stopping
         case "error":
             let phase = (obj["phase"] as? String) ?? "unknown"
             let message = (obj["message"] as? String) ?? "(no message)"

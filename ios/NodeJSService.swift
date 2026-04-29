@@ -5,8 +5,27 @@ import Foundation
 /// Unlike Android (which uses a foreground service in a separate process), iOS runs
 /// Node.js in-process. Graceful shutdown is triggered when the app is about to be
 /// terminated (`applicationWillTerminate`).
+///
+/// ## State model
+///
+/// The public `state: State` is a *derived* value. Internally the
+/// service tracks three independently-stateful components and computes
+/// `state` as a pure function of them via `deriveState`:
+///
+/// - `nodeRuntime`: whether the Node.js thread is not running, running,
+///   or exited (with a reason).
+/// - `backendState`: what the backend has told us via control-socket
+///   frames (`started`, `ready`, `stopping`, `error`).
+/// - `stopRequested`: whether `stop()` has been called this lifetime.
+///
+/// Replacing the previous single-variable model with derived state
+/// makes "node exits without a control frame" detectable: the
+/// `nodeRuntime` becomes `.exited(_, .unexpected)` and the derivation
+/// produces ERROR deterministically. Each ERROR transition carries
+/// which component caused it via `_lastError`.
 class NodeJSService {
     /// Lifecycle states. Mirrors Android's `NodeJSService.State` 1:1.
+    /// This is a *derived* state — see `deriveState` for the inputs.
     ///
     /// **`.error` is per-instance terminal.** `start()` and `stop()`
     /// are refused once the service has entered `.error`; the only way
@@ -25,12 +44,51 @@ class NodeJSService {
 
     /// Structured detail attached to .error transitions sourced from the
     /// backend's `{type:"error",phase,message,stack?}` control frame, or
-    /// from local rootkey-load / startup failures. `phase` mirrors the
-    /// backend's phase strings (`listen-control`, `init`, `construct`,
-    /// `runtime`) plus the local `rootkey` and `node-runtime`.
+    /// from local rootkey-load / startup failures, or synthesized when
+    /// the node thread exits unexpectedly without a frame. `phase`
+    /// mirrors the backend's phase strings (`listen-control`, `init`,
+    /// `construct`, `runtime`) plus the local `rootkey`,
+    /// `starting-timeout`, `shutdown-timeout`, `node-runtime-unexpected`,
+    /// `node-runtime`.
     struct ErrorInfo: Equatable {
         let phase: String
         let message: String
+    }
+
+    // MARK: - Component state (derivation inputs)
+
+    /// Whether the Node.js runtime thread is running, not yet started, or has
+    /// exited. The `exited` reason distinguishes a graceful exit (we asked
+    /// for it via `stop()` or saw a `stopping` frame) from an unexpected
+    /// one (thread returned without us asking) — the latter derives to
+    /// `.error` so a crash in a native addon or an unrecoverable
+    /// `process.abort()` is observable as ERROR rather than STOPPED.
+    enum NodeRuntimeState: Equatable {
+        case notRunning
+        case running
+        case exited(code: Int32, reason: ExitReason)
+    }
+
+    enum ExitReason: Equatable {
+        /// `stop()` was called or the backend broadcast `{type:"stopping"}`
+        /// before the thread exited. The graceful path.
+        case requested
+        /// The thread returned without a preceding stop signal. Derives
+        /// to ERROR via `deriveState`.
+        case unexpected
+    }
+
+    /// What the backend has told us via control-socket frames, plus local
+    /// failures that share the same conceptual slot (rootkey load,
+    /// watchdog timeout). Mirrors the boot phases the backend tags errors
+    /// with, with `unknown` for "no frames yet" and `controlBound` for
+    /// "received `started`, awaiting init→ready".
+    enum BackendState: Equatable {
+        case unknown
+        case controlBound
+        case ready
+        case stopping
+        case error(phase: String, message: String)
     }
 
     /// A blocking function that runs the Node.js runtime.
@@ -94,6 +152,10 @@ class NodeJSService {
     /// `ComapeoCoreModule` to forward as a JS-visible event.
     var onMessageError: ((String) -> Void)?
 
+    /// Cached derivation of the public lifecycle state. Recomputed by
+    /// `applyAndEmit` after every component-state mutation; kept as a
+    /// stored property so external readers (`ComapeoCoreModule`) get
+    /// O(1) access without having to take the lock.
     private(set) var state: State = .stopped {
         didSet {
             if oldValue != state {
@@ -102,8 +164,13 @@ class NodeJSService {
         }
     }
 
+    // Component state (all mutated only under `lock`).
+    private var nodeRuntime: NodeRuntimeState = .notRunning
+    private var backendState: BackendState = .unknown
+    private var stopRequested: Bool = false
+
     /// Last error detail observed during this service's lifetime. Set
-    /// alongside an .error transition by `transitionToError`. Reads are
+    /// by `applyAndEmit` when a transition lands in `.error`. Reads are
     /// guarded by `lock`; consumers should call `getLastError()` rather
     /// than reading the storage directly.
     private var _lastError: ErrorInfo?
@@ -167,43 +234,104 @@ class NodeJSService {
         deleteSocketFiles()
     }
 
-    /// Transitions to `newState` under the lock and fires `onStateChange`
-    /// outside it. Callers must NOT hold `lock` when calling this; the callback
-    /// otherwise runs while the lock is held, which would deadlock if the
-    /// observer re-enters any other locked method.
-    private func transitionState(to newState: State) {
-        lock.lock()
-        let changed = state != newState
-        let leavingStarting = changed && state == .starting
-        state = newState
-        let watchdog = leavingStarting ? startupWatchdog : nil
-        if leavingStarting { startupWatchdog = nil }
-        lock.unlock()
-        // Cancel the watchdog outside the lock — `cancel()` doesn't take
-        // any of our locks but the principle (no callbacks under lock)
-        // holds for any future addition here.
-        watchdog?.cancel()
-        if changed { onStateChange?(newState) }
+    // MARK: - Derivation
+
+    /// Pure function: maps the three component states to the public
+    /// `State`. Exposed at file-internal visibility so unit tests can
+    /// drive the table directly without touching a real service.
+    ///
+    /// Decision order (top to bottom — earlier matches win):
+    /// 1. Any backend-reported error → ERROR.
+    /// 2. An unexpected runtime exit → ERROR.
+    /// 3. A stop has been requested → STOPPED if the runtime is gone,
+    ///    STOPPING otherwise.
+    /// 4. Backend announced `stopping` → STOPPING.
+    /// 5. Backend reached `ready` → STARTED.
+    /// 6. Runtime is running OR backend reached `controlBound` → STARTING.
+    /// 7. Otherwise → STOPPED.
+    static func deriveState(
+        nodeRuntime: NodeRuntimeState,
+        backendState: BackendState,
+        stopRequested: Bool
+    ) -> State {
+        if case .error = backendState { return .error }
+        if case .exited(_, .unexpected) = nodeRuntime { return .error }
+
+        if stopRequested {
+            switch nodeRuntime {
+            case .notRunning, .exited:
+                return .stopped
+            default:
+                return .stopping
+            }
+        }
+        if case .stopping = backendState { return .stopping }
+        if case .ready = backendState { return .started }
+
+        if case .running = nodeRuntime { return .starting }
+        if case .controlBound = backendState { return .starting }
+
+        if case .exited(_, .requested) = nodeRuntime { return .stopped }
+        return .stopped
     }
 
-    /// Atomically records error detail and transitions to .error. The
-    /// `_lastError` write and the state mutation share a single critical
-    /// section so an observer reading `getLastError()` from the
-    /// `onStateChange` callback always sees the matching pair, even if
-    /// two threads race transitionToError simultaneously. Callers must
-    /// NOT hold `lock` (same reason as `transitionState`).
-    private func transitionToError(phase: String, message: String) {
+    /// Mutates one or more component-state fields under the lock,
+    /// recomputes the derived `state`, and fires `onStateChange` outside
+    /// the lock if the derived value changed.
+    ///
+    /// `error` is set when the transition has a caller-supplied error
+    /// detail (most error paths). When the derived state lands in
+    /// `.error` *without* a caller-supplied detail (e.g. an unexpected
+    /// `nodeRuntime.exited`), a synthetic `ErrorInfo` is generated from
+    /// the offending component so `getLastError()` is never silent on
+    /// an ERROR.
+    ///
+    /// Callers must NOT hold `lock` — the callback runs outside the
+    /// lock to prevent deadlock if an observer re-enters any locked
+    /// method.
+    private func applyAndEmit(
+        error: ErrorInfo? = nil,
+        _ mutate: () -> Void
+    ) {
         lock.lock()
-        _lastError = ErrorInfo(phase: phase, message: message)
-        let changed = state != .error
-        let leavingStarting = changed && state == .starting
-        if changed { state = .error }
+        mutate()
+        if let error = error {
+            _lastError = error
+        }
+        let derived = NodeJSService.deriveState(
+            nodeRuntime: nodeRuntime,
+            backendState: backendState,
+            stopRequested: stopRequested
+        )
+        let prev = state
+        let enteringError = derived == .error && prev != .error
+        state = derived
+
+        // Synthesize a lastError if we're entering ERROR and the caller
+        // didn't supply one. The backend-reported error path always
+        // passes one in; the unexpected-runtime-exit path doesn't, so
+        // we derive from the component state here.
+        if enteringError && error == nil {
+            if case .error(let phase, let message) = backendState {
+                _lastError = ErrorInfo(phase: phase, message: message)
+            } else if case .exited(let code, .unexpected) = nodeRuntime {
+                _lastError = ErrorInfo(
+                    phase: "node-runtime-unexpected",
+                    message: "Node thread exited unexpectedly with code \(code)"
+                )
+            }
+        }
+
+        let leavingStarting = (prev == .starting && derived != .starting)
         let watchdog = leavingStarting ? startupWatchdog : nil
         if leavingStarting { startupWatchdog = nil }
         lock.unlock()
-        log("NodeJSService error (\(phase)): \(message)")
+
+        // Cancel the watchdog outside the lock — `cancel()` doesn't
+        // currently take any of our locks but the no-callbacks-under-lock
+        // discipline holds for any future addition here.
         watchdog?.cancel()
-        if changed { onStateChange?(.error) }
+        if prev != derived { onStateChange?(derived) }
     }
 
     func start() {
@@ -215,7 +343,14 @@ class NodeJSService {
         }
         nodeCompletionSemaphore = DispatchSemaphore(value: 0)
         lock.unlock()
-        transitionState(to: .starting)
+
+        // Reset component state for a fresh start cycle and transition
+        // STOPPED → STARTING via the derivation.
+        applyAndEmit {
+            self.nodeRuntime = .running
+            self.backendState = .unknown
+            self.stopRequested = false
+        }
 
         // Arm the startup watchdog. Captured `[weak self]` to avoid a
         // retain cycle holding the service alive past its natural
@@ -229,10 +364,13 @@ class NodeJSService {
             let stillStarting = (self.state == .starting)
             self.lock.unlock()
             if stillStarting {
-                self.transitionToError(
+                let info = ErrorInfo(
                     phase: "starting-timeout",
                     message: "Service did not reach .started within \(Int(self.startupTimeout))s"
                 )
+                self.applyAndEmit(error: info) {
+                    self.backendState = .error(phase: info.phase, message: info.message)
+                }
             }
         }
         lock.lock()
@@ -265,27 +403,33 @@ class NodeJSService {
         thread.start()
     }
 
-    /// Routes raw control-socket frames into lifecycle transitions.
+    /// Routes raw control-socket frames into component-state mutations.
     ///
     /// Frames are JSON of the shape `{"type":"<name>",…}` (well-known
-    /// names: `started`, `ready`, `error`). We're already on the IPC's
-    /// receive queue and the init-frame send dispatches async on the
-    /// IPC's send queue, so a real parser costs nothing in latency or
-    /// ordering and gains us forward-compat for additional fields.
+    /// names: `started`, `ready`, `stopping`, `error`). We're already on
+    /// the IPC's receive queue and the init-frame send dispatches async
+    /// on the IPC's send queue, so a real parser costs nothing in
+    /// latency or ordering and gains us forward-compat for additional
+    /// fields.
     private func handleControlMessage(_ message: String) {
         log("Control IPC received: \(message)")
         switch ControlFrame.parse(message) {
         case .started:
+            applyAndEmit { self.backendState = .controlBound }
             sendInitFrame()
         case .ready:
-            // Don't downgrade from .stopping back to .started — stop() may
-            // have raced ahead of the backend's `ready` broadcast.
-            lock.lock()
-            let canPromote = (state == .starting)
-            lock.unlock()
-            if canPromote { transitionState(to: .started) }
+            applyAndEmit { self.backendState = .ready }
+        case .stopping:
+            // Backend is gracefully shutting down. The next thing we'll
+            // see is the socket close; the derivation maps this to
+            // STOPPING, and the subsequent runtime exit will derive to
+            // STOPPED (via `.exited(_, .requested)`).
+            applyAndEmit { self.backendState = .stopping }
         case .error(let phase, let message):
-            transitionToError(phase: phase, message: message)
+            let info = ErrorInfo(phase: phase, message: message)
+            applyAndEmit(error: info) {
+                self.backendState = .error(phase: phase, message: message)
+            }
         case .malformed(let detail):
             // Logged + forwarded via `onMessageError` (the JS bridge
             // wires it to the `messageerror` event). Not raised to
@@ -300,13 +444,14 @@ class NodeJSService {
     /// control socket. Called exactly once per start cycle, in response to
     /// the backend's `started` broadcast.
     ///
-    /// Failures transition to `.error` and capture the cause via
-    /// `transitionToError`. We deliberately do **not** tear down the node
-    /// thread here: `.error` is observable by the application (via the
-    /// JS `stateChange` event), and recovery — calling `stop()`+`cleanup()`
-    /// then re-creating the service, prompting the user, etc. — is the
-    /// application's responsibility. Tearing down inside this layer would
-    /// race with the application's own ERROR observation.
+    /// Failures transition to `.error` via `backendState = .error(...)`
+    /// and capture the cause. We deliberately do **not** tear down the
+    /// node thread here: `.error` is observable by the application (via
+    /// the JS `stateChange` event), and recovery — calling
+    /// `stop()`+`cleanup()` then re-creating the service, prompting the
+    /// user, etc. — is the application's responsibility. Tearing down
+    /// inside this layer would race with the application's own ERROR
+    /// observation.
     ///
     /// See the `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` note in
     /// `RootKeyStore`: a device that has never been unlocked since reboot
@@ -318,7 +463,10 @@ class NodeJSService {
         do {
             keyBytes = try rootKeyProvider()
         } catch {
-            transitionToError(phase: "rootkey", message: error.localizedDescription)
+            let info = ErrorInfo(phase: "rootkey", message: error.localizedDescription)
+            applyAndEmit(error: info) {
+                self.backendState = .error(phase: info.phase, message: info.message)
+            }
             return
         }
         defer {
@@ -349,7 +497,10 @@ class NodeJSService {
         }
         let completionSem = nodeCompletionSemaphore
         lock.unlock()
-        transitionState(to: .stopping)
+
+        // Mark intent — this drives the derivation toward STOPPING and
+        // (once the runtime exits) STOPPED.
+        applyAndEmit { self.stopRequested = true }
 
         // Send shutdown message — this causes Node.js JS code to exit,
         // which unblocks node_start() in runNode().
@@ -382,10 +533,13 @@ class NodeJSService {
             lock.lock()
             let sem = nodeCompletionSemaphore
             lock.unlock()
-            transitionToError(
+            let info = ErrorInfo(
                 phase: "node-runtime",
                 message: "Could not find nodejs-project/index.mjs in app bundle"
             )
+            applyAndEmit(error: info) {
+                self.backendState = .error(phase: info.phase, message: info.message)
+            }
             sem?.signal()
             return
         }
@@ -394,7 +548,7 @@ class NodeJSService {
         let completionSem = nodeCompletionSemaphore
         lock.unlock()
         // Stay in `.starting` while Node spins up — the transition to
-        // `.started` now waits for the backend's `ready` broadcast (after
+        // `.started` waits for the backend's `ready` broadcast (after
         // ComapeoManager is constructed), driven by `handleControlMessage`.
 
         // argv shape matches Android's NodeJSService.kt:
@@ -423,6 +577,31 @@ class NodeJSService {
         let exitCode = nodeEntryPoint(args)
         log("Node.js exited with code \(exitCode)")
 
+        // Classify the exit. "Requested" means we asked for it (stop()
+        // was called) or the backend announced it (`stopping` frame
+        // landed before exit). Anything else is unexpected — a crash
+        // in a native addon, a `process.abort()` we didn't see coming,
+        // a SIGSEGV — and derives to ERROR with a synthesized phase.
+        applyAndEmit {
+            let isRequested: Bool
+            if self.stopRequested {
+                isRequested = true
+            } else if case .stopping = self.backendState {
+                isRequested = true
+            } else if case .error = self.backendState {
+                // An error frame already arrived; treat the exit as
+                // matching that error (the derivation keeps ERROR via
+                // backendState anyway). Reason here is bookkeeping only.
+                isRequested = true
+            } else {
+                isRequested = false
+            }
+            self.nodeRuntime = .exited(
+                code: exitCode,
+                reason: isRequested ? .requested : .unexpected
+            )
+        }
+
         // Signal that the node thread has finished
         completionSem?.signal()
     }
@@ -449,12 +628,32 @@ class NodeJSService {
         lock.unlock()
 
         if threadExited {
-            transitionState(to: .stopped)
+            // `threadExited: true` is the caller asserting the runtime
+            // has finished (via stop(), or because the application is
+            // tearing down deliberately). Per the documented contract,
+            // this always lands in .stopped — including from .error,
+            // since cleanup-from-error is the recovery path after which
+            // the application is expected to create a fresh instance.
+            // We force the three component states that the derivation
+            // reads, but leave `_lastError` intact so a caller that
+            // observed ERROR can still read getLastError() after
+            // cleanup() to decide what to do next.
+            applyAndEmit {
+                self.stopRequested = true
+                self.nodeRuntime = .exited(code: 0, reason: .requested)
+                // Drop a backend-side .error / .stopping / .ready /
+                // .controlBound: those drove the previous derivation,
+                // we now want a clean .stopped.
+                self.backendState = .unknown
+            }
         } else {
-            transitionToError(
+            let info = ErrorInfo(
                 phase: "shutdown-timeout",
                 message: "Graceful shutdown timed out — node thread still alive"
             )
+            applyAndEmit(error: info) {
+                self.backendState = .error(phase: info.phase, message: info.message)
+            }
         }
     }
 
