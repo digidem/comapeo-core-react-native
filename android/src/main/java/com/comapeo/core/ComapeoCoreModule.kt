@@ -33,7 +33,22 @@ class ComapeoCoreModule : Module() {
      */
     private lateinit var controlIpc: NodeJSIPC
 
-    @Volatile
+    /**
+     * Single mutex protecting `jsState` and `lastError`. `setState` is
+     * called from two independent control-IPC callbacks (`onMessage`
+     * and `onConnectionStateChange`) which run on separate IPC
+     * coroutines and can fire concurrently — e.g. an ERROR frame
+     * arriving on the receive loop while the connection-state stream
+     * is firing Disconnected. Without serialisation the two updates
+     * would interleave and produce a dropped-or-overwritten state plus
+     * an event payload that disagrees with what `getState()` returns
+     * when JS reads it from the listener.
+     *
+     * The lock is held for the read-modify-write only; `sendEvent` is
+     * invoked outside it so an observer that synchronously calls back
+     * into the module can't deadlock.
+     */
+    private val stateLock = Any()
     private var jsState: JsState = JsState.STOPPED
 
     /**
@@ -42,23 +57,26 @@ class ComapeoCoreModule : Module() {
      * any non-ERROR transition so a fresh start cycle doesn't surface
      * stale details. Exposed to JS via `getLastError()`.
      */
-    @Volatile
     private var lastError: Map<String, String>? = null
 
     private fun setState(next: JsState, errorPayload: Map<String, String>? = null) {
-        if (jsState == next) {
-            // Even if state is unchanged, refresh error details when the
-            // caller has new ones — a second error frame in the same ERROR
-            // state should still be visible to JS.
-            if (next == JsState.ERROR && errorPayload != null) {
-                lastError = errorPayload
-                sendEvent("stateChange", buildEventPayload(next, errorPayload))
+        var eventToEmit: Map<String, Any>? = null
+        synchronized(stateLock) {
+            if (jsState == next) {
+                // Even if state is unchanged, refresh error details when
+                // the caller has new ones — a second error frame in the
+                // same ERROR state should still be visible to JS.
+                if (next == JsState.ERROR && errorPayload != null) {
+                    lastError = errorPayload
+                    eventToEmit = buildEventPayload(next, errorPayload)
+                }
+                return@synchronized
             }
-            return
+            jsState = next
+            lastError = errorPayload
+            eventToEmit = buildEventPayload(next, errorPayload)
         }
-        jsState = next
-        lastError = errorPayload
-        sendEvent("stateChange", buildEventPayload(next, errorPayload))
+        eventToEmit?.let { sendEvent("stateChange", it) }
     }
 
     private fun buildEventPayload(
@@ -132,7 +150,11 @@ class ComapeoCoreModule : Module() {
                         is NodeJSIPC.State.Disconnecting -> setState(JsState.STOPPING)
                         is NodeJSIPC.State.Disconnected -> {
                             // Don't downgrade ERROR (terminal until next start).
-                            if (jsState != JsState.ERROR) setState(JsState.STOPPED)
+                            // Read jsState under the lock so a concurrent
+                            // ERROR transition from onMessage can't be
+                            // missed by a stale read here.
+                            val current = synchronized(stateLock) { jsState }
+                            if (current != JsState.ERROR) setState(JsState.STOPPED)
                         }
                         is NodeJSIPC.State.Error -> setState(
                             JsState.ERROR,
@@ -181,14 +203,14 @@ class ComapeoCoreModule : Module() {
         }
 
         Function("getState") {
-            jsState.raw
+            synchronized(stateLock) { jsState.raw }
         }
 
         Function("getLastError") {
             // Return null when there's no captured error so JS sees a
             // clean `null`, not an empty object that callers have to
             // sentinel-check.
-            lastError
+            synchronized(stateLock) { lastError }
         }
     }
 }
