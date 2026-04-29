@@ -62,6 +62,13 @@ public class ComapeoCoreModule: Module {
         }
 
         OnAppEntersForeground {
+            // `connect()` on NodeJSIPC is idempotent: it early-returns
+            // when the IPC is already .connected/.connecting/.disconnecting
+            // and resets a prior .error state so a fresh connect attempt
+            // can succeed. Calling it on every foreground is the cheap
+            // way to recover from a transient connection failure (e.g.
+            // an iOS suspension that closed the underlying fd) without
+            // tracking IPC state at this layer.
             self.ipc?.connect()
         }
 
