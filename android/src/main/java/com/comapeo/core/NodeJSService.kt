@@ -58,11 +58,19 @@ class NodeJSService(
      * - STARTED  — RPC is safe to use. The comapeo socket is bound.
      * - STOPPING — graceful shutdown initiated.
      * - ERROR    — observable failure (rootkey load failed, backend boot
-     *              error, shutdown timed out, IPC connect error). The
-     *              node thread may still be alive — this layer does not
-     *              tear it down. Recovery (restart the FGS, prompt the
-     *              user, log a report) is the application's call;
-     *              `getLastError()` carries the structured detail.
+     *              error, shutdown timed out, IPC connect error,
+     *              malformed control frame). `getLastError()` carries
+     *              the structured detail.
+     *
+     * **ERROR is per-instance terminal.** Once an instance enters ERROR,
+     * `start()` and `stop()` are refused — the application must
+     * `destroy()` the instance and create a fresh `NodeJSService`. On
+     * Android this is the natural model: the FGS creates a new
+     * `NodeJSService` in `onCreate` for every service start, so a
+     * recovery flow is "stop the FGS, start it again" and a brand-new
+     * instance gets STOPPED → STARTING. The node thread may still be
+     * alive when ERROR is set (this layer does not tear it down on
+     * error); `destroy()` is what releases it.
      */
     enum class State {
         STOPPED, STARTING, STARTED, STOPPING, ERROR
@@ -214,6 +222,20 @@ class NodeJSService(
     }
 
     fun start(callback: Callback) {
+        // Strict guard: start is only valid from STOPPED. Refusing
+        // STARTING/STARTED is the existing behaviour (nodeJob check
+        // below); refusing STOPPING/ERROR is the new behaviour that
+        // makes ERROR per-instance terminal — a caller that sees ERROR
+        // must `destroy()` and create a new instance to recover, which
+        // is what the FGS lifecycle does naturally on Android. iOS has
+        // the same guard.
+        val current = getState()
+        if (current != State.STOPPED) {
+            throw IllegalStateException(
+                "Cannot start NodeJS service from state $current; must be STOPPED " +
+                    "(call destroy() and create a new instance to recover from ERROR)",
+            )
+        }
         if (nodeJob != null) {
             throw IllegalStateException("NodeJS service is already running")
         }
@@ -353,6 +375,18 @@ class NodeJSService(
     }
 
     suspend fun stop() {
+        // Strict guard: stop is only valid from STARTING/STARTED.
+        // Refusing STOPPED/STOPPING is "nothing to do, already there".
+        // Refusing ERROR is what makes ERROR per-instance terminal —
+        // a stop() on ERROR would otherwise transition ERROR -> STOPPING,
+        // a transition that doesn't map to any clear semantic.
+        // Callers that need to release resources after ERROR should
+        // call `destroy()`. iOS has the same guard.
+        val current = getState()
+        if (current != State.STARTING && current != State.STARTED) {
+            log("Cannot stop NodeJS service from state $current (not STARTING/STARTED)")
+            return
+        }
         if (nodeJob == null) {
             log("NodeJS service is not running, nothing to stop")
             return

@@ -6,6 +6,15 @@ import Foundation
 /// Node.js in-process. Graceful shutdown is triggered when the app is about to be
 /// terminated (`applicationWillTerminate`).
 class NodeJSService {
+    /// Lifecycle states. Mirrors Android's `NodeJSService.State` 1:1.
+    ///
+    /// **`.error` is per-instance terminal.** `start()` and `stop()`
+    /// are refused once the service has entered `.error`; the only way
+    /// out is `cleanup()` (which lands in `.stopped` if the node thread
+    /// has actually exited, or `.error` again if it hasn't) followed
+    /// by creating a fresh `NodeJSService` instance. The node thread
+    /// may still be alive when `.error` is set (this layer does not
+    /// tear it down on error); `cleanup()` is what releases it.
     enum State: String {
         case stopped = "STOPPED"
         case starting = "STARTING"
