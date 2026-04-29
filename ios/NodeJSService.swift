@@ -289,6 +289,14 @@ class NodeJSService {
     /// Callers must NOT hold `lock` — the callback runs outside the
     /// lock to prevent deadlock if an observer re-enters any locked
     /// method.
+    ///
+    /// **`mutate` discipline:** the closure runs while `lock` is held
+    /// (NSLock is non-recursive). It must restrict itself to direct
+    /// writes of the component-state fields — `nodeRuntime`,
+    /// `backendState`, `stopRequested`, `_lastError`. It must NOT
+    /// call any other locked method, fire `onStateChange`, recurse
+    /// into `applyAndEmit`, or invoke arbitrary callbacks — any of
+    /// those would deadlock.
     private func applyAndEmit(
         error: ErrorInfo? = nil,
         _ mutate: () -> Void
@@ -345,11 +353,17 @@ class NodeJSService {
         lock.unlock()
 
         // Reset component state for a fresh start cycle and transition
-        // STOPPED → STARTING via the derivation.
+        // STOPPED → STARTING via the derivation. `_lastError` is cleared
+        // explicitly: today this only matters as defense-in-depth (the
+        // `state == .stopped` guard above means fresh start is
+        // reachable only from STOPPED, where `_lastError` is nil in
+        // clean cycles) but it removes any chance of a stale ErrorInfo
+        // leaking across start cycles if that invariant ever weakens.
         applyAndEmit {
             self.nodeRuntime = .running
             self.backendState = .unknown
             self.stopRequested = false
+            self._lastError = nil
         }
 
         // Arm the startup watchdog. Captured `[weak self]` to avoid a
