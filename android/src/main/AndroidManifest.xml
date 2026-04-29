@@ -19,11 +19,35 @@
 
         `dataExtractionRules` (Android 12+) and `fullBackupContent` (older)
         exclude the SharedPreferences file the rootkey envelope lives in
-        from cloud backup and device-to-device transfer. Consuming apps
-        that already declare these attributes will get a manifest-merger
-        conflict — they should add their own rules referencing the
-        `comapeo-core.xml` SharedPreferences file or use `tools:replace`
-        with awareness.
+        from cloud backup and device-to-device transfer.
+
+        **Manifest-merger conflict if the host app already declares these
+        attributes.** This is intentional — a silent loss of the exclusion
+        would leak a useless-but-private blob to Google Drive backups and
+        produce confusing restore UX (envelope restored, wrapper key
+        alias missing on the new device, RootKeyException at first
+        launch). The build-time error is the lesser evil.
+
+        Resolution path for consumers with existing backup rules:
+
+          1. Merge the contents of `@xml/comapeo_data_extraction_rules`
+             and `@xml/comapeo_backup_rules` into your app's own rules
+             XML (an `<exclude>` for the `comapeo-core.xml`
+             SharedPreferences file under both `<cloud-backup>` and
+             `<device-transfer>`).
+          2. Add `tools:replace="android:dataExtractionRules,
+             android:fullBackupContent"` to your app's `<application>`
+             tag. The host's now-merged rules win; the library
+             declaration becomes a no-op.
+
+        The actual cryptographic risk of skipping the exclusion is small:
+        the wrapper key is device-bound (AndroidKeyStore, non-exportable),
+        so a backed-up envelope is useless on any other device. The
+        exclusion is defense-in-depth + UX.
+
+        See README "Configure for Android" for the full integration
+        guide. A future Expo config plugin (issue tracked separately)
+        will automate this for managed-Expo consumers.
     -->
     <application
         android:extractNativeLibs="false"
