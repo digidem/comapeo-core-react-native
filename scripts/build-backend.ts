@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { $ } from "execa";
@@ -8,6 +8,7 @@ import { readNodeJsMobileVersions } from "./lib/node-versions.ts";
 import { downloadPrebuilds } from "./lib/prebuilds.ts";
 import { packageAndroidJniLibs } from "./lib/android-jni.ts";
 import { packageIosFrameworks } from "./lib/ios-frameworks.ts";
+import { audit16kAlignment } from "./lib/check-16k-alignment.ts";
 
 // ------------------------------------------------
 // Paths
@@ -29,6 +30,7 @@ const ANDROID_MAIN_NODEJS_PROJECT_DIR = join(
   "android/src/main/assets/nodejs-project",
 );
 const ANDROID_JNILIBS_DIR = join(PROJECT_ROOT, "android/src/main/jniLibs");
+const ANDROID_LIBNODE_DIR = join(PROJECT_ROOT, "android/libnode/bin");
 const IOS_NODEJS_PROJECT_DIR = join(PROJECT_ROOT, "ios/nodejs-project");
 // One xcframework per native module instance. CocoaPods picks them up
 // via `vendored_frameworks` in ComapeoCore.podspec; Xcode's standard
@@ -91,7 +93,33 @@ await packageAndroidJniLibs({
   jniLibsDir: ANDROID_JNILIBS_DIR,
 });
 
-// 6. iOS: wrap each (name, version) as `<name>__<version>.xcframework`
+// 6. Audit 16 KB page alignment on every Android .so we ship.
+//    Android 15+ rejects APKs whose native libraries have a PT_LOAD
+//    segment with p_align < 0x4000. The per-addon prebuilds are
+//    already linked with -Wl,-z,max-page-size=16384 (see
+//    nodejs-mobile-bare-prebuilds/prebuild/action.yml); this audit
+//    verifies it every build so an upstream regression can't slip a
+//    misaligned .so into the APK.
+//
+//    libnode.so v18.20.4 (downloaded by `download:nodejs-mobile`) is
+//    *not* yet 16 KB-aligned upstream — fix is in flight at
+//    nodejs-mobile/nodejs-mobile#155, and a 16 KB-aligned build is
+//    being produced from the digidem/nodejs-mobile fork pending the
+//    upstream release. Allowlisted here until we point the
+//    downloader at the fork's tag and bump NODEJS_MOBILE_VERSION;
+//    the audit refuses allowlist entries that pass, so the carve-out
+//    fails the build the moment the bumped libnode is in tree.
+await audit16kAlignment({
+  roots: [ANDROID_JNILIBS_DIR, ANDROID_LIBNODE_DIR].filter(existsSync),
+  cwd: PROJECT_ROOT,
+  expectedMisaligned: [
+    "android/libnode/bin/arm64-v8a/libnode.so",
+    "android/libnode/bin/armeabi-v7a/libnode.so",
+    "android/libnode/bin/x86_64/libnode.so",
+  ],
+});
+
+// 7. iOS: wrap each (name, version) as `<name>__<version>.xcframework`
 //    (device + lipo'd simulator slices). Embed & Sign at app build
 //    time; bundled JS loads it via `process.dlopen` against
 //    `<App>.app/Frameworks/<key>.framework/<key>`.
