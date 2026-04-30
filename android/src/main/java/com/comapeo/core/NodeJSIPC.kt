@@ -252,17 +252,17 @@ private suspend fun connectWithRetry(
     deadlineMs: Long = 30_000,
     intervalMs: Long = 50,
 ): LocalSocket = withTimeout(deadlineMs) {
+    lateinit var connected: LocalSocket
     var attempt = 0
     while (true) {
         attempt++
         try {
-            val socket = LocalSocket()
-            socket.connect(socketAddress)
+            connected = LocalSocket().also { it.connect(socketAddress) }
             log("Connected on attempt $attempt")
-            return@withTimeout socket
+            break
         } catch (_: IOException) {
             delay(intervalMs)
         }
     }
-    @Suppress("UNREACHABLE_CODE") error("unreachable")
+    connected
 }

@@ -112,7 +112,7 @@ has been constructed. The main app process connects and uses
 A late connection (i.e. the React Native module connects after Node has
 already bound this socket) is the steady state: the backend always binds
 this socket some hundreds of milliseconds after process start. The
-`NodeJSIPC.waitForFile()` poll handles the gap.
+`NodeJSIPC.connectWithRetry()` 50 ms-cadence retry loop handles the gap.
 
 #### `control.sock` — lifecycle + handshake
 
@@ -198,8 +198,8 @@ frames (each `type` is its own protocol).
                 │             │                     │                  │
                 │             │                     │  connect via     │
                 │             │ ◄─────────────────  │  NodeJSIPC       │
-                │             │                     │  (waitForFile +  │
-                │             │                     │   retry)         │
+                │             │                     │  (50 ms retry    │
+                │             │                     │   loop)          │
                 │             │                     │                  │
                 │             │                     │                  │
    broadcast    │             │ ──{started}──►      │                  │
@@ -480,7 +480,7 @@ codebases.
 | 5 | Android `startupTimeoutMs` | 30 s | Mirrors #1 | Sends `error-native` to backend (best-effort; see #7) **and** sets local `BackendState.Error(starting-timeout)` |
 | 6 | Android `ComapeoCoreService.onDestroy` `withTimeout` | 10 s | `nodeJSService.stop()` hangs | Catches `TimeoutCancellationException` → `Process.killProcess`. This is the only outer bound on Android `stop()` — it has no internal timeout |
 | 7 | Android `SEND_ERROR_NATIVE_TIMEOUT_MS` | 2 s | `ipcDeferred` never completes (FGS init threw before IPC was constructed) | Frame logged as dropped, no error thrown — the FGS still sets local `ERROR` regardless |
-| 8 | Android `waitForFile` | 30 s | Same as #3 | Throws `TimeoutCancellationException` |
+| 8 | Android `connectWithRetry` (`NodeJSIPC`) | 30 s | Backend never binds the socket OR file exists but `accept()` never ready | IPC `State.Error` |
 
 **Backend (Node):**
 
@@ -572,7 +572,7 @@ The current approach (§4.4) is a second `NodeJSIPC` connection to
 | **Second `NodeJSIPC` (current)** | Replay in Node | Yes | Low (~30 LOC) | **Selected.** Reuses existing socket client class; replay logic lives in JS where the rest of the lifecycle lives; iOS uses the in-process equivalent so the "Node owns the truth" abstraction holds across platforms. |
 
 The strongest case against the current approach is "it's a second
-persistent socket paying connection overhead and a `waitForFile` poll
+persistent socket paying connection overhead and a 50 ms retry poll
 for a channel that carries ~6 messages per process lifetime." That cost
 is real but small. If profiling later shows it matters, **ContentProvider
 + ContentObserver** is the runner-up.
