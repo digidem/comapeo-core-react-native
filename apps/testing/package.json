@@ -3,7 +3,7 @@
 	"version": "1.0.0",
 	"main": "index.ts",
 	"scripts": {
-		"prepare": "patch-package",
+		"postinstall": "patch-package",
 		"start": "expo start",
 		"android": "expo run:android",
 		"ios": "expo run:ios"
