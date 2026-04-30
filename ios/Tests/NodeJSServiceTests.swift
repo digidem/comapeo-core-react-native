@@ -83,6 +83,65 @@ final class NodeJSServiceTests: XCTestCase {
         XCTAssertEqual(service.state, .error)
     }
 
+    /// Native-local rootkey load failure during the boot handshake.
+    /// `rootKeyProvider` throws → `sendInitFrame()` sets
+    /// `backendState = .error(rootkey, ...)` → derives ERROR with phase
+    /// `rootkey` and the thrown error's localizedDescription as message.
+    /// This is a mirror on iOS of the FGS-side rootkey path on Android;
+    /// without this test the iOS-only branch of the §5.5 §1 (Errors) doc
+    /// section is unverified end-to-end.
+    func testRootKeyLoadFailureDerivesError() throws {
+        struct RootKeyError: Error, LocalizedError {
+            var errorDescription: String? { "test rootkey unavailable" }
+        }
+        let (service, _) = makeMockNodeService(
+            socketDir: testDir,
+            rootKeyProvider: { throw RootKeyError() }
+        )
+        let errorExpectation = expectation(description: "Derived to error")
+        service.onStateChange = { if $0 == .error { errorExpectation.fulfill() } }
+
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+        wait(for: [errorExpectation], timeout: 5)
+
+        XCTAssertEqual(service.state, .error)
+        let lastError = service.getLastError()
+        XCTAssertEqual(lastError?.phase, "rootkey")
+        XCTAssertEqual(lastError?.message, "test rootkey unavailable")
+    }
+
+    /// Backend sends an `error` frame post-`ready`. The service should
+    /// transition from STARTED to ERROR carrying the frame's phase and
+    /// message. Verifies the §5.5 §2 path (backend-reported failures
+    /// reach native via the control socket) end-to-end, not just at the
+    /// `ControlFrame.parse` level.
+    func testBackendErrorFrameDerivesError() throws {
+        let (service, _) = makeTestService()
+        let startedExpectation = expectation(description: "Reached started")
+        let errorExpectation = expectation(description: "Derived to error")
+        service.onStateChange = { state in
+            if state == .started { startedExpectation.fulfill() }
+            if state == .error { errorExpectation.fulfill() }
+        }
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+        wait(for: [startedExpectation], timeout: 5)
+
+        XCTAssertTrue(
+            backend.sendFrame(
+                #"{"type":"error","phase":"runtime","message":"backend exploded"}"#
+            ),
+            "backend client should be connected after handshake"
+        )
+        wait(for: [errorExpectation], timeout: 5)
+
+        XCTAssertEqual(service.state, .error)
+        let lastError = service.getLastError()
+        XCTAssertEqual(lastError?.phase, "runtime")
+        XCTAssertEqual(lastError?.message, "backend exploded")
+    }
+
     /// Backend sends `{type:"stopping"}` before closing. The service
     /// should derive to STOPPING in response to the frame, then to
     /// STOPPED once the runtime exits.
