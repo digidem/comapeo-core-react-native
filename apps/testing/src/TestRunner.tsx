@@ -1,81 +1,119 @@
 import { useState } from 'react'
-import jasmineRequire from 'jasmine-core/lib/jasmine-core/jasmine'
+import jasmineRequire, {
+	type JasmineDoneInfo,
+} from 'jasmine-core/lib/jasmine-core/jasmine'
 import { Button, ScrollView, Text, View } from 'react-native'
 
 import { test as basicTest } from './tests/basic'
 import { test as projectCrudTest } from './tests/project-crud'
 
-export function TestRunner() {
-	const [isRunning, setIsRunning] = useState(false)
+type TestResult = {
+	id: string
+	name: string
+	passed: boolean
+	errors: Array<{ message: string; stack: string }>
+}
 
-	const [results, setResults] = useState<
-		Array<{
-			id: string
-			name: string
-			passed: boolean
-			errors: Array<{ message: string; stack: string }>
-		}>
-	>([])
+type TestState =
+	| { status: 'idle' | 'pending'; results: Array<TestResult> }
+	| { status: 'done'; info: JasmineDoneInfo; results: Array<TestResult> }
+
+export function TestRunner() {
+	const [testState, setTestState] = useState<TestState>({
+		status: 'idle',
+		results: [],
+	})
 
 	async function runTests() {
-		setResults([])
-		setIsRunning(true)
+		const jasmineCore = jasmineRequire.core(jasmineRequire)
 
-		try {
-			const jasmineCore = jasmineRequire.core(jasmineRequire)
+		const jasmineEnv = jasmineCore.getEnv({
+			suppressLoadErrors: true,
+			GlobalErrors: NoopGlobalErrors,
+		})
 
-			const jasmineEnv = jasmineCore.getEnv({
-				suppressLoadErrors: true,
-				GlobalErrors: NoopGlobalErrors,
-			})
+		jasmineEnv.addReporter({
+			jasmineStarted: () => {
+				setTestState({ status: 'pending', results: [] })
+			},
+			jasmineDone: (info) => {
+				setTestState((prev) => {
+					if (prev.status === 'done') {
+						throw new Error(
+							`Invalid state transition from '${prev.status}' to 'done'.`,
+						)
+					}
 
-			jasmineEnv.addReporter({
-				specDone: (result) => {
-					const describeText = result.fullName.replaceAll(
-						result.description,
-						'',
-					)
+					return {
+						status: 'done',
+						info,
+						results: prev.results,
+					}
+				})
+			},
+			specDone: (result) => {
+				const describeText = result.fullName.replaceAll(result.description, '')
 
-					setResults((prev) => [
-						...prev,
-						{
-							id: result.id,
-							name: describeText
-								? `${describeText} > ${result.description}`
-								: result.description,
-							passed: result.status === 'passed',
-							errors: result.failedExpectations.map((err) => ({
-								message: err.message,
-								stack: err.stack,
-							})),
-						},
-					])
-				},
-			})
+				setTestState((prev) => {
+					if (prev.status === 'done') {
+						throw new Error(
+							`Invalid state transition from '${prev.status}' to 'done'.`,
+						)
+					}
 
-			const { describe, it, expect, expectAsync, jasmine } =
-				jasmineRequire.interface(jasmineCore, jasmineEnv)
+					return {
+						status: 'pending',
+						results: [
+							...prev.results,
+							{
+								id: result.id,
+								name: describeText
+									? `${describeText} > ${result.description}`
+									: result.description,
+								passed: result.status === 'passed',
+								errors: result.failedExpectations.map((err) => ({
+									message: err.message,
+									stack: err.stack,
+								})),
+							},
+						],
+					}
+				})
+			},
+		})
 
-			// 👇 Register tests here!
-			basicTest({ describe, it, expect, expectAsync, jasmine })
-			projectCrudTest({ describe, it, expect, expectAsync, jasmine })
+		const { describe, it, expect, expectAsync, jasmine } =
+			jasmineRequire.interface(jasmineCore, jasmineEnv)
 
-			await jasmineEnv.execute()
-		} catch (err) {
-			throw err
-		}
-		setIsRunning(false)
+		// 👇 Register tests here!
+		basicTest({ describe, it, expect, expectAsync, jasmine })
+		projectCrudTest({ describe, it, expect, expectAsync, jasmine })
+
+		await jasmineEnv.execute()
 	}
 
 	return (
 		<ScrollView style={{ padding: 20 }} contentContainerStyle={{ gap: 20 }}>
 			<Button
-				title={isRunning ? 'Running…' : 'Run Tests'}
+				title={testState.status === 'pending' ? 'Running…' : 'Run Tests'}
 				onPress={runTests}
-				disabled={isRunning}
+				disabled={testState.status === 'pending'}
 			/>
 
-			{results.map((result) => (
+			{testState.status !== 'idle' ? (
+				<View>
+					<Text>
+						{`${testState.status === 'pending' ? 'Pending' : 'Done'}: ${testState.results.filter((r) => r.passed).length} out of ${testState.results.length} tests passed`}
+					</Text>
+
+					{testState.status === 'done' &&
+					testState.info.overallStatus === 'passed' ? (
+						<Text testID="all-tests-passed">All tests passed!</Text>
+					) : null}
+				</View>
+			) : null}
+
+			{testState.results.map((result) => (
 				<View key={result.id}>
 					<Text selectable style={{ color: result.passed ? 'green' : 'red' }}>
 						{result.passed ? '✓' : '✗'} {result.name}

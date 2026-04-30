@@ -124,12 +124,12 @@ declare module 'jasmine-core/lib/jasmine-core/jasmine' {
 
 	// ─── Reporter event shapes ────────────────────────────────────────────────
 
-	interface JasmineStartedInfo {
+	export interface JasmineStartedInfo {
 		totalSpecsDefined: number
 		order: { random: boolean; seed: string | number }
 	}
 
-	interface JasmineDoneInfo {
+	export interface JasmineDoneInfo {
 		overallStatus: 'passed' | 'failed' | 'incomplete'
 		totalTime: number
 		numWorkers?: number
