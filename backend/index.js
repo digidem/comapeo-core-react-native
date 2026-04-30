@@ -107,9 +107,9 @@ const controlIpcServer = new SimpleRpcServer({
     // frame to distinguish "expected disconnect" from "unexpected
     // disconnect" — a control socket that closes without a preceding
     // `stopping` frame is unambiguously a crash or kill, not a graceful
-    // exit. AF_UNIX is local and the kernel buffer flushes synchronously
-    // enough that peers will see the frame before they see the socket
-    // close.
+    // exit. AF_UNIX is a stream socket; the kernel guarantees that the
+    // 'stopping' frame is delivered before the EOF (socket close),
+    // allowing the peer to distinguish graceful shutdown from a crash.
     controlIpcServer.broadcast({ type: "stopping" });
     const closePromises = [controlIpcServer.close(), fastify.close()];
     if (comapeoRpcServer) closePromises.push(comapeoRpcServer.close());
@@ -142,10 +142,7 @@ const controlIpcServer = new SimpleRpcServer({
       typeof message.phase !== "string" ||
       typeof message.message !== "string"
     ) {
-      console.warn(
-        "Received malformed error-native frame, ignoring",
-        message,
-      );
+      console.warn("Received malformed error-native frame, ignoring", message);
       return;
     }
     handleFatal(message.phase, new Error(message.message));
