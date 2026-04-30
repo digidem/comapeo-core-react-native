@@ -234,7 +234,7 @@ export function test({
 				).toBeRejected()
 			})
 
-			it(`create, read, close, re-open, read ${schemaName}`, async () => {
+			it(`create, read, close, re-open, read (${schemaName})`, async () => {
 				const projectId = await comapeo.createProject()
 
 				let project = await comapeo.getProject(projectId)
@@ -287,7 +287,7 @@ export function test({
 				expect(sortById(deleted)).toEqual(sortById(read))
 			})
 
-			it('delete forks', async () => {
+			it(`delete forks ${schemaName}`, async () => {
 				const projectId = await comapeo.createProject()
 				const project = await comapeo.getProject(projectId)
 				const written = await create(project, value)
