@@ -24,6 +24,13 @@ final class ControlFrameTests: XCTestCase {
         }
     }
 
+    func testParsesStopping() {
+        let frame = ControlFrame.parse(#"{"type":"stopping"}"#)
+        guard case .stopping = frame else {
+            XCTFail("expected .stopping, got \(frame)"); return
+        }
+    }
+
     func testParsesErrorWithPhaseAndMessage() {
         let frame = ControlFrame.parse(
             #"{"type":"error","phase":"construct","message":"boom"}"#

@@ -23,6 +23,15 @@ import org.json.JSONObject
 sealed class ControlFrame {
     object Started : ControlFrame()
     object Ready : ControlFrame()
+
+    /**
+     * Backend has begun graceful shutdown. Sent before any close work so
+     * peers can distinguish "expected disconnect" from "unexpected
+     * disconnect" — a control socket that closes without a preceding
+     * `Stopping` is unambiguously a crash or kill, not a graceful exit.
+     */
+    object Stopping : ControlFrame()
+
     data class Error(val phase: String, val message: String) : ControlFrame()
 
     /**
@@ -47,6 +56,7 @@ sealed class ControlFrame {
             return when (type) {
                 "started" -> Started
                 "ready" -> Ready
+                "stopping" -> Stopping
                 "error" -> Error(
                     phase = json.optString("phase", "unknown"),
                     message = json.optString("message", "(no message)"),

@@ -52,6 +52,22 @@ final class MockBackend {
         return handshakeComplete.wait(timeout: .now() + timeout) == .success
     }
 
+    /// Sends a raw frame string on the connected client socket. Tests use
+    /// this to inject `error` (or other) frames after the handshake
+    /// completes — the production backend would broadcast these via
+    /// `controlIpcServer.broadcastError`. Returns false if the client
+    /// hasn't connected yet (call `waitForHandshake` first if you need to
+    /// guarantee connectivity).
+    @discardableResult
+    func sendFrame(_ raw: String) -> Bool {
+        lock.lock()
+        let fd = clientFd
+        lock.unlock()
+        guard fd >= 0 else { return false }
+        MockNodeServer.sendFramedMessage(fd: fd, message: raw)
+        return true
+    }
+
     func stop() {
         lock.lock()
         let fd = clientFd
@@ -83,13 +99,18 @@ final class MockBackend {
         handshakeComplete.signal()
 
         // Continue reading so a subsequent shutdown frame is observed by
-        // tests that drive `service.stop()`.
+        // tests that drive `service.stop()`. On shutdown, mirror the
+        // production backend's behavior: broadcast `stopping` BEFORE
+        // closing the connection. The service's exit-classification
+        // logic relies on this — without `stopping`, an exit during
+        // STARTED is classified as unexpected (= ERROR).
         while true {
             guard let frame = MockNodeServer.receiveFramedMessage(fd: fd) else { return }
             if frame.contains("\"shutdown\"") {
                 lock.lock()
                 receivedShutdown = true
                 lock.unlock()
+                MockNodeServer.sendFramedMessage(fd: fd, message: #"{"type":"stopping"}"#)
                 return
             }
         }

@@ -116,6 +116,30 @@ export class SimpleRpcServer extends ServerHelper {
   }
 
   /**
+   * Broadcast an arbitrary JSON-serializable message to every connected
+   * client. Used by the host to fan out lifecycle signals like
+   * `{type:"stopping"}` that don't fit the readiness-phase replay model
+   * (they're one-shot announcements, not state machine transitions).
+   *
+   * Non-replayed: a client connecting after this fires gets nothing.
+   * For lifecycle frames the caller should rely on the natural close of
+   * the socket as the follow-up signal — a `stopping` frame followed
+   * by socket close is the "we initiated graceful shutdown" pair.
+   *
+   * @param {import("type-fest").JsonValue} message
+   */
+  broadcast(message) {
+    for (const client of this.#clients) {
+      try {
+        client.postMessage(message);
+      } catch (e) {
+        // Best-effort: a single broken client shouldn't block the rest.
+        console.error("broadcast: client postMessage threw", e);
+      }
+    }
+  }
+
+  /**
    * Broadcast `{type:"error", phase, message, stack?}` to every connected
    * client. Used by the host's uncaughtException handler and by explicit
    * boot-failure paths so native can transition to its `error` state.
