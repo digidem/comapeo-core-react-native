@@ -139,6 +139,16 @@ late-connecting client (the React Native module on Android races the
 FGS's IPC client; both connect to the same socket, see §4) would miss
 the events that already fired.
 
+The other broadcast frames — `stopping` (via `broadcast()`) and `error`
+(via `broadcastError()`) — are explicitly **not** replayed. They're
+one-shot announcements that pair with the natural socket close: a late
+client connecting after either frame fires sees nothing on the wire,
+but observes the impending disconnect and infers ERROR / STOPPED from
+its own pre-disconnect state (see §5.4 for the disconnect-reason
+table). The control socket is short-lived in those scenarios — the
+process is about to exit — so the no-replay choice avoids buffering
+lifecycle history on a server that's tearing itself down.
+
 ### 3.2 Why two sockets
 
 Three signals matter:
@@ -335,6 +345,16 @@ to React Native as `state.getState()` and the `stateChange` event. The
 event payload carries optional `errorPhase` / `errorMessage` when the
 state is `ERROR`; `state.getLastError()` returns the structured detail.
 
+**`lastError` persistence is intentionally asymmetric.** A fresh
+`start()` clears it (a new lifecycle starts with a clean slate);
+`cleanup()` / `destroy()` preserves it (so a caller that observed
+ERROR can still read `getLastError()` after cleanup to decide what
+to do next — log, prompt, recreate the service, etc.). In normal
+flows JS only reads `lastError` inside the `stateChange` callback
+where state is `ERROR`, so the asymmetry isn't observable; callers
+that poll `getLastError()` standalone after `cleanup()` see the
+last-cycle error until the next `start()` clears it.
+
 ### 5.4 Native ↔ JS plumbing
 
 **iOS** (`ios/ComapeoCoreModule.swift`): in-process callback —
@@ -369,30 +389,43 @@ in `STOPPED`. An unannounced disconnect from a running state lands in
 
 Three failure surfaces, all converging on `ERROR`:
 
-1. **Local FGS-side failures** (Android, in the FGS process): rootkey
-   load, JS entry point not found, shutdown timeout, watchdog timeout,
-   unexpected node exit. Tagged with phases like `rootkey`,
-   `node-runtime`, `shutdown-timeout`, `starting-timeout`,
-   `node-runtime-unexpected`. These set `BackendState.Error{phase,
-   message}` (or `NodeRuntime.Exited(_, Unexpected)`) which derives
-   to `ERROR` and populates `_lastError`.
+1. **Native-local failures** (both platforms, originating in the
+   `NodeJSService` host — the FGS process on Android, the iOS app
+   process on iOS): rootkey load, JS entry point not found, shutdown
+   timeout, watchdog timeout, unexpected node exit. Tagged with
+   phases like `rootkey`, `node-runtime`, `shutdown-timeout`,
+   `starting-timeout`, `node-runtime-unexpected`. These set
+   `BackendState.Error{phase, message}` (or `NodeRuntime.Exited(_,
+   Unexpected)`) directly on the local `NodeJSService`, which derives
+   to `ERROR` and populates `_lastError`. They never go through
+   Node's `handleFatal` — the failure originated native-side and the
+   native side reports it native-side.
 
-   For cross-process attribution, the FGS additionally ships an
-   `error-native` frame to Node when the failure is local (rootkey,
-   watchdog) but Node is still alive: the backend's `error-native`
-   handler routes to `handleFatal`, which broadcasts an `error` frame
-   to all control clients (including the main-app process) and exits
-   1 after a 100ms flush. Without this, an FGS rootkey failure leaves
-   Node hanging on `await initPromise` indefinitely — the FGS knows
-   it has failed but has no way to tell the main-app process.
+   **Cross-process attribution** matters only on Android, where the
+   main-app process is separate from the FGS and observes lifecycle
+   only through the control socket. When the FGS-side failure is
+   local (rootkey, watchdog) but Node is still alive, the FGS
+   additionally ships an `error-native` frame to Node: the backend's
+   `error-native` handler routes to `handleFatal`, which broadcasts
+   an `error` frame to all control clients (including the main-app
+   process's read-only observer) and exits 1 after a 100ms flush.
+   Without this, an FGS rootkey failure would leave Node hanging on
+   `await initPromise` indefinitely — the FGS knows it has failed
+   but has no way to tell the main-app process. iOS has no
+   `error-native` channel because the JS module reads
+   `service.state` directly via the in-process `onStateChange`
+   callback; there is no second process to attribute to.
 
-2. **Backend-reported failures**: `process.on("uncaughtException")`
-   and `process.on("unhandledRejection")` route through
+2. **Backend-reported failures** (Node-side throws, both platforms):
+   `process.on("uncaughtException")` and
+   `process.on("unhandledRejection")` route through
    `handleFatal(phase, error)` which calls
    `controlIpcServer.broadcastError({phase, message, stack})` and
-   exits 1 after a 100ms flush wait. Phases: `init`,
-   `listen-control`, `construct`, `runtime`. iOS has no separate
-   FGS so all "local" failures funnel through the same path.
+   exits 1 after a 100ms flush wait. Boot-phase errors (`init`,
+   `listen-control`, `construct`, `runtime`) follow the same path
+   via the boot IIFE's catch. The `error-native` handler from §1 is
+   what bridges Android FGS-local failures *into* this same path,
+   so all `error` frames seen on the wire come from `handleFatal`.
 
 3. **IPC-level failures** (Android main-app side): `NodeJSIPC.State.Error`
    maps to `ERROR` with phase `ipc`. Phase distinguishes "connection
