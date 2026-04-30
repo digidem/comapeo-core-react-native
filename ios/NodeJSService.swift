@@ -271,7 +271,6 @@ class NodeJSService {
         if case .running = nodeRuntime { return .starting }
         if case .controlBound = backendState { return .starting }
 
-        if case .exited(_, .requested) = nodeRuntime { return .stopped }
         return .stopped
     }
 
@@ -551,8 +550,15 @@ class NodeJSService {
                 phase: "node-runtime",
                 message: "Could not find nodejs-project/index.mjs in app bundle"
             )
+            // Mark the runtime as exited alongside the backend-error so
+            // the component triple is consistent — without this the
+            // thread is exiting (we're about to return + signal the
+            // semaphore) but `nodeRuntime` would still say `.running`.
+            // Reason `.requested` anchors the derivation on the explicit
+            // backend error rather than competing with rule 2.
             applyAndEmit(error: info) {
                 self.backendState = .error(phase: info.phase, message: info.message)
+                self.nodeRuntime = .exited(code: -1, reason: .requested)
             }
             sem?.signal()
             return

@@ -45,9 +45,5 @@ internal fun deriveLifecycleState(
     if (nodeRuntime is NodeJSService.NodeRuntimeState.Running) return NodeJSService.State.STARTING
     if (backendState is NodeJSService.BackendState.ControlBound) return NodeJSService.State.STARTING
 
-    if (nodeRuntime is NodeJSService.NodeRuntimeState.Exited &&
-        nodeRuntime.reason == NodeJSService.ExitReason.REQUESTED) {
-        return NodeJSService.State.STOPPED
-    }
     return NodeJSService.State.STOPPED
 }
