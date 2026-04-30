@@ -215,7 +215,7 @@ export function test({
 						const updateValue = getUpdateFixture(value)
 						await update(project, written.versionId, updateValue)
 					})(),
-				).toBeRejected()
+				).toBeRejectedWithError(/closed/i)
 
 				// 'should fail creating since the project is already closed'
 				await expectAsync(
@@ -224,14 +224,14 @@ export function test({
 							await create(project, value)
 						}
 					})(),
-				).toBeRejected()
+				).toBeRejectedWithError(/closed/i)
 
 				// 'should fail getting since the project is already closed'
 				await expectAsync(
 					(async () => {
 						await project[schemaName].getMany()
 					})(),
-				).toBeRejected()
+				).toBeRejectedWithError(/closed/i)
 			})
 
 			it(`create, read, close, re-open, read (${schemaName})`, async () => {

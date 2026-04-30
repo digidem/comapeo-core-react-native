@@ -1,0 +1,51 @@
+diff --git a/node_modules/@comapeo/ipc/dist/client.js b/node_modules/@comapeo/ipc/dist/client.js
+index 166b674..e9faf5f 100644
+--- a/node_modules/@comapeo/ipc/dist/client.js
++++ b/node_modules/@comapeo/ipc/dist/client.js
+@@ -68,6 +68,10 @@ export function createMapeoClient(messagePort, opts = {}) {
+             await mapeoRpcClient.assertProjectExists(projectPublicId);
+         }
+         catch (err) {
++            // Failed to open the project — drop the cached promise so a
++            // subsequent getProject() call can retry instead of getting back
++            // the same rejected promise.
++            projectClientPromises.delete(projectPublicId);
+             deferred.reject(err);
+             throw err;
+         }
+@@ -75,8 +79,33 @@ export function createMapeoClient(messagePort, opts = {}) {
+         /** @type {import('rpc-reflector').ClientApi<import('@comapeo/core').MapeoProject>} */
+         const projectClient = createClient(projectChannel, opts);
+         projectChannel.start();
+-        deferred.resolve(projectClient);
+-        return projectClient;
++        // Wrap the projectClient to intercept `.close()` so we can tear down
++        // local state (cache entry, rpc-reflector client, SubChannel) after
++        // the wire close completes. Without this, an application-held
++        // reference to the project remains usable after close — calls would
++        // silently re-open the project on the server. All other property
++        // accesses are delegated to the inner client unchanged, including the
++        // Symbol used by `createClient.close` so the manager-level close
++        // path keeps working.
++        const wrappedProjectClient = new Proxy(projectClient, {
++            get(target, prop, receiver) {
++                if (prop === 'close') {
++                    return async () => {
++                        try {
++                            await target.close();
++                        }
++                        finally {
++                            projectClientPromises.delete(projectPublicId);
++                            createClient.close(target);
++                            projectChannel.close();
++                        }
++                    };
++                }
++                return Reflect.get(target, prop, receiver);
++            },
++        });
++        deferred.resolve(wrappedProjectClient);
++        return wrappedProjectClient;
+     }
+ }
+ /**
