@@ -25,7 +25,18 @@ import java.nio.ByteOrder
 
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class NodeJSIPC(private val socketFile: File, private val onMessage: (String) -> Unit) {
+class NodeJSIPC(
+    private val socketFile: File,
+    // Optional first so the trailing-lambda call form
+    // `NodeJSIPC(file) { msg -> ... }` keeps binding to `onMessage` (the
+    // last function-type parameter). Reordering after `onMessage` would
+    // silently capture every existing single-callback callsite as the
+    // state observer, which the kotlinc reports as
+    // "Argument type mismatch: actual type is 'NodeJSIPC.State', but
+    //  'String!' was expected." in CI.
+    private val onConnectionStateChange: ((State) -> Unit)? = null,
+    private val onMessage: (String) -> Unit,
+) {
     private val socketAddress =
         LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM)
     private lateinit var socket: LocalSocket
@@ -53,6 +64,18 @@ class NodeJSIPC(private val socketFile: File, private val onMessage: (String) ->
 
     init {
         log("NodeJSIPC initialized with socket file: ${socketFile.absolutePath}")
+        // Forward subsequent state transitions to the optional observer.
+        // The very first observation is the initial Disconnected state, which
+        // is uninteresting; consumers care about transitions, not the seed
+        // value, so we skip that emission.
+        onConnectionStateChange?.let { callback ->
+            scope.launch {
+                var seenFirst = false
+                state.collect {
+                    if (seenFirst) callback(it) else seenFirst = true
+                }
+            }
+        }
         connect()
     }
 

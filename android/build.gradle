@@ -174,6 +174,15 @@ dependencies {
     // JVM unit test dependencies
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0'
+    // `org.json` ships with the Android framework, but the JVM
+    // unit-test classpath gets a stub where every method throws
+    // "Method ... not mocked" at runtime. Pulling the standalone
+    // org.json:json library onto the test classpath replaces the
+    // stub with a real implementation so production code that uses
+    // `JSONObject` (ControlFrame, RootKeyStore) is unit-testable on
+    // the JVM without instrumentation. Same package + API; no
+    // production code change needed.
+    testImplementation 'org.json:json:20240303'
 
     // Instrumented test dependencies
     androidTestImplementation 'androidx.test:runner:1.6.2'

@@ -27,7 +27,7 @@ public class ComapeoCoreModule: Module {
     public func definition() -> ModuleDefinition {
         Name("ComapeoCore")
 
-        Events("message", "stateChange")
+        Events("message", "messageerror", "stateChange")
 
         OnCreate {
             let socketPath = ComapeoCoreModule.resolveSocketPath()
@@ -43,7 +43,24 @@ public class ComapeoCoreModule: Module {
             // the new instance will receive stateChange events until the old one is
             // destroyed.
             AppLifecycleDelegate.nodeService.onStateChange = { [weak self] state in
-                self?.sendEvent("stateChange", ["state": state.rawValue])
+                var payload: [String: Any] = ["state": state.rawValue]
+                // Attach the captured error detail when the new state is .error
+                // so JS sees a single event with both the state and the cause,
+                // rather than having to follow up with getLastError().
+                if state == .error,
+                   let info = AppLifecycleDelegate.nodeService.getLastError() {
+                    payload["errorPhase"] = info.phase
+                    payload["errorMessage"] = info.message
+                }
+                self?.sendEvent("stateChange", payload)
+            }
+
+            // Forward control-frame parse failures to JS as a
+            // `messageerror` event (mirrors DOM MessagePort). Decoupled
+            // from `onStateChange` so a single garbled frame doesn't
+            // affect the lifecycle state.
+            AppLifecycleDelegate.nodeService.onMessageError = { [weak self] detail in
+                self?.sendEvent("messageerror", ["data": detail])
             }
         }
 
@@ -53,6 +70,13 @@ public class ComapeoCoreModule: Module {
         }
 
         OnAppEntersForeground {
+            // `connect()` on NodeJSIPC is idempotent: it early-returns
+            // when the IPC is already .connected/.connecting/.disconnecting
+            // and resets a prior .error state so a fresh connect attempt
+            // can succeed. Calling it on every foreground is the cheap
+            // way to recover from a transient connection failure (e.g.
+            // an iOS suspension that closed the underlying fd) without
+            // tracking IPC state at this layer.
             self.ipc?.connect()
         }
 
@@ -67,6 +91,13 @@ public class ComapeoCoreModule: Module {
                 for: AppLifecycleDelegate.nodeService,
                 ipc: self.ipc
             )
+        }
+
+        Function("getLastError") { () -> [String: String]? in
+            guard let info = AppLifecycleDelegate.nodeService.getLastError() else {
+                return nil
+            }
+            return ["errorPhase": info.phase, "errorMessage": info.message]
         }
     }
 }

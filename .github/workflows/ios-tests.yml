@@ -58,7 +58,7 @@ jobs:
           node-version-file: package.json
 
       - name: Install dependencies
-        run: npm install && cd example && npm install
+        run: npm install && cd apps/example && npm install
 
       - name: Download NodeMobile
         # Both platforms: `scripts/build-backend.ts#getNodeJsMobileNodeVersions`
@@ -80,10 +80,10 @@ jobs:
         run: npm run backend:build
 
       - name: Expo prebuild
-        run: cd example && npx expo prebuild --platform ios --no-install
+        run: cd apps/example && npx expo prebuild --platform ios --no-install
 
       - name: Pod install
-        run: cd example/ios && pod install
+        run: cd apps/example/ios && pod install
 
       # Don't pin a specific device name (e.g. "iPhone 16"). GitHub-hosted
       # macos-15 runners *should* have iPhone 16 pre-installed for iOS 26 per
@@ -131,15 +131,30 @@ jobs:
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
           xcrun simctl list devices "$UDID"
 
+      # `tee` to a file so the failure-dump step has something to grep,
+      # and so the log is uploadable as an artifact for forensic
+      # debugging of intermittent simulator boot / test races. Empirically
+      # the runner's xcodebuild stream behaves more reliably when piped
+      # rather than written directly to the workflow's TTY — without the
+      # `tee` redirection this step intermittently times out at ~15 min.
       - name: Run integration tests
         run: |
-          cd example/ios
+          cd apps/example/ios
           xcodebuild test \
             -workspace corereactnativeexample.xcworkspace \
             -scheme corereactnativeexample \
             -sdk iphonesimulator \
             -destination "id=${{ steps.simulator.outputs.udid }}" \
-            CODE_SIGNING_ALLOWED='NO'
+            CODE_SIGNING_ALLOWED='NO' 2>&1 | tee xcodebuild-test.log
+
+      - name: Surface xcodebuild failure summary
+        if: failure()
+        run: |
+          echo "=== xcodebuild test failure summary ==="
+          grep -E "error:|FAIL|Test Case|Assertion|XCTAssert|timed out|fatal error" example/ios/xcodebuild-test.log | head -100 || true
+          echo ""
+          echo "=== last 300 lines of log ==="
+          tail -300 example/ios/xcodebuild-test.log || true
 
   device-build:
     name: iOS Device Build (xcframework codesign verification)
@@ -171,7 +186,7 @@ jobs:
           node-version-file: package.json
 
       - name: Install dependencies
-        run: npm install && cd example && npm install
+        run: npm install && cd apps/example && npm install
 
       - name: Download NodeMobile
         run: npm run download:nodejs-mobile
@@ -180,14 +195,14 @@ jobs:
         run: npm run backend:build
 
       - name: Expo prebuild
-        run: cd example && npx expo prebuild --platform ios --no-install
+        run: cd apps/example && npx expo prebuild --platform ios --no-install
 
       - name: Pod install
-        run: cd example/ios && pod install
+        run: cd apps/example/ios && pod install
 
       - name: Build for iOS device (no run)
         run: |
-          cd example/ios
+          cd apps/example/ios
           xcodebuild build \
             -workspace corereactnativeexample.xcworkspace \
             -scheme corereactnativeexample \

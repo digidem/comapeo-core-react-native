@@ -39,24 +39,27 @@ jobs:
         uses: actions/cache@v4
         with:
           path: android/libnode
-          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android
+          # hashFiles(...) folds the BASE_URL (defined inside the
+          # download script) into the cache key, so any swap of the
+          # source repo automatically invalidates stale caches.
+          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
 
       - name: Download nodejs-mobile binaries
         if: steps.cache-libnode.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
       - name: Install npm dependencies
-        run: npm install --ignore-scripts && cd example && npm install --ignore-scripts
+        run: npm install --ignore-scripts && cd apps/example && npm install --ignore-scripts
 
-      - name: Expo prebuild (generates example/android)
-        run: cd example && npx expo prebuild --platform android --no-install
+      - name: Expo prebuild (generates apps/example/android)
+        run: cd apps/example && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Run JVM unit tests
         run: |
-          cd example/android
+          cd apps/example/android
           ./gradlew :comapeo-core-react-native:testDebugUnitTest --no-daemon
 
       - name: Upload test results
@@ -129,27 +132,30 @@ jobs:
         uses: actions/cache@v4
         with:
           path: android/libnode
-          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android
+          # hashFiles(...) folds the BASE_URL (defined inside the
+          # download script) into the cache key, so any swap of the
+          # source repo automatically invalidates stale caches.
+          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
 
       - name: Download nodejs-mobile binaries
         if: steps.cache-libnode.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
       - name: Install npm dependencies
-        run: npm install --ignore-scripts && cd example && npm install --ignore-scripts
+        run: npm install --ignore-scripts && cd apps/example && npm install --ignore-scripts
 
       - name: Build backend
         run: npm run backend:build
 
-      - name: Expo prebuild (generates example/android)
-        run: cd example && npx expo prebuild --platform android --no-install
+      - name: Expo prebuild (generates apps/example/android)
+        run: cd apps/example && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build test APKs
         run: |
-          cd example/android
+          cd apps/example/android
           ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest :app:assembleDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
 
       - name: Cache AVD snapshot
@@ -200,7 +206,7 @@ jobs:
             adb shell settings put global animator_duration_scale 0.0
             # -i prints per-test STARTED/PASSED/FAILED so a hanging test is
             # identifiable
-            cd example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -i -PreactNativeArchitectures=x86_64
+            cd apps/example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -i -PreactNativeArchitectures=x86_64
 
       - name: Upload test results
         if: always()
@@ -210,5 +216,5 @@ jobs:
           path: |
             android/build/reports/androidTests/
             android/build/outputs/androidTest-results/
-            example/android/app/build/reports/androidTests/
-            example/android/app/build/outputs/androidTest-results/
+            apps/example/android/app/build/reports/androidTests/
+            apps/example/android/app/build/outputs/androidTest-results/

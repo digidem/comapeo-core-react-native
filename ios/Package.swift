@@ -8,14 +8,25 @@ let package = Package(
         .target(
             name: "ComapeoCore",
             path: ".",
+            // RootKeyStore.swift uses Keychain APIs that the macOS
+            // swift-test target doesn't exercise (tests inject the rootkey
+            // via NodeJSService.RootKeyProvider). Excluded explicitly so
+            // SPM doesn't emit "unhandled file" noise; the production
+            // CocoaPods build picks it up via `s.source_files = "*.swift"`.
             exclude: [
                 "Tests",
                 "ComapeoCore.podspec",
                 "Package.swift",
                 "ComapeoCoreModule.swift",
                 "AppLifecycleDelegate.swift",
+                "RootKeyStore.swift",
             ],
-            sources: ["NodeJSIPC.swift", "NodeJSService.swift", "Log.swift"]
+            sources: [
+                "NodeJSIPC.swift",
+                "NodeJSService.swift",
+                "ControlFrame.swift",
+                "Log.swift",
+            ]
         ),
         .testTarget(
             name: "ComapeoCoreTests",

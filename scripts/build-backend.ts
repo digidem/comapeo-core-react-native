@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { $ } from "execa";
@@ -8,6 +8,7 @@ import { readNodeJsMobileVersions } from "./lib/node-versions.ts";
 import { downloadPrebuilds } from "./lib/prebuilds.ts";
 import { packageAndroidJniLibs } from "./lib/android-jni.ts";
 import { packageIosFrameworks } from "./lib/ios-frameworks.ts";
+import { audit16kAlignment } from "./lib/check-16k-alignment.ts";
 
 // ------------------------------------------------
 // Paths
@@ -29,6 +30,7 @@ const ANDROID_MAIN_NODEJS_PROJECT_DIR = join(
   "android/src/main/assets/nodejs-project",
 );
 const ANDROID_JNILIBS_DIR = join(PROJECT_ROOT, "android/src/main/jniLibs");
+const ANDROID_LIBNODE_DIR = join(PROJECT_ROOT, "android/libnode/bin");
 const IOS_NODEJS_PROJECT_DIR = join(PROJECT_ROOT, "ios/nodejs-project");
 // One xcframework per native module instance. CocoaPods picks them up
 // via `vendored_frameworks` in ComapeoCore.podspec; Xcode's standard
@@ -91,7 +93,21 @@ await packageAndroidJniLibs({
   jniLibsDir: ANDROID_JNILIBS_DIR,
 });
 
-// 6. iOS: wrap each (name, version) as `<name>__<version>.xcframework`
+// 6. Audit 16 KB page alignment on every Android .so we ship.
+//    Android 15+ rejects APKs whose native libraries have a PT_LOAD
+//    segment with p_align < 0x4000. Both the per-addon prebuilds and
+//    libnode are linked with `-Wl,-z,max-page-size=16384`
+//    (nodejs-mobile-bare-prebuilds/prebuild/action.yml for addons,
+//    digidem/nodejs-mobile fork for libnode pending upstream
+//    nodejs-mobile/nodejs-mobile#155). This audit verifies it every
+//    build so an upstream regression can't slip a misaligned .so
+//    into the APK.
+await audit16kAlignment({
+  roots: [ANDROID_JNILIBS_DIR, ANDROID_LIBNODE_DIR].filter(existsSync),
+  cwd: PROJECT_ROOT,
+});
+
+// 7. iOS: wrap each (name, version) as `<name>__<version>.xcframework`
 //    (device + lipo'd simulator slices). Embed & Sign at app build
 //    time; bundled JS loads it via `process.dlopen` against
 //    `<App>.app/Frameworks/<key>.framework/<key>`.
