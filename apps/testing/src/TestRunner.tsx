@@ -95,7 +95,7 @@ export function TestRunner() {
 	return (
 		<ScrollView style={{ padding: 20 }} contentContainerStyle={{ gap: 20 }}>
 			<Button
-				title={testState.status === 'pending' ? 'Running…' : 'Run Tests'}
+				title={testState.status === 'pending' ? 'Running…' : 'Run tests'}
 				onPress={runTests}
 				disabled={testState.status === 'pending'}
 			/>

@@ -1,15 +1,15 @@
 import { comapeo } from '@comapeo/core-react-native'
 import {
-	ComapeoValue,
 	valueOf,
 	type ComapeoDoc,
+	type ComapeoValue,
 	type FieldValue,
 	type ObservationValue,
 	type PresetValue,
 	type RemoteDetectionAlertValue,
 	type TrackValue,
 } from '@comapeo/core/schema.js'
-import { MapeoClientApi, MapeoProjectApi } from '@comapeo/ipc'
+import type { MapeoProjectApi } from '@comapeo/ipc'
 import { generate } from '@mapeo/mock-data'
 import { getRandomBytes } from 'expo-crypto'
 import { uint8ArrayToHex } from 'uint8array-extras'
