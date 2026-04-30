@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
@@ -110,7 +111,6 @@ class NodeJSIPC(
                     }
                 }
             }
-            waitForFile(socketFile)
             if (::socket.isInitialized) {
                 try {
                     socket.close()
@@ -233,37 +233,36 @@ class NodeJSIPC(
     }
 }
 
+/**
+ * Connect with a fixed-cadence retry loop bounded by an overall deadline.
+ *
+ * Retries fire on every `IOException` from `LocalSocket.connect`, which covers
+ * both "socket file does not exist yet" (`ENOENT`) and "file exists but the
+ * server is not yet `accept`ing" (`ECONNREFUSED`) — the same primitive handles
+ * both phases of backend startup. The 50 ms cadence is fast enough to be
+ * invisible to TTI; the 30 s deadline matches the prior `waitForFile` timeout
+ * so the cumulative startup wait budget is unchanged.
+ *
+ * No exponential backoff: this is a one-shot startup wait, not a network call,
+ * and the failure mode we're tolerating is "backend not finished booting yet"
+ * — it doesn't get worse from retrying tightly.
+ */
 private suspend fun connectWithRetry(
     socketAddress: LocalSocketAddress,
-    maxRetries: Int = 5,
-    initialDelayMs: Long = 100,
-    maxDelayMs: Long = 5000,
-    backoffMultiplier: Double = 2.0
-): LocalSocket {
-    var currentDelay = initialDelayMs
-    var lastException: IOException? = null
-
-    repeat(maxRetries) { attempt ->
+    deadlineMs: Long = 30_000,
+    intervalMs: Long = 50,
+): LocalSocket = withTimeout(deadlineMs) {
+    var attempt = 0
+    while (true) {
+        attempt++
         try {
             val socket = LocalSocket()
             socket.connect(socketAddress)
-            log("Connected on attempt ${attempt + 1}")
-            return socket
-        } catch (e: IOException) {
-            lastException = e
-
-            if (attempt < maxRetries - 1) {
-                delay(currentDelay)
-                currentDelay = minOf(
-                    (currentDelay * backoffMultiplier).toLong(),
-                    maxDelayMs
-                )
-            }
+            log("Connected on attempt $attempt")
+            return@withTimeout socket
+        } catch (_: IOException) {
+            delay(intervalMs)
         }
     }
-
-    throw IOException(
-        "Failed to connect after $maxRetries attempts",
-        lastException
-    )
+    @Suppress("UNREACHABLE_CODE") error("unreachable")
 }
