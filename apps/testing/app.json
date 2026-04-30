@@ -21,6 +21,7 @@
 				"backgroundColor": "#ffffff"
 			},
 			"package": "com.comapeo.core.testing"
-		}
+		},
+		"plugins": [["expo-dev-client", { "launchMode": "most-recent" }]]
 	}
 }
