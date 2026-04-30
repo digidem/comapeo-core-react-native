@@ -9,7 +9,7 @@
 		"ios": "expo run:ios"
 	},
 	"dependencies": {
-		"expo": "55.0.17",
+		"expo": "55.0.18",
 		"expo-crypto": "55.0.14",
 		"react": "19.2.5",
 		"react-native": "0.83.6",
