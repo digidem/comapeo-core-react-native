@@ -41,6 +41,138 @@ final class NodeJSServiceTests: XCTestCase {
         return makeMockNodeService(socketDir: testDir)
     }
 
+    // MARK: - Per-component lifecycle tests
+    //
+    // These exercise the previously-broken paths the per-component
+    // model addresses: an unexpected node exit (without an `error`
+    // frame) must derive to ERROR, and a `stopping` frame from the
+    // backend must derive to STOPPING before disconnect. The pure
+    // `deriveState` table is covered separately in `DeriveStateTests`.
+
+    /// The runtime exits while we're STARTED and stop() was never
+    /// called (and the backend never sent `stopping`). Old behavior:
+    /// state stayed `.started` until a later cleanup() forced
+    /// `.stopped`. New behavior: derives to ERROR with phase
+    /// `node-runtime-unexpected`.
+    func testUnexpectedNodeExitDerivesError() throws {
+        let (service, signalExit) = makeTestService()
+        let startedExpectation = expectation(description: "Reached started")
+        let errorExpectation = expectation(description: "Derived to error")
+
+        service.onStateChange = { state in
+            if state == .started { startedExpectation.fulfill() }
+            if state == .error { errorExpectation.fulfill() }
+        }
+
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+        wait(for: [startedExpectation], timeout: 5)
+
+        // Cause the runtime to exit WITHOUT calling stop() or
+        // sending a `stopping` frame — i.e. a crash from the
+        // service's perspective.
+        signalExit()
+
+        wait(for: [errorExpectation], timeout: 5)
+        XCTAssertEqual(service.state, .error)
+        let lastError = service.getLastError()
+        XCTAssertEqual(lastError?.phase, "node-runtime-unexpected")
+        XCTAssertNotNil(lastError?.message)
+        // Once in ERROR, start()/stop() are refused.
+        service.start()
+        XCTAssertEqual(service.state, .error)
+    }
+
+    /// Native-local rootkey load failure during the boot handshake.
+    /// `rootKeyProvider` throws → `sendInitFrame()` sets
+    /// `backendState = .error(rootkey, ...)` → derives ERROR with phase
+    /// `rootkey` and the thrown error's localizedDescription as message.
+    /// This is a mirror on iOS of the FGS-side rootkey path on Android;
+    /// without this test the iOS-only branch of the §5.5 §1 (Errors) doc
+    /// section is unverified end-to-end.
+    func testRootKeyLoadFailureDerivesError() throws {
+        struct RootKeyError: Error, LocalizedError {
+            var errorDescription: String? { "test rootkey unavailable" }
+        }
+        let (service, _) = makeMockNodeService(
+            socketDir: testDir,
+            rootKeyProvider: { throw RootKeyError() }
+        )
+        let errorExpectation = expectation(description: "Derived to error")
+        service.onStateChange = { if $0 == .error { errorExpectation.fulfill() } }
+
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+        wait(for: [errorExpectation], timeout: 5)
+
+        XCTAssertEqual(service.state, .error)
+        let lastError = service.getLastError()
+        XCTAssertEqual(lastError?.phase, "rootkey")
+        XCTAssertEqual(lastError?.message, "test rootkey unavailable")
+    }
+
+    /// Backend sends an `error` frame post-`ready`. The service should
+    /// transition from STARTED to ERROR carrying the frame's phase and
+    /// message. Verifies the §5.5 §2 path (backend-reported failures
+    /// reach native via the control socket) end-to-end, not just at the
+    /// `ControlFrame.parse` level.
+    func testBackendErrorFrameDerivesError() throws {
+        let (service, _) = makeTestService()
+        let startedExpectation = expectation(description: "Reached started")
+        let errorExpectation = expectation(description: "Derived to error")
+        service.onStateChange = { state in
+            if state == .started { startedExpectation.fulfill() }
+            if state == .error { errorExpectation.fulfill() }
+        }
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+        wait(for: [startedExpectation], timeout: 5)
+
+        XCTAssertTrue(
+            backend.sendFrame(
+                #"{"type":"error","phase":"runtime","message":"backend exploded"}"#
+            ),
+            "backend client should be connected after handshake"
+        )
+        wait(for: [errorExpectation], timeout: 5)
+
+        XCTAssertEqual(service.state, .error)
+        let lastError = service.getLastError()
+        XCTAssertEqual(lastError?.phase, "runtime")
+        XCTAssertEqual(lastError?.message, "backend exploded")
+    }
+
+    /// Backend sends `{type:"stopping"}` before closing. The service
+    /// should derive to STOPPING in response to the frame, then to
+    /// STOPPED once the runtime exits.
+    func testStoppingFrameDerivesStopping() throws {
+        let (service, signalExit) = makeTestService()
+        let startedExpectation = expectation(description: "Reached started")
+        let stoppingExpectation = expectation(description: "Derived to stopping")
+        let stoppedExpectation = expectation(description: "Derived to stopped")
+
+        service.onStateChange = { state in
+            if state == .started { startedExpectation.fulfill() }
+            if state == .stopping { stoppingExpectation.fulfill() }
+            if state == .stopped { stoppedExpectation.fulfill() }
+        }
+
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+        wait(for: [startedExpectation], timeout: 5)
+
+        // Drive a stop, which causes the MockBackend to send `stopping`
+        // before closing the connection. The state path is
+        // STARTED → STOPPING → STOPPED.
+        DispatchQueue.global().async {
+            service.stop(timeout: 3)
+        }
+        wait(for: [stoppingExpectation], timeout: 5)
+        signalExit()
+        wait(for: [stoppedExpectation], timeout: 5)
+        XCTAssertEqual(service.state, .stopped)
+    }
+
     // MARK: - Startup Tests
 
     func testStartTransitionsToStarted() throws {
@@ -300,21 +432,22 @@ final class NodeJSServiceTests: XCTestCase {
     func testConcurrentStopCallsAreSafe() throws {
         let (service, signalExit) = makeTestService()
         let startedExpectation = expectation(description: "Started")
+        let stoppingExpectation = expectation(description: "Reached stopping")
 
         service.onStateChange = { state in
             if state == .started { startedExpectation.fulfill() }
+            if state == .stopping { stoppingExpectation.fulfill() }
         }
 
         let backend = try startServiceWithMockBackend(service)
         defer { backend.stop() }
-        waitForExpectations(timeout: 5)
-
-        // Signal exit so stop() calls can complete
-        signalExit()
+        wait(for: [startedExpectation], timeout: 5)
 
         let group = DispatchGroup()
 
-        // Fire 3 concurrent stop() calls
+        // Fire 3 concurrent stop() calls. The first to mark intent
+        // wins the STOPPED → STOPPING derivation; subsequent calls
+        // see state != .started/.starting and bail out cleanly.
         for _ in 0..<3 {
             group.enter()
             DispatchQueue.global().async {
@@ -322,6 +455,18 @@ final class NodeJSServiceTests: XCTestCase {
                 group.leave()
             }
         }
+
+        // Wait until at least one stop() has set stopRequested=true
+        // (driving the derivation to .stopping). Without this, the
+        // mock entryPoint's exit can race ahead of stop() and the
+        // exit-classification correctly flags the runtime exit as
+        // unexpected — which is the new model's whole point. The
+        // graceful-shutdown path requires intent set BEFORE exit.
+        wait(for: [stoppingExpectation], timeout: 5)
+
+        // Now signal the entryPoint to return — exit is classified
+        // as requested because stopRequested is already true.
+        signalExit()
 
         let result = group.wait(timeout: .now() + 5)
         XCTAssertEqual(result, .success, "All stop calls should complete")

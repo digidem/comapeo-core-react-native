@@ -121,6 +121,7 @@ class ComapeoCoreModule : Module() {
                     when (val frame = ControlFrame.parse(message)) {
                         ControlFrame.Started -> setState(JsState.STARTING)
                         ControlFrame.Ready -> setState(JsState.STARTED)
+                        ControlFrame.Stopping -> setState(JsState.STOPPING)
                         is ControlFrame.Error -> setState(
                             JsState.ERROR,
                             mapOf(
@@ -138,12 +139,41 @@ class ComapeoCoreModule : Module() {
                         // we wait for `started`/`ready` to advance state.
                         is NodeJSIPC.State.Disconnecting -> setState(JsState.STOPPING)
                         is NodeJSIPC.State.Disconnected -> {
-                            // Don't downgrade ERROR (terminal until next start).
-                            // Read jsState under the lock so a concurrent
-                            // ERROR transition from onMessage can't be
-                            // missed by a stale read here.
+                            // Distinguish graceful from unexpected disconnect
+                            // by what state we were in when the socket
+                            // closed:
+                            //
+                            //   ERROR    — already terminal, don't downgrade.
+                            //   STOPPING — graceful exit (we either saw
+                            //              `stopping` from the backend, or
+                            //              the FGS-side asked us to stop and
+                            //              we propagated). Land in STOPPED.
+                            //   STOPPED  — already there, idempotent.
+                            //   STARTING/STARTED — the socket closed without
+                            //              a preceding `stopping` frame, so
+                            //              the backend exited unexpectedly
+                            //              (crash, OOM kill, abort()). Surface
+                            //              as ERROR with a synthetic phase so
+                            //              the application can react. Errors
+                            //              the FGS knows about (rootkey,
+                            //              watchdog) come through `error-native`
+                            //              → backend re-broadcast → real error
+                            //              frame, so they hit the
+                            //              `ControlFrame.Error` branch above
+                            //              with their actual phase before we
+                            //              get here.
                             val current = synchronized(stateLock) { jsState }
-                            if (current != JsState.ERROR) setState(JsState.STOPPED)
+                            when (current) {
+                                JsState.ERROR -> {}
+                                JsState.STOPPING, JsState.STOPPED -> setState(JsState.STOPPED)
+                                JsState.STARTING, JsState.STARTED -> setState(
+                                    JsState.ERROR,
+                                    mapOf(
+                                        "errorPhase" to "node-runtime-unexpected",
+                                        "errorMessage" to "Backend disconnected unexpectedly",
+                                    ),
+                                )
+                            }
                         }
                         is NodeJSIPC.State.Error -> setState(
                             JsState.ERROR,

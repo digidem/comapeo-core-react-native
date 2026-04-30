@@ -102,10 +102,50 @@ const controlIpcServer = new SimpleRpcServer({
     resolveInit(rootKey);
   },
   shutdown: async () => {
+    // Announce graceful shutdown BEFORE closing anything. Native peers
+    // (FGS-side and main-app-side on Android) use the presence of this
+    // frame to distinguish "expected disconnect" from "unexpected
+    // disconnect" — a control socket that closes without a preceding
+    // `stopping` frame is unambiguously a crash or kill, not a graceful
+    // exit. AF_UNIX is a stream socket; the kernel guarantees that the
+    // 'stopping' frame is delivered before the EOF (socket close),
+    // allowing the peer to distinguish graceful shutdown from a crash.
+    controlIpcServer.broadcast({ type: "stopping" });
     const closePromises = [controlIpcServer.close(), fastify.close()];
     if (comapeoRpcServer) closePromises.push(comapeoRpcServer.close());
     await Promise.all(closePromises);
     if (comapeo) await comapeo.close();
+  },
+  /**
+   * Cross-process error attribution channel (Android FGS → Node →
+   * main-app process). When the FGS-side `NodeJSService` enters ERROR
+   * from a *local* cause (rootkey load failure, startup watchdog
+   * timeout) while Node is still alive, it sends this frame. The
+   * backend re-broadcasts via `handleFatal` (which calls
+   * `broadcastError` and exits 1 after a 100ms flush) so the main-app
+   * process sees a real `error` frame with the correct phase and
+   * message — not a generic "unexpected disconnect" inferred from a
+   * sudden socket close.
+   *
+   * Without this channel, an FGS-side rootkey failure leaves Node
+   * hanging on `await initPromise` (no backend timeout on init) while
+   * the main-app process stays at STARTING forever. iOS doesn't use
+   * this — in-process, the module reads service state directly.
+   *
+   * Validates the input: a misbehaving native side sending a
+   * malformed payload is logged and ignored, not crashed on.
+   *
+   * @param {Record<string, unknown>} message
+   */
+  "error-native": (message) => {
+    if (
+      typeof message.phase !== "string" ||
+      typeof message.message !== "string"
+    ) {
+      console.warn("Received malformed error-native frame, ignoring", message);
+      return;
+    }
+    handleFatal(message.phase, new Error(message.message));
   },
 });
 
