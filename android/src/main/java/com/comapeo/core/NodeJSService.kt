@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -43,6 +44,15 @@ const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
 const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
+
+/**
+ * Bound on `ipcDeferred.await()` inside `sendErrorNativeFrame`. If the
+ * FGS fails before NodeJSIPC is constructed, the deferred never
+ * completes and an unbounded await would pin a coroutine. Two seconds
+ * is generous for an in-process completion that normally happens in
+ * milliseconds; on miss, the frame is logged as dropped.
+ */
+private const val SEND_ERROR_NATIVE_TIMEOUT_MS = 2_000L
 
 @Suppress("KotlinJniMissingFunction")
 class NodeJSService(
@@ -223,21 +233,11 @@ class NodeJSService(
 
         /**
          * Pure function: maps the three component states to the public
-         * `State`. Delegates to the top-level [deriveLifecycleState]
-         * so unit tests can call it from the JVM-only `test` source
-         * set without triggering the companion object's
-         * `System.loadLibrary` init (which fails outside an Android
-         * device / instrumented test).
-         *
-         * Decision order (top to bottom — earlier matches win):
-         * 1. Any backend-reported error → ERROR.
-         * 2. An unexpected runtime exit → ERROR.
-         * 3. A stop has been requested → STOPPED if the runtime is gone,
-         *    STOPPING otherwise.
-         * 4. Backend announced `stopping` → STOPPING.
-         * 5. Backend reached `ready` → STARTED.
-         * 6. Runtime is running OR backend reached `controlBound` → STARTING.
-         * 7. Otherwise → STOPPED.
+         * `State`. The decision order lives on [deriveLifecycleState]
+         * — single source of truth. This delegate exists so the
+         * companion can expose it as a [@JvmStatic] entry point;
+         * tests prefer the top-level helper to avoid triggering
+         * the companion's `System.loadLibrary` init.
          */
         @JvmStatic
         fun deriveState(
@@ -363,11 +363,17 @@ class NodeJSService(
         log("Starting NodeJS service")
 
         // Reset component state for a fresh start cycle and transition
-        // STOPPED → STARTING via the derivation.
+        // STOPPED → STARTING via the derivation. `lastError` is cleared
+        // explicitly: today this only matters as defense-in-depth (the
+        // start guard above refuses ERROR, so fresh start is reachable
+        // only from STOPPED, where lastError is null in clean cycles)
+        // but it removes any chance of a stale ErrorInfo leaking across
+        // start cycles if that invariant ever weakens.
         applyAndEmit { it.copy(
             nodeRuntime = NodeRuntimeState.Running,
             backendState = BackendState.Unknown,
             stopRequested = false,
+            lastError = null,
         ) }
 
         // Arm the startup watchdog. `delay()` respects coroutine
@@ -436,8 +442,22 @@ class NodeJSService(
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting node", e)
                 val info = ErrorInfo("node-runtime", e.message ?: e.javaClass.simpleName)
+                // The thread has unwound, so mark the runtime as exited
+                // alongside the backend-error transition. Without this,
+                // the component triple is left inconsistent (runtime
+                // still Running) — visible state derives correctly via
+                // the backend-error rule, but a later applyAndEmit that
+                // mutates other fields would re-derive against a stale
+                // runtime. Reason is REQUESTED to keep the derivation
+                // anchored on the explicit backend error.
                 applyAndEmit(error = info) {
-                    it.copy(backendState = BackendState.Error(info.phase, info.message))
+                    it.copy(
+                        backendState = BackendState.Error(info.phase, info.message),
+                        nodeRuntime = NodeRuntimeState.Exited(
+                            code = -1,
+                            reason = ExitReason.REQUESTED,
+                        ),
+                    )
                 }
                 callback.onError(e)
             } finally {
@@ -537,10 +557,13 @@ class NodeJSService(
      * the main-app process stays at STARTING forever — the FGS knows it
      * has failed but has no way to tell the main app.
      *
-     * Best-effort: fires async and returns immediately. If the IPC
-     * isn't connected yet, the frame is dropped — but in that case the
-     * FGS is also dropping the only channel to the main-app process,
-     * so this is no worse than today.
+     * Best-effort: fires async and returns immediately. Bounded by
+     * [SEND_ERROR_NATIVE_TIMEOUT_MS] so a never-completing
+     * `ipcDeferred` (e.g. an FGS that fails before the IPC is
+     * constructed) doesn't pin a coroutine forever — it's logged as
+     * dropped after the timeout. In that case the FGS is also losing
+     * the only channel to the main-app process, so the dropped frame
+     * is no worse than today.
      */
     private fun sendErrorNativeFrame(phase: String, message: String) {
         val payload = json.encodeToString(
@@ -548,7 +571,18 @@ class NodeJSService(
         )
         serviceScope.launch {
             try {
-                ipcDeferred.await().sendMessage(payload)
+                val ipc = withTimeoutOrNull(SEND_ERROR_NATIVE_TIMEOUT_MS) {
+                    ipcDeferred.await()
+                }
+                if (ipc == null) {
+                    Log.w(
+                        TAG,
+                        "Dropping error-native frame: IPC not available within " +
+                            "${SEND_ERROR_NATIVE_TIMEOUT_MS}ms (phase=$phase)",
+                    )
+                    return@launch
+                }
+                ipc.sendMessage(payload)
                 log("Sent error-native frame to backend (phase=$phase)")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to send error-native frame", e)
