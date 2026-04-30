@@ -429,6 +429,67 @@ Native plumbing:
   process's `controlIpc` receives the same broadcast and emits the
   event there.
 
+### 5.7 Timeout topology
+
+Every wait in the lifecycle path has either a local timeout or a
+caller-side bound. Catalogued here so the next person debugging a
+"why did this hang for N seconds" question doesn't have to grep three
+codebases.
+
+**Native side:**
+
+| # | Where | Default | Guards against | On expiry |
+|---|-------|---------|---------------|-----------|
+| 1 | iOS `startupTimeout` (`NodeJSService.swift`) | 30 s | Service stuck in `STARTING` (Node parked, no `ready` frame) | Sets `backendState = .error(starting-timeout)` → derives `ERROR` |
+| 2 | iOS `stop(timeout:)` | 10 s; **5 s** when called from `applicationWillTerminate` | Node not draining cleanly | `cleanup(threadExited: false)` → `ERROR` with phase `shutdown-timeout`. Node thread may still be alive — process death cleans up |
+| 3 | iOS `waitForFile` (`NodeJSIPC`) | 30 s | Backend never binds the socket | IPC `.error` |
+| 4 | iOS `connectWithRetry` | ~1.5 s budget (5 attempts, 100→200→400→800 ms) | File exists but `accept()` not yet ready | IPC `.error` |
+| 5 | Android `startupTimeoutMs` | 30 s | Mirrors #1 | Sends `error-native` to backend (best-effort; see #7) **and** sets local `BackendState.Error(starting-timeout)` |
+| 6 | Android `ComapeoCoreService.onDestroy` `withTimeout` | 10 s | `nodeJSService.stop()` hangs | Catches `TimeoutCancellationException` → `Process.killProcess`. This is the only outer bound on Android `stop()` — it has no internal timeout |
+| 7 | Android `SEND_ERROR_NATIVE_TIMEOUT_MS` | 2 s | `ipcDeferred` never completes (FGS init threw before IPC was constructed) | Frame logged as dropped, no error thrown — the FGS still sets local `ERROR` regardless |
+| 8 | Android `waitForFile` | 30 s | Same as #3 | Throws `TimeoutCancellationException` |
+
+**Backend (Node):**
+
+| # | Where | Default | Guards against | On expiry |
+|---|-------|---------|---------------|-----------|
+| 9 | `handleFatal` flush window | 100 ms | `broadcastError` not flushed before `process.exit(1)` | Hard exit |
+| 10 | `ServerHelper.listen` retry on `EADDRINUSE` | ~4 s (3 retries × 1 s) | Stale socket file blocking bind | Reject — caller surfaces ERROR with phase `listen-control` / `construct` |
+
+**Unbounded waits (with safety nets, not internal timeouts):**
+
+- **Backend `await initPromise` (`backend/index.js`).** No timeout on
+  the rootkey-receive step. Relies on the native watchdog (#1 / #5)
+  to break it via `error-native` → `process.exit(1)`. If both the
+  watchdog and `error-native` fail, Node parks indefinitely and the
+  main-app process sees `STARTING` until the OS kills the process.
+  Defense-in-depth would be a 60–120 s `initPromise` timeout in the
+  backend; not currently implemented.
+
+- **Backend `await comapeo.close()` in the `shutdown` handler.**
+  Bounded only by the caller-side stop timeout (#2 / #6). If
+  `comapeo.close()` hangs internally, the native side fires
+  `shutdown-timeout` and (on Android) the FGS process is killed.
+
+- **Android `nodeJob?.join()` inside `NodeJSService.stop()`.** No
+  internal timeout. Only the `withTimeout(10_000)` in
+  `ComapeoCoreService.onDestroy` (#6) bounds it. Direct callers of
+  `stop()` outside the FGS lifecycle must wrap in their own timeout.
+
+- **`state.first { Connected }` in `NodeJSIPC.sendMessageInternal`.**
+  Bounded indirectly: `disconnect()` cancels `connectJob`, which
+  cancels the child `sendJob`, which cancels the suspending `first`.
+
+**Worst-case latencies for cross-process error attribution (Android):**
+
+- `error-native` lands: ~100 ms (flush window) from FGS-side ERROR to
+  main-app receiving the precise phase.
+- `error-native` dropped (#7): ~10–12 s from FGS-side ERROR to main-app
+  receiving generic `node-runtime-unexpected` (FGS dies via `onError →
+  stopService → onDestroy → withTimeout(10_000) → killProcess`; control
+  socket closes; main-app's disconnect handler fires). State is
+  correct; phase attribution is degraded.
+
 ---
 
 ## 6. Residual limitations
