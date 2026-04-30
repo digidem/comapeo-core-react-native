@@ -83,3 +83,6 @@ build/
 
 # eslint
 .eslintcache
+
+# Maestro artifacts
+maestro/recordings/
