@@ -77,12 +77,12 @@ export function TestRunner() {
 
 			{results.map((result) => (
 				<View key={result.id}>
-					<Text style={{ color: result.passed ? 'green' : 'red' }}>
+					<Text selectable style={{ color: result.passed ? 'green' : 'red' }}>
 						{result.passed ? '✓' : '✗'} {result.name}
 					</Text>
 
 					{result.errors.map((e, j) => (
-						<Text key={j} style={{ color: 'red', marginLeft: 16 }}>
+						<Text key={j} selectable style={{ color: 'red', marginLeft: 16 }}>
 							{e.message}
 						</Text>
 					))}
