@@ -99,7 +99,7 @@ export function test({
 		},
 	]
 
-	describe('crud operations', () => {
+	describe('project CRUD operations', () => {
 		for (const value of FIXTURES) {
 			const { schemaName } = value
 
@@ -206,6 +206,7 @@ export function test({
 					await create(project, value)
 				}
 				const written = await create(project, value)
+
 				await project.close()
 
 				// 'should fail updating since the project is already closed'

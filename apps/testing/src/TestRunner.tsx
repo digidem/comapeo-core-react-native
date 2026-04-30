@@ -3,7 +3,7 @@ import jasmineRequire from 'jasmine-core/lib/jasmine-core/jasmine'
 import { Button, ScrollView, Text, View } from 'react-native'
 
 import { test as basicTest } from './tests/basic'
-import { test as crudTest } from './tests/crud'
+import { test as projectCrudTest } from './tests/project-crud'
 
 export function TestRunner() {
 	const [isRunning, setIsRunning] = useState(false)
@@ -58,7 +58,7 @@ export function TestRunner() {
 
 			// 👇 Register tests here!
 			basicTest({ describe, it, expect, expectAsync, jasmine })
-			crudTest({ describe, it, expect, expectAsync, jasmine })
+			projectCrudTest({ describe, it, expect, expectAsync, jasmine })
 
 			await jasmineEnv.execute()
 		} catch (err) {
