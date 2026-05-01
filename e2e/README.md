@@ -56,7 +56,6 @@ android/src/androidTest/java/com/comapeo/core/  # Instrumented tests (device)
     NodeJSIPCTest.kt        # IPC: connect, send, receive, framing, disconnect
     ServiceLifecycleTest.kt # Service: start, stop, process isolation, notification
     ShutdownPathTest.kt     # Shutdown: graceful stop, process kill, recovery cycles
-    WatchForFileTest.kt     # FileObserver: creation, cancellation, TOCTOU
 
 e2e/.maestro/                                # Maestro UI flows
     app-launch.yaml         # App launches and displays all UI sections
@@ -112,20 +111,6 @@ Tests the critical shutdown and recovery path.
 | `stopWhileNodeJSIsStartingDoesNotHang` | STOP during startup doesn't hang |
 | `multipleStopStartCycles` | 3 start/stop cycles work (fresh process each) |
 | `appForceStopCleansUpService` | `am force-stop` kills both processes |
-
-### WatchForFileTest
-
-Tests the `waitForFile` suspending function.
-
-| Test | What it verifies |
-|---|---|
-| `returnsImmediatelyIfFileExists` | No suspension if file exists |
-| `suspendsUntilFileIsCreated` | Suspends, resumes on file creation |
-| `handlesFileCreatedAfterShortDelay` | 2s delay before creation |
-| `cancellationStopsWatching` | Coroutine cancellation cleans up |
-| `doesNotResumeForDifferentFile` | Only the target filename triggers resume |
-| `createsParentDirectoryIfMissing` | Creates missing parent dirs |
-| `handlesRapidFileCreateDelete` | TOCTOU scenario |
 
 ## Writing new tests
 
