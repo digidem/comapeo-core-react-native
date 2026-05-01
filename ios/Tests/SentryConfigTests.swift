@@ -1,0 +1,170 @@
+import XCTest
+@testable import ComapeoCore
+
+/// Pure unit tests for `SentryConfig.load`. Mirrors the Android
+/// `SentryConfigTest` JVM unit tests — same fixture cases, same
+/// pure-getter pattern. Runs as part of the swift-test target with
+/// no simulator dependency.
+///
+/// Coverage rationale: this is the deserialization seam between the
+/// Expo plugin's plist writes and the native consumers (SDK init,
+/// argv flags). A regression here would silently disable Sentry or
+/// ship the wrong environment tag — both of which produce useless
+/// Sentry projects rather than visible failures.
+final class SentryConfigTests: XCTestCase {
+
+    private let defaultRelease: () -> String = { "1.2.3+42" }
+
+    func testReturnsNilWhenDsnMissing() {
+        // Mirrors the "plugin not registered, or registered without
+        // a sentry argument" case: no plist keys were written, so
+        // loading produces nil — the documented "Sentry off" state.
+        let config = SentryConfig.load(from: [:], defaultRelease: defaultRelease)
+        XCTAssertNil(config)
+    }
+
+    func testReturnsNilWhenDsnEmptyString() {
+        // Defensive: a plist round-trip can produce an empty-string
+        // key. Treat that the same as absent.
+        let config = SentryConfig.load(
+            from: [SentryConfig.Key.dsn: ""],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertNil(config)
+    }
+
+    func testLoadsRequiredFields() {
+        let config = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://abc@sentry.example/1",
+                SentryConfig.Key.environment: "production",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertNotNil(config)
+        XCTAssertEqual(config?.dsn, "https://abc@sentry.example/1")
+        XCTAssertEqual(config?.environment, "production")
+        XCTAssertEqual(config?.release, "1.2.3+42")
+        XCTAssertNil(config?.sampleRate)
+        XCTAssertNil(config?.tracesSampleRate)
+        XCTAssertNil(config?.rpcArgsBytes)
+        XCTAssertNil(config?.captureApplicationDataDefault)
+    }
+
+    func testPluginReleaseOverridesDefault() {
+        // When the consumer passes `release` to the plugin, that
+        // value wins over CFBundleShortVersionString+CFBundleVersion.
+        // Used to embed git SHAs from EAS_BUILD_GIT_COMMIT_HASH
+        // (plan §4.1).
+        let config = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "qa",
+                SentryConfig.Key.release: "deadbeef",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertEqual(config?.release, "deadbeef")
+    }
+
+    func testParsesNumericStringFields() {
+        let config = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "production",
+                SentryConfig.Key.sampleRate: "0.5",
+                SentryConfig.Key.tracesSampleRate: "0.1",
+                SentryConfig.Key.rpcArgsBytes: "0",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertEqual(config?.sampleRate, 0.5)
+        XCTAssertEqual(config?.tracesSampleRate, 0.1)
+        XCTAssertEqual(config?.rpcArgsBytes, 0)
+    }
+
+    func testParsesNumericNativePlistTypes() {
+        // The plugin coerces values to strings, but a hand-written
+        // plist may use native plist types (real <real>/<integer>).
+        // Accept both so a developer hand-editing for a one-off
+        // build doesn't have to remember to quote.
+        let config = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "production",
+                SentryConfig.Key.sampleRate: 0.5,
+                SentryConfig.Key.rpcArgsBytes: 0,
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertEqual(config?.sampleRate, 0.5)
+        XCTAssertEqual(config?.rpcArgsBytes, 0)
+    }
+
+    func testUnparseableNumericFieldsAreNil() {
+        // The plugin coerces values to strings on the way in; if a
+        // future plugin bug or a hand-edited plist produces an
+        // unparseable value, we'd rather drop the field than crash.
+        let config = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "production",
+                SentryConfig.Key.sampleRate: "not-a-number",
+                SentryConfig.Key.rpcArgsBytes: "1.5",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertNil(config?.sampleRate)
+        XCTAssertNil(config?.rpcArgsBytes)
+    }
+
+    func testCaptureApplicationDataDefaultParsesString() {
+        let on = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "qa",
+                SentryConfig.Key.captureApplicationDataDefault: "true",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertEqual(on?.captureApplicationDataDefault, true)
+
+        let off = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "production",
+                SentryConfig.Key.captureApplicationDataDefault: "false",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertEqual(off?.captureApplicationDataDefault, false)
+    }
+
+    func testCaptureApplicationDataDefaultParsesNativeBool() {
+        let config = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "production",
+                SentryConfig.Key.captureApplicationDataDefault: true,
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertEqual(config?.captureApplicationDataDefault, true)
+    }
+
+    func testCaptureApplicationDataDefaultStrictness() {
+        // Only "true"/"false" (or a real Bool) parse. A stray
+        // "1"/"yes" returns nil → native treats absence as false.
+        // Defensive against hand-written plists silently flipping
+        // the default.
+        let config = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "qa",
+                SentryConfig.Key.captureApplicationDataDefault: "yes",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertNil(config?.captureApplicationDataDefault)
+    }
+}

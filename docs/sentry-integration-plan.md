@@ -1692,23 +1692,57 @@ changes, zero risk to other consumers.
 
 ### 10.2 Phase 2 — Expo config plugin + native config consumption
 
+Phase 2 splits in two because the plugin-and-readers part has
+zero dependency cost and the native-side direct-Sentry-SDK part
+adds a non-trivial Gradle / podspec coupling. The phasing
+reflects that:
+
+**Phase 2a — plugin + native config readers**
+
 - New `app.plugin.js` at module root (§4.1).
-- iOS reads Info.plist into `SentryConfig` at app delegate
-  init; Android reads manifest meta-data at FGS `onCreate`.
-- Native error tagging (§7.4.7) and FGS-side
-  `SentryAndroid.init` from manifest values.
-- State-transition breadcrumbs and boot transaction
-  (§7.4.1, §7.4.2) wired into the existing
-  `NodeJSService` state-derivation callsites.
+- iOS reads Info.plist into `SentryConfig` at load time;
+  Android reads manifest meta-data into `SentryConfig`.
+- JVM unit tests + Swift `XCTest` cases pinning the parsers'
+  contract (DSN-absent → null, missing environment → throw,
+  versionName/versionCode default release, numeric coercion,
+  strict bool parsing).
+- JS-side state-transition breadcrumbs + ERROR
+  `captureException` fire through the configured adapter
+  immediately (§6.3 — already in §10.1, but the plugin makes
+  the host app's manifest carry the same DSN/environment
+  values `@sentry/react-native` reads, so the host-supplied
+  adapter is correctly tagged).
+
+Cost: ~150 LOC plugin + Kotlin + Swift + tests. Zero new
+runtime deps.
+
+**Phase 2b — FGS-process direct Sentry calls (follow-up)**
+
+- Add `io.sentry:sentry-android-core` to `android/build.gradle`
+  (Android FGS process) and pin versions compatible with
+  `@sentry/react-native@^6`'s transitive deps so consumers
+  using both don't see two copies of sentry-android. iOS
+  doesn't need a comparable add — single-process app, host
+  Sentry SDK already covers it.
+- FGS-side `SentryAndroid.init(ctx) { … }` in
+  `ComapeoCoreService.onCreate` keyed off `SentryConfig`.
+- State-transition breadcrumbs (§7.4.1) and boot transaction
+  with phase spans (§7.4.2) wired into the existing
+  `NodeJSService` state-derivation callsites — these land on
+  the FGS-process scope so logcat tail / FGS-foreground state
+  ride along with the event.
 - Timeout events (§7.4.4) on the existing watchdog firing
   paths.
+- Cross-process error attribution (§7.4.7): FGS-side
+  captureException tagged `proc:fgs` before the
+  `error-native` re-broadcast.
 
-Value: native-side error capture is live for production users
-without depending on RN being alive. FGS cold-start path is
-fully observable. Boot durations dashboarded.
+Value: native-process scope on FGS-originated events. Breadcrumb
+data survives RN being dead. Boot durations dashboarded with
+phase-level granularity.
 
-Cost: ~150 LOC native (Kotlin + Swift), ~50 LOC plugin, no
-backend changes yet.
+Cost: ~150 LOC native, ~10 LOC build config, transitive
+runtime size from sentry-android-core.
 
 ### 10.3 Phase 3 — backend loader + RPC tracing
 
@@ -1908,47 +1942,66 @@ Cost: ~150 LOC native + JS + backend.
 
 Concrete touch list, by phase, for code review.
 
-**Phase 1**
+**Phase 1 — landed**
 
-- `src/sentry.ts` (new) — `configureSentry`, types, state listeners.
-- `src/sentry-internal.ts` (new) — module-private adapter holder.
-- `package.json` — add `@sentry/react-native` to `peerDependencies`
-  with `peerDependenciesMeta.optional: true`.
-- `docs/sentry-integration-plan.md` (this file).
+- `src/sentry.ts` (new) — `configureSentry`, hand-rolled
+  `SentryAdapter` interface (no compile-time `@sentry/*` import),
+  state listeners that emit a breadcrumb on every transition and
+  a `captureException` on ERROR.
+- `src/sentry-internal.ts` (new) — module-private adapter holder
+  read by Phase 3's RPC `onRequestHook`.
+- `package.json` — add `@sentry/react-native` to
+  `peerDependencies` with `peerDependenciesMeta.optional: true`,
+  add `exports` field exposing `./sentry` sub-export and
+  `./app.plugin`.
 
-**Phase 2 — Expo plugin + native config + breadcrumbs/spans**
+**Phase 2a — landed**
 
-- `app.plugin.js` (new, module root) — `withAndroidManifest` to
-  inject `<meta-data>` and `withInfoPlist` to inject keys.
-  Validates `dsn` and `environment` are present; throws at
-  prebuild on misconfiguration.
-- `expo-module.config.json` — register the plugin if needed
-  (the file is already wired to expo-modules via this manifest).
-- `ios/SentryConfigStore.swift` (new) — read Info.plist into
-  `SentryConfig`, fall back to `CFBundleShortVersionString`
-  for `release` if absent.
-- `android/src/main/java/com/comapeo/core/SentryConfigStore.kt`
-  (new) — read manifest meta-data into `SentryConfig`, fall
-  back to `versionName` for `release` if absent.
-- `ios/AppLifecycleDelegate.swift` — read config and stash on
-  `NodeJSService` before `runNode()`.
-- `ios/NodeJSService.swift` — accept stored config, build
-  argv with `--sentry*` flags for `runNode`, init
-  `sentry-cocoa` (already present via `@sentry/react-native`,
-  no re-init needed on iOS).
-- `android/src/main/java/com/comapeo/core/ComapeoCoreService.kt`
-  — read config in `onCreate`, init `SentryAndroid` for the
-  FGS process, pass to `NodeJSService`.
-- `android/src/main/java/com/comapeo/core/NodeJSService.kt`
-  — build argv with `--sentry*` flags for the Node spawn
-  call.
-- `android/src/main/java/com/comapeo/core/NodeJSService.kt`,
-  `ios/NodeJSService.swift` — add `Sentry.addBreadcrumb` calls
-  on every state-derivation update; wrap boot phases in
-  `Sentry.startSpan`; emit timeout events.
-- `android/src/main/java/com/comapeo/core/ComapeoCoreModule.kt`
-  (main process) — same breadcrumb/event emission from the
-  control-IPC observer.
+- `app.plugin.js` (new, module root) — ESM Expo plugin (because
+  this package is `"type": "module"`). `withAndroidManifest`
+  upserts `<meta-data>`; `withInfoPlist` upserts plist keys.
+  Validates `dsn` + `environment` are present; throws at
+  prebuild on misconfiguration. No-op when registered without
+  a `sentry` argument.
+- `android/src/main/java/com/comapeo/core/SentryConfig.kt`
+  (new) — typed manifest reader. Pure `load(metaString,
+  defaultRelease)` overload for unit tests; production
+  `loadFromManifest(context)` reads
+  `PackageManager.getApplicationInfo(...).metaData`. Default
+  release = `versionName + "+" + versionCode` (longVersionCode
+  on API 28+).
+- `android/src/test/java/com/comapeo/core/SentryConfigTest.kt`
+  (new) — JVM unit tests covering DSN-absent, missing-env
+  throw, plugin-release override, numeric coercion,
+  unparseable-numerics drop to null, captureApplicationDataDefault
+  strict bool.
+- `ios/SentryConfig.swift` (new) — typed plist reader. Pure
+  `load(from: [String: Any], defaultRelease)` for unit tests;
+  production `loadFromMainBundle()` reads
+  `Bundle.main.infoDictionary`. Accepts both string-coerced
+  values (the plugin's normal output) and native plist types
+  (defensive against hand-edits). Default release =
+  `CFBundleShortVersionString + "+" + CFBundleVersion`.
+- `ios/Tests/SentryConfigTests.swift` (new) — XCTest cases
+  mirroring the Kotlin tests.
+- `ios/Package.swift` — add `SentryConfig.swift` to the SPM
+  target's `sources` list so the macOS-native test suite
+  compiles it.
+
+**Phase 2b — follow-up (deferred)**
+
+- `android/build.gradle` — add `io.sentry:sentry-android-core`
+  dep at the major version that matches
+  `@sentry/react-native@^6`'s transitive dep.
+- `android/.../ComapeoCoreService.kt` — read config in
+  `onCreate`, init `SentryAndroid` for the FGS process, stash
+  on `NodeJSService`.
+- `android/.../NodeJSService.kt`,
+  `ios/NodeJSService.swift` — add `Sentry.addBreadcrumb`
+  calls on every state-derivation update; wrap boot phases
+  in `Sentry.startSpan`; emit timeout events.
+- `android/.../ComapeoCoreModule.kt` (main process) — same
+  breadcrumb / event emission from the control-IPC observer.
 
 **Phase 3 — backend instrumentation (loader + multi-entry bundle)**
 

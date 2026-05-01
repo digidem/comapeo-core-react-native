@@ -77,6 +77,57 @@ is a confusing state to end up in).
 
 Run `npx pod-install` after installing the npm package.
 
+# Optional: Sentry integration
+
+This module can forward its lifecycle errors and (in later phases) RPC tracing
+into the host app's `@sentry/react-native`. Sentry is opt-in — if you don't
+register the plugin and don't import the sub-export, no Sentry code path is
+exercised and no DSN ends up in your APK/IPA.
+
+### 1. Register the Expo config plugin
+
+In `app.config.js` (must be `.js`, not `app.json`, to read `process.env`):
+
+```js
+export default {
+  expo: {
+    plugins: [
+      ["@comapeo/core-react-native", {
+        sentry: {
+          dsn: process.env.SENTRY_DSN,
+          environment: process.env.SENTRY_ENVIRONMENT ?? "production",
+          // Optional: opt internal/test builds into the §9 capture-application-data
+          // toggle by default. Production stays off-by-default.
+          captureApplicationDataDefault:
+            (process.env.SENTRY_ENVIRONMENT ?? "production") !== "production",
+        },
+      }],
+    ],
+  },
+};
+```
+
+The plugin runs at `expo prebuild` and bakes the DSN, environment, and other
+options into AndroidManifest meta-data and Info.plist keys. Sourcing values
+from `process.env` lets EAS build profiles produce different builds without
+code changes — see `docs/sentry-integration-plan.md` §4.1 for the full pattern.
+
+### 2. Hand off the host's Sentry SDK
+
+```ts
+import * as Sentry from "@sentry/react-native";
+import { configureSentry } from "@comapeo/core-react-native/sentry";
+
+Sentry.init({ /* options — DSN/environment/release auto-loaded from plist/manifest */ });
+
+configureSentry({ sentry: Sentry });
+```
+
+After this call, the module's lifecycle ERROR transitions and `messageerror`
+events are captured to your Sentry project tagged with the relevant phase
+(`rootkey`, `starting-timeout`, `node-runtime-unexpected`, etc.). State
+transitions show up as breadcrumbs that ride along on the next event.
+
 # Contributing
 
 Contributions are very welcome! Please refer to guidelines described in the [contributing guide](https://github.com/expo/expo#contributing).
