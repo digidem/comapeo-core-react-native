@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -251,18 +252,42 @@ private suspend fun connectWithRetry(
     socketAddress: LocalSocketAddress,
     deadlineMs: Long = 30_000,
     intervalMs: Long = 50,
-): LocalSocket = withTimeout(deadlineMs) {
-    lateinit var connected: LocalSocket
-    var attempt = 0
-    while (true) {
-        attempt++
-        try {
-            connected = LocalSocket().also { it.connect(socketAddress) }
-            log("Connected on attempt $attempt")
-            break
-        } catch (_: IOException) {
-            delay(intervalMs)
+): LocalSocket {
+    var lastFailure: IOException? = null
+    var attempts = 0
+    val connected = try {
+        withTimeout(deadlineMs) {
+            // `LocalSocket.connect` opens a real fd before it can throw
+            // (`LocalSocketImpl.create` runs before `connectLocal`), so
+            // each failed attempt's socket has to be closed before the
+            // next iteration — otherwise we'd accumulate hundreds of
+            // file descriptors over the deadline window.
+            lateinit var s: LocalSocket
+            while (true) {
+                attempts++
+                val candidate = LocalSocket()
+                try {
+                    candidate.connect(socketAddress)
+                    s = candidate
+                    break
+                } catch (e: IOException) {
+                    try { candidate.close() } catch (_: Exception) {}
+                    lastFailure = e
+                    delay(intervalMs)
+                }
+            }
+            s
         }
+    } catch (e: TimeoutCancellationException) {
+        // Translate the timeout into an IOException carrying the last
+        // connect failure as the cause; otherwise `State.Error` would
+        // surface only "Timed out for 30000 ms" with no hint of which
+        // syscall was failing or how many attempts ran.
+        throw IOException(
+            "Timed out connecting to socket after ${deadlineMs}ms across $attempts attempts",
+            lastFailure,
+        )
     }
-    connected
+    log("Connected on attempt $attempts")
+    return connected
 }
