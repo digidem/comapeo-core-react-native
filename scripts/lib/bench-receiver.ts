@@ -76,7 +76,15 @@ function safeRunId(raw: unknown, fallback: string): string {
 
 function percentile(sortedAsc: number[], p: number): number {
   if (sortedAsc.length === 0) return Number.NaN;
-  return sortedAsc[Math.floor((sortedAsc.length - 1) * p)]!;
+  // Linear interpolation between closest ranks — matches the on-device
+  // calculation in apps/benchmark/App.tsx so on-screen and host-side
+  // numbers agree.
+  const position = (sortedAsc.length - 1) * p;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sortedAsc[lower]!;
+  const weight = position - lower;
+  return sortedAsc[lower]! + (sortedAsc[upper]! - sortedAsc[lower]!) * weight;
 }
 
 function rewriteSummary(outDir: string): void {

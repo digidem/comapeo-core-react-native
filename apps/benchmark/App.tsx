@@ -5,7 +5,7 @@ import {
 } from "@comapeo/core-react-native";
 import { Directory, File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -20,13 +20,13 @@ import { SafeAreaView } from "react-native-safe-area-context";
 /**
  * Benchmark app entry. Drives the bench RPC bridge through the same
  * RN→native→Node UDS path as the production module, but talks to the
- * stripped `backend/index.bench.js` (via the `bench` Android
- * productFlavor / `ENV['COMAPEO_BENCH']` iOS opt-in) — so timings
- * isolate the framing / IPC / JSON-RPC bridge from `@comapeo/core` init
- * noise. See `docs/uds-rpc-bridge-benchmark-plan.md`.
+ * stripped `backend/index.bench.js` (via the `comapeoBench=true`
+ * Gradle property on Android / `ENV['COMAPEO_BENCH']` iOS opt-in) —
+ * so timings isolate the framing / IPC / JSON-RPC bridge from
+ * `@comapeo/core` init noise. See `docs/uds-rpc-bridge-benchmark-plan.md`.
  *
  * UI surface:
- *   - boot status (state observer): waits for "READY" before enabling
+ *   - boot status (state observer): waits for "STARTED" before enabling
  *     the run button.
  *   - payload-size selector: subset of {64B, 1KB, 64KB, 1MB} per run.
  *   - "Run benchmark" button (testID="send-button"): runs warmup +
@@ -45,6 +45,7 @@ const PAYLOAD_SIZES = [64, 1024, 65536, 1048576] as const;
 const DEFAULT_SELECTED: ReadonlyArray<number> = [64, 1024, 65536];
 const WARMUP_ITERATIONS = 10;
 const STEADY_ITERATIONS = 100;
+const REQUEST_TIMEOUT_MS = 30_000;
 const RECEIVER_DEFAULT_URL = "http://localhost:8787/spans";
 
 type BenchSpan = {
@@ -73,9 +74,14 @@ type RunReport = {
   spanFile: string;
 };
 
+type BenchResponse = { result?: unknown; error?: { message: string } };
+
 class BenchClient {
   private nextId = 0;
-  private pending = new Map<string, (response: { result?: unknown; error?: { message: string } }) => void>();
+  private pending = new Map<
+    string,
+    { resolve: (r: BenchResponse) => void; timer: ReturnType<typeof setTimeout> }
+  >();
   private listenerInstalled = false;
 
   ensureListener() {
@@ -90,19 +96,35 @@ class BenchClient {
         return;
       }
       const m = msg as { id: string; result?: unknown; error?: { message: string } };
-      const cb = this.pending.get(m.id);
-      if (cb) {
+      const entry = this.pending.get(m.id);
+      if (entry) {
+        clearTimeout(entry.timer);
         this.pending.delete(m.id);
-        cb({ result: m.result, error: m.error });
+        entry.resolve({ result: m.result, error: m.error });
       }
     });
   }
 
-  request(method: string, params?: unknown): Promise<{ result?: unknown; error?: { message: string } }> {
+  request(method: string, params?: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<BenchResponse> {
     this.ensureListener();
     const id = `bench-${this.nextId++}`;
     return new Promise((resolve) => {
-      this.pending.set(id, resolve);
+      // Per-request timeout so a lost frame / disconnected backend
+      // doesn't hang the run forever and leak the pending entry.
+      // Caller surfaces `error.message === "timeout"` through the same
+      // path as a backend-emitted error.
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) {
+          resolve({ error: { message: `bench rpc timeout after ${timeoutMs}ms (method=${method})` } });
+        }
+      }, timeoutMs);
+      // `unref` so the timer doesn't keep the JS runtime alive on its
+      // own — RN's JS thread doesn't actually exit, but it's a good
+      // habit and avoids surprises if this code is ported back to Node.
+      if (typeof (timer as unknown as { unref?: () => void }).unref === "function") {
+        (timer as unknown as { unref: () => void }).unref();
+      }
+      this.pending.set(id, { resolve, timer });
       benchMessagePort.postMessage({ id, method, params } as never);
     });
   }
@@ -110,12 +132,17 @@ class BenchClient {
 
 function percentile(sortedAsc: number[], p: number): number {
   if (sortedAsc.length === 0) return Number.NaN;
-  // Linear interpolation between closest ranks. For our sample sizes
-  // (~100), `Math.floor((n-1) * p)` is good enough and avoids the
-  // off-by-one trap of `Math.floor(n * p)` (which would index past the
-  // end at p=1).
-  const idx = Math.floor((sortedAsc.length - 1) * p);
-  return sortedAsc[idx]!;
+  // Linear interpolation between closest ranks (a.k.a. the "C=1" /
+  // NumPy default percentile method). For p=0.5 over 100 samples this
+  // averages indices 49 and 50; nearest-rank would return index 49
+  // alone, biasing low for small samples. Bench p99 is the usual
+  // outlier — `n*p=99` lands exactly on the 99th sample so weight=0.
+  const position = (sortedAsc.length - 1) * p;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sortedAsc[lower]!;
+  const weight = position - lower;
+  return sortedAsc[lower]! + (sortedAsc[upper]! - sortedAsc[lower]!) * weight;
 }
 
 function summarise(samples: number[], sizeBytes: number): SizeStats {

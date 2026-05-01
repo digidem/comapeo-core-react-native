@@ -46,6 +46,13 @@ const sink = createSinkFromArg(
 
 /** @type {BenchRpcServer | undefined} */
 let benchRpcServer;
+/**
+ * Set true once a graceful shutdown has been initiated. Used by the
+ * `uncaughtException` filter below to distinguish a shutdown-race
+ * write-after-end (benign — the peer is going away) from a real
+ * runtime fault that should tear the process down.
+ */
+let isShuttingDown = false;
 
 /** @type {(rootKey: unknown) => void} */
 let resolveInit;
@@ -81,6 +88,7 @@ const controlIpcServer = new SimpleRpcServer({
     resolveInit(message.rootKey ?? null);
   },
   shutdown: async () => {
+    isShuttingDown = true;
     // Match production's shutdown frame ordering so native lifecycle
     // detection (graceful exit vs. crash) keeps working unchanged.
     controlIpcServer.broadcast({ type: "stopping" });
@@ -123,10 +131,40 @@ async function handleFatal(phase, error) {
   process.exit(1);
 }
 
+/**
+ * Filter for the streamx-microtask shutdown race described above.
+ *
+ * Returns true if `e` is an `ERR_STREAM_WRITE_AFTER_END` thrown while
+ * a graceful shutdown is in progress — benign by definition (the
+ * message was already destined for a peer being torn down). Returned
+ * to both `uncaughtException` and `unhandledRejection` because Node's
+ * internal writable surfaces this error via either path depending on
+ * which microtask boundary it crosses.
+ *
+ * @param {unknown} e
+ */
+function isBenignShutdownWriteAfterEnd(e) {
+  return (
+    isShuttingDown &&
+    !!e &&
+    typeof e === "object" &&
+    "code" in e &&
+    /** @type {NodeJS.ErrnoException} */ (e).code === "ERR_STREAM_WRITE_AFTER_END"
+  );
+}
+
 process.on("uncaughtException", (error) => {
+  if (isBenignShutdownWriteAfterEnd(error)) {
+    console.warn("Bench: uncaught write-after-end during shutdown, ignored");
+    return;
+  }
   handleFatal("runtime", error);
 });
 process.on("unhandledRejection", (reason) => {
+  if (isBenignShutdownWriteAfterEnd(reason)) {
+    console.warn("Bench: unhandled-rejection write-after-end during shutdown, ignored");
+    return;
+  }
   handleFatal("runtime", reason);
 });
 

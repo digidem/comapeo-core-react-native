@@ -95,29 +95,49 @@ artefacts in their APK or IPA. Three independent guards enforce this:
      `./plugins/with-comapeo-bench`. `expo prebuild` regenerates the
      `android/` and `ios/` directories on demand; nothing under those
      paths is checked into git for `apps/benchmark/`.
-   - Android: the plugin uses `withAppBuildGradle` to append
-     `flavorDimensions += "comapeo"` and
-     `missingDimensionStrategy 'comapeo', 'bench'` to the bench app's
-     `android/app/build.gradle` `defaultConfig`. The module's own
-     `android/build.gradle` declares the `bench` flavor + sourceSet;
-     consumers that don't activate it (`apps/example/`, third-party
-     apps) get the default flavor and never see `src/bench/`.
+   - Android: the plugin uses `withGradleProperties` to write
+     `comapeoBench=true` into the consuming app's
+     `android/gradle.properties`. The module's own `android/build.gradle`
+     reads `rootProject.findProperty('comapeoBench')` and, when set,
+     replaces `assets.srcDirs` with `src/bench/assets/` (and zeroes out
+     `src/debug/assets/` so the production debug overlay doesn't shadow
+     the bench bundle in debug builds). Consumers that don't set the
+     property (`apps/example/`, third-party apps) keep the default
+     `src/main/assets/` and never see `src/bench/`. The earlier design
+     used a `bench` productFlavor + `missingDimensionStrategy`, but that
+     hit AGP / Gradle 9 strict variant resolution ambiguity for Expo
+     apps that don't declare matching flavors of their own (expo/expo
+     #18315 et al.); a project property dodges the variant-attribute
+     graph entirely.
    - iOS: the plugin uses `withPodfile` (the canonical
      `@expo/config-plugins` mod for Podfile string edits) to prepend
      `ENV['COMAPEO_BENCH'] = '1'` to the regenerated `ios/Podfile`
      above the autolinking block, so the env var is set before pod
      install reads `ComapeoCore.podspec`. The module's
-     `ComapeoCore.podspec` reads that env var at `pod install` time and
-     conditionally appends `nodejs-project-bench` to `s.resources`.
-     With no env var, the podspec ships only the production
-     `nodejs-project/`. Each mutation guards with an `includes(sentinel)`
-     check so re-runs of `expo prebuild` are idempotent (string-based
-     mods compose poorly without this — Expo docs explicitly warn about
-     it). `withDangerousMod` is reserved as an escape hatch and is not
-     needed here. Note: `expo-build-properties.ios.extraPods` cannot
-     express a subspec opt-in (no `:subspecs` field) and only appends —
-     it cannot override the autolinked `pod 'ComapeoCore'` entry — which
-     is why the env-var-driven podspec is the right shape.
+     `ComapeoCore.podspec` reads that env var at `pod install` time
+     and, when set, stages a copy of `nodejs-project-bench/` to
+     `.bench-staging/nodejs-project/` and adds it to `s.resources`
+     **alongside** the production `nodejs-project/`. CocoaPods'
+     `[CP] Copy Pods Resources` rsyncs both into the app bundle in
+     declaration order, with the same destination basename
+     (`<App>.app/nodejs-project/`); the bench overlay's `index.mjs`
+     replaces production's at the same path. If the bench bundle is
+     missing (forgot to run `--bench`), staging is skipped and only
+     the production bundle ships — the bench app boots production
+     instead of crashing on a missing resource. With no env var, the
+     podspec ships exactly today's `nodejs-project/`, byte-identical.
+     An earlier iteration tried to do the rename via an Xcode Run
+     Script build phase (added by the plugin via `withXcodeProject`)
+     but CocoaPods 1.x doesn't reliably position user script phases
+     after `[CP] Copy Pods Resources`, so the rename ran before the
+     bench files were on disk and silently no-op'd; the staging
+     approach sidesteps the ordering problem entirely. The Podfile
+     mutation guards with an `includes(sentinel)` check so re-runs of
+     `expo prebuild` are idempotent. Note:
+     `expo-build-properties.ios.extraPods` cannot express a subspec
+     opt-in (no `:subspecs` field) and only appends — it cannot
+     override the autolinked `pod 'ComapeoCore'` entry — which is why
+     the env-var-driven podspec is the right shape.
 3. **Publish-time exclusion.** `package.json`'s `files` array does not
    list `android/src/bench/` or `ios/nodejs-project-bench/`, so even if a
    developer accidentally runs `--bench` before publishing, those paths
@@ -137,17 +157,20 @@ bench app, whose `app.json` lists the plugin, links the bench bundle.
 sandbox. To avoid changing the native loader, the bench variant
 substitutes the bundle in place:
 
-- Android: AGP's per-variant asset overlay replaces files in
-  `assets/nodejs-project/` with the bench versions when the `bench`
-  flavor is active, because the bench sourceSet writes the bundle to the
-  same relative path (`nodejs-project/`) under its own `src/bench/assets`
-  root. Production builds never see `src/bench/`.
-- iOS: the podspec packages `nodejs-project-bench/` as a separate
-  resource bundle when `ENV['COMAPEO_BENCH']` is set. A small build
-  phase (added by the `with-comapeo-bench` plugin via
-  `withXcodeProject`) renames it to `nodejs-project/` in the embedded
-  app bundle at copy time. The default build ships only the production
-  `nodejs-project/`.
+- Android: when `comapeoBench=true`, the module's `android/build.gradle`
+  reassigns `sourceSets.main.assets.srcDirs` to `['src/bench/assets']`
+  (and empties `sourceSets.debug.assets.srcDirs` so the production
+  debug overlay doesn't shadow it). The bench bundle's relative path
+  inside its sourceSet is `nodejs-project/`, the same as production,
+  so the AAR ships exactly one `nodejs-project/` — bench's. Default
+  consumer (no property) keeps the production `src/main/assets`.
+- iOS: the podspec stages `nodejs-project-bench/` to
+  `.bench-staging/nodejs-project/` at pod install time when
+  `ENV['COMAPEO_BENCH']` is set, and lists both `nodejs-project` and
+  `.bench-staging/nodejs-project` in `s.resources`. CocoaPods rsyncs
+  them in declaration order to `<App>.app/nodejs-project/`; the bench
+  overlay's `index.mjs` replaces production's. The default build
+  (no env var) ships only the production `nodejs-project/`.
 
 Both variants leave the existing `NodeJSService.swift` and Android Node
 launcher unchanged.
@@ -180,13 +203,14 @@ device, tap Send, and read results on screen. Concretely:
 Real-app perf-feel is debug-misleading (interpreter JS, no R8/ProGuard,
 unminified RN bundle). Both build types must work end-to-end:
 
-- Android: the `bench` productFlavor is orthogonal to `debug` /
-  `release` build types. The bench sourceSet only adds assets, which
-  R8/ProGuard never touch, so a `release` variant of the bench app
-  bundles the bench `nodejs-project/` exactly as `debug` does.
-  Verification: `eas build --profile production-apk --platform android`
-  (or `./gradlew :app:assembleBenchRelease`) and unzip-grep the APK.
-- iOS: the resource toggle via `ENV['COMAPEO_BENCH']` runs at
+- Android: the `comapeoBench=true` Gradle property is orthogonal to
+  `debug` / `release` build types — it just selects which `assets`
+  srcDirs the AAR ships. R8 / ProGuard don't touch assets, so a
+  `release` build of the bench app bundles the same bench
+  `nodejs-project/` as `debug`. Verification:
+  `expo run:android --variant release` (or `./gradlew :app:assembleRelease`
+  in the prebuild output) and unzip-grep the APK.
+- iOS: the podspec's `ENV['COMAPEO_BENCH']` check + staging copy run at
   `pod install` time, before any per-configuration build, so Release
   and Debug configurations both embed the bench bundle identically.
   Verification: archive the bench app with the Release configuration
@@ -205,18 +229,18 @@ unminified RN bundle). Both build types must work end-to-end:
 - `backend/rollup.config.ts` — accept the entry override; exclude `@comapeo/core` and its drizzle migrations from the bench bundle.
 
 **Module-side wiring for the bench variant:**
-- `android/build.gradle` — declare `flavorDimensions "comapeo"`, a `productFlavors { production {}; bench {} }` block, and a `sourceSets.bench { assets.srcDirs 'src/bench/assets' }`. Default consumer (`apps/example/` and third parties) compiles `production` only; the bench sourceSet is ignored. Bench app activates the `bench` flavor via `missingDimensionStrategy` injected by its config plugin.
-- `ios/ComapeoCore.podspec` — read `ENV['COMAPEO_BENCH']` at evaluation time and, when set, append `nodejs-project-bench` to `s.resources`. Default consumers leave the env var unset and ship the existing single `nodejs-project` resource.
-- `package.json` — `files` array stays as-is; `android/src/bench/` and `ios/nodejs-project-bench/` are deliberately omitted so they cannot leak via `npm publish`.
+- `android/build.gradle` — read `rootProject.findProperty('comapeoBench')`. When set, reassign `sourceSets.main.assets.srcDirs = ['src/bench/assets']` (replacing — not appending — the production `src/main/assets`) and zero out `sourceSets.debug.assets.srcDirs` so the debug overlay can't shadow bench in debug builds. Default consumer (`apps/example/`, third parties) leaves the property unset and keeps the production `src/main/assets`. The earlier `productFlavors` design hit AGP variant-attribute ambiguity for Expo apps without matching flavors of their own.
+- `ios/ComapeoCore.podspec` — read `ENV['COMAPEO_BENCH']` at evaluation time. When set, stage `ios/nodejs-project-bench/` to `ios/.bench-staging/nodejs-project/` and add it to `s.resources` alongside the production `nodejs-project/`. CocoaPods' `[CP] Copy Pods Resources` rsyncs both into `<App>.app/nodejs-project/` in declaration order, with the bench `index.mjs` overlaying. Default consumers leave the env var unset and ship the existing single `nodejs-project` resource, byte-identical.
+- `package.json` — `files` array stays as-is; `android/src/bench/`, `ios/nodejs-project-bench/`, and `ios/.bench-staging/` are deliberately omitted (and explicitly negated via `!`-patterns) so they cannot leak via `npm publish`.
 
 **Bench app (no checked-in `android/`/`ios/`):**
 - `apps/benchmark/` *(new)* — slim sibling of `apps/example/`, but only owns: `App.tsx`, `app.json`, `babel.config.js`, `metro.config.js`, `index.ts`, `package.json`, `tsconfig.json`, and `plugins/`. Native dirs are not checked in; `expo prebuild` generates them on demand using the config plugin below. Uses Expo autolinking back to `../..`, same pattern as `apps/example`.
 - `apps/benchmark/app.json` *(new)* — declares the bench plugin **only**: `"plugins": ["./plugins/with-comapeo-bench"]`. Does **not** include `with-android-tests` or `with-ios-tests` from `apps/example/plugins/`.
 - `apps/benchmark/App.tsx` *(new)* — UI with `testID="send-button"`, `testID="benchmark-result"`, payload-size selector, warmup/steady-state toggle, on-screen p50/p95/p99 render, "Export results" button, and an opt-in "POST to receiver" toggle + URL field (default `http://localhost:<port>`, off by default).
-- `apps/benchmark/plugins/with-comapeo-bench/` *(new)* — single config plugin. Uses canonical `@expo/config-plugins` mods only (no `withDangerousMod` — research confirmed neither `expo-build-properties` nor any `@config-plugins/*` package covers product flavors or Podfile env-var injection, so a custom plugin is unavoidable, but the standard mods suffice):
-  - `withAppBuildGradle` — appends `flavorDimensions += "comapeo"` and `missingDimensionStrategy 'comapeo', 'bench'` inside `android.defaultConfig`. Also adds `matchingFallbacks = ['production']` on the `debug` and `release` build types to avoid the known Expo / AGP footgun where the consuming app's variants don't resolve against the module's `bench` flavor (expo/expo#18315, #16686, #23266). Each insertion guarded by an `includes(sentinel)` check for idempotency across `expo prebuild` re-runs.
-  - `withPodfile` — prepends `ENV['COMAPEO_BENCH'] = '1'` to `ios/Podfile` above the autolinking block. Same idempotency guard.
-  - `withXcodeProject` — adds the resource-rename build phase mapping `nodejs-project-bench/` → `nodejs-project/` in the embedded app bundle.
+- `apps/benchmark/plugins/with-comapeo-bench/` *(new)* — single config plugin. Uses canonical `@expo/config-plugins` mods only:
+  - `withGradleProperties` — writes `comapeoBench=true` into `android/gradle.properties`. Idempotent (lookup-then-update). The module's `android/build.gradle` reads this and swaps in the bench asset srcDirs.
+  - `withPodfile` — prepends `ENV['COMAPEO_BENCH'] = '1'` to `ios/Podfile` above the autolinking block, guarded by an `includes(sentinel)` check for idempotency. The podspec reads the env var at pod install time and stages the bench bundle.
+  - No `withXcodeProject` — an earlier iteration tried to add an Xcode Run Script build phase to rename `nodejs-project-bench/` → `nodejs-project/` in the app bundle, but CocoaPods 1.x doesn't reliably position user script phases after `[CP] Copy Pods Resources`, so the rename ran before the bench files were on disk and silently no-op'd. The pod-install-time staging in the podspec sidesteps the ordering problem entirely.
 
 **RN-side timing hook:**
 - `src/ComapeoCoreModule.ts` (`CoreMessagePort`) — accept an optional JS-side `recordSpan` so RN-thread timestamps round-trip with each RPC. Same structural shape Sentry plan §6.2 will need later.
@@ -250,13 +274,13 @@ Two transports, ranked by who's running the bench:
    `backend/index.bench.js` skeleton with boot-phase spans wired. Verify
    locally with `JsonFileSink` against a dev build.
 2. **Phase 2 (2–3 days):** dual-bundle build wiring + consumer isolation
-   (`scripts/build-backend.ts --bench`, rollup config, Android `bench`
-   productFlavor in the module's `android/build.gradle`, env-driven
-   resource toggle in the module's `ios/ComapeoCore.podspec`). Confirm
-   production `nodejs-project/` is byte-identical to before; bench
-   bundle lands in `android/src/bench/...` / `ios/nodejs-project-bench/`
-   and is absent from a default `apps/example/` build (release variant
-   too).
+   (`scripts/build-backend.ts --bench`, rollup config, `comapeoBench`
+   Gradle property toggle in the module's `android/build.gradle`,
+   env-var-driven resource staging in the module's
+   `ios/ComapeoCore.podspec`). Confirm production `nodejs-project/` is
+   byte-identical to before; bench bundle lands in
+   `android/src/bench/...` / `ios/nodejs-project-bench/` and is absent
+   from a default `apps/example/` build (release variant too).
 3. **Phase 3 (3–5 days):** `apps/benchmark/` skeleton (no checked-in
    `android/`/`ios/`) with `App.tsx` UI, RPC bridge wiring, per-payload-size
    handlers, warmup/steady-state logic, on-screen p50/p95/p99 render,

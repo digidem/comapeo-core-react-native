@@ -43,10 +43,13 @@ const ANDROID_MAIN_NODEJS_PROJECT_DIR = join(
   PROJECT_ROOT,
   "android/src/main/assets/nodejs-project",
 );
-// Bench bundle output. Lives under `src/bench/assets/` so AGP's
-// per-flavor sourceSet merging picks it up only when the consuming app
-// has activated the `bench` productFlavor (see android/build.gradle —
-// `apps/benchmark/` activates this; `apps/example/` does not).
+// Bench bundle output. Lives under `src/bench/assets/` so the module's
+// `android/build.gradle` only swaps it in when the consuming app sets
+// `comapeoBench=true` in its `gradle.properties` (a project property,
+// not a productFlavor — the flavor approach hit AGP / Gradle 9 strict
+// variant resolution issues for Expo apps without matching flavors).
+// `apps/benchmark/`'s `with-comapeo-bench` config plugin sets it;
+// `apps/example/` and third-party apps don't.
 const ANDROID_BENCH_NODEJS_PROJECT_DIR = join(
   PROJECT_ROOT,
   "android/src/bench/assets/nodejs-project",
@@ -81,8 +84,9 @@ if (IS_BENCH) {
   // imports, so no prebuilds / JNI / xcframework packaging is needed —
   // the production build run already laid those down. We bundle into
   // bench-specific output dirs (`android/src/bench/assets/` and
-  // `ios/nodejs-project-bench/`) which are activated by the `bench`
-  // Android productFlavor / `ENV['COMAPEO_BENCH']` iOS env var.
+  // `ios/nodejs-project-bench/`) which are activated by the
+  // `comapeoBench=true` Gradle property on Android / `ENV['COMAPEO_BENCH']`
+  // iOS env var (consumed by `ios/ComapeoCore.podspec`).
   await $({
     cwd: BACKEND_SRC_DIR,
     stdio: "inherit",

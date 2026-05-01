@@ -1,4 +1,5 @@
 require 'json'
+require 'fileutils'
 
 package = JSON.parse(File.read(File.join(__dir__, '..', 'package.json')))
 
@@ -46,22 +47,40 @@ Pod::Spec.new do |s|
   # ship separately via `Frameworks/*.xcframework` (above) and are embedded
   # + codesigned by Xcode automatically.
   #
-  # Bench opt-in: when `ENV['COMAPEO_BENCH']` is set at `pod install` time,
-  # the bench-only resource bundle (`nodejs-project-bench/`, produced by
-  # `scripts/build-backend.ts --bench`) REPLACES the production
-  # `nodejs-project/` in the resources list. The `with-comapeo-bench`
-  # Expo config plugin in `apps/benchmark/` flips that env var by
-  # prepending `ENV['COMAPEO_BENCH'] = '1'` to the consuming app's
-  # Podfile via `withPodfile`. Default consumers (`apps/example/`, third
-  # parties) leave the env var unset and ship only the production
-  # `nodejs-project/`. The bench bundle is then renamed to
-  # `nodejs-project/` in the embedded app bundle by a Run Script build
-  # phase the same plugin adds via `withXcodeProject` — so the native
-  # loader continues to look at a fixed `nodejs-project/` path regardless
-  # of which flavor is active.
+  # Bench opt-in: when `ENV['COMAPEO_BENCH']` is set at `pod install` time
+  # AND the bench bundle (`nodejs-project-bench/`, produced by
+  # `scripts/build-backend.ts --bench`) is on disk, this podspec stages
+  # the bench bundle to `.bench-staging/nodejs-project/` and declares it
+  # in `s.resources` ALONGSIDE the production `nodejs-project/`.
+  # CocoaPods' `[CP] Copy Pods Resources` rsyncs both into the app
+  # bundle in declaration order, with the same destination basename, so
+  # the bench bundle's `index.mjs` overlays the production bundle's
+  # without changing the path the native loader looks at. This avoids
+  # the build-phase ordering footgun that an Xcode Run Script approach
+  # hit (CocoaPods 1.x can't reliably position a user script phase
+  # after `[CP] Copy Pods Resources`); the staging here happens at
+  # podspec evaluation time, before any Xcode build phase runs.
+  #
+  # Robustness: if the bench bundle is missing (forgot to run
+  # `--bench`), the staging step is skipped and only the production
+  # bundle ships. The bench app boots production rather than crashing
+  # on a missing resource — graceful degradation. Default consumers
+  # (`apps/example/`, third parties) leave the env var unset and ship
+  # exactly today's production `nodejs-project/` byte-identically.
+  resources = ['nodejs-project']
   if ENV['COMAPEO_BENCH'] == '1'
-    s.resources = ['nodejs-project-bench']
-  else
-    s.resources = ['nodejs-project']
+    bench_src = File.join(__dir__, 'nodejs-project-bench')
+    if File.directory?(bench_src)
+      bench_staged = File.join(__dir__, '.bench-staging', 'nodejs-project')
+      FileUtils.rm_rf(bench_staged)
+      FileUtils.mkdir_p(File.dirname(bench_staged))
+      FileUtils.cp_r(bench_src, bench_staged)
+      # Order matters: `nodejs-project` first so the bench overlay
+      # rsyncs over it. (CP iterates the list in declaration order;
+      # rsync overlay leaves prod-only files like drizzle SQL intact
+      # but unused — the bench `index.mjs` is what the loader reads.)
+      resources << '.bench-staging/nodejs-project'
+    end
   end
+  s.resources = resources
 end

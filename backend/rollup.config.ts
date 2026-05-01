@@ -41,10 +41,14 @@ const IOS_OUT = process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
 /**
  * `BENCH=1` switches this config to emit the bench-only bundle
  * (`index.bench.js`) into the bench-specific output trees:
- *   - `android/src/bench/assets/nodejs-project/` (overlaid by the
- *      `bench` Android productFlavor — see android/build.gradle)
+ *   - `android/src/bench/assets/nodejs-project/` (selected by the
+ *      module's `android/build.gradle` when the `comapeoBench` Gradle
+ *      property is set — this replaced the earlier productFlavor
+ *      approach to dodge AGP variant ambiguity)
  *   - `ios/nodejs-project-bench/` (picked up by `ComapeoCore.podspec`
- *      iff `ENV['COMAPEO_BENCH']` is set at pod install time)
+ *      iff `ENV['COMAPEO_BENCH']` is set at pod install time; the
+ *      podspec also stages a copy at `ios/.bench-staging/nodejs-project/`
+ *      so CocoaPods rsyncs it on top of the production bundle)
  *
  * Default (no env var) is unchanged: production `index.js` to the
  * existing main/debug/iOS paths.
