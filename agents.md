@@ -96,7 +96,6 @@ Messages are framed with a **4-byte little-endian length prefix** followed by a 
 │   │   ├── ComapeoCoreReactActivityLifecycleListener.kt
 │   │   ├── ComapeoCorePackage.kt
 │   │   ├── Actions.kt
-│   │   ├── watchForFile.kt
 │   │   └── log.kt
 │   ├── src/main/cpp/
 │   │   ├── jni-bridge.cpp         # JNI bridge to libnode.so + stdout/stderr → logcat

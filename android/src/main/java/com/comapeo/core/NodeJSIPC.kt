@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
@@ -110,7 +112,6 @@ class NodeJSIPC(
                     }
                 }
             }
-            waitForFile(socketFile)
             if (::socket.isInitialized) {
                 try {
                     socket.close()
@@ -233,37 +234,60 @@ class NodeJSIPC(
     }
 }
 
+/**
+ * Connect with a fixed-cadence retry loop bounded by an overall deadline.
+ *
+ * Retries fire on every `IOException` from `LocalSocket.connect`, which covers
+ * both "socket file does not exist yet" (`ENOENT`) and "file exists but the
+ * server is not yet `accept`ing" (`ECONNREFUSED`) — the same primitive handles
+ * both phases of backend startup. The 50 ms cadence is fast enough to be
+ * invisible to TTI; the 30 s deadline matches the prior `waitForFile` timeout
+ * so the cumulative startup wait budget is unchanged.
+ *
+ * No exponential backoff: this is a one-shot startup wait, not a network call,
+ * and the failure mode we're tolerating is "backend not finished booting yet"
+ * — it doesn't get worse from retrying tightly.
+ */
 private suspend fun connectWithRetry(
     socketAddress: LocalSocketAddress,
-    maxRetries: Int = 5,
-    initialDelayMs: Long = 100,
-    maxDelayMs: Long = 5000,
-    backoffMultiplier: Double = 2.0
+    deadlineMs: Long = 30_000,
+    intervalMs: Long = 50,
 ): LocalSocket {
-    var currentDelay = initialDelayMs
-    var lastException: IOException? = null
-
-    repeat(maxRetries) { attempt ->
-        try {
-            val socket = LocalSocket()
-            socket.connect(socketAddress)
-            log("Connected on attempt ${attempt + 1}")
-            return socket
-        } catch (e: IOException) {
-            lastException = e
-
-            if (attempt < maxRetries - 1) {
-                delay(currentDelay)
-                currentDelay = minOf(
-                    (currentDelay * backoffMultiplier).toLong(),
-                    maxDelayMs
-                )
+    var lastFailure: IOException? = null
+    var attempts = 0
+    val connected = try {
+        withTimeout(deadlineMs) {
+            // `LocalSocket.connect` opens a real fd before it can throw
+            // (`LocalSocketImpl.create` runs before `connectLocal`), so
+            // each failed attempt's socket has to be closed before the
+            // next iteration — otherwise we'd accumulate hundreds of
+            // file descriptors over the deadline window.
+            lateinit var s: LocalSocket
+            while (true) {
+                attempts++
+                val candidate = LocalSocket()
+                try {
+                    candidate.connect(socketAddress)
+                    s = candidate
+                    break
+                } catch (e: IOException) {
+                    try { candidate.close() } catch (_: Exception) {}
+                    lastFailure = e
+                    delay(intervalMs)
+                }
             }
+            s
         }
+    } catch (e: TimeoutCancellationException) {
+        // Translate the timeout into an IOException carrying the last
+        // connect failure as the cause; otherwise `State.Error` would
+        // surface only "Timed out for 30000 ms" with no hint of which
+        // syscall was failing or how many attempts ran.
+        throw IOException(
+            "Timed out connecting to socket after ${deadlineMs}ms across $attempts attempts",
+            lastFailure,
+        )
     }
-
-    throw IOException(
-        "Failed to connect after $maxRetries attempts",
-        lastException
-    )
+    log("Connected on attempt $attempts")
+    return connected
 }
