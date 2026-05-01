@@ -111,15 +111,20 @@ and needs its own SDK init.
 │    │      attach sentry-trace + baggage in metadata   │           │
 │    └──────────────────────────────────────────────────┘           │
 │                            │                                      │
-│                            │ control.sock {type:"init",sentry:…}  │
+│                            │ argv: --sentryDsn, --sentry...,      │
+│                            │       --captureApplicationData       │
 │                            │ comapeo.sock RPC (with sentry-trace) │
 │                            ▼                                      │
 │    ┌─────────────────── Node backend ─────────────────┐           │
-│    │  @sentry/node (bundled, init only on opt-in)     │           │
-│    │  - handleFatal → captureException                │           │
-│    │  - createMapeoServer({ onRequestHook }) → spans  │           │
-│    │  - OpenTelemetry processor sends @comapeo/core   │           │
-│    │      spans (PR #1051) to Sentry transport        │           │
+│    │  loader.mjs                                      │           │
+│    │   - parseArgs → if DSN: Sentry.init() then       │           │
+│    │     await import('./index.mjs')                  │           │
+│    │   - lazy chunk: @sentry/node loaded only on opt-in           │
+│    │  index.mjs                                       │           │
+│    │   - handleFatal → captureException               │           │
+│    │   - createMapeoServer({ onRequestHook }) → spans │           │
+│    │   - OpenTelemetry processor sends @comapeo/core  │           │
+│    │     spans (PR #1051) to Sentry transport         │           │
 │    └──────────────────────────────────────────────────┘           │
 │                            │                                      │
 │                            │ shared DSN/release/env               │
@@ -196,29 +201,86 @@ package root, registered in `expo-module.config.json`. It uses
 the same `@expo/config-plugins` patterns already in use for
 `apps/example/plugins/with-android-tests/index.js`.
 
-Consumer registration in CoMapeo Mobile's `app.json` /
-`app.config.ts`:
+Plugin inputs:
+
+| Field | Required | Source |
+|---|---|---|
+| `dsn` | yes | App-specific Sentry project DSN. |
+| `environment` | yes | Build-environment label (e.g. `development`, `qa`, `production`). The consumer decides the scheme. |
+| `release` | no, defaults to versionName | If omitted, native reads `versionName` (Android) / `CFBundleShortVersionString` (iOS) at runtime. |
+| `tracesSampleRate` | no | Sentry sampling knob. |
+| `sampleRate` | no | Sentry sampling knob. |
+| `rpcArgsBytes` | no | RPC arg-truncation cap (developer debug builds only). |
+
+The module deliberately **does not derive `environment`** —
+build-environment schemes are app-specific. CoMapeo Mobile's
+frontend uses an `applicationId` suffix mapping
+(`.dev`/`.rc`/`.pre`) in `src/frontend/lib/appVariant.ts`, but
+that's a CoMapeo convention, not something other consumers of
+this module should be locked into.
+
+Instead, the consumer feeds `environment` from a build-time
+source they control. The cleanest path on EAS is **`eas.json`
+build-profile env vars + `app.config.js`** so the same
+codebase produces different `environment` values for
+internal/test/release builds. CoMapeo Mobile's
+`eas.json` would carry:
 
 ```json
 {
-  "expo": {
-    "plugins": [
-      [
-        "@comapeo/core-react-native",
-        {
-          "sentry": {
-            "dsn": "https://abc@sentry.example.com/1",
-            "environment": "production",
-            "release": "1.4.2",
-            "tracesSampleRate": 0.1,
-            "rpcArgsBytes": 0
-          }
-        }
-      ]
-    ]
+  "build": {
+    "development": {
+      "env": {
+        "SENTRY_DSN": "https://…",
+        "SENTRY_ENVIRONMENT": "development"
+      }
+    },
+    "preview": {
+      "env": {
+        "SENTRY_DSN": "https://…",
+        "SENTRY_ENVIRONMENT": "qa"
+      }
+    },
+    "production": {
+      "env": {
+        "SENTRY_DSN": "https://…",
+        "SENTRY_ENVIRONMENT": "production"
+      }
+    }
   }
 }
 ```
+
+…and `app.config.js` (must be `.js`, not `app.json`, to read
+`process.env`):
+
+```js
+// app.config.js
+export default {
+  expo: {
+    plugins: [
+      ["@comapeo/core-react-native", {
+        sentry: {
+          dsn: process.env.SENTRY_DSN,
+          environment: process.env.SENTRY_ENVIRONMENT ?? "production",
+        },
+      }],
+    ],
+  },
+};
+```
+
+EAS evaluates `app.config.js` with the build profile's `env`
+visible as `process.env.*`, so each `eas build --profile X`
+bakes a different `environment` string into the manifest /
+plist at prebuild time. No native code change between profiles.
+
+`release` is the one value we *do* default from existing native
+config: omitting it makes the native loader fall back to
+`versionName` / `CFBundleShortVersionString` — the canonical
+versions Expo and the host app are already using. Consumers can
+still pass `release` explicitly (e.g. to embed a git SHA from
+EAS's `EAS_BUILD_GIT_COMMIT_HASH`) and the explicit value wins.
 
 The plugin runs at `expo prebuild` and writes:
 
@@ -230,12 +292,11 @@ The plugin runs at `expo prebuild` and writes:
     android:value="https://abc@sentry.example.com/1"/>
 <meta-data android:name="com.comapeo.core.sentry.environment"
     android:value="production"/>
-<meta-data android:name="com.comapeo.core.sentry.release"
-    android:value="1.4.2"/>
 <meta-data android:name="com.comapeo.core.sentry.tracesSampleRate"
     android:value="0.1"/>
 <meta-data android:name="com.comapeo.core.sentry.rpcArgsBytes"
     android:value="0"/>
+<!-- release omitted: native falls back to versionName -->
 ```
 
 These meta-data live on the manifest's main `<application>` tag so
@@ -250,12 +311,11 @@ shared across processes within the package.
 <string>https://abc@sentry.example.com/1</string>
 <key>ComapeoCoreSentryEnvironment</key>
 <string>production</string>
-<key>ComapeoCoreSentryRelease</key>
-<string>1.4.2</string>
 <key>ComapeoCoreSentryTracesSampleRate</key>
 <string>0.1</string>
 <key>ComapeoCoreSentryRpcArgsBytes</key>
 <string>0</string>
+<!-- release omitted: native falls back to CFBundleShortVersionString -->
 ```
 
 Plugin behaviour rules:
@@ -264,10 +324,13 @@ Plugin behaviour rules:
   meta-data / Info.plist entries are written. Native treats the
   absence as "Sentry off". The example app under `apps/example/`
   ships unconfigured.
-- If the consumer registers the plugin **with** a `sentry` key,
-  exactly the keys provided are written. Missing optional fields
-  (e.g. `environment`) result in absent manifest entries, which
-  native maps to `null` in the loaded `SentryConfig`.
+- If the consumer registers the plugin **with** a `sentry` key, the
+  plugin validates that `dsn` and `environment` are present
+  (throwing at prebuild time if they're not — fast failure beats
+  a silently-misconfigured Sentry project) and writes the
+  corresponding meta-data / plist keys. Optional fields
+  (`release`, `tracesSampleRate`, `sampleRate`, `rpcArgsBytes`)
+  are written only when provided.
 - Plugin code is small (~50 LOC) and lives alongside the existing
   `app.plugin.js` patterns. The plugin is consumed at `expo
   prebuild` time only — runtime code path doesn't touch it.
@@ -287,8 +350,8 @@ typed `SentryConfig?` and propagates it two ways:
 // android/.../SentryConfigStore.kt (new) — sketch
 data class SentryConfig(
   val dsn: String,
-  val environment: String?,
-  val release: String?,
+  val environment: String,
+  val release: String,
   val sampleRate: Double?,
   val tracesSampleRate: Double?,
   val rpcArgsBytes: Int?,
@@ -299,16 +362,43 @@ fun loadFromManifest(ctx: Context): SentryConfig? {
     ctx.packageName, PackageManager.GET_META_DATA
   ).metaData ?: return null
   val dsn = meta.getString("com.comapeo.core.sentry.dsn") ?: return null
+
+  // Environment: written by the plugin from the consumer's
+  // app.config.js, which sources it from EAS build-profile env
+  // (see §4.1). Required when a DSN is present — the plugin
+  // refused to prebuild without it, so this should never be
+  // null at runtime; treat null as a build misconfiguration.
+  val environment = meta.getString("com.comapeo.core.sentry.environment")
+    ?: error("comapeo: sentry.environment missing from manifest")
+
+  // Release: prefer plugin override, else fall back to the
+  // host app's versionName — the canonical source of truth,
+  // same value expo-application reports.
+  val release = meta.getString("com.comapeo.core.sentry.release")
+    ?: ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
+    ?: "unknown"
+
   return SentryConfig(
     dsn = dsn,
-    environment = meta.getString("com.comapeo.core.sentry.environment"),
-    release = meta.getString("com.comapeo.core.sentry.release"),
+    environment = environment,
+    release = release,
     sampleRate = meta.getString("com.comapeo.core.sentry.sampleRate")?.toDoubleOrNull(),
     tracesSampleRate = meta.getString("com.comapeo.core.sentry.tracesSampleRate")?.toDoubleOrNull(),
     rpcArgsBytes = meta.getString("com.comapeo.core.sentry.rpcArgsBytes")?.toIntOrNull(),
   )
 }
 ```
+
+iOS reads the same key set from `Bundle.main.infoDictionary`
+(`ComapeoCoreSentryDsn`, `ComapeoCoreSentryEnvironment`, etc.) and
+falls back to `CFBundleShortVersionString` for `release` if the
+plist key was absent.
+
+There is intentionally **no native-side derivation logic** for
+`environment`. Build-environment schemes are app-specific —
+this module reads whatever literal string the consumer's plugin
+wrote, with no coupling to any particular `applicationId` suffix
+convention.
 
 The loaded `SentryConfig` is consumed in two places:
 
@@ -318,16 +408,34 @@ The loaded `SentryConfig` is consumed in two places:
    crashes, ANRs, and the §7.4 telemetry events with the same DSN.
    On iOS the host app's `@sentry/react-native` already owns the
    single-process SDK; we don't re-init.
-2. **Backend init frame.** When `NodeJSService.sendInit(rootKey)`
-   builds the `init` frame, it embeds `SentryConfig` as a
-   `sentry` field (see §4.5). The backend `Sentry.init()`s
-   synchronously inside the existing `init` handler, before
-   `MapeoManager` is constructed and before
-   `ComapeoRpcServer.listen` registers `onRequestHook`. No JS
-   round-trip; the FGS-cold-start path is fully covered.
+2. **Backend, via Node argv at spawn time.** Native serializes
+   `SentryConfig` (plus the §9 `captureApplicationData` toggle)
+   into argv and passes it to `nodejs-mobile`'s start call. The
+   backend's `loader.mjs` entry parses argv, runs `Sentry.init()`,
+   then dynamically imports `index.mjs`. See §5.1 for the bundle
+   layout and §5.2 for the loader pattern.
 
-This is the key change vs. the prior draft: **the backend boot
-sequence does not depend on RN being alive to be observable**.
+This is the key change vs. the prior draft: **Sentry config
+flows through argv, not through the control-socket `init`
+frame**. The init frame stays focused on the rootkey (which we
+deliberately keep out of argv per `ARCHITECTURE.md §7.4`). The
+DSN is fine in argv: it's already in the manifest of every
+Sentry-using app's APK/IPA, identifies a project rather than
+authenticating writes, and is rate-limited server-side.
+
+The benefits stack:
+
+- **FGS cold-start**: Sentry config is in native config + argv;
+  Node boots with full instrumentation before RN is alive.
+- **Auto-instrumentation order**: `Sentry.init()` runs in
+  `loader.mjs` *before* the dynamic import of `index.mjs`, so
+  OpenTelemetry's `import-in-the-middle` patches modules as
+  they load. This is the explicit pattern from comapeo-mobile's
+  `src/backend/loader.js`.
+- **Lazy bundle chunk**: when the manifest has no DSN, native
+  doesn't pass `--sentryDsn=...` in argv; the loader's
+  `if (sentryDsn) await import('@sentry/node')` short-circuits
+  and the rollup-split `@sentry/node` chunk never loads.
 
 ### 4.3 JS adapter handoff
 
@@ -407,32 +515,58 @@ described in §7.4 (per-RPC method spans, sync session spans,
 counts) but never touches DSN/environment/release and never
 unlocks PII fields. See §9 for full design.
 
-### 4.5 Control-socket payload (internal)
+### 4.5 Backend transport: argv at Node spawn
 
-For completeness — the `init` frame written by native to the
-backend now carries an optional `sentry` field:
+Native already passes positional argv to the Node process when
+it spawns nodejs-mobile (`comapeoSocketPath`, `controlSocketPath`,
+`privateStorageDir`; see `backend/index.js:19-20`). We extend
+that with named flags for Sentry config, mirroring
+comapeo-mobile's pattern (`src/frontend/initializeNodejs.ts`):
+
+```
+node loader.mjs \
+  <comapeoSocketPath> <controlSocketPath> <privateStorageDir> \
+  --sentryDsn=https://abc@sentry.example.com/1 \
+  --sentryEnvironment=production \
+  --sentryRelease=1.4.2 \
+  --sentryTracesSampleRate=0.1 \
+  --sentryRpcArgsBytes=0 \
+  --captureApplicationData      # only when toggle is on
+```
+
+Native picks the loader path (`loader.mjs`) as the entry script
+and constructs the argv from `SentryConfig` plus the §9
+toggle's persisted value. When the manifest has no DSN, the
+`--sentry*` flags are omitted entirely; the loader's first
+check is `if (!sentryDsn) await import('./index.mjs')` — no
+`@sentry/node` chunk is ever loaded.
+
+The control-socket `init` frame stays focused on the rootkey
+(unchanged from today, except optional sibling fields are now
+gone):
 
 ```js
 // Native → Node, on control.sock
-{
-  type: "init",
-  rootKey: "<base64>",
-  sentry: {
-    dsn: "https://…",
-    environment: "production",
-    release: "1.4.2",
-    sampleRate: 1.0,
-    tracesSampleRate: 0.1,
-    rpcArgsBytes: 0,
-    captureApplicationData: false   // §9 toggle, snapshot at boot
-  }
-}
+{ type: "init", rootKey: "<base64>" }
 ```
 
-The backend `init` handler (`backend/index.js`) calls
-`initSentry(message.sentry)` before resolving `initPromise`. The
-DSN is therefore short-lived in process memory only; not in argv,
-not in env, not on disk past the manifest read.
+Why argv is the right transport for Sentry config (and not the
+rootkey):
+
+| | Sentry config | Rootkey |
+|---|---|---|
+| Already in app binary? | Yes (manifest / plist) | No (encrypted in keystore) |
+| Server-side rate limited? | Yes | n/a — single bytes are the secret |
+| Visible in `/proc/<pid>/cmdline`? | Yes | Would be — that's the problem |
+| Needed before any other module loads? | **Yes** (auto-instrumentation order) | No (received post-handshake) |
+| Right transport | argv | init frame |
+
+Argv satisfies the auto-instrumentation order requirement:
+`Sentry.init()` must run before any module that Sentry wants
+to patch is imported. The control-socket init frame arrives
+*after* `index.js` has already imported `@comapeo/core`,
+`fastify`, and friends; argv is the only transport that
+arrives before the loader's first import.
 
 ---
 
@@ -441,78 +575,256 @@ not in env, not on disk past the manifest read.
 Mirrors `comapeo-mobile/src/backend/src/app.js`, adapted to this
 module's two-socket boot.
 
-### 5.1 Bundle strategy
+### 5.1 Bundle strategy: multi-entry with lazy `@sentry/node` chunk
 
-`@sentry/node` becomes a `dependencies` entry of `backend/package.json`
-and gets rolled into the bundle. The built backend therefore
-contains the SDK whether or not anyone uses it.
+The backend currently rolls into a single `index.mjs` per
+platform (see `backend/rollup.config.ts`). To support
+auto-instrumentation **and** keep the bundle weight off
+non-Sentry consumers, we move to the multi-entry layout used by
+`comapeo-mobile/src/backend/rollup.config.js`:
 
-Bundle-size cost: `@sentry/node` core is ~150–250 KB minified +
-gzipped depending on integrations imported. Acceptable for the
-APK/IPA but not zero. Mitigations:
+```
+nodejs-project/
+├── loader.mjs          # spawn target — parses argv, optionally
+│                       #   inits Sentry, then dynamically imports
+│                       #   index.mjs.
+├── index.mjs           # current entry — unchanged in shape; now
+│                       #   imported dynamically by the loader.
+├── importHook.js       # OpenTelemetry's import-in-the-middle
+│                       #   hook entry. MUST be a separate file
+│                       #   because it's loaded with module.register(),
+│                       #   not import. Empty/unused when Sentry isn't
+│                       #   active.
+├── lib/register.js     # Internal dep of import-in-the-middle that
+│                       #   it expects at this exact relative path.
+│                       #   Bundled as its own chunk and copied
+│                       #   across; can't be inlined.
+└── chunks/sentry-*.mjs # Auto-emitted rollup chunk holding
+                        #   @sentry/node + transitive deps. Loaded
+                        #   only when loader.mjs awaits the dynamic
+                        #   import.
+```
 
-- Subpath-import only what we need
-  (`@sentry/node/init`, `@sentry/core`) rather than the full
-  default bundle. We do **not** want HTTP / Express / undici
-  auto-instrumentation in this Node — the only network surface
-  is the local fastify on 127.0.0.1.
-- Exclude OTLP exporters; the only transport we need is the
-  Sentry HTTPS transport that ships in `@sentry/node`.
-- Confirm rollup can tree-shake; if not, the bundle plugin
-  config in `backend/rollup.config.ts` may need an explicit
-  `external: []` adjustment.
+**Why each piece is separate**:
 
-A future optimisation if size matters more than build simplicity
-(§9.2): produce a second backend bundle with Sentry stripped, and
-have the native module pick which assets dir to copy into
-`nodejs-project/` based on host-app config. Not in v1.
+- **`loader.mjs`** is the new spawn target. Native passes
+  `loader.mjs` to nodejs-mobile instead of `index.mjs`.
+  The loader parses `--sentryDsn`/etc. from `process.argv`,
+  dynamically imports `@sentry/node` if a DSN is present,
+  calls `Sentry.init()`, then `await import('./index.mjs')`.
+  This is the comapeo-mobile pattern verbatim — without the
+  init-before-other-imports order, Sentry's OpenTelemetry
+  auto-instrumentation can't patch modules.
+- **`importHook.js`** is `import-in-the-middle/hook.mjs`,
+  which OpenTelemetry registers as a Node module-loading
+  hook via `module.register('import-in-the-middle/hook.mjs', ...)`.
+  `module.register` requires a **separate file** that is
+  loaded fresh in a child loader thread; it can't be
+  bundled into the same module that calls
+  `module.register`. The comapeo-mobile rollup config
+  carries this as a dedicated entry; we do the same.
+- **`lib/register.js`** is a sub-dep of `import-in-the-middle`
+  that resolves via a hard-coded relative path
+  (`./lib/register.js`). Cannot be bundled. Comapeo-mobile
+  carries this too — we mirror.
+- **`chunks/sentry-*.mjs`** is what rollup auto-emits when it
+  sees `await import('@sentry/node')` in the loader and the
+  rest of the bundle never touches it statically. Output
+  format is `format: 'esm'`; rollup with
+  `output.manualChunks` (or default code-splitting) produces
+  the chunk. Consumers who don't pass `--sentryDsn` never
+  load this chunk; the cost is install-time disk only.
 
-### 5.2 `Sentry.init()` location
+**Path-rewrite plugin**. The
+`rollup-plugin-import-hook.mjs` from comapeo-mobile rewrites
+calls like
+`module.register('import-in-the-middle/hook.mjs', …)` to
+`module.register('./importHook.js', …)` so the runtime
+register call points at the bundled output rather than the
+node_modules path that no longer exists post-bundle. We port
+this plugin into `backend/rollup-plugins/`.
 
-In `backend/index.js`, before any other side-effecting import that
-might throw and before `controlIpcServer.listen()`:
+**Updated `backend/rollup.config.ts` shape** (sketch):
+
+```ts
+import importHook from "./rollup-plugins/rollup-plugin-import-hook.mjs";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+
+const sharedInput = {
+  loader: path.join(__dirname, "loader.mjs"),
+  index:  path.join(__dirname, "index.js"),
+  // Required separate chunks for import-in-the-middle:
+  importHook:    require.resolve("import-in-the-middle/hook.mjs"),
+  "lib/register": require.resolve("import-in-the-middle/lib/register.js"),
+};
+
+// In buildPlugins: append importHook() alongside the existing
+// addonLoaderPlugin() / esmShim() / nodeResolve() pipeline.
+```
+
+**Bundle-size cost**:
+
+- Consumers **with** Sentry: ~150–250 KB extra in the
+  per-platform output dir (the sentry chunk plus `importHook` /
+  `lib/register`). Loaded into V8 only when DSN is present.
+- Consumers **without** Sentry: same disk cost (the chunks
+  ship in `nodejs-project/`), but **zero runtime cost**: the
+  `@sentry/node` chunk is never required by any path the
+  loader executes when `--sentryDsn` is absent. The loader
+  itself is tiny (~1 KB) and runs unconditionally.
+
+If install size becomes the bottleneck (it currently isn't —
+the existing `nodejs-project/` tree is dominated by V8 + native
+addons), Phase 6 adds a second backend bundle with the Sentry
+chunks stripped at build time, and `scripts/build-backend.ts`
+selects which to copy based on whether the consumer's
+`app.json` registered the plugin with a DSN. Not in v1.
+
+**Sentry rollup plugin (sourcemaps).** Comapeo-mobile uses
+`@sentry/rollup-plugin` to upload sourcemaps for stack-trace
+symbolication. We add the same to `backend/rollup.config.ts`
+behind `process.env.SENTRY_AUTH_TOKEN` — only runs in CI for
+release builds, no-op otherwise. Sourcemap upload is the only
+way Sentry can map minified backend stack frames back to
+readable JS.
+
+### 5.2 `loader.mjs` — `Sentry.init()` and dynamic import
 
 ```js
-// backend/index.js (sketch)
-import * as Sentry from "@sentry/node";
+// backend/loader.mjs (new) — sketch, mirroring
+// comapeo-mobile/src/backend/loader.js
 
-let sentryActive = false;
+import { parseArgs } from "node:util";
 
-function initSentry(config) {
+const { values } = parseArgs({
+  options: {
+    sentryDsn:               { type: "string" },
+    sentryEnvironment:       { type: "string" },
+    sentryRelease:           { type: "string" },
+    sentryTracesSampleRate:  { type: "string" },
+    sentrySampleRate:        { type: "string" },
+    sentryRpcArgsBytes:      { type: "string" },
+    captureApplicationData:  { type: "boolean", default: false },
+  },
+  // The three positional args (comapeoSocketPath, controlSocketPath,
+  // privateStorageDir) flow through unchanged for index.mjs to read.
+  allowPositionals: true,
+  strict: false,
+});
+
+if (values.sentryDsn) {
+  // Dynamic import so the rollup chunk only loads when needed.
+  // Sentry.init() must complete before index.mjs imports anything,
+  // because OpenTelemetry's import-in-the-middle hook can only
+  // patch modules loaded after init.
+  const Sentry = await import("@sentry/node");
   Sentry.init({
-    dsn: config.dsn,
-    environment: config.environment,
-    release: config.release,
-    sampleRate: config.sampleRate ?? 1.0,
-    tracesSampleRate: config.tracesSampleRate ?? 0,
+    dsn: values.sentryDsn,
+    environment: values.sentryEnvironment ?? "production",
+    release: values.sentryRelease,
+    sampleRate: Number(values.sentrySampleRate ?? 1.0),
+    tracesSampleRate: values.captureApplicationData
+      ? Number(values.sentryTracesSampleRate ?? 0.1)
+      : 0,
     integrations: [
-      // Keep this list explicit — auto-discovery pulls in
-      // http/express/etc. that we don't want.
       Sentry.consoleLoggingIntegration(),
     ],
-    // tag every event so we can split JS vs native vs backend
-    // in Sentry's UI.
     initialScope: { tags: { layer: "backend" } },
   });
-  sentryActive = true;
+
+  // Stash the parsed config so index.mjs can read it back
+  // (RPC arg-truncation cap, capture-application-data toggle,
+  // etc.) without re-parsing argv.
+  globalThis.__comapeoSentryConfig = {
+    rpcArgsBytes: Number(values.sentryRpcArgsBytes ?? 0),
+    captureApplicationData: values.captureApplicationData,
+  };
 }
+
+// Always run the app, with or without Sentry.
+await import("./index.mjs");
 ```
 
-The `init` handler in `controlIpcServer` calls `initSentry` if the
-frame includes a `sentry` field, before resolving `initPromise`:
+**Order matters**: `Sentry.init()` runs before
+`await import('./index.mjs')`. Inside `index.mjs`, the existing
+top-level imports (`Fastify`, `@comapeo/core`, etc.) execute in
+the patched module loader — Sentry's OpenTelemetry hook
+intercepts each one and applies its instrumentation. If we
+flipped the order, none of those modules would be patched.
+
+**No-op path**. If `--sentryDsn` is absent, the `if (values.sentryDsn)`
+block is skipped entirely, the `await import('@sentry/node')` is
+never reached, the rollup-emitted Sentry chunk is never loaded,
+and `index.mjs` runs identically to today. Zero overhead for
+unconfigured consumers.
+
+**Sentry's instrumentation patching nuances** (from
+comapeo-mobile experience):
+
+- The `consoleLoggingIntegration` requires `debug` to call
+  `console.log` directly. The comapeo-mobile loader rebinds
+  `debug.log = (...args) => console.log(...)` for non-production
+  environments to make `debug('mapeo:*')` output flow through
+  Sentry breadcrumbs. We replicate when `debug` is in our
+  bundle (it's a transitive dep of `@comapeo/core`).
+- The default Sentry transport hits the network synchronously
+  on flush. For mobile we likely want
+  `sentry-offline-transport-better-sqlite` (which comapeo-mobile
+  uses) to queue events when offline. Folded into Phase 3
+  if we ship offline transport, otherwise events are lost
+  while offline (acceptable for v1).
+- `Sentry.consoleLoggingIntegration({ levels: ["error"] })`
+  in production keeps log volume sane; widening to
+  `["error", "warn", "log"]` in dev mirrors comapeo-mobile.
+
+### 5.3 `index.mjs` — read parsed config, no Sentry init
+
+`backend/index.js` (renamed `index.mjs` for the multi-entry
+layout) gets a small read of `globalThis.__comapeoSentryConfig`
+for the RPC hook + toggle flags it needs. It does **not** call
+`Sentry.init()` (that already happened in the loader) and the
+control-socket `init` frame no longer carries any `sentry`
+field:
 
 ```js
-init: (message) => {
-  // … existing rootKey validation …
-  if (message.sentry) {
-    try { initSentry(message.sentry); }
-    catch (e) { console.error("Sentry init failed", e); }
-  }
-  resolveInit(rootKey);
-}
+// backend/index.js (sketch — minimal additions)
+import * as Sentry from "@sentry/node"; // resolved if loader ran init; otherwise unused
+
+const sentryConfig = globalThis.__comapeoSentryConfig;
+const sentryActive = sentryConfig != null;
+
+// ... existing code unchanged ...
+
+// In ComapeoRpcServer construction (§5.5):
+comapeoRpcServer = new ComapeoRpcServer(comapeo, {
+  sentry: sentryActive ? Sentry : null,
+  rpcArgsBytes: sentryConfig?.rpcArgsBytes ?? 0,
+  captureApplicationData: sentryConfig?.captureApplicationData ?? false,
+});
 ```
 
-### 5.3 Error capture wiring
+When the loader didn't init Sentry, `import * as Sentry from "@sentry/node"`
+in `index.mjs` would normally still load the chunk. To keep
+the lazy behaviour intact, we use one of two patterns:
+
+1. **Conditional import inside `index.mjs`**:
+   ```js
+   const Sentry = sentryActive ? await import("@sentry/node") : null;
+   ```
+   The chunk is only loaded if the loader already loaded it
+   (cached in Node's module registry). Net: still zero work
+   for the no-Sentry path.
+2. **Adapter object on globalThis**: the loader stashes
+   `globalThis.__comapeoSentry = Sentry` after init, and
+   `index.mjs` reads from globalThis instead of importing.
+   No further chunk-load risk.
+
+Pick (2) for simplicity — `index.mjs` never names
+`@sentry/node` at all, and the rollup chunk is unambiguously
+gated by the loader's argv check.
+
+### 5.4 Error capture wiring
 
 Three failure surfaces in `backend/index.js` to retrofit:
 
@@ -540,9 +852,9 @@ Three failure surfaces in `backend/index.js` to retrofit:
    automatically. We add a `tags: { source: "native" }` so
    Sentry can filter cross-process forwarding.
 
-3. **Per-RPC errors** — handled in §5.4.
+3. **Per-RPC errors** — handled in §5.5.
 
-### 5.4 RPC tracing — server side
+### 5.5 RPC tracing — server side
 
 Replicates the `onRequestHook` from
 `comapeo-mobile/src/backend/src/app.js`, called from
@@ -613,7 +925,7 @@ Differences from the comapeo-mobile reference:
   attachments). PII risk is high, so opt-in only via
   `rpcArgsBytes`.
 
-### 5.5 OpenTelemetry forwarding (PR #1051)
+### 5.6 OpenTelemetry forwarding (PR #1051)
 
 When `comapeo-core` PR #1051 merges, `@comapeo/core` will emit
 OpenTelemetry spans through the global `@opentelemetry/api`
@@ -623,7 +935,7 @@ the Sentry span processor.
 
 Concretely, after `Sentry.init()`, no further wiring is needed —
 `@comapeo/core`'s spans become children of the active Sentry
-transaction (the RPC span from §5.4) and ship to the configured
+transaction (the RPC span from §5.5) and ship to the configured
 DSN.
 
 If PR #1051 lands before this integration, we should verify the
@@ -738,7 +1050,7 @@ watchdog timeout rate" without parsing message strings.
 ### 6.4 Public client error capture
 
 The IPC client surfaces RPC errors as rejected promises. Most
-captures happen on the backend side (§5.4) and reach Sentry from
+captures happen on the backend side (§5.5) and reach Sentry from
 there with full context. The JS side adds a thin
 `captureException` for client-perceived errors (e.g. RPC timeouts,
 disconnect mid-call) that the backend never observed:
@@ -751,7 +1063,7 @@ async (...args) => {
       return await underlying[method](...args);
     } catch (e) {
       // Only capture if it didn't originate from a backend
-      // event we already see in §5.4 — the backend tags its
+      // event we already see in §5.5 — the backend tags its
       // captures with `layer: "backend"`. Backend RPC failures
       // arrive here as plain errors, but Sentry de-dupes if
       // the same exception is captured twice with different
@@ -1096,11 +1408,15 @@ side so it survives app uninstall-resistant in the same way
 existing user prefs do (and is not a special concern at the
 backup/restore layer):
 
-- **Android**: stored in
-  `EncryptedSharedPreferences("comapeo-core-prefs", ...)` —
-  the same `androidx.security.crypto` mechanism used elsewhere
-  in the module. Key: `sentry.captureApplicationData`. Read by
-  both the main process and the FGS process.
+- **Android**: stored in plain
+  `SharedPreferences("comapeo-core-prefs", MODE_PRIVATE)`. Key:
+  `sentry.captureApplicationData`. Read by both the main process
+  and the FGS process. (The earlier draft considered
+  `EncryptedSharedPreferences`; for a non-sensitive boolean
+  there's no value in the encryption overhead, and plain prefs
+  are cross-process-safe via `MODE_MULTI_PROCESS` if both
+  processes need the live value — though the toggle is only
+  read at process start so even that's unnecessary.)
 - **iOS**: stored in `UserDefaults.standard` keyed
   `com.comapeo.core.sentry.captureApplicationData`. Read at
   app delegate init.
@@ -1198,7 +1514,7 @@ setCaptureApplicationData(true)        ─── JS ───
 ComapeoCoreModule.setCaptureApplicationData  ─── Native bridge ───
         │
         ▼
-EncryptedSharedPreferences write (Android)    ─── Persisted ───
+SharedPreferences write (Android)             ─── Persisted ───
 UserDefaults.set (iOS)
         │
         ▼
@@ -1209,23 +1525,34 @@ UserDefaults.set (iOS)
 NodeJSService starts        ─── Native ───
         │
         ▼
-read EncryptedSharedPreferences / UserDefaults
+read persisted toggle (SharedPreferences / UserDefaults)
         │
         ▼
-sentryConfig.captureApplicationData = true
+spawn Node with argv:
+  loader.mjs <…sockets…> --sentryDsn=… [--captureApplicationData]
         │
         ▼
-embed in init frame to backend       ─── Control socket ───
+loader.mjs parseArgs                         ─── Node argv ───
         │
         ▼
-backend initSentry({captureApplicationData})    ─── Node ───
+Sentry.init({ tracesSampleRate: toggle ? 0.1 : 0, … })
+globalThis.__comapeoSentryConfig = { captureApplicationData: true }
+        │
+        ▼
+await import('./index.mjs')                  ─── Node ───
         │
         ▼
 - onRequestHook registered (per-RPC spans)
 - sync-session emitter registered
 - memory-snapshot timer started
-- tracesSampleRate raised to configured value
+- (tracesSampleRate already set in Sentry.init)
 ```
+
+Note that the toggle is read **once** at native process start
+and passed as a Node argv flag (`--captureApplicationData`).
+The control-socket `init` frame doesn't carry it. Restart-to-
+activate is the natural consequence: the loader's argv is
+fixed for the life of the Node process.
 
 ### 9.6 What the toggle never unlocks
 
@@ -1289,21 +1616,30 @@ fully observable. Boot durations dashboarded.
 Cost: ~150 LOC native (Kotlin + Swift), ~50 LOC plugin, no
 backend changes yet.
 
-### 10.3 Phase 3 — backend error capture + RPC tracing
+### 10.3 Phase 3 — backend loader + RPC tracing
 
-- Add `@sentry/node` to `backend/package.json`, bundle it.
-- Extend `init` frame with optional `sentry` field (§4.5).
-- `handleFatal` and `onRequestHook` wired (§5.3, §5.4).
+- Add `@sentry/node`, `import-in-the-middle`, and
+  `@sentry/rollup-plugin` to `backend/package.json`.
+- Restructure `backend/rollup.config.ts` for multi-entry
+  output (`loader`, `index`, `importHook`, `lib/register`).
+- New `backend/loader.mjs` parses argv, conditionally inits
+  Sentry, dynamically imports `index.mjs`.
+- Native side (iOS + Android) passes `loader.mjs` as the
+  spawn target with `--sentry*` argv flags from
+  `SentryConfig` (§4.2).
+- `handleFatal` and `onRequestHook` wired (§5.4, §5.5).
 - Client-side `getMetadata` (§6.2) for distributed tracing
   (or accept JS-side spans without parent linkage if
   `@comapeo/ipc` doesn't yet support it — track upstream).
 
 Value: RPC method-level errors and durations in Sentry;
 backend boot failures with proper stacktraces; baseline
-distributed tracing.
+distributed tracing; auto-instrumentation works because
+`Sentry.init()` runs before any other module loads.
 
-Cost: ~200 LOC across backend, JS, and native; ~150–250 KB
-bundle delta on every consumer (mitigations in §5.1).
+Cost: ~300 LOC across loader/rollup config/native/JS;
+~150–250 KB bundle delta on every consumer **on disk** but
+zero runtime cost when DSN is absent (§5.1).
 
 ### 10.4 Phase 4 — `@comapeo/core` OpenTelemetry forwarding
 
@@ -1318,13 +1654,13 @@ to surface.
 
 ### 10.5 Phase 5 — capture-application-data toggle
 
-- Native preference store (Android `EncryptedSharedPreferences`,
+- Native preference store (Android `SharedPreferences`,
   iOS `UserDefaults`) with `getCaptureApplicationData` /
   `setCaptureApplicationData` JS API (§9.2).
-- Read on boot, embed in `init` frame, gates the §7.4.8 opt-in
-  captures (per-RPC method spans, sync session transaction,
-  background/foreground breadcrumbs, memory checkpoints,
-  storage size sample).
+- Read on boot, passed as `--captureApplicationData` argv
+  flag (§9.5), gates the §7.4.8 opt-in captures (per-RPC
+  method spans, sync session transaction, background/foreground
+  breadcrumbs, memory checkpoints, storage size sample).
 - `before_send` privacy processor (§7.4.9 enforcement).
 
 Value: opt-in detailed observability for users who consent,
@@ -1351,10 +1687,23 @@ Cost: ~150 LOC native + JS + backend.
 - `src/sentry.ts` is a no-op if `configureSentry` was never
   called: the existing `comapeo` client should produce
   identical wire frames (no `metadata` injected).
-- Backend: build the bundle without a `sentry` field in
-  `init` and confirm `Sentry.init` is never called.
-  Build with the field and confirm `onRequestHook` is
-  registered (assert via metadata propagation).
+- Backend loader: spawn `loader.mjs` without `--sentryDsn`
+  and assert `@sentry/node` is never resolved (check
+  `require.cache` / module-graph instrumentation in a test
+  harness). Spawn with `--sentryDsn=...` and assert
+  `Sentry.init` was called with the parsed values **before**
+  `index.mjs`'s top-level imports ran.
+- Backend rollup output: assert the multi-entry build
+  produces `loader.mjs`, `index.mjs`, `importHook.js`, and
+  `lib/register.js`; that `loader.mjs` does not statically
+  reference `@sentry/node`; that the rewritten
+  `module.register('./importHook.js', ...)` call is in the
+  bundled output (no bare `import-in-the-middle/hook.mjs`
+  reference).
+- Toggle gating in loader: build with `--captureApplicationData`
+  and assert `tracesSampleRate` is non-zero in the captured
+  init options; build without it and assert `tracesSampleRate`
+  is `0`.
 - Config plugin: snapshot test that running the plugin with
   a `sentry` argument writes the expected manifest
   meta-data and Info.plist keys. Run without argument →
@@ -1369,7 +1718,7 @@ Cost: ~150 LOC native + JS + backend.
 - Toggle persistence: write `setCaptureApplicationData(true)`,
   read it back, kill the process, read it back again — value
   survives. Re-launch and confirm the flag flows into the
-  init frame.
+  Node argv as `--captureApplicationData`.
 - `before_send` privacy processor: feed it events containing
   base64-shaped strings, latitude/longitude markers, and raw
   project IDs; assert each is redacted or dropped.
@@ -1459,11 +1808,37 @@ Cost: ~150 LOC native + JS + backend.
    even when overall `tracesSampleRate` is low. Confirm this
    doesn't blow Sentry quota for high-launch-volume users.
    May need a 1-in-N sampler with a minimum floor.
-10. **`EncryptedSharedPreferences` for the toggle**: it's
-    stronger than necessary for a non-sensitive boolean. Plain
-    `SharedPreferences` would be simpler and faster. Decision
-    pending unless we want the toggle's value masked from
-    on-device tooling, which seems unnecessary.
+10. **Sourcemap upload for the backend bundle**: §5.1 mentions
+    `@sentry/rollup-plugin` for sourcemap upload. Confirm CI
+    has `SENTRY_AUTH_TOKEN` available and that uploaded
+    sourcemaps reference the right release tag (matching
+    what native passes as `--sentryRelease`).
+11. **Lazy chunk on iOS**: nodejs-mobile on iOS runs V8 with
+    `--jitless`. Confirm dynamic `import()` works there for
+    a separate ESM chunk; the mainline path is well-tested
+    but the lazy path is new code. iOS is also where we
+    already stub the `@comapeo/core` maps plugin to keep
+    undici out (see `backend/lib/maps-stub.js` and the
+    `stubComapeoMapsPlugin` in `rollup.config.ts`); the
+    Sentry chunk is an additional surface for this kind of
+    iOS-only quirk.
+12. **Offline transport**: comapeo-mobile uses
+    `sentry-offline-transport-better-sqlite` to queue events
+    while offline. Decide whether v1 ships offline transport
+    or accepts dropped events when the device is offline.
+    Mobile fieldwork is offline more than online; this is
+    likely required for production usage but adds another
+    bundled dep.
+13. **Capture-application-data toggle and EAS development
+    builds**: development builds are presumably
+    `environment: "development"` and frequently want
+    detailed traces. Consider whether the toggle should
+    default to `true` for non-production environments
+    (read from the manifest at startup), so developers
+    don't have to flip it in their settings UI on every
+    fresh install. Defaulting to `false` everywhere is
+    safer; defaulting to `true` for `environment !==
+    "production"` is more useful. Decision pending.
 
 ---
 
@@ -1483,19 +1858,28 @@ Concrete touch list, by phase, for code review.
 
 - `app.plugin.js` (new, module root) — `withAndroidManifest` to
   inject `<meta-data>` and `withInfoPlist` to inject keys.
+  Validates `dsn` and `environment` are present; throws at
+  prebuild on misconfiguration.
 - `expo-module.config.json` — register the plugin if needed
   (the file is already wired to expo-modules via this manifest).
 - `ios/SentryConfigStore.swift` (new) — read Info.plist into
-  `SentryConfig`.
+  `SentryConfig`, fall back to `CFBundleShortVersionString`
+  for `release` if absent.
 - `android/src/main/java/com/comapeo/core/SentryConfigStore.kt`
-  (new) — read manifest meta-data into `SentryConfig`.
+  (new) — read manifest meta-data into `SentryConfig`, fall
+  back to `versionName` for `release` if absent.
 - `ios/AppLifecycleDelegate.swift` — read config and stash on
   `NodeJSService` before `runNode()`.
-- `ios/NodeJSService.swift` — accept stored config, embed in
-  init frame.
+- `ios/NodeJSService.swift` — accept stored config, build
+  argv with `--sentry*` flags for `runNode`, init
+  `sentry-cocoa` (already present via `@sentry/react-native`,
+  no re-init needed on iOS).
 - `android/src/main/java/com/comapeo/core/ComapeoCoreService.kt`
   — read config in `onCreate`, init `SentryAndroid` for the
   FGS process, pass to `NodeJSService`.
+- `android/src/main/java/com/comapeo/core/NodeJSService.kt`
+  — build argv with `--sentry*` flags for the Node spawn
+  call.
 - `android/src/main/java/com/comapeo/core/NodeJSService.kt`,
   `ios/NodeJSService.swift` — add `Sentry.addBreadcrumb` calls
   on every state-derivation update; wrap boot phases in
@@ -1504,13 +1888,36 @@ Concrete touch list, by phase, for code review.
   (main process) — same breadcrumb/event emission from the
   control-IPC observer.
 
-**Phase 3 — backend instrumentation**
+**Phase 3 — backend instrumentation (loader + multi-entry bundle)**
 
-- `backend/package.json` — `@sentry/node` dependency.
-- `backend/index.js` — `initSentry`, hook `handleFatal`, extend
-  `init` handler validation.
-- `backend/lib/comapeo-rpc.js` — accept `sentry` option, register
-  `onRequestHook`.
+- `backend/package.json` — `@sentry/node` and
+  `import-in-the-middle` dependencies; `@sentry/rollup-plugin`
+  devDependency for sourcemap upload.
+- `backend/loader.mjs` (new) — argv-driven `Sentry.init`,
+  dynamic import of `index.mjs`. Mirrors
+  `comapeo-mobile/src/backend/loader.js`.
+- `backend/rollup.config.ts` — multi-entry input (`loader`,
+  `index`, `importHook`, `lib/register`); add
+  `@sentry/rollup-plugin` for sourcemap upload behind
+  `SENTRY_AUTH_TOKEN`.
+- `backend/rollup-plugins/rollup-plugin-import-hook.mjs` (new)
+  — port of comapeo-mobile's path-rewrite plugin so
+  `module.register('import-in-the-middle/hook.mjs', …)` lands
+  on the bundled `./importHook.js`.
+- `scripts/build-backend.ts` — pass `loader.mjs` as the new
+  spawn target through to native asset trees; ensure the
+  Sentry chunk and `importHook`/`lib/register` files are
+  copied alongside `index.mjs`.
+- `ios/NodeJSService.swift`, `android/.../NodeJSService.kt`
+  — change the `runNode` / `startWithArgs` call to pass
+  `loader.mjs` as the entry script (was `index.mjs`).
+- `backend/index.js` — read
+  `globalThis.__comapeoSentryConfig` (set by loader);
+  hook `handleFatal` with `Sentry.captureException`; remove
+  any `sentry` field handling from the `init` control-frame
+  handler (the field is no longer sent — argv carries it).
+- `backend/lib/comapeo-rpc.js` — accept `sentry` option,
+  register `onRequestHook`.
 - `src/ComapeoCoreModule.ts` — pass `getMetadata` to
   `createMapeoClient` (or wrapper fallback).
 
@@ -1523,8 +1930,8 @@ Concrete touch list, by phase, for code review.
 **Phase 5 — capture-application-data toggle**
 
 - `android/src/main/java/com/comapeo/core/SentryPrefsStore.kt`
-  (new) — `EncryptedSharedPreferences` read/write of the
-  toggle, plus `getCaptureApplicationData` /
+  (new) — `SharedPreferences` read/write of the toggle,
+  plus `getCaptureApplicationData` /
   `setCaptureApplicationData` bridge.
 - `ios/SentryPrefsStore.swift` (new) — `UserDefaults`
   equivalent.
