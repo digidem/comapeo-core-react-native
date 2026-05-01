@@ -276,11 +276,15 @@ bakes a different `environment` string into the manifest /
 plist at prebuild time. No native code change between profiles.
 
 `release` is the one value we *do* default from existing native
-config: omitting it makes the native loader fall back to
-`versionName` / `CFBundleShortVersionString` — the canonical
-versions Expo and the host app are already using. Consumers can
-still pass `release` explicitly (e.g. to embed a git SHA from
-EAS's `EAS_BUILD_GIT_COMMIT_HASH`) and the explicit value wins.
+config. Omitting it makes the native loader build the release
+tag as **`versionName + "+" + versionCode`** (Android) /
+**`CFBundleShortVersionString + "+" + CFBundleVersion`** (iOS).
+On EAS, `versionCode` / `CFBundleVersion` is the auto-incremented
+build number, so successive EAS builds of the same app version
+produce distinct release tags — required to disambiguate
+internal/test builds that share a marketing version. Consumers
+can still pass `release` explicitly (e.g. to embed a git SHA
+from `EAS_BUILD_GIT_COMMIT_HASH`) and the explicit value wins.
 
 The plugin runs at `expo prebuild` and writes:
 
@@ -371,12 +375,17 @@ fun loadFromManifest(ctx: Context): SentryConfig? {
   val environment = meta.getString("com.comapeo.core.sentry.environment")
     ?: error("comapeo: sentry.environment missing from manifest")
 
-  // Release: prefer plugin override, else fall back to the
-  // host app's versionName — the canonical source of truth,
-  // same value expo-application reports.
+  // Release: prefer plugin override, else build from
+  // versionName + "+" + versionCode so successive EAS builds
+  // of the same marketing version produce distinct releases.
   val release = meta.getString("com.comapeo.core.sentry.release")
-    ?: ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
-    ?: "unknown"
+    ?: run {
+      val pkg = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+      val v = pkg.versionName ?: "unknown"
+      val build = if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode
+                  else @Suppress("DEPRECATION") pkg.versionCode.toLong()
+      "$v+$build"
+    }
 
   return SentryConfig(
     dsn = dsn,
@@ -577,6 +586,13 @@ module's two-socket boot.
 
 ### 5.1 Bundle strategy: multi-entry with lazy `@sentry/node` chunk
 
+**Pinned versions**: `@sentry/node@^8`, `@sentry/react-native@^6`,
+`@sentry/core@^8`, `import-in-the-middle` (whatever
+`@sentry/node@8` resolves it at). These are the
+OpenTelemetry-first majors — required for the §5.6 forwarding
+of `@comapeo/core` PR #1051 spans to "just work" without glue
+code.
+
 The backend currently rolls into a single `index.mjs` per
 platform (see `backend/rollup.config.ts`). To support
 auto-instrumentation **and** keep the bundle weight off
@@ -681,13 +697,36 @@ chunks stripped at build time, and `scripts/build-backend.ts`
 selects which to copy based on whether the consumer's
 `app.json` registered the plugin with a DSN. Not in v1.
 
-**Sentry rollup plugin (sourcemaps).** Comapeo-mobile uses
-`@sentry/rollup-plugin` to upload sourcemaps for stack-trace
-symbolication. We add the same to `backend/rollup.config.ts`
-behind `process.env.SENTRY_AUTH_TOKEN` — only runs in CI for
-release builds, no-op otherwise. Sourcemap upload is the only
-way Sentry can map minified backend stack frames back to
-readable JS.
+**Sourcemaps — generate here, upload from the consumer.**
+Rollup already emits `.map` files alongside each output (the
+existing config has `sourcemap: true`). We:
+
+1. **Ship the sourcemaps in the npm package** by including
+   them in `package.json`'s `files` field (or leaving the
+   default — they're already inside `android/src/main/assets/`
+   and `ios/nodejs-project/` after `backend:build`).
+2. **Strip them from the shipped APK/IPA** at build time. The
+   consumer's gradle / Xcode build excludes
+   `nodejs-project/**/*.map` from the packaged assets via a
+   small build step (documented in README). Sourcemaps on
+   device are dead weight — only Sentry needs them — and
+   shipping them inflates the install size and exposes
+   readable backend source to anyone who unpacks the APK.
+3. **Document the upload step** for consumers. Each consumer's
+   release CI calls `sentry-cli sourcemaps upload` (or the
+   equivalent EAS hook) against the `.map` files in
+   `node_modules/@comapeo/core-react-native/android/src/main/assets/nodejs-project/`,
+   tagged with the same release string the plugin baked into
+   the manifest (`versionName + "+" + versionCode`). README
+   includes a copy-paste snippet.
+
+We do **not** add `@sentry/rollup-plugin` here. Comapeo-mobile
+uses it because that codebase owns the build *and* the upload;
+this module owns only the build, and pushing uploads from a
+library's CI to a consumer-owned Sentry project would require
+the consumer to surface their `SENTRY_AUTH_TOKEN` to this
+module's CI — wrong direction. Consumers run upload in their
+own CI with their own credentials.
 
 ### 5.2 `loader.mjs` — `Sentry.init()` and dynamic import
 
@@ -958,59 +997,79 @@ linked in.
 
 ### 6.2 RPC client tracing — request side
 
-The existing `comapeo` client is created once at module load:
+`createMapeoClient` already accepts an `onRequestHook` of the
+same shape as the server's. The CoMapeo Mobile frontend uses
+this verbatim in
+[`src/frontend/lib/createMapeoApi.ts`](https://github.com/digidem/comapeo-mobile/blob/develop/src/frontend/lib/createMapeoApi.ts);
+we port it directly.
 
-```ts
-// src/ComapeoCoreModule.ts:71-72
-const messagePort = new CoreMessagePort() as unknown as MessagePort;
-export const comapeo: MapeoClientApi = createMapeoClient(messagePort);
-```
-
-To attach `sentry-trace` + `baggage` headers as `request.metadata`
-on outgoing RPC frames, we have two options:
-
-**Option A — IPC-level metadata factory** (preferred)
-
-`@comapeo/ipc/client.js` already supports `request.metadata` on
-the wire (the server reads it in `onRequestHook`). If
-`createMapeoClient` accepts (or can be extended to accept) a
-`getMetadata(method)` option, we register one that returns the
-current trace headers from the active Sentry adapter:
+The hook starts a span for the RPC call, reads
+`sentry-trace`/`baggage` from the active span via
+`@sentry/core`'s `getTraceData`, and stuffs them into
+`request.metadata` so the server-side `onRequestHook` (§5.5)
+can `Sentry.continueTrace` them as the parent context. The
+`Sentry.getActiveSpan()` short-circuit is what makes the hook
+inert when tracing isn't enabled — no try/catch, no allocation,
+no overhead beyond one function call and one falsy check:
 
 ```ts
 // src/ComapeoCoreModule.ts (changed)
+import { getTraceData } from "@sentry/core";
 import { activeAdapter } from "./sentry-internal";
 
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
-  getMetadata: () => {
-    const a = activeAdapter();
-    if (!a) return undefined;
-    // Sentry v8 helper that returns sentry-trace + baggage.
-    const { "sentry-trace": st, baggage } = a.getTraceData();
-    return st ? { "sentry-trace": st, baggage } : undefined;
+  timeout: Infinity,
+  onRequestHook: (request, next) => {
+    const Sentry = activeAdapter();
+    const parentSpan = Sentry?.getActiveSpan();
+    if (!Sentry || !parentSpan) {
+      // Tracing disabled or no active root span — pass through
+      // untouched, no metadata injection. This is the no-op path
+      // when configureSentry was never called.
+      next(request).catch(noop);
+      return;
+    }
+    Sentry.startSpan(
+      { name: request.method.join("."), op: "ipc" },
+      async (span) => {
+        const traceHeaders = getTraceData({ span });
+        if (traceHeaders) {
+          request.metadata = {
+            "sentry-trace": traceHeaders["sentry-trace"],
+            baggage: traceHeaders["baggage"],
+          };
+        }
+        try {
+          await next(request);
+          span.setStatus({ code: 1, message: "ok" });
+        } catch (error) {
+          span.setStatus({ code: 2, message: "internal_error" });
+          Sentry.captureException(error);
+        }
+      },
+    );
   },
 });
 ```
 
-Verify whether the installed `@comapeo/ipc` (currently `^8.0.0`)
-exposes such a hook. If it doesn't, file an upstream issue and
-fall back to Option B for the interim.
+Three things to call out:
 
-**Option B — Method proxy wrapper**
-
-`configureSentry` returns a Proxy-wrapped clone of `comapeo`
-where each method call:
-1. Starts a `Sentry.startSpan({ op: "rpc.client", name: ... })`.
-2. Reads `getTraceData()` for headers.
-3. Calls the underlying `comapeo` method with a wrapped first
-   argument that smuggles the headers — but this only works if
-   the IPC supports per-call metadata, which collapses Option B
-   into Option A.
-
-If neither path is possible without an upstream change to
-`@comapeo/ipc`, we accept JS-side spans without distributed
-tracing for v1 (the backend still produces its own spans, just
-unlinked) and pursue the IPC change as a follow-up.
+- **The hook is registered unconditionally at module load.**
+  We can't lazily install it later because `comapeo` is a
+  module-scoped const; consumers may have imported and called
+  it before `configureSentry` runs. Registering up-front and
+  short-circuiting on `!parentSpan` is exactly the pattern
+  comapeo-mobile uses and costs essentially nothing per call
+  when Sentry is off.
+- **`activeAdapter()`** is a tiny indirection that returns the
+  adapter passed to `configureSentry`, or `null`. It's read
+  per call; updates take effect the next time the hook runs.
+- **`getTraceData` comes from `@sentry/core`**, not
+  `@sentry/react-native`, because the helper lives in core
+  and re-exporting it through the adapter type would force
+  consumers to surface it. We import it directly. Adds a
+  `@sentry/core` peer dependency entry (already a transitive
+  dep of `@sentry/react-native`).
 
 ### 6.3 State observer capture
 
@@ -1571,10 +1630,45 @@ to production at all).
 
 ### 9.7 Default and migration
 
-Default value when the preference has never been written:
-`false`. We never auto-enable. A user upgrading the app to a
-version that introduces this toggle starts at `false` and only
-enters extended capture when they explicitly flip the switch.
+The default-when-unset is **per-environment, decided by the
+consumer at build time** via a new plugin field
+`captureApplicationDataDefault`:
+
+```json
+{
+  "expo": {
+    "plugins": [["@comapeo/core-react-native", {
+      "sentry": {
+        "dsn": "...",
+        "environment": "development",
+        "captureApplicationDataDefault": true   // dev/qa builds
+      }
+    }]]
+  }
+}
+```
+
+The plugin writes a manifest meta-data /
+plist key (`com.comapeo.core.sentry.captureApplicationDataDefault`)
+that the native preference read consults as a fallback when the
+user has never explicitly written the toggle. Once the user
+flips the switch in the host app's settings UI, their explicit
+choice wins forever — the per-build default only applies on the
+first launch after install (or after a clear-data).
+
+Recommended consumer config, wired through EAS env vars:
+
+```js
+// app.config.js
+captureApplicationDataDefault:
+  (process.env.SENTRY_ENVIRONMENT ?? "production") !== "production",
+```
+
+so internal/test builds opt in by default without any user
+action, while production ships off-by-default. If the field is
+omitted, native treats it as `false` everywhere — safer
+fallback for the example app and any consumer that doesn't
+actively configure it.
 
 ---
 
@@ -1618,8 +1712,11 @@ backend changes yet.
 
 ### 10.3 Phase 3 — backend loader + RPC tracing
 
-- Add `@sentry/node`, `import-in-the-middle`, and
-  `@sentry/rollup-plugin` to `backend/package.json`.
+- Add `@sentry/node@^8`, `@sentry/core@^8`, and
+  `import-in-the-middle` to `backend/package.json`.
+- Confirm `package.json`'s `files` field surfaces the built
+  `*.map` files into the published npm package; document
+  consumer's APK/IPA exclusion + sourcemap upload step.
 - Restructure `backend/rollup.config.ts` for multi-entry
   output (`loader`, `index`, `importHook`, `lib/register`).
 - New `backend/loader.mjs` parses argv, conditionally inits
@@ -1766,79 +1863,44 @@ Cost: ~150 LOC native + JS + backend.
 
 ---
 
-## 12. Open questions
+## 12. Decisions and remaining questions
 
-1. **Does `@comapeo/ipc@^8` support a client-side `getMetadata`
-   hook?** §6.2 hinges on this. If not, what's the upstream
-   path — patch + release, or temporary monkey-patch in this
-   module?
-2. **Sentry SDK version**: pin to `@sentry/react-native@^6` and
-   `@sentry/node@^8`? The OpenTelemetry-first model only exists
-   in v8+ for Node and v6+ for React Native; older versions
-   force a different tracing API.
-3. **Bundle size budget**: do we have a hard limit for the
-   embedded backend? §5.1 estimates suggest ~150–250 KB; if the
-   budget is tighter, plan for dual bundles in Phase 5.
-4. **Release tagging**: how does `release` flow from the host
-   app (CoMapeo Mobile) into the backend? The natural source is
-   the host app's `package.json` version, but the backend bundle
-   is built inside this module — we'd need to surface the value
-   via the runtime config rather than baking it in at build time.
-5. **Cross-process scope on Android**: Phase 3 assumes the FGS's
-   Sentry events can carry a `proc:fgs` tag. Confirm the host
-   app's `@sentry/react-native` config doesn't override our tag
-   in the main-process events.
-6. **Release tagging via plugin**: §4.1 has the consumer pass
-   `release` as a literal in `app.json`. CoMapeo Mobile likely
-   wants this auto-derived from the host app's version. The
-   plugin can read `config.version` (the consumer's `expo.version`)
-   as a default; a `${VERSION}` placeholder is another option.
-   Decide which.
-7. **Plugin output for empty config**: when the consumer
-   registers the plugin without a `sentry` argument (e.g. just
-   `["@comapeo/core-react-native"]`), the plugin should be a
-   no-op for Sentry. Confirm we don't accidentally write empty
-   `<meta-data>` entries that confuse the native loader.
-8. **Toggle UI surface**: where does the host app expose the
-   `setCaptureApplicationData` switch? CoMapeo Mobile already
-   has a settings screen — coordinate the copy and restart
-   prompt. Out of scope for this module but called out for
-   integration.
-9. **Boot transaction sample rate**: §7.4.2 forces 100% on boot
-   even when overall `tracesSampleRate` is low. Confirm this
-   doesn't blow Sentry quota for high-launch-volume users.
-   May need a 1-in-N sampler with a minimum floor.
-10. **Sourcemap upload for the backend bundle**: §5.1 mentions
-    `@sentry/rollup-plugin` for sourcemap upload. Confirm CI
-    has `SENTRY_AUTH_TOKEN` available and that uploaded
-    sourcemaps reference the right release tag (matching
-    what native passes as `--sentryRelease`).
-11. **Lazy chunk on iOS**: nodejs-mobile on iOS runs V8 with
-    `--jitless`. Confirm dynamic `import()` works there for
-    a separate ESM chunk; the mainline path is well-tested
-    but the lazy path is new code. iOS is also where we
-    already stub the `@comapeo/core` maps plugin to keep
-    undici out (see `backend/lib/maps-stub.js` and the
-    `stubComapeoMapsPlugin` in `rollup.config.ts`); the
-    Sentry chunk is an additional surface for this kind of
-    iOS-only quirk.
-12. **Offline transport**: comapeo-mobile uses
-    `sentry-offline-transport-better-sqlite` to queue events
-    while offline. Decide whether v1 ships offline transport
-    or accepts dropped events when the device is offline.
-    Mobile fieldwork is offline more than online; this is
-    likely required for production usage but adds another
-    bundled dep.
-13. **Capture-application-data toggle and EAS development
-    builds**: development builds are presumably
-    `environment: "development"` and frequently want
-    detailed traces. Consider whether the toggle should
-    default to `true` for non-production environments
-    (read from the manifest at startup), so developers
-    don't have to flip it in their settings UI on every
-    fresh install. Defaulting to `false` everywhere is
-    safer; defaulting to `true` for `environment !==
-    "production"` is more useful. Decision pending.
+### 12.1 Decided
+
+| Question | Decision |
+|---|---|
+| Sentry SDK versions | `@sentry/node@^8`, `@sentry/react-native@^6`, `@sentry/core@^8`. OpenTelemetry-first majors so PR #1051 forwarding works without glue (§5.1). |
+| `@comapeo/ipc@^8` client-side hook | Confirmed: `createMapeoClient` accepts `onRequestHook` directly. Pattern lifted from [`comapeo-mobile/src/frontend/lib/createMapeoApi.ts`](https://github.com/digidem/comapeo-mobile/blob/develop/src/frontend/lib/createMapeoApi.ts) (§6.2). |
+| `release` source | Default to `versionName + "+" + versionCode` (Android) / `CFBundleShortVersionString + "+" + CFBundleVersion` (iOS). Successive EAS builds of the same marketing version produce distinct releases. Plugin override always wins (§4.1). |
+| Boot transaction sample rate | Force 100% even when overall `tracesSampleRate` is low. Boot is once-per-process and high-value. Document quota implications (§7.4.2). |
+| Bundle size strategy | Single bundle with rollup chunk-splitting — accept the disk cost. No dual-bundle build for v1 (§5.1). |
+| Plugin behaviour with no `sentry` arg | No-op silently. Treat absent meta-data / plist keys as Sentry off. Used by `apps/example/` (§4.1). |
+| Sourcemap upload | Consumer responsibility. Module ships `*.map` in npm package; consumer excludes from APK/IPA and runs `sentry-cli sourcemaps upload` against `node_modules/.../nodejs-project/` in their own CI with their own credentials (§5.1). |
+| Toggle UI surface | Out of scope for this module. Module exposes `getCaptureApplicationData` / `setCaptureApplicationData` only; consumer builds the settings UI and the restart prompt (§9.2). |
+| Capture-application-data default | Per-environment, decided by consumer at build time via `captureApplicationDataDefault` plugin field. EAS env var pattern: default to `true` when `environment !== "production"`. Once user flips the switch their explicit choice wins (§9.7). |
+
+### 12.2 Still open / verify-during-build
+
+1. **Cross-process scope on Android**: Phase 2 smoke test must
+   verify FGS-process Sentry events carry `proc:fgs` and that
+   `@sentry/react-native`'s main-process tags don't override
+   them in the dashboard.
+2. **Lazy chunk on iOS `--jitless`**: dynamic `import()` of a
+   separate ESM chunk should work but isn't proven for our
+   specific config. Phase 3 CI smoke test exercises both
+   with-Sentry and without-Sentry loader paths on iOS; block
+   the phase landing if either fails. iOS is also the platform
+   we already stub `@comapeo/core`'s maps plugin to keep
+   undici out (see `backend/lib/maps-stub.js`); the Sentry
+   chunk is an additional surface for this kind of iOS-only
+   quirk.
+3. **Offline transport**: deferred to a later phase. v1 drops
+   Sentry events when the device is offline. CoMapeo is heavily
+   used in the field; this is a known limitation that needs
+   addressing before the integration is genuinely production-ready
+   for fieldwork. Tracked as a follow-up rather than v1 scope.
+   Reference: `sentry-offline-transport-better-sqlite` is
+   what comapeo-mobile uses today.
 
 ---
 
@@ -1890,16 +1952,23 @@ Concrete touch list, by phase, for code review.
 
 **Phase 3 — backend instrumentation (loader + multi-entry bundle)**
 
-- `backend/package.json` — `@sentry/node` and
-  `import-in-the-middle` dependencies; `@sentry/rollup-plugin`
-  devDependency for sourcemap upload.
+- `backend/package.json` — `@sentry/node@^8`, `@sentry/core@^8`,
+  `import-in-the-middle` dependencies.
 - `backend/loader.mjs` (new) — argv-driven `Sentry.init`,
   dynamic import of `index.mjs`. Mirrors
   `comapeo-mobile/src/backend/loader.js`.
 - `backend/rollup.config.ts` — multi-entry input (`loader`,
-  `index`, `importHook`, `lib/register`); add
-  `@sentry/rollup-plugin` for sourcemap upload behind
-  `SENTRY_AUTH_TOKEN`.
+  `index`, `importHook`, `lib/register`). `sourcemap: true`
+  stays; no Sentry rollup plugin (consumer uploads).
+- `package.json` (module root) — verify built sourcemaps
+  (`*.map` files alongside the bundles in
+  `android/src/main/assets/nodejs-project/` and
+  `ios/nodejs-project/`) are included in the npm package
+  `files` field.
+- `README.md` — new section documenting the consumer's
+  responsibilities: APK/IPA `.map` exclusion (small gradle /
+  Xcode snippet) and `sentry-cli sourcemaps upload` invocation
+  tagged with `release = versionName + "+" + versionCode`.
 - `backend/rollup-plugins/rollup-plugin-import-hook.mjs` (new)
   — port of comapeo-mobile's path-rewrite plugin so
   `module.register('import-in-the-middle/hook.mjs', …)` lands
