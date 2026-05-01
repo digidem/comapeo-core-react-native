@@ -69,12 +69,18 @@ ios/.swiftpm/
 #     ABI into jniLibs/.
 #   * iOS: rolled-up JS bundle into ios/nodejs-project/ + per-addon
 #     xcframework into ios/Frameworks/.
+#   * Bench-only sibling outputs (npm run backend:build -- --bench)
+#     land in `android/src/bench/assets/` and `ios/nodejs-project-bench/`;
+#     activated by the `bench` Android productFlavor and the
+#     `ENV['COMAPEO_BENCH']` iOS env var respectively.
 backend/dist
 nodejs-assets
 android/src/debug/assets/
 android/src/main/assets/
 android/src/main/jniLibs/
+android/src/bench/assets/
 ios/nodejs-project/
+ios/nodejs-project-bench/
 ios/Frameworks/
 
 # output

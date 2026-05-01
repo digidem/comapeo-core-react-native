@@ -1,0 +1,28 @@
+appId: com.comapeo.core.benchmark
+---
+# Per-payload-size variant of bench-rpc.yaml: only 64KB selected.
+
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible:
+      id: "service-state"
+      text: "STARTED"
+    timeout: 60000
+
+- tapOn:
+    id: "size-64"
+- tapOn:
+    id: "size-1024"
+
+- tapOn:
+    id: "send-button"
+
+- extendedWaitUntil:
+    visible:
+      id: "benchmark-result"
+    timeout: 90000
+
+- assertVisible:
+    text: "64KB"

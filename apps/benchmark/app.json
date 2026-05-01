@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "core-react-native-benchmark",
+    "slug": "core-react-native-benchmark",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.comapeo.core.benchmark"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.comapeo.core.benchmark"
+    },
+    "plugins": ["./plugins/with-comapeo-bench"]
+  }
+}

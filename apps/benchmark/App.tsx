@@ -1,0 +1,519 @@
+import {
+  benchMessagePort,
+  state,
+  type ComapeoState,
+} from "@comapeo/core-react-native";
+import { Directory, File, Paths } from "expo-file-system";
+import * as Sharing from "expo-sharing";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+/**
+ * Benchmark app entry. Drives the bench RPC bridge through the same
+ * RN→native→Node UDS path as the production module, but talks to the
+ * stripped `backend/index.bench.js` (via the `bench` Android
+ * productFlavor / `ENV['COMAPEO_BENCH']` iOS opt-in) — so timings
+ * isolate the framing / IPC / JSON-RPC bridge from `@comapeo/core` init
+ * noise. See `docs/uds-rpc-bridge-benchmark-plan.md`.
+ *
+ * UI surface:
+ *   - boot status (state observer): waits for "READY" before enabling
+ *     the run button.
+ *   - payload-size selector: subset of {64B, 1KB, 64KB, 1MB} per run.
+ *   - "Run benchmark" button (testID="send-button"): runs warmup +
+ *     steady-state sweep, records per-RPC RTT.
+ *   - results panel (testID="benchmark-result"): per-size p50/p95/p99
+ *     over the steady-state samples.
+ *   - "Export results" button: writes NDJSON to the app's documents
+ *     directory and opens the system share sheet.
+ *   - optional "POST to receiver" toggle + URL: forwards each span as
+ *     JSON to a host-side `bench-receiver.ts` for orchestrated runs.
+ *     Defaults to off; failures are silently swallowed so the
+ *     on-device experience is unaffected.
+ */
+
+const PAYLOAD_SIZES = [64, 1024, 65536, 1048576] as const;
+const DEFAULT_SELECTED: ReadonlyArray<number> = [64, 1024, 65536];
+const WARMUP_ITERATIONS = 10;
+const STEADY_ITERATIONS = 100;
+const RECEIVER_DEFAULT_URL = "http://localhost:8787/spans";
+
+type BenchSpan = {
+  op: "rpc";
+  name: string;
+  startTimestamp: number;
+  durationMs: number;
+  attrs: { bytes: number; rttSide: "rn" };
+};
+
+type SizeStats = {
+  sizeBytes: number;
+  count: number;
+  p50: number;
+  p95: number;
+  p99: number;
+  min: number;
+  max: number;
+};
+
+type RunReport = {
+  runId: string;
+  startedAt: string;
+  device: { os: string; arch?: string };
+  stats: SizeStats[];
+  spanFile: string;
+};
+
+class BenchClient {
+  private nextId = 0;
+  private pending = new Map<string, (response: { result?: unknown; error?: { message: string } }) => void>();
+  private listenerInstalled = false;
+
+  ensureListener() {
+    if (this.listenerInstalled) return;
+    this.listenerInstalled = true;
+    benchMessagePort.addListener("message", (msg) => {
+      if (
+        !msg ||
+        typeof msg !== "object" ||
+        typeof (msg as Record<string, unknown>).id !== "string"
+      ) {
+        return;
+      }
+      const m = msg as { id: string; result?: unknown; error?: { message: string } };
+      const cb = this.pending.get(m.id);
+      if (cb) {
+        this.pending.delete(m.id);
+        cb({ result: m.result, error: m.error });
+      }
+    });
+  }
+
+  request(method: string, params?: unknown): Promise<{ result?: unknown; error?: { message: string } }> {
+    this.ensureListener();
+    const id = `bench-${this.nextId++}`;
+    return new Promise((resolve) => {
+      this.pending.set(id, resolve);
+      benchMessagePort.postMessage({ id, method, params } as never);
+    });
+  }
+}
+
+function percentile(sortedAsc: number[], p: number): number {
+  if (sortedAsc.length === 0) return Number.NaN;
+  // Linear interpolation between closest ranks. For our sample sizes
+  // (~100), `Math.floor((n-1) * p)` is good enough and avoids the
+  // off-by-one trap of `Math.floor(n * p)` (which would index past the
+  // end at p=1).
+  const idx = Math.floor((sortedAsc.length - 1) * p);
+  return sortedAsc[idx]!;
+}
+
+function summarise(samples: number[], sizeBytes: number): SizeStats {
+  const sorted = [...samples].sort((a, b) => a - b);
+  return {
+    sizeBytes,
+    count: sorted.length,
+    min: sorted[0] ?? Number.NaN,
+    max: sorted[sorted.length - 1] ?? Number.NaN,
+    p50: percentile(sorted, 0.5),
+    p95: percentile(sorted, 0.95),
+    p99: percentile(sorted, 0.99),
+  };
+}
+
+function formatBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(0)}MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(0)}KB`;
+  return `${n}B`;
+}
+
+export default function App() {
+  const [serviceState, setServiceState] = useState<ComapeoState>(state.getState());
+  const [selected, setSelected] = useState<ReadonlyArray<number>>(DEFAULT_SELECTED);
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<string>("");
+  const [report, setReport] = useState<RunReport | null>(null);
+  const [postEnabled, setPostEnabled] = useState(false);
+  const [receiverUrl, setReceiverUrl] = useState(RECEIVER_DEFAULT_URL);
+
+  const clientRef = useRef<BenchClient | null>(null);
+  if (!clientRef.current) clientRef.current = new BenchClient();
+
+  useEffect(() => {
+    const onChange = (next: ComapeoState) => setServiceState(next);
+    state.addListener("stateChange", onChange);
+    return () => {
+      state.removeListener("stateChange", onChange);
+    };
+  }, []);
+
+  const toggleSize = useCallback((size: number) => {
+    setSelected((prev) =>
+      prev.includes(size) ? prev.filter((s) => s !== size) : [...prev, size].sort((a, b) => a - b),
+    );
+  }, []);
+
+  const runBench = useCallback(async () => {
+    if (running) return;
+    if (serviceState !== "STARTED") return;
+    if (selected.length === 0) return;
+
+    setRunning(true);
+    setReport(null);
+    const client = clientRef.current!;
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const startedAt = new Date().toISOString();
+    const allSpans: BenchSpan[] = [];
+    const stats: SizeStats[] = [];
+
+    try {
+      for (const sizeBytes of selected) {
+        setProgress(`warmup ${formatBytes(sizeBytes)}…`);
+        for (let i = 0; i < WARMUP_ITERATIONS; i++) {
+          // Discard timing, just prime caches.
+          await client.request("payload", { sizeBytes });
+        }
+
+        setProgress(`measuring ${formatBytes(sizeBytes)}…`);
+        const samples: number[] = [];
+        for (let i = 0; i < STEADY_ITERATIONS; i++) {
+          const start = global.performance.now();
+          const startMs = Date.now();
+          const { error } = await client.request("payload", { sizeBytes });
+          const durationMs = global.performance.now() - start;
+          if (error) {
+            console.warn(`bench: rpc.payload error at size ${sizeBytes}:`, error.message);
+            continue;
+          }
+          samples.push(durationMs);
+          const span: BenchSpan = {
+            op: "rpc",
+            name: "rpc.payload",
+            startTimestamp: startMs,
+            durationMs,
+            attrs: { bytes: sizeBytes, rttSide: "rn" },
+          };
+          allSpans.push(span);
+          if (postEnabled) {
+            // Fire-and-forget — failures are intentionally silent so a
+            // missing receiver doesn't break the on-device flow.
+            fetch(receiverUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ...span, runId }),
+            }).catch(() => {});
+          }
+        }
+        stats.push(summarise(samples, sizeBytes));
+      }
+
+      // Persist the full NDJSON dump for export.
+      const dir = new Directory(Paths.document, "comapeo-bench");
+      if (!dir.exists) dir.create({ intermediates: true });
+      const file = new File(dir, `${runId}.ndjson`);
+      const ndjson = allSpans.map((s) => JSON.stringify({ ...s, runId })).join("\n") + "\n";
+      file.create();
+      file.write(ndjson);
+
+      setReport({
+        runId,
+        startedAt,
+        device: { os: getOs() },
+        stats,
+        spanFile: file.uri,
+      });
+      setProgress(`done — ${allSpans.length} spans`);
+    } catch (e) {
+      console.error("bench: run failed", e);
+      setProgress(`error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRunning(false);
+    }
+  }, [running, serviceState, selected, postEnabled, receiverUrl]);
+
+  const exportResults = useCallback(async () => {
+    if (!report) return;
+    try {
+      const available = await Sharing.isAvailableAsync();
+      if (!available) {
+        setProgress(`file: ${report.spanFile}`);
+        return;
+      }
+      await Sharing.shareAsync(report.spanFile, {
+        mimeType: "application/x-ndjson",
+        dialogTitle: "Export bench results",
+      });
+    } catch (e) {
+      console.warn("bench: export failed", e);
+      setProgress(`export error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [report]);
+
+  const canRun = serviceState === "STARTED" && !running && selected.length > 0;
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={styles.scrollContent}
+      >
+        <Text style={styles.title} testID="header">
+          UDS / RPC Bridge Benchmark
+        </Text>
+
+        <Group name="Backend">
+          <Row label="state">
+            <Text testID="service-state">{serviceState}</Text>
+          </Row>
+        </Group>
+
+        <Group name="Payload sizes">
+          <View style={styles.sizeRow}>
+            {PAYLOAD_SIZES.map((s) => {
+              const active = selected.includes(s);
+              return (
+                <Pressable
+                  key={s}
+                  onPress={() => toggleSize(s)}
+                  style={[styles.sizeChip, active && styles.sizeChipActive]}
+                  testID={`size-${s}`}
+                >
+                  <Text style={active ? styles.sizeChipTextActive : styles.sizeChipText}>
+                    {formatBytes(s)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </Group>
+
+        <Group name="Receiver (optional)">
+          <Row label="POST spans">
+            <Switch value={postEnabled} onValueChange={setPostEnabled} testID="post-toggle" />
+          </Row>
+          {postEnabled && (
+            <TextInput
+              value={receiverUrl}
+              onChangeText={setReceiverUrl}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder={RECEIVER_DEFAULT_URL}
+              style={styles.input}
+              testID="receiver-url"
+            />
+          )}
+        </Group>
+
+        <Pressable
+          onPress={runBench}
+          disabled={!canRun}
+          style={[styles.button, !canRun && styles.buttonDisabled]}
+          testID="send-button"
+        >
+          <Text style={styles.buttonText}>
+            {running ? `Running… ${progress}` : "Run benchmark"}
+          </Text>
+        </Pressable>
+
+        {report && (
+          <View testID="benchmark-result">
+            <Group name={`Results — ${report.runId}`}>
+              <Text style={styles.subtle}>started {report.startedAt}</Text>
+              <View style={styles.table}>
+                <View style={styles.tableHeaderRow}>
+                  <Text style={[styles.tableCell, styles.tableHeader]}>size</Text>
+                  <Text style={[styles.tableCell, styles.tableHeader]}>n</Text>
+                  <Text style={[styles.tableCell, styles.tableHeader]}>p50</Text>
+                  <Text style={[styles.tableCell, styles.tableHeader]}>p95</Text>
+                  <Text style={[styles.tableCell, styles.tableHeader]}>p99</Text>
+                </View>
+                {report.stats.map((row) => (
+                  <View style={styles.tableRow} key={row.sizeBytes}>
+                    <Text style={styles.tableCell}>{formatBytes(row.sizeBytes)}</Text>
+                    <Text style={styles.tableCell}>{row.count}</Text>
+                    <Text style={styles.tableCell}>{row.p50.toFixed(2)}</Text>
+                    <Text style={styles.tableCell}>{row.p95.toFixed(2)}</Text>
+                    <Text style={styles.tableCell}>{row.p99.toFixed(2)}</Text>
+                  </View>
+                ))}
+              </View>
+              <Text style={styles.subtle}>(durations in ms, RN-thread RTT)</Text>
+              <Pressable
+                onPress={exportResults}
+                style={styles.exportButton}
+                testID="export-button"
+              >
+                <Text style={styles.exportButtonText}>Export results (NDJSON)</Text>
+              </Pressable>
+              <Text style={styles.subtle} numberOfLines={2} ellipsizeMode="middle">
+                {report.spanFile}
+              </Text>
+            </Group>
+          </View>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function Group(props: { name: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.group}>
+      <Text style={styles.groupHeader}>{props.name}</Text>
+      {props.children}
+    </View>
+  );
+}
+
+function Row(props: { label: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.rowLabel}>{props.label}</Text>
+      {props.children}
+    </View>
+  );
+}
+
+function getOs(): string {
+  // Avoid pulling in `react-native/Platform` types here — the check is
+  // best-effort metadata, not load-bearing logic.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Platform = require("react-native").Platform as { OS: string };
+  return Platform.OS;
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#eee",
+  },
+  container: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 40,
+  },
+  title: {
+    fontSize: 26,
+    margin: 20,
+    fontWeight: "600",
+  },
+  group: {
+    margin: 12,
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    padding: 16,
+  },
+  groupHeader: {
+    fontSize: 16,
+    marginBottom: 10,
+    fontWeight: "600",
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginVertical: 4,
+  },
+  rowLabel: {
+    color: "#666",
+  },
+  sizeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  sizeChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#bbb",
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  sizeChipActive: {
+    backgroundColor: "#0070f3",
+    borderColor: "#0070f3",
+  },
+  sizeChipText: {
+    color: "#333",
+  },
+  sizeChipTextActive: {
+    color: "#fff",
+    fontWeight: "600",
+  },
+  input: {
+    marginTop: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 6,
+    backgroundColor: "#fafafa",
+    fontSize: 14,
+  },
+  button: {
+    marginHorizontal: 12,
+    marginVertical: 8,
+    backgroundColor: "#0070f3",
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  buttonDisabled: {
+    backgroundColor: "#9bb",
+  },
+  buttonText: {
+    color: "#fff",
+    fontWeight: "600",
+    fontSize: 16,
+  },
+  table: {
+    marginTop: 8,
+  },
+  tableHeaderRow: {
+    flexDirection: "row",
+    borderBottomWidth: 1,
+    borderColor: "#eee",
+    paddingBottom: 4,
+    marginBottom: 4,
+  },
+  tableHeader: {
+    fontWeight: "600",
+    color: "#666",
+  },
+  tableRow: {
+    flexDirection: "row",
+    paddingVertical: 4,
+  },
+  tableCell: {
+    flex: 1,
+    fontVariant: ["tabular-nums"],
+  },
+  subtle: {
+    color: "#888",
+    fontSize: 12,
+    marginTop: 6,
+  },
+  exportButton: {
+    marginTop: 12,
+    paddingVertical: 10,
+    borderRadius: 6,
+    backgroundColor: "#eef4ff",
+    alignItems: "center",
+  },
+  exportButtonText: {
+    color: "#0070f3",
+    fontWeight: "600",
+  },
+});

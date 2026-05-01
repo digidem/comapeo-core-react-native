@@ -39,6 +39,26 @@ const ANDROID_OUT_MAIN =
 const IOS_OUT = process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
 
 /**
+ * `BENCH=1` switches this config to emit the bench-only bundle
+ * (`index.bench.js`) into the bench-specific output trees:
+ *   - `android/src/bench/assets/nodejs-project/` (overlaid by the
+ *      `bench` Android productFlavor — see android/build.gradle)
+ *   - `ios/nodejs-project-bench/` (picked up by `ComapeoCore.podspec`
+ *      iff `ENV['COMAPEO_BENCH']` is set at pod install time)
+ *
+ * Default (no env var) is unchanged: production `index.js` to the
+ * existing main/debug/iOS paths.
+ */
+const IS_BENCH = process.env.BENCH === "1";
+
+const ANDROID_BENCH_OUT =
+  process.env.OUTPUT_DIR_ANDROID_BENCH ??
+  path.join(__dirname, "dist/android/bench");
+
+const IOS_BENCH_OUT =
+  process.env.OUTPUT_DIR_IOS_BENCH ?? path.join(__dirname, "dist/ios/bench");
+
+/**
  * Resolves `@comapeo/core`'s `./fastify-plugins/maps.js` import to the
  * iOS-only no-op stub. Scoped tightly to the `@comapeo/core/src/` importer
  * so unrelated packages with a similarly-named file aren't caught.
@@ -88,16 +108,25 @@ const STATIC_ASSET_PATHS = [
 ] as const;
 
 /**
+ * Bench-bundle static assets. The bench backend doesn't import
+ * `@comapeo/core` so none of the production runtime data files
+ * (drizzle SQL, default-categories zip, fallback map) are reachable
+ * from `index.bench.js`. Only the `package.json` is needed — Node's
+ * module resolver reads it to set the unpacked tree's module type.
+ */
+const BENCH_STATIC_ASSET_PATHS = ["package.json"] as const;
+
+/**
  * Copies the static asset paths from `backend/` into `outDir` after the
  * rollup write completes. Replaces the per-platform staging copy that
  * `scripts/build-backend.ts` used to do.
  */
-function copyStaticAssetsPlugin(outDir: string): Plugin {
+function copyStaticAssetsPlugin(outDir: string, paths: readonly string[]): Plugin {
   return {
     name: "copy-static-assets",
     async writeBundle() {
       await Promise.all(
-        STATIC_ASSET_PATHS.map((rel) =>
+        paths.map((rel) =>
           cp(path.join(__dirname, rel), path.join(outDir, rel), {
             recursive: true,
           }),
@@ -111,10 +140,14 @@ function buildPlugins({
   platform,
   outDir,
   shouldMinify,
+  staticAssetPaths,
+  isBench,
 }: {
   platform: "android" | "ios";
   outDir: string;
   shouldMinify: boolean;
+  staticAssetPaths: readonly string[];
+  isBench: boolean;
 }): Plugin[] {
   return [
     alias({
@@ -128,8 +161,9 @@ function buildPlugins({
       ],
     }),
     // iOS-only: stub the maps fastify plugin so undici stays out of the
-    // bundle. See lib/maps-stub.js.
-    ...(platform === "ios" ? [stubComapeoMapsPlugin()] : []),
+    // bundle. See lib/maps-stub.js. Bench bundle doesn't import
+    // `@comapeo/core` at all, so no stub is needed.
+    ...(platform === "ios" && !isBench ? [stubComapeoMapsPlugin()] : []),
     // Native addon loader rewrite is identical for both platforms:
     // every loader pattern (`bindings`, `node-gyp-build`, `require.addon`)
     // becomes `__loadAddon(name, version)`. The helper itself differs
@@ -144,7 +178,7 @@ function buildPlugins({
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
     json(),
     shouldMinify ? minify() : undefined,
-    copyStaticAssetsPlugin(outDir),
+    copyStaticAssetsPlugin(outDir, staticAssetPaths),
   ];
 }
 
@@ -163,8 +197,12 @@ function cleanOutputDirPlugin(dir: string): Plugin {
   };
 }
 
-const sharedInput = {
+const prodInput = {
   index: path.join(__dirname, "index.js"),
+};
+
+const benchInput = {
+  index: path.join(__dirname, "index.bench.js"),
 };
 
 const sharedOutput: OutputOptions = {
@@ -174,12 +212,22 @@ const sharedOutput: OutputOptions = {
 };
 
 /**
- * Three outputs from the same source tree: Android debug, Android release, and iOS.
- * Android gets the full bundle — its nodejs-mobile build permits JIT, so undici
- * (and therefore the maps fastify plugin) loads cleanly. iOS gets the same bundle but with
- * `@comapeo/core`'s maps plugin swapped for a no-op (see lib/maps-stub.js)
- * because nodejs-mobile iOS runs V8 with `--jitless` and undici's
- * WebAssembly init would crash module load.
+ * Production: three outputs from the same source tree (Android debug,
+ * Android release, iOS). Android gets the full bundle — its
+ * nodejs-mobile build permits JIT, so undici (and therefore the maps
+ * fastify plugin) loads cleanly. iOS gets the same bundle but with
+ * `@comapeo/core`'s maps plugin swapped for a no-op (see
+ * lib/maps-stub.js) because nodejs-mobile iOS runs V8 with `--jitless`
+ * and undici's WebAssembly init would crash module load.
+ *
+ * Bench: a separate two-output mode keyed off `BENCH=1`. Same banner /
+ * loader machinery so the native addon system works identically, but
+ * the entry is `index.bench.js` (which doesn't import `@comapeo/core`)
+ * and the static-asset copy is trimmed to just `package.json`. Bench
+ * outputs land in flavor-specific paths (`android/src/bench/...`,
+ * `ios/nodejs-project-bench/`) that production consumers never see;
+ * see android/build.gradle and ios/ComapeoCore.podspec for the
+ * consumer-side wiring.
  *
  * Each output's `banner` defines `__loadAddon(name, version)` with the
  * platform-appropriate `process.dlopen` target — Android does
@@ -187,9 +235,9 @@ const sharedOutput: OutputOptions = {
  * Embed-&-Sign'd xcframework binary at NATIVE_LIB_DIR/<key>.framework/<key>.
  * See `rollup-plugin-addon-loader.js` for the helper bodies.
  */
-const config: RollupOptions[] = [
+const prodConfig: RollupOptions[] = [
   {
-    input: sharedInput,
+    input: prodInput,
     output: {
       ...sharedOutput,
       dir: ANDROID_OUT_DEBUG,
@@ -202,11 +250,13 @@ const config: RollupOptions[] = [
         outDir: ANDROID_OUT_DEBUG,
         // Android debug does not minify the bundle.
         shouldMinify: false,
+        staticAssetPaths: STATIC_ASSET_PATHS,
+        isBench: false,
       }),
     ],
   },
   {
-    input: sharedInput,
+    input: prodInput,
     output: {
       ...sharedOutput,
       dir: ANDROID_OUT_MAIN,
@@ -218,11 +268,13 @@ const config: RollupOptions[] = [
         platform: "android",
         outDir: ANDROID_OUT_MAIN,
         shouldMinify: true,
+        staticAssetPaths: STATIC_ASSET_PATHS,
+        isBench: false,
       }),
     ],
   },
   {
-    input: sharedInput,
+    input: prodInput,
     output: {
       ...sharedOutput,
       dir: IOS_OUT,
@@ -234,9 +286,50 @@ const config: RollupOptions[] = [
         platform: "ios",
         outDir: IOS_OUT,
         shouldMinify: true,
+        staticAssetPaths: STATIC_ASSET_PATHS,
+        isBench: false,
       }),
     ],
   },
 ];
 
-export default config;
+const benchConfig: RollupOptions[] = [
+  {
+    input: benchInput,
+    output: {
+      ...sharedOutput,
+      dir: ANDROID_BENCH_OUT,
+      banner: androidAddonLoaderBanner,
+    },
+    plugins: [
+      cleanOutputDirPlugin(ANDROID_BENCH_OUT),
+      ...buildPlugins({
+        platform: "android",
+        outDir: ANDROID_BENCH_OUT,
+        shouldMinify: true,
+        staticAssetPaths: BENCH_STATIC_ASSET_PATHS,
+        isBench: true,
+      }),
+    ],
+  },
+  {
+    input: benchInput,
+    output: {
+      ...sharedOutput,
+      dir: IOS_BENCH_OUT,
+      banner: iosAddonLoaderBanner,
+    },
+    plugins: [
+      cleanOutputDirPlugin(IOS_BENCH_OUT),
+      ...buildPlugins({
+        platform: "ios",
+        outDir: IOS_BENCH_OUT,
+        shouldMinify: true,
+        staticAssetPaths: BENCH_STATIC_ASSET_PATHS,
+        isBench: true,
+      }),
+    ],
+  },
+];
+
+export default IS_BENCH ? benchConfig : prodConfig;

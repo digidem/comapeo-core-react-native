@@ -68,8 +68,27 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
   }
 }
 
-const messagePort = new CoreMessagePort() as unknown as MessagePort;
+const corePort = new CoreMessagePort();
+const messagePort = corePort as unknown as MessagePort;
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort);
+
+/**
+ * Raw `CoreMessagePort` singleton, exported for the benchmark app
+ * (`apps/benchmark/`) to bypass the `MapeoClient` request/response
+ * machinery and speak directly to the bench backend's `BenchRpcServer`
+ * (which uses a different wire schema — see
+ * `backend/lib/bench-rpc.js`). Production consumers should use the
+ * `comapeo` export above; this is a deliberate escape hatch for the
+ * UDS/RPC bridge benchmark suite (`docs/uds-rpc-bridge-benchmark-plan.md`)
+ * and ships in the same module surface so the bench app doesn't need
+ * a private import path.
+ *
+ * Note: `createMapeoClient(messagePort)` above already adds a
+ * `"message"` listener to this port. Bench requests use a different
+ * `{id, method, params}` shape so the prod RPC machinery treats them
+ * as unknown frames and silently ignores them.
+ */
+export const benchMessagePort = corePort;
 
 type StateEvents = {
   stateChange: (state: ComapeoState, error: ComapeoErrorInfo | null) => void;

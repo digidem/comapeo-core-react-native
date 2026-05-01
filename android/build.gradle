@@ -87,6 +87,31 @@ android {
             abiFilters(*comapeoAbiFilters)
         }
     }
+
+    // Flavor `bench` opts the consuming app into the benchmark JS
+    // bundle (`backend/index.bench.js`, rolled up into
+    // `src/bench/assets/nodejs-project/`). Default consumers
+    // (`apps/example/`, third-party apps) compile the `production`
+    // flavor and never see `src/bench/`. The bench app
+    // (`apps/benchmark/`) activates `bench` via
+    // `missingDimensionStrategy 'comapeo', 'bench'` injected by its
+    // `with-comapeo-bench` Expo config plugin.
+    //
+    // Flavors are intentionally orthogonal to build types: bench works
+    // in both debug and release so real-app perf-feel can be measured
+    // under R8/ProGuard. The bench sourceSet only adds assets — no
+    // code, no native libs — so minification has nothing to strip.
+    flavorDimensions "comapeo"
+    productFlavors {
+        production {
+            dimension "comapeo"
+            isDefault true
+        }
+        bench {
+            dimension "comapeo"
+        }
+    }
+
     lintOptions {
         abortOnError false
     }
@@ -100,6 +125,18 @@ android {
             jniLibs.srcDirs 'libnode/bin/', 'src/main/jniLibs/'
             assets {
                 srcDirs 'src/main/assets'
+            }
+        }
+        // When the `bench` flavor is selected, AGP merges this sourceSet
+        // on top of `main`. `index.mjs` (the rolled-up bench bundle)
+        // overlays its production counterpart at the same relative path
+        // (`nodejs-project/index.mjs`); the rest of `nodejs-project/`
+        // (drizzle migrations etc.) is inherited from `main` but never
+        // imported by `index.bench.js` — bench-bundle bloat without
+        // correctness impact.
+        bench {
+            assets {
+                srcDirs 'src/bench/assets'
             }
         }
     }

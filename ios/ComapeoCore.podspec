@@ -45,5 +45,23 @@ Pod::Spec.new do |s|
   # of truth lives under `backend/` at the repo root. Native `.node` files
   # ship separately via `Frameworks/*.xcframework` (above) and are embedded
   # + codesigned by Xcode automatically.
-  s.resources = ['nodejs-project']
+  #
+  # Bench opt-in: when `ENV['COMAPEO_BENCH']` is set at `pod install` time,
+  # the bench-only resource bundle (`nodejs-project-bench/`, produced by
+  # `scripts/build-backend.ts --bench`) REPLACES the production
+  # `nodejs-project/` in the resources list. The `with-comapeo-bench`
+  # Expo config plugin in `apps/benchmark/` flips that env var by
+  # prepending `ENV['COMAPEO_BENCH'] = '1'` to the consuming app's
+  # Podfile via `withPodfile`. Default consumers (`apps/example/`, third
+  # parties) leave the env var unset and ship only the production
+  # `nodejs-project/`. The bench bundle is then renamed to
+  # `nodejs-project/` in the embedded app bundle by a Run Script build
+  # phase the same plugin adds via `withXcodeProject` — so the native
+  # loader continues to look at a fixed `nodejs-project/` path regardless
+  # of which flavor is active.
+  if ENV['COMAPEO_BENCH'] == '1'
+    s.resources = ['nodejs-project-bench']
+  else
+    s.resources = ['nodejs-project']
+  end
 end
