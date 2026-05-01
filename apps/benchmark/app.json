@@ -22,6 +22,9 @@
       },
       "package": "com.comapeo.core.benchmark"
     },
-    "plugins": ["./plugins/with-comapeo-bench"]
+    "plugins": [
+      "./plugins/with-comapeo-bench",
+      "expo-sharing"
+    ]
   }
 }

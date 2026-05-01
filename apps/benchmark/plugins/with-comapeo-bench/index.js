@@ -1,30 +1,26 @@
 const {
-  withAppBuildGradle,
+  withGradleProperties,
   withPodfile,
   withXcodeProject,
 } = require('@expo/config-plugins');
-const {
-  mergeContents,
-} = require('@expo/config-plugins/build/utils/generateCode');
 
 /**
- * Activates the `bench` Android productFlavor + the iOS bench resource
- * opt-in for this Expo app on every `expo prebuild`. The bench app
- * (`apps/benchmark/`) does not check in `android/` or `ios/`, so this
- * plugin is the single source of truth for the native wiring; production
- * consumers (`apps/example/`, third parties) never apply it and never
- * see any bench artefacts in their APK / IPA.
+ * Opts this Expo app into the benchmark JS bundle on every
+ * `expo prebuild`. The bench app (`apps/benchmark/`) does not check in
+ * `android/` or `ios/`, so this plugin is the single source of truth
+ * for the native wiring; production consumers (`apps/example/`, third
+ * parties) never apply it and never see any bench artefacts.
  *
  * Three idempotent mutations:
  *
- *   - `withAppBuildGradle` injects, into `android/app/build.gradle`:
- *       defaultConfig { missingDimensionStrategy 'comapeo', 'bench' }
- *       buildTypes.{debug,release} { matchingFallbacks = ['production'] }
- *     so AGP resolves the consuming app's build types against the
- *     module's `bench` flavor, and falls back to `production` for
- *     anything that doesn't have a bench-specific configuration. Heads
- *     off the known release-variant footgun (expo/expo#18315, #16686,
- *     #23266).
+ *   - `withGradleProperties` writes `comapeoBench=true` into the
+ *     consuming app's `android/gradle.properties`. The module's
+ *     `android/build.gradle` reads `rootProject.findProperty('comapeoBench')`
+ *     and, when set, overlays `src/bench/assets/` (containing the bench
+ *     `nodejs-project/index.mjs`) onto its main asset srcDirs. The
+ *     property mechanism is intentionally chosen over a productFlavor
+ *     to avoid AGP / Gradle 9 variant-attribute ambiguity for Expo apps
+ *     that don't declare matching flavors of their own.
  *
  *   - `withPodfile` prepends `ENV['COMAPEO_BENCH'] = '1'` to the top of
  *     `ios/Podfile` so it's set BEFORE Expo autolinking evaluates
@@ -39,59 +35,31 @@ const {
  *     bench bundle masquerade as the production bundle on disk
  *     without touching the loader.
  *
- * Each mutation guards on a sentinel-tag include-check so re-runs of
- * `expo prebuild` are idempotent — string-based mods compose poorly
- * without this and the Expo docs explicitly warn about it
- * (https://docs.expo.dev/config-plugins/mods/).
+ * Each mutation is idempotent so re-runs of `expo prebuild` don't
+ * accumulate duplicate insertions.
  */
 function withComapeoBench(config) {
-  config = withBenchAndroidGradle(config);
+  config = withBenchGradleProperties(config);
   config = withBenchPodfile(config);
   config = withBenchIosRenameScript(config);
   return config;
 }
 
-const ANDROID_DEFAULT_CONFIG_INSERT =
-  "        missingDimensionStrategy 'comapeo', 'bench'";
-
-const ANDROID_BUILD_TYPES_INSERT = [
-  '        debug {',
-  "            matchingFallbacks = ['production']",
-  '        }',
-  '        release {',
-  "            matchingFallbacks = ['production']",
-  '        }',
-].join('\n');
-
-function withBenchAndroidGradle(config) {
-  return withAppBuildGradle(config, (cfg) => {
-    if (cfg.modResults.language !== 'groovy') {
-      console.warn(
-        'with-comapeo-bench: app/build.gradle is not groovy; skipping Android wiring',
-      );
-      return cfg;
+function withBenchGradleProperties(config) {
+  return withGradleProperties(config, (cfg) => {
+    const props = cfg.modResults;
+    const existing = props.find(
+      (p) => p.type === 'property' && p.key === 'comapeoBench',
+    );
+    if (existing) {
+      existing.value = 'true';
+    } else {
+      props.push({
+        type: 'comment',
+        value: ' bench bundle opt-in — read by android/build.gradle of @comapeo/core-react-native',
+      });
+      props.push({ type: 'property', key: 'comapeoBench', value: 'true' });
     }
-    let contents = cfg.modResults.contents;
-
-    contents = mergeContents({
-      tag: 'with-comapeo-bench:missing-dimension',
-      src: contents,
-      newSrc: ANDROID_DEFAULT_CONFIG_INSERT,
-      anchor: /defaultConfig\s*\{/,
-      offset: 1,
-      comment: '//',
-    }).contents;
-
-    contents = mergeContents({
-      tag: 'with-comapeo-bench:matching-fallbacks',
-      src: contents,
-      newSrc: ANDROID_BUILD_TYPES_INSERT,
-      anchor: /buildTypes\s*\{/,
-      offset: 1,
-      comment: '//',
-    }).contents;
-
-    cfg.modResults.contents = contents;
     return cfg;
   });
 }

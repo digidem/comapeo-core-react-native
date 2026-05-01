@@ -42,6 +42,24 @@ def comapeoAbiFilters = {
     return effective
 }()
 
+// `comapeoBench=true` (set in the consuming app's gradle.properties)
+// opts the consuming AAR/APK into the benchmark JS bundle
+// (`backend/index.bench.js`, rolled up into
+// `src/bench/assets/nodejs-project/`). The bench sourceSet's
+// nodejs-project files overlay main's at AGP merge time — bench's
+// `index.mjs` replaces production's at the same relative path. Default
+// consumers (`apps/example/`, third-party apps) do not set the
+// property and never include `src/bench/`.
+//
+// Implemented as a project property rather than a productFlavor to
+// avoid the AGP variant-attribute ambiguity that flavor dimensions
+// trigger for Expo apps that don't declare matching flavors of their
+// own (AGP 8.x + Gradle 9 strict variant resolution). The
+// `with-comapeo-bench` Expo config plugin in `apps/benchmark/` flips
+// this property by writing it into the consuming app's
+// `android/gradle.properties`.
+def comapeoBenchEnabled = (rootProject.findProperty('comapeoBench') ?: project.findProperty('comapeoBench'))?.toString() == 'true'
+
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
 apply from: expoModulesCorePlugin
 applyKotlinExpoModulesCorePlugin()
@@ -88,30 +106,6 @@ android {
         }
     }
 
-    // Flavor `bench` opts the consuming app into the benchmark JS
-    // bundle (`backend/index.bench.js`, rolled up into
-    // `src/bench/assets/nodejs-project/`). Default consumers
-    // (`apps/example/`, third-party apps) compile the `production`
-    // flavor and never see `src/bench/`. The bench app
-    // (`apps/benchmark/`) activates `bench` via
-    // `missingDimensionStrategy 'comapeo', 'bench'` injected by its
-    // `with-comapeo-bench` Expo config plugin.
-    //
-    // Flavors are intentionally orthogonal to build types: bench works
-    // in both debug and release so real-app perf-feel can be measured
-    // under R8/ProGuard. The bench sourceSet only adds assets — no
-    // code, no native libs — so minification has nothing to strip.
-    flavorDimensions "comapeo"
-    productFlavors {
-        production {
-            dimension "comapeo"
-            isDefault true
-        }
-        bench {
-            dimension "comapeo"
-        }
-    }
-
     lintOptions {
         abortOnError false
     }
@@ -123,21 +117,24 @@ android {
             // native module instance × ABI). Both directories ship into the
             // same APK `lib/<abi>/` segment.
             jniLibs.srcDirs 'libnode/bin/', 'src/main/jniLibs/'
-            assets {
-                srcDirs 'src/main/assets'
-            }
+            // When `comapeoBench=true`, swap `src/main/assets` for
+            // `src/bench/assets`. Assigning rather than calling —
+            // `srcDirs '<...>'` is additive (AGP keeps the default
+            // `src/main/assets`); assignment replaces.
+            //
+            // AGP rejects duplicate relative paths across srcDirs, so
+            // we replace rather than overlay.
+            assets.srcDirs = comapeoBenchEnabled
+                ? ['src/bench/assets']
+                : ['src/main/assets']
         }
-        // When the `bench` flavor is selected, AGP merges this sourceSet
-        // on top of `main`. `index.mjs` (the rolled-up bench bundle)
-        // overlays its production counterpart at the same relative path
-        // (`nodejs-project/index.mjs`); the rest of `nodejs-project/`
-        // (drizzle migrations etc.) is inherited from `main` but never
-        // imported by `index.bench.js` — bench-bundle bloat without
-        // correctness impact.
-        bench {
-            assets {
-                srcDirs 'src/bench/assets'
-            }
+        // The default `debug` sourceSet picks up `src/debug/assets`
+        // (where `scripts/build-backend.ts` writes the unminified
+        // production bundle for debug builds). When bench is active,
+        // empty it out so the prod debug bundle doesn't overlay our
+        // bench bundle and end up shipping in the bench APK.
+        debug {
+            assets.srcDirs = comapeoBenchEnabled ? [] : ['src/debug/assets']
         }
     }
     externalNativeBuild {
