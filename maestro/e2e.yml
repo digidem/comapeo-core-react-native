@@ -3,7 +3,7 @@ appId: com.comapeo.core.e2e
 - launchApp:
     clearState: true
 - startRecording:
-    path: "maestro/recordings/e2e-tests"
+    path: "maestro/recordings/e2e"
 - tapOn: "Run tests"
 - extendedWaitUntil:
     visible: 
