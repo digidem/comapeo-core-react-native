@@ -1,5 +1,5 @@
 {
-	"name": "core-react-native-testing",
+	"name": "core-react-native-e2e",
 	"version": "1.0.0",
 	"main": "index.ts",
 	"scripts": {

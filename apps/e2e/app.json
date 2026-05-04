@@ -1,7 +1,7 @@
 {
 	"expo": {
-		"name": "core-react-native-testing",
-		"slug": "core-react-native-testing",
+		"name": "core-react-native-e2e",
+		"slug": "core-react-native-e2e",
 		"version": "1.0.0",
 		"orientation": "portrait",
 		"icon": "./assets/icon.png",
@@ -13,14 +13,14 @@
 		},
 		"ios": {
 			"supportsTablet": true,
-			"bundleIdentifier": "com.comapeo.core.testing"
+			"bundleIdentifier": "com.comapeo.core.e2e"
 		},
 		"android": {
 			"adaptiveIcon": {
 				"foregroundImage": "./assets/adaptive-icon.png",
 				"backgroundColor": "#ffffff"
 			},
-			"package": "com.comapeo.core.testing"
+			"package": "com.comapeo.core.e2e"
 		},
 		"plugins": [["expo-dev-client", { "launchMode": "most-recent" }]]
 	}
