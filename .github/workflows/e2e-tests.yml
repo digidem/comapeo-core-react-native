@@ -198,14 +198,10 @@ jobs:
     name: Run test suite on Android
     needs: [build-android, upload-test-suite]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
       - name: Run tests
         id: run
         env:
@@ -255,14 +251,10 @@ jobs:
     name: Run test suite on iOS
     needs: [build-ios, upload-test-suite]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
       - name: Run tests
         id: run
         env:
