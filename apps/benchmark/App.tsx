@@ -1,5 +1,5 @@
 import {
-  benchMessagePort,
+  unstable_messagePort,
   state,
   type ComapeoState,
 } from "@comapeo/core-react-native";
@@ -87,7 +87,7 @@ class BenchClient {
   ensureListener() {
     if (this.listenerInstalled) return;
     this.listenerInstalled = true;
-    benchMessagePort.addListener("message", (msg) => {
+    unstable_messagePort.addListener("message", (msg) => {
       if (
         !msg ||
         typeof msg !== "object" ||
@@ -125,7 +125,7 @@ class BenchClient {
         (timer as unknown as { unref: () => void }).unref();
       }
       this.pending.set(id, { resolve, timer });
-      benchMessagePort.postMessage({ id, method, params } as never);
+      unstable_messagePort.postMessage({ id, method, params } as never);
     });
   }
 }
