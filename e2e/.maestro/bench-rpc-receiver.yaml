@@ -1,0 +1,35 @@
+appId: com.comapeo.core.benchmark
+---
+# Receiver-enabled variant of bench-rpc.yaml. Same sweep, but flips the
+# "POST spans" toggle before running so the bench app fires every
+# rpc.payload span to http://localhost:8787/spans (the
+# `RECEIVER_DEFAULT_URL` baked into App.tsx). On BrowserStack runs,
+# `localhost` from the device's perspective resolves through
+# BrowserStackLocal back to the host running scripts/bench-receiver.ts.
+
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible:
+      id: "service-state"
+      text: "STARTED"
+    timeout: 60000
+
+- tapOn:
+    id: "post-toggle"
+
+- tapOn:
+    id: "send-button"
+
+- extendedWaitUntil:
+    visible:
+      id: "benchmark-result"
+    timeout: 120000
+
+- assertVisible:
+    id: "benchmark-result"
+- assertVisible:
+    text: "p50"
+- assertVisible:
+    text: "p99"

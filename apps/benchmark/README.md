@@ -138,12 +138,65 @@ missing receiver never breaks the on-device flow.
   plugin).
 - ✅ **Phase 3:** bench app UI, RPC bridge wiring, on-device
   p50/p95/p99 render, "Export results", config plugin, Maestro flows.
-- ⏳ **Phase 4:** BrowserStack App Automate — multi-device runs across
-  representative low-end Android, mid-range Android, and iOS hardware,
-  with span aggregation via BrowserStack Local tunnel + a host-side
-  receiver. See `scripts/lib/bench-receiver.ts` (forthcoming).
+- 🛠 **Phase 4 (in progress):** BrowserStack App Automate — multi-device
+  runs across representative Android + iOS hardware, with span
+  aggregation via BrowserStack Local + a host-side receiver. See
+  "Run on BrowserStack" below; results-format question still open.
 - ⏳ **Phase 5:** `SentryAdapterSink` once the Sentry plan adopts the
   shared instrumentation; bench call sites stay the same.
+
+## Run on BrowserStack
+
+Three pieces wire together: the host-side **receiver** that collates
+spans, the **BrowserStack Local** tunnel that lets the device reach
+`localhost`, and the **runner script** that uploads the app + Maestro
+flows and triggers a build.
+
+### One-time setup
+
+1. BrowserStack App Automate account with the Maestro framework
+   enabled. Username + access key from `Account → Settings → Access
+   Keys`.
+2. Copy `.env.example` (repo root) to `.env` and fill in
+   `BROWSERSTACK_USERNAME` / `BROWSERSTACK_ACCESS_KEY`.
+3. Install the
+   [BrowserStackLocal binary](https://www.browserstack.com/local-testing/app-automate#command-line)
+   somewhere on `$PATH`.
+
+### Per-run workflow
+
+```bash
+# 1. Receiver collates incoming spans → apps/benchmark/results/<runId>.ndjson
+npm run bench:receiver
+
+# 2. In another shell: tunnel localhost into the BS device fleet
+BrowserStackLocal --key "$BROWSERSTACK_ACCESS_KEY" --daemon start
+# (optional flags: --local-identifier, --force-local for offline-only)
+
+# 3. Build a release APK and (Distribution-signed) IPA. Standard
+#    Expo workflow — check expo docs for IPA signing.
+
+# 4. Trigger the run (uploads app + Maestro flows, prints dashboard URL)
+npm run bench:browserstack -- \
+  --app-android path/to/release.apk \
+  --app-ios path/to/release.ipa \
+  --flow bench-rpc-receiver.yaml \
+  --device-android "Samsung Galaxy S23 Ultra-13.0" \
+  --device-ios "iPhone 15-17"
+
+# 5. When done
+BrowserStackLocal --key "$BROWSERSTACK_ACCESS_KEY" --daemon stop
+```
+
+The `bench-rpc-receiver.yaml` flow flips the bench app's "POST spans"
+toggle before tapping run; spans land at
+`http://localhost:8787/spans` and the receiver appends them to
+`apps/benchmark/results/<runId>.ndjson`. Use `bench-rpc.yaml` instead
+when you only want on-device results visible in the BrowserStack
+dashboard.
+
+The runner deduplicates app + test-suite uploads via `custom_id`, so
+re-running with byte-identical artefacts is cheap.
 
 ## Repository layout
 

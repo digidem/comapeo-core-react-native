@@ -1,15 +1,18 @@
 appId: com.comapeo.core.benchmark
 ---
 # UDS / RPC bridge benchmark — bench app launches its own bench backend
-# (`backend/index.bench.js`, embedded via the `bench` Android flavor /
-# `ENV['COMAPEO_BENCH']` iOS opt-in), waits for the service to reach
-# STARTED, runs a sweep across the default payload sizes, and reads back
-# the on-screen p50/p95/p99 panel. Spans are also written to the app's
-# documents directory; "Export results" opens the system share sheet.
+# (rolled up from `apps/benchmark/backend/`, dropped into the consumer
+# app's native asset tree by the `with-comapeo-bench` Expo plugin and
+# loaded via the module's `comapeoBackendDir` override), waits for the
+# service to reach STARTED, runs a sweep across the default payload
+# sizes, and reads back the on-screen p50/p95/p99 panel. Spans are also
+# written to the app's documents directory; "Export results" opens the
+# system share sheet.
 #
-# This flow is the primary BrowserStack App Automate entry point. For
-# orchestrated runs that ship spans to a host-side `bench-receiver.ts`,
-# tap the "POST spans" toggle before tapping "Run benchmark".
+# Sibling `bench-rpc-receiver.yaml` is the same flow but with the
+# "POST spans" toggle enabled, intended for orchestrated BrowserStack
+# runs that ship spans to a host-side `bench-receiver.ts` via
+# BrowserStack Local.
 
 - launchApp:
     clearState: true

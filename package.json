@@ -41,7 +41,9 @@
     "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh",
     "backend:install": "npm ci --ignore-scripts --prefix backend",
     "prebackend:build": "npm run backend:install",
-    "backend:build": "node ./scripts/build-backend.ts"
+    "backend:build": "node ./scripts/build-backend.ts",
+    "bench:receiver": "node ./scripts/bench-receiver.ts",
+    "bench:browserstack": "node --env-file=.env ./scripts/run-on-browserstack.ts"
   },
   "keywords": [
     "react-native",

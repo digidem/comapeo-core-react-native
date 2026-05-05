@@ -83,3 +83,20 @@ build/
 
 # eslint
 .eslintcache
+
+# Local secrets (BrowserStack credentials etc). The .example file is
+# checked in and lists the variables; copy it to .env and fill in.
+.env
+.env.local
+.env.*.local
+
+# Bench receiver output. NDJSON spans per run, written by
+# scripts/bench-receiver.ts. Treat as build artifacts; copy out of
+# this dir if you want to commit a specific run's results.
+apps/benchmark/results/
+
+# BrowserStackLocal default log files. Created next to wherever the
+# binary is invoked from.
+browserstack.err
+browserstack.log
+local.log
