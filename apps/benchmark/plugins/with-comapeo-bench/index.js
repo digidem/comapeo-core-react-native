@@ -140,11 +140,13 @@ function withBenchIosResources(config) {
     if (project.hasFile && project.hasFile(relPath)) {
       return cfg;
     }
-    project.addResourceFile(
-      relPath,
-      { lastKnownFileType: 'folder' },
-      undefined,
-    );
+    // `pbxProject.addResourceFile` unconditionally calls
+    // `correctForResourcesPath` which crashes if the project has no
+    // 'Resources' PBXGroup yet. Default Expo prebuild output has no
+    // such group, so create it first — `addToResourcesPbxGroup` later
+    // attaches the file ref under it.
+    IOSConfig.XcodeUtils.ensureGroupRecursively(project, 'Resources');
+    project.addResourceFile(relPath, { lastKnownFileType: 'folder' });
     return cfg;
   });
   return config;
