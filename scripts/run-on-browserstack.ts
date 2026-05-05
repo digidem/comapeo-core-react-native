@@ -282,6 +282,14 @@ async function triggerBuild(args: {
     // Options).
     deviceLogs: true,
     networkLogs: true,
+    // `local: true` is the BS-side opt-in that routes the device's
+    // `localhost` through any active BrowserStackLocal tunnel back to
+    // the host's loopback. Without it, the device's `localhost`
+    // resolves to its own loopback and our bench-receiver POSTs vanish
+    // into a connection-refused void (silent because App.tsx swallows
+    // fetch errors). On by default for the bench workflow — harmless
+    // when no tunnel is up (POSTs just fail silently as before).
+    local: true,
   };
   // Some org accounts restrict project creation. Only set the field
   // when explicitly requested so BrowserStack uses its account-level

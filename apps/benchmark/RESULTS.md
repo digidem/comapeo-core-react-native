@@ -26,6 +26,28 @@ duration measurement per phase (no percentiles).
 
 <!-- Add new runs at the top. -->
 
+### 2026-05-05 — first real BrowserStack run (Samsung Galaxy S23 Ultra)
+
+> **Date:** 2026-05-05 &nbsp;·&nbsp; **Git SHA:** `7c08575` &nbsp;·&nbsp;
+> **Build:** [BS dashboard](https://app-automate.browserstack.com/dashboard/v2/builds/f73297b5730f44a71f39c207848633731e8c754a) &nbsp;·&nbsp;
+> **Flow:** `bench-rpc-receiver.yaml` &nbsp;·&nbsp;
+> **APK:** release variant, debug-keystore signed &nbsp;·&nbsp;
+> **runId:** `1778018703688-8h54fc`
+
+#### RPC throughput (RN-thread RTT)
+
+| device | size | n | min | p50 | p95 | p99 | max |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Samsung Galaxy S23 Ultra (Android 13) | 64 B | 100 | 0.38 | 0.55 | 1.83 | 3.22 | 5.40 |
+| Samsung Galaxy S23 Ultra (Android 13) | 1 KB | 100 | 0.41 | 0.68 | 1.36 | 2.41 | 5.17 |
+| Samsung Galaxy S23 Ultra (Android 13) | 64 KB | 100 | 1.40 | 1.77 | 4.47 | 5.36 | 11.26 |
+
+> **Notes:** First end-to-end run with BrowserStackLocal + receiver
+> wired. Sub-ms p50 across all small payload sizes; p99 well under
+> 6 ms for ≤1 KB. 64 KB scales as expected (~3× p50, but still
+> sub-2 ms median). Boot-phase spans aren't yet wired into the
+> receiver path — only `op:"rpc"` was captured this run.
+
 ### Template (copy this when filling in a real run)
 
 > **Date:** YYYY-MM-DD &nbsp;·&nbsp; **Git SHA:** `<sha>` &nbsp;·&nbsp;

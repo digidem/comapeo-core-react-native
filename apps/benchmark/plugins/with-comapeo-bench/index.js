@@ -1,5 +1,7 @@
 const {
+  AndroidConfig,
   IOSConfig,
+  withAndroidManifest,
   withDangerousMod,
   withGradleProperties,
   withInfoPlist,
@@ -64,7 +66,28 @@ function withComapeoBench(config) {
   config = withBenchInfoPlist(config);
   config = withBenchAndroidAssets(config);
   config = withBenchIosResources(config);
+  config = withBenchCleartextHttp(config);
   return config;
+}
+
+/**
+ * Allow plain-HTTP traffic from the bench app to localhost. Required
+ * for the "POST spans" flow to reach `bench-receiver.ts` over the
+ * BrowserStackLocal tunnel; without this attribute, Android API 28+
+ * blocks the receiver POST silently and `apps/benchmark/results/`
+ * stays empty even on a successful Maestro run.
+ *
+ * Expo prebuild only sets `usesCleartextTraffic="true"` on the debug
+ * sourceSet's manifest, not the release manifest that BrowserStack
+ * actually runs. The bench app is benchmarking-only and never ships
+ * to end users, so flipping it on for all variants is the right shape.
+ */
+function withBenchCleartextHttp(config) {
+  return withAndroidManifest(config, (cfg) => {
+    const app = AndroidConfig.Manifest.getMainApplicationOrThrow(cfg.modResults);
+    app.$['android:usesCleartextTraffic'] = 'true';
+    return cfg;
+  });
 }
 
 function withBenchGradleProperty(config) {
