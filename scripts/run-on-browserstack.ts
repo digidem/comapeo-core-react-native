@@ -10,7 +10,15 @@
  *     [--flow bench-rpc.yaml] \
  *     [--device-android "Samsung Galaxy S23 Ultra-13.0"] \
  *     [--device-ios "iPhone 15-17"] \
- *     [--build-name <label>]
+ *     [--build-name <label>] \
+ *     [--project <existing BrowserStack project name>]
+ *
+ * The optional `--project` flag attaches the build to an existing
+ * BrowserStack project. Some org accounts restrict project creation
+ * (HTTP 422: "You do not have the necessary permissions to create
+ * this project"); in that case omit `--project` (BrowserStack
+ * defaults to "BrowserStack Project") or pass the name of a project
+ * already visible in the App Automate dashboard.
  *
  * If only one of --app-android / --app-ios is given, only that
  * platform runs. Default flow is `bench-rpc.yaml`; use
@@ -65,6 +73,7 @@ type CliArgs = {
   deviceAndroid: string;
   deviceIos: string;
   buildName: string;
+  project?: string;
 };
 
 function parseArgs(): CliArgs {
@@ -74,6 +83,11 @@ function parseArgs(): CliArgs {
     deviceAndroid: DEFAULT_DEVICES.android,
     deviceIos: DEFAULT_DEVICES.ios,
     buildName: `comapeo-bench-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+    // BrowserStack accounts that lock down project creation require
+    // an existing project name. `BENCH_BROWSERSTACK_PROJECT` lets that
+    // default live in `.env` so it doesn't need to be repeated on
+    // every CLI invocation; --project still overrides per-run.
+    project: process.env.BENCH_BROWSERSTACK_PROJECT,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -91,6 +105,8 @@ function parseArgs(): CliArgs {
         out.deviceIos = v; i++; break;
       case "--build-name":
         out.buildName = v; i++; break;
+      case "--project":
+        out.project = v; i++; break;
       case "--help":
       case "-h":
         printUsageAndExit(0);
@@ -116,7 +132,8 @@ function printUsageAndExit(code: number): never {
       "    [--flow bench-rpc.yaml] \\\n" +
       "    [--device-android \"Samsung Galaxy S23 Ultra-13.0\"] \\\n" +
       "    [--device-ios \"iPhone 15-17\"] \\\n" +
-      "    [--build-name <label>]",
+      "    [--build-name <label>] \\\n" +
+      "    [--project <existing-project-name>]",
   );
   process.exit(code);
 }
@@ -243,17 +260,21 @@ async function triggerBuild(args: {
   device: string;
   flow: string;
   buildName: string;
+  project?: string;
 }) {
-  const body = {
+  const body: Record<string, unknown> = {
     app: args.appUrl,
     testSuite: args.testSuiteUrl,
-    project: "comapeo-core-react-native-bench",
     buildName: args.buildName,
     devices: [args.device],
     // Target a single flow inside the zip's `flows/` parent dir. Drop
     // this key to run `main.yaml` instead.
     execute: [`flows/${args.flow}`],
   };
+  // Some org accounts restrict project creation. Only set the field
+  // when explicitly requested so BrowserStack uses its account-level
+  // default project for builds when omitted.
+  if (args.project) body.project = args.project;
   console.log(`  → trigger ${args.platform} build on ${args.device} (flow=${args.flow})…`);
   const r = await bsFetch(`/${args.platform}/build`, {
     method: "POST",
@@ -329,6 +350,7 @@ async function main() {
         device: args.deviceAndroid,
         flow: args.flow,
         buildName: args.buildName,
+        project: args.project,
       });
       builds.push({ platform: "android", result });
     }
@@ -341,6 +363,7 @@ async function main() {
         device: args.deviceIos,
         flow: args.flow,
         buildName: args.buildName,
+        project: args.project,
       });
       builds.push({ platform: "ios", result });
     }
