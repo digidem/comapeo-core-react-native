@@ -92,12 +92,12 @@ const STATIC_ASSET_PATHS = [
  * rollup write completes. Replaces the per-platform staging copy that
  * `scripts/build-backend.ts` used to do.
  */
-function copyStaticAssetsPlugin(outDir: string, paths: readonly string[]): Plugin {
+function copyStaticAssetsPlugin(outDir: string): Plugin {
   return {
     name: "copy-static-assets",
     async writeBundle() {
       await Promise.all(
-        paths.map((rel) =>
+        STATIC_ASSET_PATHS.map((rel) =>
           cp(path.join(__dirname, rel), path.join(outDir, rel), {
             recursive: true,
           }),
@@ -144,7 +144,7 @@ function buildPlugins({
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
     json(),
     shouldMinify ? minify() : undefined,
-    copyStaticAssetsPlugin(outDir, STATIC_ASSET_PATHS),
+    copyStaticAssetsPlugin(outDir),
   ];
 }
 
@@ -163,7 +163,7 @@ function cleanOutputDirPlugin(dir: string): Plugin {
   };
 }
 
-const prodInput = {
+const sharedInput = {
   index: path.join(__dirname, "index.js"),
 };
 
@@ -174,13 +174,12 @@ const sharedOutput: OutputOptions = {
 };
 
 /**
- * Three outputs from the same source tree (Android debug, Android
- * release, iOS). Android gets the full bundle — its nodejs-mobile
- * build permits JIT, so undici (and therefore the maps fastify plugin)
- * loads cleanly. iOS gets the same bundle but with `@comapeo/core`'s
- * maps plugin swapped for a no-op (see lib/maps-stub.js) because
- * nodejs-mobile iOS runs V8 with `--jitless` and undici's WebAssembly
- * init would crash module load.
+ * Three outputs from the same source tree: Android debug, Android release, and iOS.
+ * Android gets the full bundle — its nodejs-mobile build permits JIT, so undici
+ * (and therefore the maps fastify plugin) loads cleanly. iOS gets the same bundle but with
+ * `@comapeo/core`'s maps plugin swapped for a no-op (see lib/maps-stub.js)
+ * because nodejs-mobile iOS runs V8 with `--jitless` and undici's
+ * WebAssembly init would crash module load.
  *
  * Each output's `banner` defines `__loadAddon(name, version)` with the
  * platform-appropriate `process.dlopen` target — Android does
@@ -190,7 +189,7 @@ const sharedOutput: OutputOptions = {
  */
 const config: RollupOptions[] = [
   {
-    input: prodInput,
+    input: sharedInput,
     output: {
       ...sharedOutput,
       dir: ANDROID_OUT_DEBUG,
@@ -207,7 +206,7 @@ const config: RollupOptions[] = [
     ],
   },
   {
-    input: prodInput,
+    input: sharedInput,
     output: {
       ...sharedOutput,
       dir: ANDROID_OUT_MAIN,
@@ -223,7 +222,7 @@ const config: RollupOptions[] = [
     ],
   },
   {
-    input: prodInput,
+    input: sharedInput,
     output: {
       ...sharedOutput,
       dir: IOS_OUT,
