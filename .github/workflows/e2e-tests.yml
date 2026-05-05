@@ -245,7 +245,8 @@ jobs:
                   "testSuite": "$TEST_SUITE_URL",
                   "devices": $DEVICES,
                   "project": "$BROWSERSTACK_PROJECT_NAME",
-                  "deviceLogs": true }' \
+                  "deviceLogs": true,
+                  "maestroVersion": "latest" }' \
               -H "Content-Type: application/json" | jq -r '.build_id')
 
           echo "build_id=$BUILD_ID" >> $GITHUB_ENV
@@ -283,7 +284,8 @@ jobs:
                   "testSuite": "$TEST_SUITE_URL",
                   "devices": $DEVICES,
                   "project": "$BROWSERSTACK_PROJECT_NAME",
-                  "deviceLogs": true }' \
+                  "deviceLogs": true,
+                  "maestroVersion": "latest" }' \
               -H "Content-Type: application/json" | jq -r '.build_id')
 
           echo "build_id=$BUILD_ID" >> $GITHUB_ENV
