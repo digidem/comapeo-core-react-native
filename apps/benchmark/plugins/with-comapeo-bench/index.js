@@ -1,86 +1,185 @@
 const {
+  IOSConfig,
+  withDangerousMod,
   withGradleProperties,
-  withPodfile,
+  withInfoPlist,
+  withXcodeProject,
 } = require('@expo/config-plugins');
+const fs = require('fs');
+const fsp = require('fs/promises');
+const path = require('path');
 
 /**
- * Opts this Expo app into the benchmark JS bundle on every
+ * Wires the bench backend bundle into the consumer Expo app on every
  * `expo prebuild`. The bench app (`apps/benchmark/`) does not check in
  * `android/` or `ios/`, so this plugin is the single source of truth
  * for the native wiring; production consumers (`apps/example/`, third
- * parties) never apply it and never see any bench artefacts.
+ * parties) never apply it.
  *
- * Two idempotent mutations:
+ * Conceptually a stripped-down `expo-asset` plugin: copy a directory
+ * tree into the prebuild output's native asset/resource locations and
+ * point the module's loader at it via the override hook the module
+ * exposes. Three mutations:
  *
- *   - `withGradleProperties` writes `comapeoBench=true` into the
- *     consuming app's `android/gradle.properties`. The module's
- *     `android/build.gradle` reads `rootProject.findProperty('comapeoBench')`
- *     and, when set, swaps `assets.srcDirs` to `src/bench/assets/`
- *     (containing the bench `nodejs-project/index.mjs`). The property
- *     mechanism is intentionally chosen over a productFlavor to avoid
- *     AGP / Gradle 9 variant-attribute ambiguity for Expo apps that
- *     don't declare matching flavors of their own.
+ *   1. `withGradleProperties` — sets `comapeoBackendDir=nodejs-bench`
+ *      in the consumer app's `android/gradle.properties`. The module's
+ *      `android/build.gradle` reads this into
+ *      `BuildConfig.COMAPEO_BACKEND_DIR`; the Kotlin loader uses it
+ *      as the assets-subdir name when copying the bundle into
+ *      `filesDir/` on first launch.
  *
- *   - `withPodfile` prepends `ENV['COMAPEO_BENCH'] = '1'` to the top of
- *     `ios/Podfile` so it's set BEFORE Expo autolinking evaluates
- *     `ComapeoCore.podspec`. The podspec reads that env var and stages
- *     the bench bundle (`nodejs-project-bench/`) to
- *     `.bench-staging/nodejs-project/`, then declares both the staged
- *     bench bundle and the production `nodejs-project/` in
- *     `s.resources` — CocoaPods' `[CP] Copy Pods Resources` rsyncs
- *     them in declaration order so the bench overlay lands on top.
- *     No Xcode Run Script build phase is needed (the previous
- *     iteration hit a CocoaPods 1.x ordering footgun where user
- *     script phases can't reliably be positioned after
- *     `[CP] Copy Pods Resources`).
+ *   2. `withInfoPlist` — sets `ComapeoBackendDir=nodejs-bench` on the
+ *      consumer app's `Info.plist`. The module's `AppLifecycleDelegate`
+ *      reads this in `resolveJSEntryPoint` to pick the bundle path
+ *      inside the `.app`.
  *
- * Each mutation is idempotent so re-runs of `expo prebuild` don't
- * accumulate duplicate insertions.
+ *   3. `withDangerousMod` (Android + iOS) — copies the rolled-up bench
+ *      bundle from `apps/benchmark/backend/dist/` into:
+ *        Android: `<platformProjectRoot>/app/src/main/assets/nodejs-bench/`
+ *        iOS:     `<platformProjectRoot>/<projectName>/nodejs-bench/`
+ *      Plus `withXcodeProject` registers the iOS dir as a blue-folder
+ *      reference (`lastKnownFileType=folder`) under the project's
+ *      Resources group so Xcode preserves the directory structure when
+ *      copying it into the `.app` bundle.
+ *
+ * The bench bundle build is NOT triggered here — the bench app's
+ * `package.json` `prebuild` script runs `npm run --prefix backend
+ * build` before `expo prebuild`. Running rollup from inside a config
+ * plugin would surprise developers who invoke `expo prebuild` directly,
+ * so we fail fast with a helpful error if the bundle is missing.
+ *
+ * Plugin name retained from the prior bench-toggle implementation
+ * (`with-comapeo-bench`) so existing `app.json` references continue
+ * to work.
  */
+const BENCH_BUNDLE_DIR_NAME = 'nodejs-bench';
+const BENCH_BUNDLE_SOURCE_DIR = path.resolve(
+  __dirname,
+  '../../backend/dist',
+);
+const BENCH_BUNDLE_ENTRY = 'index.mjs';
+
 function withComapeoBench(config) {
-  config = withBenchGradleProperties(config);
-  config = withBenchPodfile(config);
+  config = withBenchGradleProperty(config);
+  config = withBenchInfoPlist(config);
+  config = withBenchAndroidAssets(config);
+  config = withBenchIosResources(config);
   return config;
 }
 
-function withBenchGradleProperties(config) {
+function withBenchGradleProperty(config) {
   return withGradleProperties(config, (cfg) => {
-    const props = cfg.modResults;
-    const existing = props.find(
-      (p) => p.type === 'property' && p.key === 'comapeoBench',
+    upsertGradleProperty(
+      cfg.modResults,
+      'comapeoBackendDir',
+      BENCH_BUNDLE_DIR_NAME,
+      ' bench bundle override — read by android/build.gradle of @comapeo/core-react-native',
     );
-    if (existing) {
-      existing.value = 'true';
-    } else {
-      props.push({
-        type: 'comment',
-        value: ' bench bundle opt-in — read by android/build.gradle of @comapeo/core-react-native',
-      });
-      props.push({ type: 'property', key: 'comapeoBench', value: 'true' });
-    }
     return cfg;
   });
 }
 
-const PODFILE_ENV_LINE = "ENV['COMAPEO_BENCH'] = '1'";
-
-function withBenchPodfile(config) {
-  return withPodfile(config, (cfg) => {
-    let contents = cfg.modResults.contents;
-
-    if (contents.includes(PODFILE_ENV_LINE)) {
-      // Already applied by a prior prebuild run.
-      return cfg;
-    }
-
-    // Prepend at the top so it runs before any autolinking-block code
-    // that evaluates `ComapeoCore.podspec` (which reads the env var).
-    cfg.modResults.contents =
-      `# @generated by with-comapeo-bench (apps/benchmark/plugins) — bench-only opt-in\n` +
-      `${PODFILE_ENV_LINE}\n\n` +
-      contents;
+function withBenchInfoPlist(config) {
+  return withInfoPlist(config, (cfg) => {
+    cfg.modResults.ComapeoBackendDir = BENCH_BUNDLE_DIR_NAME;
     return cfg;
   });
+}
+
+function withBenchAndroidAssets(config) {
+  return withDangerousMod(config, [
+    'android',
+    async (cfg) => {
+      assertBundleExists();
+      const destDir = path.join(
+        cfg.modRequest.platformProjectRoot,
+        'app',
+        'src',
+        'main',
+        'assets',
+        BENCH_BUNDLE_DIR_NAME,
+      );
+      await replaceDirectory(BENCH_BUNDLE_SOURCE_DIR, destDir);
+      return cfg;
+    },
+  ]);
+}
+
+function withBenchIosResources(config) {
+  // 1. Copy the bundle into the Xcode project source root so it sits
+  //    next to the app's other in-tree resources.
+  config = withDangerousMod(config, [
+    'ios',
+    async (cfg) => {
+      assertBundleExists();
+      const projectName = IOSConfig.XcodeUtils.getProjectName(
+        cfg.modRequest.projectRoot,
+      );
+      const destDir = path.join(
+        cfg.modRequest.platformProjectRoot,
+        projectName,
+        BENCH_BUNDLE_DIR_NAME,
+      );
+      await replaceDirectory(BENCH_BUNDLE_SOURCE_DIR, destDir);
+      return cfg;
+    },
+  ]);
+  // 2. Register the directory as a folder reference (blue folder) on
+  //    the app target. `lastKnownFileType=folder` is the standard
+  //    Xcode encoding for "preserve directory structure when copying
+  //    to the .app" — what we need so nodejs-mobile finds
+  //    `<App>.app/nodejs-bench/index.mjs` at runtime.
+  config = withXcodeProject(config, (cfg) => {
+    const project = cfg.modResults;
+    const projectName = IOSConfig.XcodeUtils.getProjectName(
+      cfg.modRequest.projectRoot,
+    );
+    const relPath = path.join(projectName, BENCH_BUNDLE_DIR_NAME);
+    // Idempotency: re-running prebuild shouldn't accumulate duplicate
+    // file refs. `pbxProject.hasFile` checks by `file.path`.
+    if (project.hasFile && project.hasFile(relPath)) {
+      return cfg;
+    }
+    project.addResourceFile(
+      relPath,
+      { lastKnownFileType: 'folder' },
+      undefined,
+    );
+    return cfg;
+  });
+  return config;
+}
+
+function upsertGradleProperty(props, key, value, comment) {
+  const existing = props.find(
+    (p) => p.type === 'property' && p.key === key,
+  );
+  if (existing) {
+    existing.value = value;
+    return;
+  }
+  if (comment) {
+    props.push({ type: 'comment', value: comment });
+  }
+  props.push({ type: 'property', key, value });
+}
+
+async function replaceDirectory(srcDir, destDir) {
+  await fsp.rm(destDir, { recursive: true, force: true });
+  await fsp.mkdir(path.dirname(destDir), { recursive: true });
+  await fsp.cp(srcDir, destDir, { recursive: true });
+}
+
+function assertBundleExists() {
+  const entry = path.join(BENCH_BUNDLE_SOURCE_DIR, BENCH_BUNDLE_ENTRY);
+  if (!fs.existsSync(entry)) {
+    throw new Error(
+      `with-comapeo-bench: bench bundle not found at ${entry}.\n` +
+        `Run \`npm install --prefix backend && npm run build --prefix backend\` ` +
+        `from apps/benchmark/ (or \`npm run prebuild\` which does both) ` +
+        `before \`expo prebuild\`.`,
+    );
+  }
 }
 
 module.exports = withComapeoBench;

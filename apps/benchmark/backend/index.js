@@ -1,6 +1,11 @@
 import { BenchRpcServer } from "./lib/bench-rpc.js";
 import { startBootSpan } from "./lib/boot-spans.js";
-import { SimpleRpcServer } from "./lib/simple-rpc.js";
+// Path-imported from the module's production backend so the bench
+// bundle exercises the same control-socket framing as production —
+// rollup inlines this at bundle time. Out-of-tree imports for shared
+// helpers are intentional: any divergence here would invalidate the
+// benchmark's whole premise.
+import { SimpleRpcServer } from "../../../backend/lib/simple-rpc.js";
 import { createSinkFromArg } from "./lib/telemetry-sink.js";
 
 /**

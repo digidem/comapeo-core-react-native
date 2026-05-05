@@ -4,11 +4,14 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start --dev-client",
-    "prebuild": "expo prebuild --no-install",
-    "android": "expo run:android",
-    "android:release": "expo run:android --variant release --no-install",
-    "ios": "expo run:ios",
-    "ios:release": "expo run:ios --configuration Release"
+    "backend:install": "npm ci --prefix backend",
+    "backend:build": "npm run build --prefix backend",
+    "prebuild:bundle": "npm run backend:install && npm run backend:build",
+    "prebuild": "npm run prebuild:bundle && expo prebuild --no-install",
+    "android": "npm run prebuild:bundle && expo run:android",
+    "android:release": "npm run prebuild:bundle && expo run:android --variant release --no-install",
+    "ios": "npm run prebuild:bundle && expo run:ios",
+    "ios:release": "npm run prebuild:bundle && expo run:ios --configuration Release"
   },
   "dependencies": {
     "expo": "55.0.17",

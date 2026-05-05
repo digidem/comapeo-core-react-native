@@ -11,20 +11,6 @@ import { packageIosFrameworks } from "./lib/ios-frameworks.ts";
 import { audit16kAlignment } from "./lib/check-16k-alignment.ts";
 
 // ------------------------------------------------
-// Mode
-// ------------------------------------------------
-
-// `--bench` produces the bench-only JS bundle into bench-specific
-// sibling paths (`android/src/bench/assets/nodejs-project/` and
-// `ios/nodejs-project-bench/`). Native binaries (JNI .so files,
-// per-addon xcframeworks, libnode) are NOT re-packaged in bench mode —
-// the bench bundle has no native-addon imports, and the production
-// build run owns the binaries that `apps/benchmark/` will share at
-// install time. Run `npm run backend:build` first if you haven't, then
-// `npm run backend:build -- --bench` to produce the bench bundle.
-const IS_BENCH = process.argv.slice(2).includes("--bench");
-
-// ------------------------------------------------
 // Paths
 // ------------------------------------------------
 
@@ -43,25 +29,9 @@ const ANDROID_MAIN_NODEJS_PROJECT_DIR = join(
   PROJECT_ROOT,
   "android/src/main/assets/nodejs-project",
 );
-// Bench bundle output. Lives under `src/bench/assets/` so the module's
-// `android/build.gradle` only swaps it in when the consuming app sets
-// `comapeoBench=true` in its `gradle.properties` (a project property,
-// not a productFlavor — the flavor approach hit AGP / Gradle 9 strict
-// variant resolution issues for Expo apps without matching flavors).
-// `apps/benchmark/`'s `with-comapeo-bench` config plugin sets it;
-// `apps/example/` and third-party apps don't.
-const ANDROID_BENCH_NODEJS_PROJECT_DIR = join(
-  PROJECT_ROOT,
-  "android/src/bench/assets/nodejs-project",
-);
 const ANDROID_JNILIBS_DIR = join(PROJECT_ROOT, "android/src/main/jniLibs");
 const ANDROID_LIBNODE_DIR = join(PROJECT_ROOT, "android/libnode/bin");
 const IOS_NODEJS_PROJECT_DIR = join(PROJECT_ROOT, "ios/nodejs-project");
-// Bench-only resource bundle. Picked up by `ComapeoCore.podspec` and
-// renamed to `nodejs-project/` in the embedded app bundle when
-// `ENV['COMAPEO_BENCH']` is set at pod install (the `with-comapeo-bench`
-// config plugin in `apps/benchmark/` sets it).
-const IOS_BENCH_NODEJS_PROJECT_DIR = join(PROJECT_ROOT, "ios/nodejs-project-bench");
 // One xcframework per native module instance. CocoaPods picks them up
 // via `vendored_frameworks` in ComapeoCore.podspec; Xcode's standard
 // Embed & Sign phase places + codesigns them into <App>.app/Frameworks/
@@ -78,33 +48,6 @@ const IOS_FRAMEWORKS_WORK_DIR = join(SCRATCH_DIR, "frameworks");
 // ------------------------------------------------
 // Pipeline
 // ------------------------------------------------
-
-if (IS_BENCH) {
-  // Bench mode: rollup only. The bench bundle has no native-addon
-  // imports, so no prebuilds / JNI / xcframework packaging is needed —
-  // the production build run already laid those down. We bundle into
-  // bench-specific output dirs (`android/src/bench/assets/` and
-  // `ios/nodejs-project-bench/`) which are activated by the
-  // `comapeoBench=true` Gradle property on Android / `ENV['COMAPEO_BENCH']`
-  // iOS env var (consumed by `ios/ComapeoCore.podspec`).
-  await $({
-    cwd: BACKEND_SRC_DIR,
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      BENCH: "1",
-      OUTPUT_DIR_ANDROID_BENCH: ANDROID_BENCH_NODEJS_PROJECT_DIR,
-      OUTPUT_DIR_IOS_BENCH: IOS_BENCH_NODEJS_PROJECT_DIR,
-    },
-  })`npm run build`;
-
-  console.log(
-    `Bench bundle written to:\n  ${ANDROID_BENCH_NODEJS_PROJECT_DIR}\n  ${IOS_BENCH_NODEJS_PROJECT_DIR}`,
-  );
-
-  // Skip the rest of the pipeline — production binaries cover bench too.
-  process.exit(0);
-}
 
 rmSync(SCRATCH_DIR, { force: true, recursive: true });
 

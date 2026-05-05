@@ -1,5 +1,8 @@
-import { ServerHelper } from "./server-helper.js";
-import { SocketMessagePort } from "./message-port.js";
+// Path-imported from the module's production backend — see
+// apps/benchmark/backend/index.js for the rationale. Same wire framing
+// as production, by design.
+import { ServerHelper } from "../../../../backend/lib/server-helper.js";
+import { SocketMessagePort } from "../../../../backend/lib/message-port.js";
 import { startSpan } from "./telemetry-sink.js";
 
 /**
