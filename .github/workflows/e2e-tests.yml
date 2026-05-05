@@ -162,8 +162,8 @@ jobs:
           echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
 
   upload-test-suite:
+    if: ${{ github.event.pull_request.draft == false }}
     name: Upload test suite
-    needs: [build-android, build-ios]
     runs-on: ubuntu-latest
     permissions:
       contents: read
