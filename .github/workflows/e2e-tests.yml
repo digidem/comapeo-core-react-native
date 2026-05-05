@@ -1,0 +1,289 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODEJS_MOBILE_VERSION: v18.20.4
+
+jobs:
+  build-android:
+    if: ${{ github.event.pull_request.draft == false }}
+    name: Build (Android)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      app_url: ${{ steps.upload.outputs.app_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache nodejs-mobile binaries
+        id: cache-libnode
+        uses: actions/cache@v4
+        with:
+          path: android/libnode
+          # hashFiles(...) folds the BASE_URL (defined inside the
+          # download script) into the cache key, so any swap of the
+          # source repo automatically invalidates stale caches.
+          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
+
+      - name: Download nodejs-mobile binaries
+        if: steps.cache-libnode.outputs.cache-hit != 'true'
+        run: ./scripts/download-nodejs-mobile.sh
+
+      - name: Install npm dependencies
+        run: |
+          npm install --ignore-scripts
+          npx patch-package
+
+      - name: Expo prebuild (generates apps/e2e/android)
+        working-directory: apps/e2e
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up E2E app
+        working-directory: apps/e2e
+        run: |
+          npm install --ignore-scripts
+          npx patch-package
+          npx expo prebuild --platform android --no-install
+
+      - name: Build APK
+        working-directory: apps/e2e/android
+        run: |
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Upload APK
+        id: upload
+        env:
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+        run: |
+          APK_PATH="$(pwd)/apps/e2e/android/app/build/outputs/apk/release/app-release.apk"
+
+          APP_URL=$(curl -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+            -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
+            -F "file=@$APK_PATH" | jq -r '.app_url')
+
+          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
+
+  build-ios:
+    if: ${{ github.event.pull_request.draft == false }}
+    name: Upload test suite
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      app_url: ${{ steps.upload.outputs.app_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - name: Cache nodejs-mobile binaries
+        id: cache-libnode
+        uses: actions/cache@v4
+        with:
+          path: android/libnode
+          # hashFiles(...) folds the BASE_URL (defined inside the
+          # download script) into the cache key, so any swap of the
+          # source repo automatically invalidates stale caches.
+          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
+
+      - name: Download nodejs-mobile binaries
+        if: steps.cache-libnode.outputs.cache-hit != 'true'
+        run: ./scripts/download-nodejs-mobile.sh
+
+      - name: Build backend bundle
+        run: npm run backend:build
+
+      - name: Expo prebuild
+        working-directory: apps/e2e
+        run: npx expo prebuild --platform ios
+
+      - name: Build .ipa
+        working-directory: apps/e2e/ios
+        run: |
+          xcodebuild archive \
+            -workspace corereactnativee2e.xcworkspace \
+            -scheme corereactnativee2e \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath ./build/corereactnativee2e.xcarchive \
+            CODE_SIGNING_ALLOWED='NO'
+
+          mkdir -p Payload
+          cp -r ./build/corereactnativee2e.xcarchive/Products/Applications/corereactnativee2e.app Payload/
+          zip -r corereactnativee2e.ipa Payload/
+
+      - name: Upload
+        id: upload
+        run: |
+          IPA_PATH="$(pwd)/apps/e2e/ios/corereactnativee2e.ipa"
+
+          APP_URL=$(curl -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+            -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
+            -F "file=@$IPA_PATH" | jq -r '.app_url')
+
+          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
+
+  upload-test-suite:
+    name: Upload test suite
+    needs: [build-android, build-ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      test_suite_url: ${{ steps.upload.outputs.test_suite_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            maestro
+
+      - name: Upload test suite to Browserstack
+        id: upload
+        env:
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+        run: |
+          ZIP_NAME="maestro_tests.zip"
+
+          zip -r "$ZIP_NAME" maestro/e2e.yml
+
+          ZIP_PATH="$(pwd)/$ZIP_NAME"
+
+          TEST_SUITE_URL=$(curl -u "BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \ 
+            -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/test-suite" \
+            -F "file=@$ZIP_PATH" | jq -r '.test_suite_url')
+
+          echo "test_suite_url=$TEST_SUITE_URL" >> $GITHUB_ENV
+
+  test-android:
+    name: Run test suite on Android
+    needs: [build-android, upload-test-suite]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run tests
+        id: run
+        env:
+          APP_URL: ${{ needs.android-build.outputs.app_url }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          BROWSERSTACK_PROJECT_NAME: ${{ vars.BROWSERSTACK_PROJECT_NAME }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          TEST_SUITE_URL: ${{ needs.upload-test-suite.outputs.test_suite_url }}
+        run: |
+          DEVICES='[
+            "Google Pixel 5-11.0",
+            "Google Pixel 9-16.0",
+            "Huawei P30-9.0",
+            "Huawei Nova 11 SE-12.0",
+            "Motorola Moto G9 Play-10.0",
+            "Motorola Moto G71 5G-11.0",
+            "OnePlus 9-11.0",
+            "OnePlus 11R-13.0",
+            "OnePlus 12R-14.0",
+            "OnePlus 13R-15.0",
+            "Oppo Reno 3 Pro-10.0",
+            "Oppo Reno 6-11.0",
+            "Samsung Galaxy Note 9-8.1" 
+            "Samsung Galaxy S10-9.0",
+            "Samsung Galaxy A51-10.0",
+            "Samsung Galaxy S23-13.0",
+            "Vivo V21-11.0",
+            "Vivo Y21-11.0",
+            "Xiaomi Redmi Note 9-10.0"
+            "Xiaomi Redmi Note 11-11.0",
+          ]'
+
+          BUILD_ID=$(curl -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+              -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/build" \
+              -d '{
+                  "app": "$APP_URL",
+                  "testSuite": "$TEST_SUITE_URL",
+                  "devices": $DEVICES,
+                  "project": "$BROWSERSTACK_PROJECT_NAME",
+                  "deviceLogs": true }' \
+              -H "Content-Type: application/json" | jq -r '.build_id')
+
+          echo "build_id=$BUILD_ID" >> $GITHUB_ENV
+
+  test-ios:
+    name: Run test suite on iOS
+    needs: [build-ios, upload-test-suite]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run tests
+        id: run
+        env:
+          APP_URL: ${{ needs.build-ios.outputs.app_url }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          BROWSERSTACK_PROJECT_NAME: ${{ vars.BROWSERSTACK_PROJECT_NAME }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          TEST_SUITE_URL: ${{ needs.upload-test-suite.outputs.test_suite_url }}
+        run: |
+          DEVICES='[
+            "iPhone 13-15",
+            "iPhone 15-17",
+            "iPhone 17-26"
+          ]'
+          BUILD_ID=$(curl -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+              -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/build" \
+              -d '{
+                  "app": "$APP_URL",
+                  "testSuite": "$TEST_SUITE_URL",
+                  "devices": $DEVICES,
+                  "project": "$BROWSERSTACK_PROJECT_NAME",
+                  "deviceLogs": true }' \
+              -H "Content-Type: application/json" | jq -r '.build_id')
+
+          echo "build_id=$BUILD_ID" >> $GITHUB_ENV
