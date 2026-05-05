@@ -60,6 +60,18 @@ def comapeoAbiFilters = {
 // `android/gradle.properties`.
 def comapeoBenchEnabled = (rootProject.findProperty('comapeoBench') ?: project.findProperty('comapeoBench'))?.toString() == 'true'
 
+// Generic override for the assets subdirectory the loader reads
+// `index.mjs` from. Defaults to `nodejs-project` (the production
+// bundle path emitted by `scripts/build-backend.ts`). A consumer that
+// ships its own backend bundle in a sibling assets directory (e.g.
+// `nodejs-bench/`) sets `comapeoBackendDir=nodejs-bench` in its
+// `android/gradle.properties` and supplies the directory at
+// `app/src/main/assets/nodejs-bench/` itself; AGP's normal asset merge
+// places it alongside `nodejs-project/` in the APK and the loader
+// reads the override path. Surface is intentionally generic so it
+// isn't bench-specific.
+def comapeoBackendDir = (rootProject.findProperty('comapeoBackendDir') ?: project.findProperty('comapeoBackendDir') ?: 'nodejs-project').toString()
+
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
 apply from: expoModulesCorePlugin
 applyKotlinExpoModulesCorePlugin()
@@ -94,6 +106,11 @@ android {
         versionCode 1
         versionName "0.1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Surfaces `comapeoBackendDir` to runtime Kotlin via
+        // `BuildConfig.COMAPEO_BACKEND_DIR`. The Java-string literal
+        // form (with embedded quotes) is what `buildConfigField`
+        // requires.
+        buildConfigField "String", "COMAPEO_BACKEND_DIR", "\"${comapeoBackendDir}\""
         externalNativeBuild {
             cmake {
                 cppFlags ''
@@ -145,6 +162,9 @@ android {
     }
     buildFeatures {
         prefab true
+        // Required for `buildConfigField` above to actually generate
+        // the BuildConfig class; AGP 8.x flipped the default to off.
+        buildConfig true
     }
     packagingOptions {
         excludes += [

@@ -98,8 +98,16 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // Android extracts on first launch instead because the APK
             // doesn't expose a filesystem-readable path to its assets
             // the way `<App>.app/<name>/` does on iOS.
+            //
+            // Bundle-subdir name is read from the consumer app's
+            // `Info.plist` `ComapeoBackendDir` key (default
+            // `nodejs-project`). Lets a consumer ship its own backend
+            // bundle in a sibling directory inside the .app without
+            // touching this module's podspec — they bundle the dir as
+            // an Xcode resource and set the Info.plist key to its name.
+            let dirName = (Bundle.main.object(forInfoDictionaryKey: "ComapeoBackendDir") as? String) ?? "nodejs-project"
             let bundleEntry = (Bundle.main.bundlePath as NSString)
-                .appendingPathComponent("nodejs-project/index.mjs")
+                .appendingPathComponent("\(dirName)/index.mjs")
             return FileManager.default.fileExists(atPath: bundleEntry)
                 ? bundleEntry
                 : nil

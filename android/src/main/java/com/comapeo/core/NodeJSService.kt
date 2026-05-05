@@ -42,7 +42,12 @@ private data class ErrorNativeMessage(
 
 const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
-const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
+// Asset subdirectory the loader copies into the app's filesDir and
+// runs `index.mjs` from. Sourced from `BuildConfig.COMAPEO_BACKEND_DIR`
+// so consumers can override via the `comapeoBackendDir` Gradle
+// property (default `nodejs-project`). See android/build.gradle for
+// the buildConfigField declaration.
+val NODEJS_PROJECT_DIRNAME: String = BuildConfig.COMAPEO_BACKEND_DIR
 const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
 
 /**
