@@ -42,34 +42,16 @@ def comapeoAbiFilters = {
     return effective
 }()
 
-// `comapeoBench=true` (set in the consuming app's gradle.properties)
-// opts the consuming AAR/APK into the benchmark JS bundle
-// (`backend/index.bench.js`, rolled up into
-// `src/bench/assets/nodejs-project/`). The bench sourceSet's
-// nodejs-project files overlay main's at AGP merge time — bench's
-// `index.mjs` replaces production's at the same relative path. Default
-// consumers (`apps/example/`, third-party apps) do not set the
-// property and never include `src/bench/`.
-//
-// Implemented as a project property rather than a productFlavor to
-// avoid the AGP variant-attribute ambiguity that flavor dimensions
-// trigger for Expo apps that don't declare matching flavors of their
-// own (AGP 8.x + Gradle 9 strict variant resolution). The
-// `with-comapeo-bench` Expo config plugin in `apps/benchmark/` flips
-// this property by writing it into the consuming app's
-// `android/gradle.properties`.
-def comapeoBenchEnabled = (rootProject.findProperty('comapeoBench') ?: project.findProperty('comapeoBench'))?.toString() == 'true'
-
-// Generic override for the assets subdirectory the loader reads
-// `index.mjs` from. Defaults to `nodejs-project` (the production
-// bundle path emitted by `scripts/build-backend.ts`). A consumer that
-// ships its own backend bundle in a sibling assets directory (e.g.
+// Override for the assets subdirectory the loader reads `index.mjs`
+// from. Defaults to `nodejs-project` (the production bundle path
+// emitted by `scripts/build-backend.ts`). A consumer that ships its
+// own backend bundle in a sibling assets directory (e.g.
 // `nodejs-bench/`) sets `comapeoBackendDir=nodejs-bench` in its
 // `android/gradle.properties` and supplies the directory at
 // `app/src/main/assets/nodejs-bench/` itself; AGP's normal asset merge
 // places it alongside `nodejs-project/` in the APK and the loader
-// reads the override path. Surface is intentionally generic so it
-// isn't bench-specific.
+// reads the override path. The bench app at `apps/benchmark/` uses
+// this hook via its `with-comapeo-bench` config plugin.
 def comapeoBackendDir = (rootProject.findProperty('comapeoBackendDir') ?: project.findProperty('comapeoBackendDir') ?: 'nodejs-project').toString()
 
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
@@ -134,24 +116,6 @@ android {
             // native module instance × ABI). Both directories ship into the
             // same APK `lib/<abi>/` segment.
             jniLibs.srcDirs 'libnode/bin/', 'src/main/jniLibs/'
-            // When `comapeoBench=true`, swap `src/main/assets` for
-            // `src/bench/assets`. Assigning rather than calling —
-            // `srcDirs '<...>'` is additive (AGP keeps the default
-            // `src/main/assets`); assignment replaces.
-            //
-            // AGP rejects duplicate relative paths across srcDirs, so
-            // we replace rather than overlay.
-            assets.srcDirs = comapeoBenchEnabled
-                ? ['src/bench/assets']
-                : ['src/main/assets']
-        }
-        // The default `debug` sourceSet picks up `src/debug/assets`
-        // (where `scripts/build-backend.ts` writes the unminified
-        // production bundle for debug builds). When bench is active,
-        // empty it out so the prod debug bundle doesn't overlay our
-        // bench bundle and end up shipping in the bench APK.
-        debug {
-            assets.srcDirs = comapeoBenchEnabled ? [] : ['src/debug/assets']
         }
     }
     externalNativeBuild {

@@ -90,7 +90,7 @@ export class SocketMessagePort extends TypedEmitter {
     // socket has ended end up throwing past this check; the host
     // process's `uncaughtException` handler must filter the resulting
     // `ERR_STREAM_WRITE_AFTER_END` during shutdown — see
-    // `backend/index.bench.js`.
+    // `apps/benchmark/backend/index.js` for an example filter.
     if (this.#state === "closed") return;
     this.#framedStream.write(Buffer.from(JSON.stringify(message)));
   }

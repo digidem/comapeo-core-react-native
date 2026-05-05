@@ -69,24 +69,12 @@ ios/.swiftpm/
 #     ABI into jniLibs/.
 #   * iOS: rolled-up JS bundle into ios/nodejs-project/ + per-addon
 #     xcframework into ios/Frameworks/.
-#   * Bench-only sibling outputs (npm run backend:build -- --bench)
-#     land in `android/src/bench/assets/` and `ios/nodejs-project-bench/`;
-#     activated on Android by the `comapeoBench` Gradle property
-#     (set in the consuming app's `gradle.properties`), and on iOS by
-#     the `ENV['COMAPEO_BENCH']` env var read by the podspec at pod
-#     install time. The podspec also stages a copy of
-#     `ios/nodejs-project-bench/` to `ios/.bench-staging/nodejs-project/`
-#     so CocoaPods can rsync it onto the production bundle in the app
-#     resources without an Xcode Run Script phase.
 backend/dist
 nodejs-assets
 android/src/debug/assets/
 android/src/main/assets/
 android/src/main/jniLibs/
-android/src/bench/assets/
 ios/nodejs-project/
-ios/nodejs-project-bench/
-ios/.bench-staging/
 ios/Frameworks/
 
 # output

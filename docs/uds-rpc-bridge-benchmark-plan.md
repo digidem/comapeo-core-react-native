@@ -1,5 +1,20 @@
 # UDS / RPC Bridge Benchmark Suite
 
+> **Note (2026-05-05):** this document captures the original v1
+> implementation plan, in which the bench bundle and rollup config
+> lived inside the production module behind a `comapeoBench=true`
+> Gradle toggle / `ENV['COMAPEO_BENCH']` Podfile mutation. The
+> benchmark has since been refactored: the bench backend, rollup
+> config, and Expo config plugin moved to `apps/benchmark/`, and the
+> module exposes a generic `comapeoBackendDir` override (Gradle
+> property → `BuildConfig.COMAPEO_BACKEND_DIR` on Android,
+> `ComapeoBackendDir` Info.plist key on iOS) that the bench app's
+> plugin sets. Goals (boot phases, RPC sweeps, sinks, Maestro flows)
+> are unchanged; only the build wiring differs. For current behavior
+> see `apps/benchmark/backend/`, `apps/benchmark/plugins/with-comapeo-bench/`,
+> and the `comapeoBackendDir` blocks in `android/build.gradle` and
+> `ios/AppLifecycleDelegate.swift`.
+
 ## Context
 
 `@comapeo/core-react-native` connects React Native to a `nodejs-mobile`

@@ -14,9 +14,7 @@
     "android/libnode/",
     "build/",
     "ios/",
-    "src/",
-    "!android/src/bench/",
-    "!ios/nodejs-project-bench/"
+    "src/"
   ],
   "devEngines": {
     "packageManager": {

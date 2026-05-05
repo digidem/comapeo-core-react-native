@@ -2,10 +2,10 @@ import { startSpan } from "./telemetry-sink.js";
 
 /**
  * Names of every boot phase the Sentry plan §7.4.2 enumerates. Re-used
- * by the bench backend (see `backend/index.bench.js`) and intended to
- * be picked up by the production `backend/index.js` when Sentry plan
- * Phase 3 lands. Keeping the names identical means the same dashboards
- * work for both transports.
+ * by the bench backend (see `apps/benchmark/backend/index.js`) and
+ * intended to be picked up by the production `backend/index.js` when
+ * Sentry plan Phase 3 lands. Keeping the names identical means the
+ * same dashboards work for both transports.
  *
  * Three of the six are server-side (Node) and three are native-side:
  *
