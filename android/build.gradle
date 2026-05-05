@@ -54,6 +54,18 @@ def comapeoAbiFilters = {
 // this hook via its `with-comapeo-bench` config plugin.
 def comapeoBackendDir = (rootProject.findProperty('comapeoBackendDir') ?: project.findProperty('comapeoBackendDir') ?: 'nodejs-project').toString()
 
+// Opt-out for the keystore-backed rootkey. When set, the loader sends
+// a deterministic 16-zero-byte stub on the init frame instead of
+// calling `RootKeyStore.loadOrInitialize()`. Intended only for builds
+// whose backend doesn't construct a `MapeoManager` and never reads
+// the rootkey value (the benchmark app being the canonical case) —
+// production consumers MUST leave this unset so real identity
+// material is encrypted at rest. The keystore-backed path requires
+// the device to have a user ECDH key (set up by the user via screen
+// lock); BrowserStack's stock Samsung devices don't, which is why
+// the bench app needs this hook.
+def comapeoStubRootKey = (rootProject.findProperty('comapeoStubRootKey') ?: project.findProperty('comapeoStubRootKey') ?: 'false').toString() == 'true'
+
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
 apply from: expoModulesCorePlugin
 applyKotlinExpoModulesCorePlugin()
@@ -93,6 +105,7 @@ android {
         // form (with embedded quotes) is what `buildConfigField`
         // requires.
         buildConfigField "String", "COMAPEO_BACKEND_DIR", "\"${comapeoBackendDir}\""
+        buildConfigField "boolean", "COMAPEO_STUB_ROOTKEY", "${comapeoStubRootKey}"
         externalNativeBuild {
             cmake {
                 cppFlags ''

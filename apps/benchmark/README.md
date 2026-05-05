@@ -24,14 +24,24 @@ The bench app drops a stripped backend bundle into the consumer app's
 own native asset tree and tells the module's loader to read from
 there. The module sees no bench-specific code:
 
-- **Module-side override hook.** `@comapeo/core-react-native` exposes
-  a generic `comapeoBackendDir` config: a Gradle property that
-  surfaces as `BuildConfig.COMAPEO_BACKEND_DIR` on Android, and a
-  `ComapeoBackendDir` Info.plist key on iOS. Defaults to
-  `nodejs-project` (production); `NodeJSService.kt` and
-  `AppLifecycleDelegate.swift` read it to choose the bundle subdir.
+- **Module-side override hooks.** `@comapeo/core-react-native` exposes
+  two paired overrides for non-production consumers:
+  - `comapeoBackendDir` — Gradle property →
+    `BuildConfig.COMAPEO_BACKEND_DIR` on Android; `ComapeoBackendDir`
+    Info.plist key on iOS. Defaults to `nodejs-project` (the
+    production bundle); `NodeJSService.kt` and
+    `AppLifecycleDelegate.swift` read it to choose the bundle subdir.
+  - `comapeoStubRootKey` — Gradle property →
+    `BuildConfig.COMAPEO_STUB_ROOTKEY` on Android; `ComapeoStubRootKey`
+    Info.plist key on iOS. Defaults to false. When true, the loader
+    sends a 16-zero-byte stub on the init frame instead of touching
+    the keystore/keychain. Required on devices without a configured
+    screen lock (BrowserStack's stock fleet falls in this bucket —
+    Android's super-encryption layer fails when
+    `setUnlockedDeviceRequired(true)` meets a missing user ECDH
+    key). Production consumers MUST leave this false.
 - **Bench plugin.** `plugins/with-comapeo-bench/` is an Expo config
-  plugin that (a) sets the override to `nodejs-bench`, (b) copies the
+  plugin that (a) sets both overrides above, (b) copies the
   rolled-up bench bundle from `backend/dist/` into the consumer app's
   own native asset tree at prebuild time —
   `android/app/src/main/assets/nodejs-bench/` on Android, an Xcode

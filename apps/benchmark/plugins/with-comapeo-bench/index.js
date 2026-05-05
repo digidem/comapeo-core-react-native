@@ -75,6 +75,14 @@ function withBenchGradleProperty(config) {
       BENCH_BUNDLE_DIR_NAME,
       ' bench bundle override — read by android/build.gradle of @comapeo/core-react-native',
     );
+    upsertGradleProperty(
+      cfg.modResults,
+      'comapeoStubRootKey',
+      'true',
+      ' bench-only opt-out of keystore-backed rootkey; required on devices without' +
+        '\n# a configured screen lock (e.g. BrowserStack stock fleet) where the Android' +
+        '\n# Keystore super-encryption layer fails on `setUnlockedDeviceRequired(true)`',
+    );
     return cfg;
   });
 }
@@ -82,6 +90,10 @@ function withBenchGradleProperty(config) {
 function withBenchInfoPlist(config) {
   return withInfoPlist(config, (cfg) => {
     cfg.modResults.ComapeoBackendDir = BENCH_BUNDLE_DIR_NAME;
+    // Boolean Info.plist key — see AppLifecycleDelegate.swift's
+    // rootKeyProvider closure for the runtime branch and the parallel
+    // Android `comapeoStubRootKey` property set above.
+    cfg.modResults.ComapeoStubRootKey = true;
     return cfg;
   });
 }

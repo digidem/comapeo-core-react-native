@@ -531,7 +531,22 @@ class NodeJSService(
      */
     private fun sendInitFrame() {
         val rootKeyBytes: ByteArray = try {
-            RootKeyStore(applicationContext).loadOrInitialize()
+            if (BuildConfig.COMAPEO_STUB_ROOTKEY) {
+                // Deterministic 16-zero-byte stub for builds that opt
+                // out of keystore-backed rootkey persistence (see
+                // android/build.gradle for the property doc and the
+                // bench app's `with-comapeo-bench` plugin for where
+                // it's set). The receiver MUST be a backend that
+                // doesn't construct a `MapeoManager` — the bench
+                // backend's relaxed init handler is the canonical
+                // example. Real identity material is never derived
+                // from this stub, so production consumers are
+                // protected by `comapeoStubRootKey` being false by
+                // default.
+                ByteArray(16)
+            } else {
+                RootKeyStore(applicationContext).loadOrInitialize()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load rootkey", e)
             val info = ErrorInfo("rootkey", e.message ?: e.javaClass.simpleName)

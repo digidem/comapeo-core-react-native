@@ -113,12 +113,24 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
                 : nil
         },
         rootKeyProvider: {
+            // Opt-out matching the Android `comapeoStubRootKey` Gradle
+            // property: when the consumer's `Info.plist` sets
+            // `ComapeoStubRootKey = YES`, the loader skips the keychain
+            // round-trip and returns 16 zero bytes. Intended only for
+            // builds whose backend doesn't construct a `MapeoManager`
+            // and never reads the rootkey value (the benchmark app is
+            // the canonical case). Production consumers MUST leave
+            // this unset so real identity material is encrypted at
+            // rest. See `apps/benchmark/plugins/with-comapeo-bench/`.
+            if Bundle.main.object(forInfoDictionaryKey: "ComapeoStubRootKey") as? Bool == true {
+                return Data(repeating: 0, count: 16)
+            }
             // Reads on first call generate-and-persist; subsequent calls in
             // the same install return the same bytes. Throws if the
             // keychain is unavailable (device locked since reboot) — the
             // service will surface that as `.error` and the next foreground
             // (which fires `applicationDidBecomeActive` again) retries.
-            try AppLifecycleDelegate.rootKeyStore.loadOrInitialize()
+            return try AppLifecycleDelegate.rootKeyStore.loadOrInitialize()
         }
     )
 
