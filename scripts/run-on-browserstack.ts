@@ -267,9 +267,21 @@ async function triggerBuild(args: {
     testSuite: args.testSuiteUrl,
     buildName: args.buildName,
     devices: [args.device],
-    // Target a single flow inside the zip's `flows/` parent dir. Drop
-    // this key to run `main.yaml` instead.
-    execute: [`flows/${args.flow}`],
+    // `execute` is a path RELATIVE to the zip's parent dir — BS auto-
+    // prepends the parent (e.g. `flows/`) at extraction time. So
+    // `execute: ["bench-rpc.yaml"]` resolves to
+    // `<extract>/flows/bench-rpc.yaml`. Adding a `flows/` prefix here
+    // doubles up and produces `<extract>/flows/flows/<flow>`, which
+    // BS reports as "flow path does not exist" in the dry-run log.
+    // Drop this key to run the conventional `main.yaml` instead.
+    execute: [args.flow],
+    // Both debug log streams default off on BS. For a benchmarking
+    // workflow where we explicitly want to triage failures (the bench
+    // backend's own logs surface in logcat), turning them on is
+    // essential and cheap. Retention is 60 days (BS docs §Debugging
+    // Options).
+    deviceLogs: true,
+    networkLogs: true,
   };
   // Some org accounts restrict project creation. Only set the field
   // when explicitly requested so BrowserStack uses its account-level
