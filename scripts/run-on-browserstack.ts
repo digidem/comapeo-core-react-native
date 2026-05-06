@@ -44,7 +44,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
 const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
-const FLOWS_SRC_DIR = path.join(PROJECT_ROOT, "e2e/.maestro");
+const FLOWS_SRC_DIR = path.join(PROJECT_ROOT, "apps/benchmark/.maestro");
 
 const API = "https://api-cloud.browserstack.com/app-automate/maestro/v2";
 
