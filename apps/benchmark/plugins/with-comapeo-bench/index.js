@@ -1,7 +1,5 @@
 const {
-  AndroidConfig,
   IOSConfig,
-  withAndroidManifest,
   withDangerousMod,
   withGradleProperties,
   withInfoPlist,
@@ -66,28 +64,7 @@ function withComapeoBench(config) {
   config = withBenchInfoPlist(config);
   config = withBenchAndroidAssets(config);
   config = withBenchIosResources(config);
-  config = withBenchCleartextHttp(config);
   return config;
-}
-
-/**
- * Allow plain-HTTP traffic from the bench app to localhost. Required
- * for the "POST spans" flow to reach `bench-receiver.ts` over the
- * BrowserStackLocal tunnel; without this attribute, Android API 28+
- * blocks the receiver POST silently and `apps/benchmark/results/`
- * stays empty even on a successful Maestro run.
- *
- * Expo prebuild only sets `usesCleartextTraffic="true"` on the debug
- * sourceSet's manifest, not the release manifest that BrowserStack
- * actually runs. The bench app is benchmarking-only and never ships
- * to end users, so flipping it on for all variants is the right shape.
- */
-function withBenchCleartextHttp(config) {
-  return withAndroidManifest(config, (cfg) => {
-    const app = AndroidConfig.Manifest.getMainApplicationOrThrow(cfg.modResults);
-    app.$['android:usesCleartextTraffic'] = 'true';
-    return cfg;
-  });
 }
 
 function withBenchGradleProperty(config) {
@@ -106,17 +83,18 @@ function withBenchGradleProperty(config) {
         '\n# a configured screen lock (e.g. BrowserStack stock fleet) where the Android' +
         '\n# Keystore super-encryption layer fails on `setUnlockedDeviceRequired(true)`',
     );
-    // Routes the bench backend's telemetry sink to the host-side
-    // receiver via BrowserStackLocal (the receiver listens on
-    // localhost:8787 by default). Native loader appends a derived
-    // `--device=<brand model> (Android <ver>)` next to this so backend
-    // boot spans land alongside RN-side rpc spans, both tagged with
-    // device attribution.
+    // Native loader still derives a `--device=<tag>` arg (read by the
+    // bench backend for span attribution). The bench backend's
+    // default sink is now LogSink — boot spans surface in logcat
+    // under the `Comapeo:NodeJS` tag, which BrowserStack captures
+    // when the build trigger sets `deviceLogs: true`. No telemetry
+    // URL needed; no BS Local; no cleartext-traffic config.
     upsertGradleProperty(
       cfg.modResults,
       'comapeoBackendArgs',
-      '--telemetry=http://localhost:8787/spans',
-      ' bench-only telemetry routing — read by android/build.gradle of @comapeo/core-react-native',
+      '',
+      ' bench-only nodejs-mobile argv — empty here so native loader appends' +
+        '\n# only the device-tag flag; pass --telemetry=<spec> here to override sink',
     );
     return cfg;
   });

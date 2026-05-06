@@ -90,13 +90,8 @@ build/
 .env.local
 .env.*.local
 
-# Bench receiver output. NDJSON spans per run, written by
-# scripts/bench-receiver.ts. Treat as build artifacts; copy out of
-# this dir if you want to commit a specific run's results.
+# Bench result NDJSONs, written by `scripts/bench-summarize.ts` after
+# pulling device logs from a BrowserStack build. Treat as build
+# artifacts; copy out of this dir if you want to commit a specific
+# run's results.
 apps/benchmark/results/
-
-# BrowserStackLocal default log files. Created next to wherever the
-# binary is invoked from.
-browserstack.err
-browserstack.log
-local.log

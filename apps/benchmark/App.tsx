@@ -10,9 +10,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -36,10 +34,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
  *     over the steady-state samples.
  *   - "Export results" button: writes NDJSON to the app's documents
  *     directory and opens the system share sheet.
- *   - optional "POST to receiver" toggle + URL: forwards each span as
- *     JSON to a host-side `bench-receiver.ts` for orchestrated runs.
- *     Defaults to off; failures are silently swallowed so the
- *     on-device experience is unaffected.
+ *
+ * Span transport for orchestrated runs is logcat: every recorded span
+ * is `console.log("BENCH_SPAN " + JSON)`'d, which lands in Android
+ * logcat (RN bridge tag) / iOS device console. The BS dispatch script
+ * pulls the device log post-build and grep's BENCH_SPAN lines into
+ * NDJSON. No transport plumbing on the device.
  */
 
 const PAYLOAD_SIZES = [64, 1024, 65536, 1048576] as const;
@@ -47,7 +47,6 @@ const DEFAULT_SELECTED: ReadonlyArray<number> = [64, 1024, 65536];
 const WARMUP_ITERATIONS = 10;
 const STEADY_ITERATIONS = 100;
 const REQUEST_TIMEOUT_MS = 30_000;
-const RECEIVER_DEFAULT_URL = "http://localhost:8787/spans";
 
 type BenchSpan = {
   op: "rpc";
@@ -208,8 +207,6 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<string>("");
   const [report, setReport] = useState<RunReport | null>(null);
-  const [postEnabled, setPostEnabled] = useState(false);
-  const [receiverUrl, setReceiverUrl] = useState(RECEIVER_DEFAULT_URL);
 
   const clientRef = useRef<BenchClient | null>(null);
   if (!clientRef.current) clientRef.current = new BenchClient();
@@ -269,15 +266,15 @@ export default function App() {
             attrs: { bytes: sizeBytes, rttSide: "rn", device: DEVICE_TAG },
           };
           allSpans.push(span);
-          if (postEnabled) {
-            // Fire-and-forget — failures are intentionally silent so a
-            // missing receiver doesn't break the on-device flow.
-            fetch(receiverUrl, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ...span, runId }),
-            }).catch(() => {});
-          }
+          // BENCH_SPAN-prefixed line lands in Android logcat (under
+          // ReactNativeJS) / iOS device console. The BS dispatch
+          // script grep's these out of the pulled device log post-
+          // build — replaces the earlier fetch+receiver pipeline that
+          // had to fight cleartext-traffic policy and BS Local
+          // tunneling. Standalone runs that don't pull logs ignore
+          // this line; the on-device JsonFileSink + Documents export
+          // still works the same.
+          console.log("BENCH_SPAN " + JSON.stringify({ ...span, runId }));
         }
         stats.push(summarise(samples, sizeBytes));
       }
@@ -304,7 +301,7 @@ export default function App() {
     } finally {
       setRunning(false);
     }
-  }, [running, serviceState, selected, postEnabled, receiverUrl]);
+  }, [running, serviceState, selected]);
 
   const exportResults = useCallback(async () => {
     if (!report) return;
@@ -360,23 +357,6 @@ export default function App() {
               );
             })}
           </View>
-        </Group>
-
-        <Group name="Receiver (optional)">
-          <Row label="POST spans">
-            <Switch value={postEnabled} onValueChange={setPostEnabled} testID="post-toggle" />
-          </Row>
-          {postEnabled && (
-            <TextInput
-              value={receiverUrl}
-              onChangeText={setReceiverUrl}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder={RECEIVER_DEFAULT_URL}
-              style={styles.input}
-              testID="receiver-url"
-            />
-          )}
         </Group>
 
         <Pressable
@@ -516,16 +496,6 @@ const styles = StyleSheet.create({
   sizeChipTextActive: {
     color: "#fff",
     fontWeight: "600",
-  },
-  input: {
-    marginTop: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 6,
-    backgroundColor: "#fafafa",
-    fontSize: 14,
   },
   button: {
     marginHorizontal: 12,

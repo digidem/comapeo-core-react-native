@@ -34,14 +34,50 @@ import path from "node:path";
  */
 
 /**
- * Default sink. Useful when telemetry is irrelevant to a given run
- * (e.g. local debugging where the bench app's on-device renderer is
- * the only consumer). Zero-overhead.
+ * Discards every span. Useful only when you want to confirm a run
+ * works without any tracing overhead at all (e.g. measuring
+ * "what's the floor of the bench backend itself").
  *
  * @returns {TelemetrySink}
  */
 export class NoopSink {
   recordSpan() {}
+  close() {}
+}
+
+/**
+ * Writes one span per stdout line, prefixed with `BENCH_SPAN ` so a
+ * downstream parser can distinguish them from regular log lines.
+ * On Android this surfaces in `logcat` (under the `Comapeo:NodeJS`
+ * tag for backend, `ReactNativeJS` for App.tsx); on iOS it lands in
+ * the device console. BrowserStack captures both verbatim when the
+ * build trigger sets `deviceLogs: true`, so the host runner just
+ * grep's `BENCH_SPAN` out of the pulled log file post-build.
+ *
+ * Replaces the receiver/HTTP-tunnel approach as the default path for
+ * BS dispatches: no BrowserStackLocal, no cleartext-traffic config,
+ * no nodejs-mobile vs RN HTTP routing distinction. Both span sources
+ * just write to stdout.
+ *
+ * @returns {TelemetrySink}
+ */
+export class LogSink {
+  /**
+   * @param {{ runId?: string, device?: string }} [defaults]
+   */
+  constructor(defaults = {}) {
+    this.defaults = defaults;
+  }
+
+  /** @param {BenchSpan} span */
+  recordSpan(span) {
+    try {
+      console.log("BENCH_SPAN " + JSON.stringify(mergeDefaults(span, this.defaults)));
+    } catch (e) {
+      console.error("LogSink: stringify failed", e);
+    }
+  }
+
   close() {}
 }
 
@@ -141,7 +177,10 @@ function mergeDefaults(span, defaults) {
 /**
  * Parses a `--telemetry=<spec>` CLI arg into a sink instance.
  *
- *   - `noop`              → NoopSink (also the fallback for unspecified)
+ *   - unspecified         → LogSink (the default; works in both
+ *                           on-device standalone and BS dispatches)
+ *   - `log`               → LogSink (explicit)
+ *   - `noop`              → NoopSink (drops every span)
  *   - `file:<path>`       → JsonFileSink writing NDJSON to `<path>`
  *   - `http://<url>`      → HttpSink POSTing each span as JSON
  *   - `https://<url>`     → ditto
@@ -153,11 +192,12 @@ function mergeDefaults(span, defaults) {
  * @returns {TelemetrySink}
  */
 export function createSinkFromArg(spec, defaults = {}) {
-  if (!spec || spec === "noop") return new NoopSink();
+  if (!spec || spec === "log") return new LogSink(defaults);
+  if (spec === "noop") return new NoopSink();
   if (spec.startsWith("file:")) return new JsonFileSink(spec.slice("file:".length), defaults);
   if (spec.startsWith("http://") || spec.startsWith("https://")) return new HttpSink(spec, defaults);
   throw new Error(
-    `Unknown --telemetry spec: ${spec}. Expected "noop", "file:<path>", or "http(s)://<url>".`,
+    `Unknown --telemetry spec: ${spec}. Expected "log", "noop", "file:<path>", or "http(s)://<url>".`,
   );
 }
 

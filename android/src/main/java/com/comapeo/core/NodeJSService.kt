@@ -415,13 +415,17 @@ class NodeJSService(
                 }
 
                 // Base argv the backend's positional parser expects:
-                // socket paths + dataDir. `BuildConfig.COMAPEO_BACKEND_ARGS`
-                // (set by android/build.gradle from the
-                // `comapeoBackendArgs` Gradle property) appends extra
-                // flags after that — the bench plugin uses it to wire
-                // `--telemetry=http://...` and a `--device=<tag>` for
-                // span attribution. Whitespace-split so a single
-                // gradle string can carry multiple flags.
+                // socket paths + dataDir. After that we append:
+                //   - `--device=<MANUFACTURER MODEL (Android REL)>` —
+                //     a stable device tag the bench backend uses for
+                //     span attribution. Production backend ignores
+                //     unknown flags so this is a no-op there.
+                //   - whitespace-split tokens from
+                //     `BuildConfig.COMAPEO_BACKEND_ARGS` (set by the
+                //     `comapeoBackendArgs` Gradle property). Empty by
+                //     default; consumers like the bench plugin set
+                //     `--telemetry=<spec>` here when they want a
+                //     non-default sink.
                 val baseArgs = arrayOf(
                     "node",
                     jsFile.absolutePath,
@@ -429,12 +433,10 @@ class NodeJSService(
                     controlSocketFile.absolutePath,
                     dataDir,
                 )
-                val extraArgs = if (BuildConfig.COMAPEO_BACKEND_ARGS.isNotBlank()) {
-                    val deviceTag = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})"
-                    BuildConfig.COMAPEO_BACKEND_ARGS.trim().split("\\s+".toRegex()) +
-                        "--device=$deviceTag"
-                } else {
-                    emptyList()
+                val deviceTag = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})"
+                val extraArgs = mutableListOf("--device=$deviceTag")
+                if (BuildConfig.COMAPEO_BACKEND_ARGS.isNotBlank()) {
+                    extraArgs += BuildConfig.COMAPEO_BACKEND_ARGS.trim().split("\\s+".toRegex())
                 }
                 val exitCode = startNodeWithArguments(baseArgs + extraArgs.toTypedArray())
                 log("NodeJS service completed with exit code $exitCode")
