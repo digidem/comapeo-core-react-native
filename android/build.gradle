@@ -171,6 +171,23 @@ dependencies {
     implementation "androidx.core:core-ktx:1.16.0"
     compileOnly "com.facebook.fbjni:fbjni:0.3.0"
 
+    // Sentry Android SDK — `compileOnly` so this module doesn't pull
+    // sentry-android into consumers who never use Sentry. The runtime
+    // classes are expected to come transitively from the consumer's
+    // `@sentry/react-native@^6` dep (see plan §5.1 / package.json's
+    // optional peer dep). When the consumer hasn't installed Sentry,
+    // `SentryFgsBridge` short-circuits via `Class.forName` so the
+    // missing classpath never reaches a verifier crash.
+    //
+    // Pin matches the API surface @sentry/react-native@6.x exposes
+    // (sentry-android 7.20.x). Bumping should be done in lock-step
+    // with the @sentry/react-native peer-dep range.
+    compileOnly "io.sentry:sentry-android-core:7.20.1"
+    // Test classpath needs the runtime classes so JVM unit tests
+    // can exercise the Impl path. Robolectric isn't on the test
+    // classpath, so tests that need a real Context use a fake.
+    testImplementation "io.sentry:sentry-android-core:7.20.1"
+
     // JVM unit test dependencies
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0'

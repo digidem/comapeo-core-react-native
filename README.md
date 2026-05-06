@@ -128,6 +128,35 @@ events are captured to your Sentry project tagged with the relevant phase
 (`rootkey`, `starting-timeout`, `node-runtime-unexpected`, etc.). State
 transitions show up as breadcrumbs that ride along on the next event.
 
+### What gets captured automatically
+
+Once the plugin is registered with a `dsn`, the module captures three
+streams without any further setup:
+
+- **JS-process events** (via the adapter you pass to `configureSentry`):
+  state-machine ERROR transitions and `messageerror` parse failures
+  tagged `proc:main`, `layer:rn`. State transitions emit breadcrumbs
+  on every cycle.
+- **FGS-process events** (Android only — `:ComapeoCore` foreground
+  service): boot transaction (`comapeo.boot`) with phase spans
+  (`boot.rootkey-load`, `boot.init-frame`), state-transition
+  breadcrumbs, control-frame breadcrumbs, FGS-lifecycle breadcrumbs,
+  watchdog-timeout events (`timeout:startup`, `timeout:fgsStop`),
+  and rootkey-load `captureException` — all tagged `proc:fgs`,
+  `layer:native` so the dashboard can split FGS-originated events
+  from main-process events.
+- **Backend-process events** (Phase 3, not yet shipped) — Node-side
+  RPC method spans and exceptions tagged `proc:backend`.
+
+The FGS-process Sentry SDK is initialised automatically in
+`ComapeoCoreService.onCreate` from the manifest meta-data your
+config plugin wrote. There's no extra configuration required for
+multi-process Android apps using this module — that's the
+`SentryFgsBridge` doing the work behind the scenes. If
+`@sentry/react-native` isn't installed (so `io.sentry.*` isn't on
+the runtime classpath), the bridge stays inert and the module
+continues to function unchanged.
+
 # Contributing
 
 Contributions are very welcome! Please refer to guidelines described in the [contributing guide](https://github.com/expo/expo#contributing).

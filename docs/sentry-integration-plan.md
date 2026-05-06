@@ -1716,33 +1716,73 @@ reflects that:
 Cost: ~150 LOC plugin + Kotlin + Swift + tests. Zero new
 runtime deps.
 
-**Phase 2b — FGS-process direct Sentry calls (follow-up)**
+**Phase 2b — FGS-process direct Sentry calls (Android only)**
 
-- Add `io.sentry:sentry-android-core` to `android/build.gradle`
-  (Android FGS process) and pin versions compatible with
-  `@sentry/react-native@^6`'s transitive deps so consumers
-  using both don't see two copies of sentry-android. iOS
-  doesn't need a comparable add — single-process app, host
-  Sentry SDK already covers it.
-- FGS-side `SentryAndroid.init(ctx) { … }` in
-  `ComapeoCoreService.onCreate` keyed off `SentryConfig`.
-- State-transition breadcrumbs (§7.4.1) and boot transaction
-  with phase spans (§7.4.2) wired into the existing
-  `NodeJSService` state-derivation callsites — these land on
-  the FGS-process scope so logcat tail / FGS-foreground state
-  ride along with the event.
-- Timeout events (§7.4.4) on the existing watchdog firing
-  paths.
-- Cross-process error attribution (§7.4.7): FGS-side
-  captureException tagged `proc:fgs` before the
-  `error-native` re-broadcast.
+iOS doesn't need a Phase 2b — it's a single-process app and
+the host's `@sentry/react-native` already covers everything
+the §6.3 JS adapter forwards. Phase 2b is Android-specific.
 
-Value: native-process scope on FGS-originated events. Breadcrumb
-data survives RN being dead. Boot durations dashboarded with
-phase-level granularity.
+Shipped:
 
-Cost: ~150 LOC native, ~10 LOC build config, transitive
-runtime size from sentry-android-core.
+- `io.sentry:sentry-android-core:7.20.1` added to
+  `android/build.gradle` as `compileOnly` so this module never
+  pulls sentry-android into consumers who don't use Sentry.
+  The runtime classes come transitively from
+  `@sentry/react-native@^6`. Pin matches the API surface RN
+  v6.x exposes; bumping should be done in lock-step with the
+  RN peer-dep range.
+- `SentryFgsBridge.kt` / `SentryFgsBridgeImpl.kt` — guard /
+  impl split. The guard's `Class.forName` probe (with
+  `initialize=false` so the SDK's `<clinit>` doesn't run on
+  the JVM unit-test classpath where `SystemClock` is unmocked)
+  gates every public method. Impl freely imports `io.sentry.*`;
+  it's only loaded when the guard says the SDK is present.
+- FGS-side `SentryAndroid.init` in
+  `ComapeoCoreService.onCreate`. Sets `proc:fgs` and
+  `layer:native` as process-level tags so dashboards split
+  FGS captures from main-process captures (which carry
+  `proc:main` from `src/sentry.ts`).
+- State-transition breadcrumbs (§7.4.1) on every
+  `applyAndEmit` transition.
+- `comapeo.boot` transaction (§7.4.2) opened in `start()`,
+  closed on first STARTED (`ok`) / ERROR (`internal_error`).
+  In-flight phase spans are closed on the same terminal.
+- `boot.rootkey-load` span around `RootKeyStore.loadOrInitialize()`,
+  `boot.init-frame` span from "init frame sent" to "ready
+  control frame received". Span names match the bench
+  backend's `boot.<phase>` taxonomy
+  (`apps/benchmark/backend/lib/boot-spans.js` on
+  `claude/benchmark-uds-rpc-bridge-1Zahz`) so a single Sentry
+  dashboard query charts both sides.
+- Timeout events (§7.4.4):
+  `comapeo: startup timeout fired` (level=error,
+  `timeout:startup`),
+  `comapeo: FGS stop timeout fired` (level=error,
+  `timeout:fgsStop`).
+- Control-frame breadcrumbs (§7.4.5): `received: started`,
+  `received: ready`, `received: stopping`, `received: error`,
+  `malformed control frame`. Plus FGS lifecycle breadcrumbs
+  (§7.4.6): `ComapeoCoreService.onCreate`, `onStartCommand`,
+  `onDestroy`.
+- FGS-side `captureException` on rootkey-load failure (§7.4.7),
+  with `comapeo.phase:rootkey` and `source:rootkey-store`
+  tags. Fires before `sendErrorNativeFrame` so the FGS scope
+  has the original logcat/notification context; the same
+  exception is re-broadcast to Node and re-captured by the
+  main-process JS adapter for the cross-process triple.
+
+Cost: ~250 LOC native + bridge + tests. Bundle delta:
+sentry-android-core is only on the runtime classpath when
+`@sentry/react-native` brings it; no impact on consumers
+without Sentry.
+
+Reused from the bench branch: the `boot.<phase>` span name
+taxonomy from
+`apps/benchmark/backend/lib/{boot-spans,telemetry-sink}.js`.
+When the bench branch's `TelemetrySink` interface lands on
+main, the production backend (Phase 3) can implement it as a
+`SentryAdapterSink` — the comment in `telemetry-sink.js`
+already foreshadows this.
 
 ### 10.3 Phase 3 — backend loader + RPC tracing
 
@@ -1988,20 +2028,57 @@ Concrete touch list, by phase, for code review.
   target's `sources` list so the macOS-native test suite
   compiles it.
 
-**Phase 2b — follow-up (deferred)**
+**Phase 2b — landed (Android only)**
 
-- `android/build.gradle` — add `io.sentry:sentry-android-core`
-  dep at the major version that matches
-  `@sentry/react-native@^6`'s transitive dep.
+- `android/build.gradle` — add `compileOnly` +
+  `testImplementation` on `io.sentry:sentry-android-core:7.20.1`.
+- `android/src/main/java/com/comapeo/core/SentryFgsBridge.kt`
+  (new) — guard layer: `Class.forName` probe (with
+  `initialize=false`) gates every public method; no
+  `io.sentry.*` imports here.
+- `android/src/main/java/com/comapeo/core/SentryFgsBridgeImpl.kt`
+  (new) — impl: `SentryAndroid.init`, `addBreadcrumb`,
+  `captureException`, `captureMessage`,
+  `startBootTransaction` / `startBootSpan` / `finishSpan`.
+  Loaded only when the guard says the SDK is present.
 - `android/.../ComapeoCoreService.kt` — read config in
-  `onCreate`, init `SentryAndroid` for the FGS process, stash
-  on `NodeJSService`.
-- `android/.../NodeJSService.kt`,
-  `ios/NodeJSService.swift` — add `Sentry.addBreadcrumb`
-  calls on every state-derivation update; wrap boot phases
-  in `Sentry.startSpan`; emit timeout events.
-- `android/.../ComapeoCoreModule.kt` (main process) — same
-  breadcrumb / event emission from the control-IPC observer.
+  `onCreate`, init the FGS-process Sentry hub via the bridge.
+  FGS lifecycle breadcrumbs on `onCreate` / `onStartCommand`
+  / `onDestroy`. Capture `timeout:fgsStop` on stop-timeout.
+- `android/.../NodeJSService.kt` — open `comapeo.boot`
+  transaction in `start()`; emit state-transition
+  breadcrumbs in `applyAndEmit`; close transaction +
+  in-flight phase spans on STARTED / ERROR; wrap
+  `RootKeyStore.loadOrInitialize` in a `boot.rootkey-load`
+  span; open `boot.init-frame` after init send and close on
+  `ready` frame; control-frame breadcrumbs on
+  `started`/`ready`/`stopping`/`error`/malformed; capture
+  `timeout:startup` on watchdog fire; FGS-side
+  `captureException` on rootkey failure tagged
+  `phase:rootkey`.
+- `android/src/test/java/com/comapeo/core/SentryFgsBridgeTest.kt`
+  (new) — JVM unit tests pinning the no-op guard contract:
+  pre-init calls (addBreadcrumb / captureException /
+  captureMessage / startBootTransaction / startBootSpan /
+  finishSpan) all return cleanly without throwing; the
+  `Class.forName` probe finds sentry-android on the test
+  classpath and is idempotent.
+- `eslint.config.js` — ignore `.claude/**/*` so leftover
+  worktree artifacts don't break the lint cache.
+
+**Phase 2b — iOS deferred (likely never needed)**
+
+iOS is a single-process app. The host's `@sentry/react-native`
+runs `SentrySDK.start(...)` in-process and the §6.3 JS
+adapter feeds state transitions / errors into that hub. The
+"FGS-process scope" concern that motivates the Android
+bridge doesn't exist on iOS. If we later want native-side
+boot spans on iOS for symmetry, we'd add a thin
+`SentrySDK.startTransaction(...)` wrapper in
+`ios/NodeJSService.swift` — but that needs the `Sentry` pod
+linked (the host transitively brings it via
+`@sentry/react-native`), and the value over the JS adapter
+is small. Tracked as a soft follow-up only.
 
 **Phase 3 — backend instrumentation (loader + multi-entry bundle)**
 

@@ -198,6 +198,35 @@ class NodeJSService(
     private val ipcDeferred = CompletableDeferred<NodeJSIPC>()
 
     /**
+     * Phase 2b — Sentry boot transaction handle. Opened in [start]
+     * before the watchdog arms, closed on the first transition to
+     * STARTED (status `ok`) or ERROR (status `internal_error`).
+     * Held as `AtomicReference<Any?>` so the bridge's opaque handle
+     * type doesn't leak in (the bridge uses `Any?` to keep
+     * `io.sentry.*` imports out of the public surface).
+     */
+    private val bootTx = AtomicReference<Any?>(null)
+
+    /**
+     * In-flight boot-phase spans, keyed by phase name (per the
+     * `boot.<phase>` taxonomy from
+     * `apps/benchmark/backend/lib/boot-spans.js` on the bench
+     * branch). Same names so a single Sentry dashboard query
+     * charts both bench and production spans without an alias
+     * table. Phases observable from the FGS process today:
+     *
+     *   - `rootkey-load` — wraps `RootKeyStore.loadOrInitialize()`.
+     *   - `init-frame` — from "sent init" to "received ready".
+     *
+     * The other phases from the plan §7.4.2 taxonomy
+     * (`listen-control`, `construct`, `ipc-connect`) live in the
+     * Node-side boot once Phase 3 wires them up via distributed
+     * tracing — the FGS-side transaction will adopt them as
+     * children then.
+     */
+    private val bootSpans = java.util.concurrent.ConcurrentHashMap<String, Any>()
+
+    /**
      * Single-slot state observer. The FGS routes transitions through here
      * to `ComapeoCoreService`, which broadcasts to the main app process via
      * the control socket's `started`/`ready`/`stopping`/`error` messages —
@@ -327,6 +356,55 @@ class NodeJSService(
         if (prev.state != committed.state) {
             log("NodeJSService state: ${prev.state} -> ${committed.state}")
             if (prev.state == State.STARTING) cancelStartupWatchdog()
+
+            // Phase 2b — FGS-process state-transition breadcrumb
+            // (§7.4.1). Lands on the FGS Sentry hub so a later
+            // `captureException` from this process picks it up
+            // alongside logcat tail / foreground state. The
+            // matching main-process breadcrumb is emitted by
+            // src/sentry.ts when the JS adapter sees the same
+            // transition via the second control-socket connection.
+            SentryFgsBridge.addBreadcrumb(
+                category = "comapeo.state",
+                message = "${prev.state} → ${committed.state}",
+                level = if (committed.state == State.ERROR) "error" else "info",
+                data = mapOf(
+                    "from" to prev.state.name,
+                    "to" to committed.state.name,
+                    "backendState" to committed.backendState.javaClass.simpleName,
+                    "nodeRuntime" to committed.nodeRuntime.javaClass.simpleName,
+                    "stopRequested" to committed.stopRequested,
+                ),
+            )
+
+            // Phase 2b — close the boot transaction on the first
+            // terminal transition. Subsequent ERROR/STARTED
+            // transitions (only possible after a fresh `start()` →
+            // boot tx is reset) won't double-finish because
+            // `getAndSet(null)` ensures a single owner.
+            when (committed.state) {
+                State.STARTED -> {
+                    bootTx.getAndSet(null)?.let {
+                        SentryFgsBridge.finishSpan(it, "ok")
+                    }
+                }
+                State.ERROR -> {
+                    bootTx.getAndSet(null)?.let {
+                        SentryFgsBridge.finishSpan(it, "internal_error")
+                    }
+                    // Drop any in-flight boot phase spans —
+                    // ERROR means we won't reach their natural
+                    // end, so close them with the same status.
+                    val phases = bootSpans.keys.toList()
+                    for (phase in phases) {
+                        bootSpans.remove(phase)?.let {
+                            SentryFgsBridge.finishSpan(it, "internal_error")
+                        }
+                    }
+                }
+                else -> Unit
+            }
+
             onStateChange?.invoke(committed.state)
         }
     }
@@ -362,6 +440,15 @@ class NodeJSService(
         }
         log("Starting NodeJS service")
 
+        // Phase 2b — open the boot transaction BEFORE the
+        // applyAndEmit that drives STOPPED→STARTING. The
+        // applyAndEmit close-on-terminal logic only fires when
+        // `bootTx` is non-null at transition time, so opening here
+        // guarantees we capture the initial transition's timing as
+        // part of the transaction. Forced 100% sample rate per
+        // §7.4.2 — boot is once-per-process and high value.
+        bootTx.set(SentryFgsBridge.startBootTransaction())
+
         // Reset component state for a fresh start cycle and transition
         // STOPPED → STARTING via the derivation. `lastError` is cleared
         // explicitly: today this only matters as defense-in-depth (the
@@ -388,6 +475,20 @@ class NodeJSService(
                 val info = ErrorInfo(
                     phase = "starting-timeout",
                     message = "Service did not reach STARTED within ${startupTimeoutMs}ms",
+                )
+                // Phase 2b — timeout event (§7.4.4). Captured
+                // BEFORE the applyAndEmit that drives the ERROR
+                // transition so the breadcrumb stack on the
+                // event ends with the in-flight STARTING state
+                // rather than the terminal ERROR.
+                SentryFgsBridge.captureMessage(
+                    "comapeo: startup timeout fired",
+                    level = "error",
+                    tags = mapOf(
+                        "timeout" to "startup",
+                        "comapeo.phase" to "starting-timeout",
+                        "timeoutMs" to startupTimeoutMs.toString(),
+                    ),
                 )
                 // Send error-native to backend so the main-app process
                 // gets the same error frame via re-broadcast — keeps
@@ -479,13 +580,37 @@ class NodeJSService(
         log("Control IPC received: $message")
         when (val frame = ControlFrame.parse(message)) {
             ControlFrame.Started -> {
+                // Phase 2b — control-socket frame breadcrumb (§7.4.5).
+                // Treats each frame the parser accepted as a noteworthy
+                // step in the boot handshake. Malformed frames don't
+                // get a breadcrumb here (they're surfaced via
+                // `messageerror` separately).
+                SentryFgsBridge.addBreadcrumb(
+                    category = "comapeo.control",
+                    message = "received: started",
+                )
                 applyAndEmit { it.copy(backendState = BackendState.ControlBound) }
                 sendInitFrame()
             }
             ControlFrame.Ready -> {
+                SentryFgsBridge.addBreadcrumb(
+                    category = "comapeo.control",
+                    message = "received: ready",
+                )
+                // `ready` arrives once the backend has constructed
+                // MapeoManager and bound the comapeo socket — the
+                // natural close point for the `boot.init-frame` span
+                // we opened in `sendInitFrame()`.
+                bootSpans.remove("init-frame")?.let {
+                    SentryFgsBridge.finishSpan(it, "ok")
+                }
                 applyAndEmit { it.copy(backendState = BackendState.Ready) }
             }
             ControlFrame.Stopping -> {
+                SentryFgsBridge.addBreadcrumb(
+                    category = "comapeo.control",
+                    message = "received: stopping",
+                )
                 // Backend is gracefully shutting down. The next thing
                 // we'll see is the socket close; the derivation maps
                 // this to STOPPING and the subsequent runtime exit
@@ -493,6 +618,15 @@ class NodeJSService(
                 applyAndEmit { it.copy(backendState = BackendState.Stopping) }
             }
             is ControlFrame.Error -> {
+                SentryFgsBridge.addBreadcrumb(
+                    category = "comapeo.control",
+                    message = "received: error",
+                    level = "error",
+                    data = mapOf(
+                        "phase" to frame.phase,
+                        "message" to frame.message,
+                    ),
+                )
                 val info = ErrorInfo(frame.phase, frame.message)
                 applyAndEmit(error = info) {
                     it.copy(backendState = BackendState.Error(frame.phase, frame.message))
@@ -506,6 +640,16 @@ class NodeJSService(
                 // separately so application code can observe protocol
                 // issues without losing service state.
                 log("NodeJSService: ${frame.detail}")
+                // §7.4.5 — protocol failures get a warning-level
+                // breadcrumb so they ride on the next captured event
+                // for forensic context, but no captureException
+                // (matches src/sentry.ts's main-process treatment).
+                SentryFgsBridge.addBreadcrumb(
+                    category = "comapeo.control",
+                    message = "malformed control frame",
+                    level = "warning",
+                    data = mapOf("detail" to frame.detail),
+                )
             }
         }
     }
@@ -525,10 +669,44 @@ class NodeJSService(
      * encoded base64 string still lives in the JVM string pool until GC.
      */
     private fun sendInitFrame() {
+        // Phase 2b — `boot.rootkey-load` span (§7.4.2). Span name
+        // matches the bench backend's `boot.<phase>` taxonomy so
+        // production and bench charts share the same dashboard
+        // queries. Closed with `ok` after a successful load,
+        // `internal_error` after the catch.
+        val rootkeyLoadSpan = SentryFgsBridge.startBootSpan(bootTx.get(), "rootkey-load")
+        if (rootkeyLoadSpan != null) {
+            bootSpans["rootkey-load"] = rootkeyLoadSpan
+        }
         val rootKeyBytes: ByteArray = try {
-            RootKeyStore(applicationContext).loadOrInitialize()
+            RootKeyStore(applicationContext).loadOrInitialize().also {
+                bootSpans.remove("rootkey-load")?.let { sp ->
+                    SentryFgsBridge.finishSpan(sp, "ok")
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load rootkey", e)
+            // Phase 2b — FGS-side captureException (§7.4.7). Lands
+            // on the FGS scope (proc:fgs is a process-level tag set
+            // at SentryAndroid.init time, see SentryFgsBridgeImpl).
+            // The same exception is forwarded to Node via
+            // sendErrorNativeFrame and re-broadcast as an `error`
+            // control frame; the main-app process captures from the
+            // JS adapter with proc:main. Sentry de-dupes via
+            // fingerprinting; the three vantage points carry FGS
+            // context, backend stack, and main-process state-machine
+            // trail respectively.
+            SentryFgsBridge.captureException(
+                e,
+                tags = mapOf(
+                    "comapeo.phase" to "rootkey",
+                    "comapeo.state" to "ERROR",
+                    "source" to "rootkey-store",
+                ),
+            )
+            bootSpans.remove("rootkey-load")?.let { sp ->
+                SentryFgsBridge.finishSpan(sp, "internal_error")
+            }
             val info = ErrorInfo("rootkey", e.message ?: e.javaClass.simpleName)
             sendErrorNativeFrame(info.phase, info.message)
             applyAndEmit(error = info) {
@@ -539,6 +717,14 @@ class NodeJSService(
         val b64 = Base64.encodeToString(rootKeyBytes, Base64.NO_WRAP)
         rootKeyBytes.fill(0)
         val frame = "{\"type\":\"init\",\"rootKey\":\"$b64\"}"
+        // Phase 2b — `boot.init-frame` span: starts as we ship the
+        // init frame, ends when we receive the `ready` control
+        // frame (closed in handleControlMessage). Captures the
+        // round-trip cost of "init sent → MapeoManager constructed
+        // → comapeo socket bound → ready broadcast".
+        SentryFgsBridge.startBootSpan(bootTx.get(), "init-frame")?.let {
+            bootSpans["init-frame"] = it
+        }
         serviceScope.launch {
             ipcDeferred.await().sendMessage(frame)
             log("Sent init frame to backend")

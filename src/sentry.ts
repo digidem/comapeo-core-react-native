@@ -163,10 +163,11 @@ let messageErrorListener: ((err: Error) => void) | null = null;
 
 function attachListeners(adapter: SentryAdapter): void {
   // Per §7.4.1 every transition becomes a breadcrumb. Phase 1 emits
-  // these from the JS adapter only; Phase 2.5 will additionally emit
-  // them FGS-side once a process-local Sentry SDK is initialized there.
-  // The two sources land on different scopes and Sentry de-dupes via
-  // fingerprinting on the eventual `captureException`.
+  // these from the JS adapter (main process only); Phase 2b adds
+  // FGS-side emissions from `NodeJSService` so the FGS-process scope
+  // gets logcat / foreground-state context. The two sources land on
+  // different scopes and Sentry de-dupes via fingerprinting on the
+  // eventual `captureException`.
   stateChangeListener = (s, info) => {
     adapter.addBreadcrumb({
       category: "comapeo.state",
@@ -185,13 +186,17 @@ function attachListeners(adapter: SentryAdapter): void {
     // Per §6.3 ERROR transitions also fire a captureException. The
     // synthesized Error encodes the phase in the name so Sentry's
     // grouping treats e.g. rootkey vs. starting-timeout as distinct
-    // issues without us having to maintain a fingerprint table.
+    // issues without us having to maintain a fingerprint table. The
+    // `proc:main` tag pairs with Phase 2b's `proc:fgs` capture from
+    // the FGS process, so a single error fanned out to multiple
+    // scopes is still filterable per-process in the dashboard.
     if (s === "ERROR" && info) {
       const e = new Error(info.errorMessage);
       e.name = `ComapeoError:${info.errorPhase}`;
       adapter.captureException(e, {
         tags: {
           layer: "rn",
+          proc: "main",
           "comapeo.phase": info.errorPhase,
           "comapeo.state": s,
         },
@@ -205,7 +210,11 @@ function attachListeners(adapter: SentryAdapter): void {
   // native payload in an Error for ergonomics — pass it through.
   messageErrorListener = (err) => {
     adapter.captureException(err, {
-      tags: { layer: "rn", source: "control-socket" },
+      tags: {
+        layer: "rn",
+        proc: "main",
+        source: "control-socket",
+      },
       level: "warning",
     });
   };

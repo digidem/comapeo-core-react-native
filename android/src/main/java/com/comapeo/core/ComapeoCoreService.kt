@@ -45,12 +45,43 @@ class ComapeoCoreService : Service() {
     override fun onCreate() {
         super.onCreate()
         activeInstanceCount++
+
+        // Phase 2b: initialise the FGS-process Sentry SDK before
+        // anything that might emit a breadcrumb / capture an
+        // exception. The host's `@sentry/react-native` runs its
+        // init in `MainApplication.onCreate`, which only fires in
+        // the *main* process — the FGS gets a fresh Application
+        // instance and an empty Sentry hub. Reading the manifest
+        // returns `null` when the consumer didn't register the
+        // Expo plugin with a `sentry: { ... }` argument, in which
+        // case the bridge stays inert.
+        SentryConfig.loadFromManifest(applicationContext)?.let { cfg ->
+            SentryFgsBridge.init(applicationContext, cfg)
+            SentryFgsBridge.addBreadcrumb(
+                category = "comapeo.fgs",
+                message = "ComapeoCoreService.onCreate",
+                level = "info",
+            )
+        }
+
         nodeJSService = NodeJSService(applicationContext)
         log("The service has been created".uppercase())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         log("onStartCommand startId: $startId action: ${intent?.action}")
+
+        // FGS-lifecycle breadcrumb (§7.4.6). Captures the action
+        // routing decision — useful for debugging "why did the FGS
+        // start" questions in production.
+        SentryFgsBridge.addBreadcrumb(
+            category = "comapeo.fgs",
+            message = "onStartCommand",
+            data = mapOf(
+                "startId" to startId,
+                "action" to (intent?.action ?: "(restart)"),
+            ),
+        )
 
         when (intent?.action) {
             Actions.USER_FOREGROUND.name -> {
@@ -107,6 +138,11 @@ class ComapeoCoreService : Service() {
         log("onDestroy")
         isServiceStarted = false
         activeInstanceCount--
+        SentryFgsBridge.addBreadcrumb(
+            category = "comapeo.fgs",
+            message = "ComapeoCoreService.onDestroy",
+            level = "info",
+        )
         serviceScope.launch {
             try {
                 withTimeout(10_000) {
@@ -115,6 +151,16 @@ class ComapeoCoreService : Service() {
                 log("NodeJS service stopped")
             } catch (e: Exception) {
                 log("Error stopping NodeJS service: ${e.message}")
+                // Plan §7.4.4: stop-timeout is a "we have to kill the
+                // FGS via Process.killProcess, observability is gone
+                // shortly" signal. Capture before the kill so the
+                // event has time to flush. Keep level at error — a
+                // 10s shutdown timeout is always actionable.
+                SentryFgsBridge.captureMessage(
+                    "comapeo: FGS stop timeout fired",
+                    level = "error",
+                    tags = mapOf("timeout" to "fgsStop"),
+                )
             }
             log("The service has been destroyed".uppercase())
             // Only kill the process if no new service instance has started.
