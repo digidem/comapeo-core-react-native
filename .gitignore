@@ -95,3 +95,7 @@ build/
 # artifacts; copy out of this dir if you want to commit a specific
 # run's results.
 apps/benchmark/results/
+
+# `apps/benchmark/scripts/build-ipa.sh` output (xcarchive + IPA staged
+# for BrowserStack upload). Regenerable; never commit.
+apps/benchmark/ios-build/

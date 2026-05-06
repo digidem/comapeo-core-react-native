@@ -182,19 +182,27 @@ BrowserStack" below.)
 ### Per-run workflow
 
 ```bash
-# 1. Build a release APK with the JS bundle embedded. Distribution-
-#    signed IPA for iOS (standard Expo flow).
+# 1a. Android: build a release APK with the JS bundle embedded.
 cd apps/benchmark
 npm run prebuild:bundle
 cd android && ./gradlew :app:assembleRelease
-
-# 2. Dispatch — defaults to the curated 10-device sweep, auto-batches
-#    against plan capacity (5+5 → fits in one build).
 cd ../../..
+
+# 1b. iOS: build a Development-export IPA. Requires
+#     APPLE_DEVELOPMENT_TEAM_ID in .env (10-char team id) and the
+#     bundle id com.comapeo.core.benchmark registered in your team's
+#     Identifiers. BrowserStack auto-resigns on upload, so a
+#     Development export (not Distribution / App Store) is enough.
+cd apps/benchmark && npm run ios:archive && cd ../..
+
+# 2. Dispatch — defaults to the curated 10-device Android sweep,
+#    auto-batches against plan capacity (5+5 → fits in one build).
 npm run bench:browserstack -- \
-  --app-android apps/benchmark/android/app/build/outputs/apk/release/app-release.apk
+  --app-android apps/benchmark/android/app/build/outputs/apk/release/app-release.apk \
+  --app-ios apps/benchmark/ios-build/ipa/corereactnativebenchmark.ipa
 # Optional flags:
-#   --devices-android "<csv>"   override device list
+#   --devices-android "<csv>"   override Android device list
+#   --devices-ios "<csv>"       override iOS device list
 #   --build-tag <label>         filter on dashboard
 #   --build-identifier <id>     per-run id (defaults to ISO timestamp)
 

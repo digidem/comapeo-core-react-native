@@ -11,7 +11,8 @@
     "android": "npm run prebuild:bundle && expo run:android",
     "android:release": "npm run prebuild:bundle && expo run:android --variant release --no-install",
     "ios": "npm run prebuild:bundle && expo run:ios",
-    "ios:release": "npm run prebuild:bundle && expo run:ios --configuration Release"
+    "ios:release": "npm run prebuild:bundle && expo run:ios --configuration Release",
+    "ios:archive": "./scripts/build-ipa.sh"
   },
   "dependencies": {
     "expo": "55.0.17",
