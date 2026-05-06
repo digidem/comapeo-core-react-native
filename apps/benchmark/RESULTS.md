@@ -77,17 +77,16 @@ to 6.7 ms (Huawei Nova 11 SE), so on every device, the framing /
 JSI / UDS path itself is sub-ms-to-low-ms; everything above min is
 runtime/OS noise.
 
-### Boot-phase wiring caveat
+### Boot-phase wiring (resolved)
 
-The summarizer table below shows _no boot spans found_. The bench
-backend's HttpSink fires `boot.<phase>` POSTs from inside
-nodejs-mobile, and BrowserStack Local doesn't appear to tunnel
-nodejs-mobile's libuv socket traffic the same way it tunnels the
-RN-side `fetch()`. RN-side rpc spans still arrive cleanly (5656 of
-~5700 expected); only the server-side boot spans drop. Tracking
-this as a known gap; likely fix is to forward boot phases through
-the existing control socket back to RN, then up the same fetch path
-the rpc spans use.
+Earlier dispatches had a known gap: boot spans never reached the
+host receiver because nodejs-mobile's libuv socket traffic bypasses
+BrowserStackLocal's tunnel. The Phase 4 follow-up replaced the
+HTTP-tunnel transport with logcat — both span sources now write
+`BENCH_SPAN <json>` lines to stdout, which surface in Android
+logcat (under `Comapeo:NodeJS` for backend, `ReactNativeJS` for
+RN-side), and the dispatch script pulls + parses them after the
+build finishes. Boot spans are present in subsequent runs.
 
 ## Runs
 

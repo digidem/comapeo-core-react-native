@@ -112,34 +112,46 @@ rm -rf android ios && npm run prebuild
 ## Maestro flows
 
 ```bash
-maestro test e2e/.maestro/bench-rpc.yaml             # all sizes
-maestro test e2e/.maestro/bench-payload-64B.yaml
-maestro test e2e/.maestro/bench-payload-1KB.yaml
-maestro test e2e/.maestro/bench-payload-64KB.yaml
-maestro test e2e/.maestro/bench-payload-1MB.yaml
+maestro test apps/benchmark/.maestro/bench-rpc.yaml              # all sizes
+maestro test apps/benchmark/.maestro/bench-payload-64B.yaml
+maestro test apps/benchmark/.maestro/bench-payload-1KB.yaml
+maestro test apps/benchmark/.maestro/bench-payload-64KB.yaml
+maestro test apps/benchmark/.maestro/bench-payload-1MB.yaml
 ```
 
-Each flow launches the app, asserts `STARTED`, deselects unwanted
-sizes, taps `send-button`, and asserts the `benchmark-result` panel
-renders with the selected size label.
+Each flow launches the app, asserts `STARTED`, taps `send-button`,
+and asserts the `benchmark-result` panel renders. The `config.yaml`
+in the same directory constrains Maestro CLI to the `bench-*.yaml`
+discoveries.
 
 To target a specific simulator/emulator when several are booted:
 
 ```bash
-maestro --device <udid-or-name> test e2e/.maestro/bench-rpc.yaml
+maestro --device <udid-or-name> test apps/benchmark/.maestro/bench-rpc.yaml
 ```
 
-## Sinks and the optional receiver
+## Span transport: logcat
 
-The on-device JSON file sink (Documents directory) is always written
-and is the path of least resistance for ad-hoc local runs.
+Per-RPC spans are emitted as `BENCH_SPAN <json>` lines on `console.log`
+— from RN's bridge (App.tsx) and from nodejs-mobile (the bench
+backend's default `LogSink`). Both surface in Android `logcat` (under
+their respective tags) and iOS device console.
 
-The **POST spans** UI toggle additionally fires each RPC span as a
-fire-and-forget HTTP POST, default URL
-`http://localhost:8787/spans`. This is intended for orchestrated
-multi-device runs (see Phase 4 below) where a host-side receiver
-collates spans across devices. Failures are silently logged so a
-missing receiver never breaks the on-device flow.
+For local standalone runs, watch them with:
+
+```bash
+adb logcat | grep BENCH_SPAN
+```
+
+Or rely on the on-device `JsonFileSink` that writes the same data to
+`<app sandbox>/Documents/comapeo-bench/<runId>.ndjson` — exportable
+via the **Export results** button in the UI.
+
+For BrowserStack runs, `scripts/run-on-browserstack.ts` pulls each
+device's logcat after the build finishes, greps `BENCH_SPAN` lines,
+and writes one NDJSON file per device into
+`apps/benchmark/results/`. No tunnel, no receiver. (See "Run on
+BrowserStack" below.)
 
 ## Phases
 
@@ -148,75 +160,68 @@ missing receiver never breaks the on-device flow.
   plugin).
 - ✅ **Phase 3:** bench app UI, RPC bridge wiring, on-device
   p50/p95/p99 render, "Export results", config plugin, Maestro flows.
-- 🛠 **Phase 4 (in progress):** BrowserStack App Automate — multi-device
-  runs across representative Android + iOS hardware, with span
-  aggregation via BrowserStack Local + a host-side receiver. See
-  "Run on BrowserStack" below; results-format question still open.
+- ✅ **Phase 4:** BrowserStack App Automate — log-based span pull
+  across a curated 10-device sweep, auto-batched against plan
+  capacity, Test R&A integration via `customBuildName` +
+  `buildIdentifier`.
 - ⏳ **Phase 5:** `SentryAdapterSink` once the Sentry plan adopts the
   shared instrumentation; bench call sites stay the same.
 
 ## Run on BrowserStack
 
-Three pieces wire together: the host-side **receiver** that collates
-spans, the **BrowserStack Local** tunnel that lets the device reach
-`localhost`, and the **runner script** that uploads the app + Maestro
-flows and triggers a build.
-
 ### One-time setup
 
-1. BrowserStack App Automate account with the Maestro framework
-   enabled. Username + access key from `Account → Settings → Access
-   Keys`.
+1. BrowserStack App Automate account, RBAC role with `create:build`
+   permission. Username + access key from `Account → Settings →
+   Access Keys`.
 2. Copy `.env.example` (repo root) to `.env` and fill in
-   `BROWSERSTACK_USERNAME` / `BROWSERSTACK_ACCESS_KEY`.
-3. Install the
-   [BrowserStackLocal binary](https://www.browserstack.com/local-testing/app-automate#command-line)
-   somewhere on `$PATH`.
+   `BROWSERSTACK_USERNAME` / `BROWSERSTACK_ACCESS_KEY`. If your
+   account can't auto-create projects, also set
+   `BENCH_BROWSERSTACK_PROJECT` to an existing project name.
 
 ### Per-run workflow
 
 ```bash
-# 1. Receiver collates incoming spans → apps/benchmark/results/<runId>.ndjson
-npm run bench:receiver
+# 1. Build a release APK with the JS bundle embedded. Distribution-
+#    signed IPA for iOS (standard Expo flow).
+cd apps/benchmark
+npm run prebuild:bundle
+cd android && ./gradlew :app:assembleRelease
 
-# 2. In another shell: tunnel localhost into the BS device fleet
-BrowserStackLocal --key "$BROWSERSTACK_ACCESS_KEY" --daemon start
-# (optional flags: --local-identifier, --force-local for offline-only)
-
-# 3. Build a release APK and (Distribution-signed) IPA. Standard
-#    Expo workflow — check expo docs for IPA signing.
-
-# 4. Trigger the run (uploads app + Maestro flows, prints dashboard URL)
+# 2. Dispatch — defaults to the curated 10-device sweep, auto-batches
+#    against plan capacity (5+5 → fits in one build).
+cd ../../..
 npm run bench:browserstack -- \
-  --app-android path/to/release.apk \
-  --app-ios path/to/release.ipa \
-  --flow bench-rpc-receiver.yaml \
-  --device-android "Samsung Galaxy S23 Ultra-13.0" \
-  --device-ios "iPhone 15-17"
+  --app-android apps/benchmark/android/app/build/outputs/apk/release/app-release.apk
+# Optional flags:
+#   --devices-android "<csv>"   override device list
+#   --build-tag <label>         filter on dashboard
+#   --build-identifier <id>     per-run id (defaults to ISO timestamp)
 
-# 5. When done
-BrowserStackLocal --key "$BROWSERSTACK_ACCESS_KEY" --daemon stop
+# 3. Refresh RESULTS.md from the pulled NDJSONs
+npm run bench:summarize
 ```
 
-The `bench-rpc-receiver.yaml` flow flips the bench app's "POST spans"
-toggle before tapping run; spans land at
-`http://localhost:8787/spans` and the receiver appends them to
-`apps/benchmark/results/<runId>.ndjson`. Use `bench-rpc.yaml` instead
-when you only want on-device results visible in the BrowserStack
-dashboard.
+The script:
+- queries `/plan.json` for the parallel + queued cap,
+- chunks the device list into builds that fit,
+- dispatches each, polls until terminal, pulls per-device logcat,
+- greps `BENCH_SPAN` lines into one NDJSON per device under
+  `apps/benchmark/results/`.
 
-The runner deduplicates app + test-suite uploads via `custom_id`, so
-re-running with byte-identical artefacts is cheap.
+No `BrowserStackLocal` tunnel needed; no receiver process; no
+`local: true` on the trigger payload.
 
 ## Repository layout
 
 | Path | Role |
 |---|---|
-| `App.tsx` | Bench UI, RN-side RPC client |
+| `App.tsx` | Bench UI, RN-side RPC client (`console.log("BENCH_SPAN ...")`) |
 | `app.json` | Registers the `with-comapeo-bench` plugin |
+| `.maestro/` | Maestro flows + workspace `config.yaml` |
 | `backend/index.js` | nodejs-mobile entry, control + comapeo socket bind |
 | `backend/lib/bench-rpc.js` | `echo` / `payload(sizeBytes)` RPC dispatch |
 | `backend/lib/boot-spans.js` | `boot.<phase>` span helper |
-| `backend/lib/telemetry-sink.js` | `NoopSink` / `JsonFileSink` / `HttpSink` |
+| `backend/lib/telemetry-sink.js` | `LogSink` (default) / `JsonFileSink` / `HttpSink` / `NoopSink` |
 | `backend/rollup.config.js` | Single ESM bundle to `backend/dist/` |
-| `plugins/with-comapeo-bench/` | Sets override + copies bundle into prebuild output |
+| `plugins/with-comapeo-bench/` | Sets module override + copies bundle into prebuild output |
