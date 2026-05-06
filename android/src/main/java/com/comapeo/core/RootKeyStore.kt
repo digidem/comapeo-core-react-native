@@ -237,9 +237,39 @@ class RootKeyStore(private val context: Context) {
             // attacked by another app on the same device".
             .setUserAuthenticationRequired(false)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            builder.setUnlockedDeviceRequired(true)
-        }
+        // Notably absent: setUnlockedDeviceRequired(true).
+        //
+        // On API 28+ this flag would prevent the wrapper key from
+        // being usable while the device is locked, which sounds like
+        // a free at-rest hardening. In practice it has two
+        // unacceptable consequences for the rootkey:
+        //
+        //   1. It requires a configured secure lock screen at key
+        //      generation. On a device without one (the user has
+        //      not set up a PIN/pattern/password) the keystore
+        //      refuses to generate the key — the FGS bricks at
+        //      startup with a `rootkey` error, which is identity
+        //      loss for that user.
+        //
+        //   2. The key is permanently and irreversibly invalidated
+        //      if the user later disables their secure lock screen,
+        //      even briefly. Re-adding the lock screen does NOT
+        //      recover it. The CoMapeo rootkey IS the user's
+        //      identity in every project they participate in;
+        //      losing it means losing access to their data.
+        //
+        // `expo-secure-store` (the de-facto standard secret store
+        // on Expo/RN Android) makes the same trade and omits this
+        // flag — see expo/expo
+        // packages/expo-secure-store/.../AESEncryptor.kt.
+        //
+        // The wrapper key remains hardware-backed (StrongBox if
+        // available, TEE otherwise), AES-256 GCM, scoped to this
+        // app's signature, and non-extractable. The only attack the
+        // unlock-required gate would have prevented — code
+        // execution as our app while the device sits in the
+        // post-boot pre-unlock state — has no practical path on
+        // current Android even without the gate.
 
         val generator = KeyGenerator.getInstance(
             KeyProperties.KEY_ALGORITHM_AES,
