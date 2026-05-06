@@ -207,9 +207,17 @@ function attachListeners(adapter: SentryAdapter): void {
   // Per §6.3 messageerror is a control-socket parse failure; it never
   // changes the lifecycle state, so we capture as a warning rather
   // than escalating to error. `state.messageerror` already wraps the
-  // native payload in an Error for ergonomics — pass it through.
+  // native payload in an Error for ergonomics — but the wrapped
+  // message can include arbitrary bytes from a corrupted control
+  // frame (the parser surfaces the offending input verbatim for
+  // debugging). Truncate before forwarding to Sentry so a runaway
+  // payload can't blow event size limits or smuggle binary data
+  // into the dashboard.
   messageErrorListener = (err) => {
-    adapter.captureException(err, {
+    const truncated = truncateForSentry(err.message);
+    const wrapped = new Error(truncated);
+    wrapped.name = err.name;
+    adapter.captureException(wrapped, {
       tags: {
         layer: "rn",
         proc: "main",
@@ -221,6 +229,22 @@ function attachListeners(adapter: SentryAdapter): void {
 
   state.addListener("stateChange", stateChangeListener);
   state.addListener("messageerror", messageErrorListener);
+}
+
+/**
+ * Cap on payload bytes we forward into a Sentry event. The control
+ * socket framing (`backend/lib/message-port.js`) accepts up to
+ * ~16 MB per frame; a corrupted frame the parser couldn't decode
+ * could include arbitrary binary bytes. Sentry's per-event size
+ * limit is much smaller, and binary noise is useless on the
+ * dashboard. 256 chars retains the human-debuggable prefix while
+ * keeping events cheap.
+ */
+const MESSAGE_ERROR_MAX_LEN = 256;
+
+function truncateForSentry(input: string): string {
+  if (input.length <= MESSAGE_ERROR_MAX_LEN) return input;
+  return `${input.slice(0, MESSAGE_ERROR_MAX_LEN)}… [truncated ${input.length - MESSAGE_ERROR_MAX_LEN} chars]`;
 }
 
 function detachListeners(): void {

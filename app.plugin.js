@@ -62,11 +62,23 @@ const IOS_KEYS = {
 };
 
 function withComapeoCore(config, props) {
-  // No Sentry config registered → plugin is a no-op. Both withX
-  // helpers are skipped so we don't write empty meta-data /
-  // plist entries that the native readers would have to
-  // distinguish from "key present, empty string".
+  // Two flavours of "off":
+  //   - `props === undefined` (consumer registered the plugin
+  //     without args, or didn't register it at all)
+  //   - `props.sentry === undefined` (consumer registered the
+  //     plugin but disabled Sentry — e.g. they had it on
+  //     previously and turned it off)
+  //
+  // In both cases we still pass through the manifest /
+  // Info.plist mods so we can REMOVE any stale entries from a
+  // previous run. With `expo prebuild --no-clean` (the default
+  // when iterating locally) the prebuild dirs survive across
+  // runs, and a previously-written `<meta-data
+  // android:name="com.comapeo.core.sentry.dsn">` would otherwise
+  // continue shipping the old DSN.
   if (!props || !props.sentry) {
+    config = withSentryAndroid(config, /* sentry= */ null);
+    config = withSentryIos(config, /* sentry= */ null);
     return config;
   }
 
@@ -132,6 +144,17 @@ function withSentryAndroid(config, sentry) {
     }
     application["meta-data"] = application["meta-data"] || [];
 
+    if (sentry == null) {
+      // No-Sentry pass: strip every key the plugin owns. Keys
+      // we don't own (e.g. `io.sentry.dsn` from
+      // `@sentry/react-native`'s own config plugin) are left
+      // alone — the consumer's other plugins manage those.
+      for (const name of Object.values(ANDROID_KEYS)) {
+        removeAndroidMetaData(application, name);
+      }
+      return cfg;
+    }
+
     upsertAndroidMetaData(application, ANDROID_KEYS.dsn, sentry.dsn);
     upsertAndroidMetaData(
       application,
@@ -191,6 +214,15 @@ function removeAndroidMetaData(application, name) {
 function withSentryIos(config, sentry) {
   return withInfoPlist(config, (cfg) => {
     const plist = cfg.modResults;
+
+    if (sentry == null) {
+      // No-Sentry pass: strip every key the plugin owns.
+      for (const key of Object.values(IOS_KEYS)) {
+        delete plist[key];
+      }
+      return cfg;
+    }
+
     plist[IOS_KEYS.dsn] = sentry.dsn;
     plist[IOS_KEYS.environment] = sentry.environment;
     setOrDelete(plist, IOS_KEYS.release, sentry.release);

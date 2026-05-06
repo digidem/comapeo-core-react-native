@@ -100,12 +100,32 @@ data class SentryConfig(
             defaultRelease: () -> String,
         ): SentryConfig? {
             val dsn = metaString(META_DSN) ?: return null
+            // The plugin refuses to prebuild without `environment`,
+            // but a stale prebuild from before the requirement was
+            // added would still ship — and the original "throw on
+            // missing" behaviour crashed every cold start with no
+            // way to recover. Treat the (DSN-present, environment-
+            // absent) state as a build misconfiguration that
+            // disables Sentry; log loud, return null. The host app
+            // continues to function; the missing manifest entry
+            // becomes visible the next time someone re-prebuilds
+            // and sees the plugin's prebuild-time validation fire.
             val environment = metaString(META_ENVIRONMENT)
-                ?: error(
-                    "comapeo: $META_ENVIRONMENT missing from manifest — the " +
-                        "Expo plugin should have refused this prebuild. " +
-                        "Re-run `expo prebuild` or check app.config.js.",
+            if (environment == null) {
+                // System.err so the warning surfaces from JVM unit
+                // tests too (`android.util.Log.e` is unmocked on the
+                // unit-test classpath and would throw "Method e in
+                // android.util.Log not mocked"). On a real device
+                // this lands in logcat at the same level Log.e
+                // would emit.
+                System.err.println(
+                    "[ComapeoCore.SentryConfig] $META_ENVIRONMENT missing " +
+                        "from manifest while $META_DSN is set. Re-run " +
+                        "`expo prebuild` so the plugin can rewrite the " +
+                        "manifest. Sentry disabled until then.",
                 )
+                return null
+            }
             val release = metaString(META_RELEASE) ?: defaultRelease()
             return SentryConfig(
                 dsn = dsn,

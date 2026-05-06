@@ -2,7 +2,6 @@ package com.comapeo.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertThrows
 import org.junit.Test
 
 /**
@@ -158,23 +157,21 @@ class SentryConfigTest {
     }
 
     @Test
-    fun missingEnvironmentIsAFailFast() {
-        // Plugin refuses to prebuild without environment (§4.1), so
-        // a manifest with DSN but no environment is a build
-        // misconfiguration. Throw rather than ship a Sentry event
-        // with no environment tag.
-        val ex = assertThrows(IllegalStateException::class.java) {
-            SentryConfig.load(
-                mapGetter(
-                    mapOf(SentryConfig.META_DSN to "https://x@sentry.io/1"),
-                ),
-                DEFAULT_RELEASE,
-            )
-        }
-        // Message should name the missing meta-data so a developer
-        // chasing this in production can find the prebuild bug.
-        assert(ex.message?.contains(SentryConfig.META_ENVIRONMENT) == true) {
-            "expected message to name the missing meta key, got: ${ex.message}"
-        }
+    fun missingEnvironmentReturnsNullNotThrow() {
+        // The plugin refuses to prebuild without environment (§4.1),
+        // but a stale prebuild from before that validation was added
+        // would still ship. The original "throw" behaviour crashed
+        // every cold start with no way to recover. Now we log loud
+        // and return null (Sentry off) so the host app keeps
+        // running; the misconfiguration becomes visible the next
+        // time someone re-runs `expo prebuild`.
+        val config = SentryConfig.load(
+            mapGetter(mapOf(SentryConfig.META_DSN to "https://x@sentry.io/1")),
+            DEFAULT_RELEASE,
+        )
+        assertNull(
+            "DSN-without-environment should disable Sentry rather than crash",
+            config,
+        )
     }
 }

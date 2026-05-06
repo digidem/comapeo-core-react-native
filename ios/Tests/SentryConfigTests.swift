@@ -167,4 +167,19 @@ final class SentryConfigTests: XCTestCase {
         )
         XCTAssertNil(config?.captureApplicationDataDefault)
     }
+
+    func testMissingEnvironmentReturnsNilNotFatal() {
+        // The plugin refuses to prebuild without environment (§4.1),
+        // but a stale prebuild from before that validation was added
+        // would still ship. The original `fatalError` behaviour
+        // crashed every cold start with no way to recover. Now we
+        // log loud and return nil (Sentry off) so the host app
+        // keeps running; the misconfiguration becomes visible the
+        // next time someone re-runs `expo prebuild`.
+        let config = SentryConfig.load(
+            from: [SentryConfig.Key.dsn: "https://x@sentry.io/1"],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertNil(config, "DSN-without-environment should disable Sentry rather than crash")
+    }
 }

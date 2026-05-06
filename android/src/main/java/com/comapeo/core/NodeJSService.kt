@@ -288,7 +288,28 @@ class NodeJSService(
             // frame with the bytes from RootKeyStore; on `ready` we
             // promote to STARTED (via the derivation).
             ipcDeferred.complete(
-                NodeJSIPC(controlSocketFile) { message ->
+                NodeJSIPC(
+                    controlSocketFile,
+                    onConnectionStateChange = { ipcState ->
+                        // Phase 2b — IPC connection breadcrumb
+                        // (§7.4.5). Cheap signal; rides on the next
+                        // event. We don't fire a captureException
+                        // here even on `Error` because the
+                        // disconnect-derivation logic in
+                        // applyAndEmit already maps unexpected
+                        // disconnects to ERROR with a precise
+                        // phase, and that path captures via
+                        // `state ERROR → captureException`.
+                        SentryFgsBridge.addBreadcrumb(
+                            category = "comapeo.ipc",
+                            message = "control IPC: ${ipcState.javaClass.simpleName}",
+                            level = if (ipcState is NodeJSIPC.State.Error) "warning" else "info",
+                            data = if (ipcState is NodeJSIPC.State.Error) {
+                                mapOf("error" to (ipcState.exception.message ?: ipcState.exception.javaClass.simpleName))
+                            } else emptyMap(),
+                        )
+                    },
+                ) { message ->
                     handleControlMessage(message)
                 },
             )
@@ -378,31 +399,45 @@ class NodeJSService(
             )
 
             // Phase 2b — close the boot transaction on the first
-            // terminal transition. Subsequent ERROR/STARTED
-            // transitions (only possible after a fresh `start()` →
-            // boot tx is reset) won't double-finish because
-            // `getAndSet(null)` ensures a single owner.
-            when (committed.state) {
-                State.STARTED -> {
-                    bootTx.getAndSet(null)?.let {
-                        SentryFgsBridge.finishSpan(it, "ok")
+            // terminal-or-cancelling transition. `getAndSet(null)`
+            // ensures a single owner so subsequent transitions
+            // (e.g. ERROR-after-STOPPING during a stuck shutdown)
+            // can't double-finish.
+            //
+            // Status mapping per Sentry conventions:
+            //   STARTED → ok            (boot succeeded)
+            //   ERROR   → internal_error (boot failed)
+            //   STOPPING/STOPPED → cancelled
+            //                        (stop()/destroy() asked us to
+            //                        bail before STARTED — boot is
+            //                        valid context but didn't reach
+            //                        its natural end). Without this
+            //                        case the txn leaks: STOPPING
+            //                        and STOPPED-via-stopRequested
+            //                        bypass STARTED/ERROR entirely
+            //                        per `deriveLifecycleState`.
+            val terminalStatus = when (committed.state) {
+                State.STARTED -> "ok"
+                State.ERROR -> "internal_error"
+                State.STOPPING, State.STOPPED -> "cancelled"
+                State.STARTING -> null
+            }
+            if (terminalStatus != null) {
+                bootTx.getAndSet(null)?.let {
+                    SentryFgsBridge.finishSpan(it, terminalStatus)
+                }
+                // Drain any in-flight phase spans alongside the
+                // transaction — they share the lifecycle and would
+                // otherwise stay open indefinitely. Pre-STARTED
+                // closure uses the same status as the parent so
+                // the dashboard doesn't show "boot.rootkey-load
+                // succeeded" alongside "comapeo.boot cancelled".
+                val phases = bootSpans.keys.toList()
+                for (phase in phases) {
+                    bootSpans.remove(phase)?.let {
+                        SentryFgsBridge.finishSpan(it, terminalStatus)
                     }
                 }
-                State.ERROR -> {
-                    bootTx.getAndSet(null)?.let {
-                        SentryFgsBridge.finishSpan(it, "internal_error")
-                    }
-                    // Drop any in-flight boot phase spans —
-                    // ERROR means we won't reach their natural
-                    // end, so close them with the same status.
-                    val phases = bootSpans.keys.toList()
-                    for (phase in phases) {
-                        bootSpans.remove(phase)?.let {
-                            SentryFgsBridge.finishSpan(it, "internal_error")
-                        }
-                    }
-                }
-                else -> Unit
             }
 
             onStateChange?.invoke(committed.state)
@@ -765,6 +800,25 @@ class NodeJSService(
                         TAG,
                         "Dropping error-native frame: IPC not available within " +
                             "${SEND_ERROR_NATIVE_TIMEOUT_MS}ms (phase=$phase)",
+                    )
+                    // Phase 2b — timeout event (§7.4.4). Warning
+                    // level rather than error: the FGS-side ERROR
+                    // is already correctly attributed locally; the
+                    // dropped frame only degrades cross-process
+                    // attribution to the synthetic
+                    // `node-runtime-unexpected` phase the main-app
+                    // process derives from the control-socket
+                    // close. That degradation is documented in
+                    // `ARCHITECTURE.md §6` as "no worse than the
+                    // pre-refactor baseline".
+                    SentryFgsBridge.captureMessage(
+                        "comapeo: error-native frame dropped",
+                        level = "warning",
+                        tags = mapOf(
+                            "timeout" to "errorNativeForward",
+                            "comapeo.phase" to phase,
+                            "timeoutMs" to SEND_ERROR_NATIVE_TIMEOUT_MS.toString(),
+                        ),
                     )
                     return@launch
                 }

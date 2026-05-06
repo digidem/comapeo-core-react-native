@@ -70,12 +70,14 @@ struct SentryConfig: Equatable {
     /// tests can run without a real `Bundle.main.infoDictionary`.
     ///
     /// Returns nil when DSN is absent (sentry-off state).
-    /// Hits a `fatalError` when DSN is present but `environment`
-    /// is missing — that combination indicates a build
-    /// misconfiguration the plugin should have refused at prebuild
-    /// time. Failing loud is preferred to silently degrading;
-    /// otherwise we'd ship Sentry events with no environment tag
-    /// and they'd be impossible to filter.
+    ///
+    /// Returns nil with an `NSLog` warning when DSN is present but
+    /// `environment` is missing. The plugin refuses to prebuild in
+    /// that state, but a stale prebuild from before the requirement
+    /// was added would still ship — the original `fatalError`
+    /// behaviour crashed every cold start with no way to recover.
+    /// Treat the misconfigured combination as Sentry-off and let
+    /// the next `expo prebuild` rewrite the plist correctly.
     static func load(
         from info: [String: Any],
         defaultRelease: () -> String
@@ -84,11 +86,13 @@ struct SentryConfig: Equatable {
             return nil
         }
         guard let environment = info[Key.environment] as? String, !environment.isEmpty else {
-            fatalError(
-                "comapeo: \(Key.environment) missing from Info.plist — the " +
-                "Expo plugin should have refused this prebuild. " +
-                "Re-run `expo prebuild` or check app.config.js."
+            NSLog(
+                "[ComapeoCore.SentryConfig] %@ missing from Info.plist while " +
+                "%@ is set. Re-run `expo prebuild` so the plugin can " +
+                "rewrite the plist. Sentry disabled until then.",
+                Key.environment, Key.dsn
             )
+            return nil
         }
         let release = (info[Key.release] as? String) ?? defaultRelease()
         return SentryConfig(

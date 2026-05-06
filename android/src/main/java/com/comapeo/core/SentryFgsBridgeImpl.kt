@@ -7,6 +7,8 @@ import io.sentry.ITransaction
 import io.sentry.Sentry
 import io.sentry.SentryLevel
 import io.sentry.SpanStatus
+import io.sentry.TracesSamplingDecision
+import io.sentry.TransactionContext
 import io.sentry.TransactionOptions
 import io.sentry.android.core.SentryAndroid
 
@@ -94,32 +96,50 @@ internal object SentryFgsBridgeImpl {
     fun startBootTransaction(): Any {
         // Force 100% sample rate per plan §7.4.2 — boot is
         // once-per-process and high value, even when the global
-        // tracesSampleRate is low. `samplingDecision = SampleRate(1.0)`
-        // overrides the global setting.
-        val opts = TransactionOptions().apply {
-            isBindToScope = true
-            // forceSampling = true (Sentry-Android exposes this via
-            // a CustomSamplingContext — but the simpler path is just
-            // to set the rate explicitly; the SDK respects it.)
-        }
-        return Sentry.startTransaction(
+        // tracesSampleRate is low (or 0.0, our default).
+        //
+        // `TransactionContext` accepts a `TracesSamplingDecision`
+        // that overrides the SDK's global decision. Constructing
+        // with `(sampled=true, sampleRate=1.0)` keeps the
+        // transaction *and* every child span on the wire,
+        // regardless of `options.tracesSampleRate`. This is the
+        // mechanism the Sentry-Android docs call out for
+        // "always-sampled-regardless-of-rate" use cases like app
+        // start where the user shouldn't have to crank up their
+        // global rate to capture a once-per-process event.
+        val context = TransactionContext(
             "comapeo.boot",
             "boot",
-            opts,
+            TracesSamplingDecision(true, 1.0),
         )
+        val opts = TransactionOptions().apply {
+            isBindToScope = true
+        }
+        return Sentry.startTransaction(context, opts)
     }
 
     fun startBootSpan(transaction: Any, phase: String): Any {
         require(transaction is ITransaction) {
             "startBootSpan: handle must be ITransaction, got ${transaction.javaClass.name}"
         }
-        // Span name matches the bench backend's `boot.<phase>`
+        // Sentry's `startChild` signature is `(operation, description)`
+        // — operation is the indexed dashboard column, description is
+        // the human-readable label. The plan §7.4.2 names like
+        // `boot.rootkey-load` are the operation names; descriptions
+        // are short summaries of what each phase actually does.
+        //
+        // Operation names match the bench backend's `boot.<phase>`
         // taxonomy (apps/benchmark/backend/lib/boot-spans.js on
-        // claude/benchmark-uds-rpc-bridge-1Zahz). Keeping the names
-        // identical means a single Sentry dashboard query can chart
-        // both the bench backend's spans and the production
-        // FGS-process spans without an alias table.
-        return transaction.startChild("boot", "boot.$phase")
+        // claude/benchmark-uds-rpc-bridge-1Zahz). Keeping the
+        // operation names identical means a single Sentry dashboard
+        // query can chart both the bench backend's spans and the
+        // production FGS-process spans without an alias table.
+        val description = when (phase) {
+            "rootkey-load" -> "Load 16-byte rootkey from RootKeyStore"
+            "init-frame" -> "Send init frame, await ready"
+            else -> phase
+        }
+        return transaction.startChild("boot.$phase", description)
     }
 
     fun finishSpan(handle: Any, status: String) {

@@ -132,7 +132,10 @@ object SentryFgsBridge {
         try {
             SentryFgsBridgeImpl.addBreadcrumb(category, message, level, data)
         } catch (t: Throwable) {
-            // Swallow — see init's catch.
+            // Don't let a Sentry hiccup take the FGS down. Log so
+            // debug builds notice the swallowed surprise — a real
+            // bug in the bridge or SDK shouldn't be silent.
+            Log.w(TAG, "addBreadcrumb($category) threw", t)
         }
     }
 
@@ -151,6 +154,7 @@ object SentryFgsBridge {
         try {
             SentryFgsBridgeImpl.captureException(throwable, tags)
         } catch (t: Throwable) {
+            Log.w(TAG, "captureException threw", t)
         }
     }
 
@@ -169,6 +173,7 @@ object SentryFgsBridge {
         try {
             SentryFgsBridgeImpl.captureMessage(message, level, tags)
         } catch (t: Throwable) {
+            Log.w(TAG, "captureMessage threw", t)
         }
     }
 
@@ -188,6 +193,7 @@ object SentryFgsBridge {
         return try {
             SentryFgsBridgeImpl.startBootTransaction()
         } catch (t: Throwable) {
+            Log.w(TAG, "startBootTransaction threw", t)
             null
         }
     }
@@ -199,6 +205,7 @@ object SentryFgsBridge {
         return try {
             SentryFgsBridgeImpl.startBootSpan(transaction, phase)
         } catch (t: Throwable) {
+            Log.w(TAG, "startBootSpan($phase) threw", t)
             null
         }
     }
@@ -216,6 +223,7 @@ object SentryFgsBridge {
         try {
             SentryFgsBridgeImpl.finishSpan(handle, status)
         } catch (t: Throwable) {
+            Log.w(TAG, "finishSpan($status) threw", t)
         }
     }
 
