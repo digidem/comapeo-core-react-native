@@ -83,9 +83,20 @@ function deriveDeviceTag(): string {
     return `${brand} ${model} (Android ${release})`;
   }
   if (Platform.OS === "ios") {
+    // Platform.constants on iOS exposes `osVersion` (NOT
+    // `systemVersion`) and `interfaceIdiom` ("phone" | "pad" | …).
+    // We deliberately don't try to identify the specific model
+    // (e.g. "iPhone 15 Pro") — that requires a native bridge or a
+    // package like `expo-device`, and the model match between RN
+    // and the backend's UIDevice.current.model would still come
+    // back as "iPhone" on both sides anyway. So we settle for a
+    // tag that exactly matches what NodeJSService.swift produces
+    // ("Apple iPhone (iOS 17.5)"), keeping the summarizer's
+    // group-by-`attrs.device` reliable.
     const sysName = (c.systemName ?? "iOS") as string;
-    const sysVer = (c.systemVersion ?? "?") as string;
-    const model = (c.model ?? "device") as string;
+    const sysVer = (c.osVersion ?? c.systemVersion ?? Platform.Version ?? "?") as string;
+    const idiom = String(c.interfaceIdiom ?? "phone").toLowerCase();
+    const model = idiom === "pad" ? "iPad" : idiom === "tv" ? "Apple TV" : "iPhone";
     return `Apple ${model} (${sysName} ${sysVer})`;
   }
   return Platform.OS;

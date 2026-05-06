@@ -107,6 +107,11 @@ function withBenchInfoPlist(config) {
     // rootKeyProvider closure for the runtime branch and the parallel
     // Android `comapeoStubRootKey` property set above.
     cfg.modResults.ComapeoStubRootKey = true;
+    // String Info.plist key paired with Android's `comapeoBackendArgs`.
+    // NodeJSService.swift whitespace-splits it onto the nodejs-mobile
+    // argv. Empty for the default LogSink path; overridable per build
+    // when the user wants e.g. `--telemetry=file:/tmp/spans.ndjson`.
+    cfg.modResults.ComapeoBackendArgs = '';
     return cfg;
   });
 }
