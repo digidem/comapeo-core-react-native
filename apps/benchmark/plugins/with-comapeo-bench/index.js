@@ -107,6 +107,12 @@ function withBenchInfoPlist(config) {
     // rootKeyProvider closure for the runtime branch and the parallel
     // Android `comapeoStubRootKey` property set above.
     cfg.modResults.ComapeoStubRootKey = true;
+    // Opt the bench build into NodeMobileBridge.mm's pipe + dup2 →
+    // os_log redirect. Production consumers leave this unset so
+    // nodejs-mobile's stdout follows iOS's default routing — keeps
+    // the os_log subsystem free of unredacted JS log lines and saves
+    // an always-on reader thread.
+    cfg.modResults.ComapeoStdoutToOsLog = true;
     // String Info.plist key paired with Android's `comapeoBackendArgs`.
     // NodeJSService.swift whitespace-splits it onto the nodejs-mobile
     // argv. Empty for the default LogSink path; overridable per build

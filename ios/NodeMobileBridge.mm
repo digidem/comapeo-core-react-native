@@ -5,41 +5,43 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <os/log.h>
+#import <Foundation/Foundation.h>
 
 /**
  * `nodejs-mobile` writes diagnostic output to stdout/stderr (file
  * descriptors 1 and 2). On Android the libnode build pipes those
- * fds into Android's `logcat` so `console.log` from the rolled-up
- * backend lands under the `Comapeo:NodeJS` tag automatically. On
- * iOS, no equivalent piping exists — by default the writes go to
- * fds inherited from the parent process, which on a TestFlight /
- * App Store build means /dev/null and on Xcode debug means the
- * Xcode console. Neither route is captured by the iOS unified
- * log subsystem (`os_log`), which is what BrowserStack pulls via
- * the device-log endpoint.
+ * fds into Android's `logcat`. On iOS no equivalent piping exists —
+ * by default the writes go to fds inherited from the parent process,
+ * which on a TestFlight / App Store build means /dev/null and on
+ * Xcode debug means the Xcode console.
  *
- * The bench app's logcat-based span transport relies on every
- * `console.log("BENCH_SPAN ...")` line surfacing in the device
- * log, so without an iOS redirect, server-side spans (boot phases
- * and any future bench backend output) are invisible to the
- * BrowserStack runner.
+ * Off by default for production consumers: keeping nodejs-mobile's
+ * stdout going where iOS sends it normally avoids two production
+ * concerns. (1) Routing every `console.log` through `os_log` with
+ * `%{public}s` deliberately defeats the unified log's PII redaction;
+ * any future identity-bearing log line would land in the device's
+ * persistent log, retrievable via the standard sysdiagnose path.
+ * (2) An always-on reader pthread is overhead production apps don't
+ * pay otherwise.
  *
- * Strategy: dup2 stdout/stderr onto the write end of a pipe before
- * `node_start`, then spawn a detached pthread that reads the read
- * end line-by-line and forwards each line to `os_log` under a
- * dedicated subsystem. The subsystem is namespaced
- * (`com.comapeo.nodejs`) so a downstream filter can pull only
- * Node-originated lines.
+ * Opt-in via the Info.plist key `ComapeoStdoutToOsLog` (BOOL). The
+ * bench app's `with-comapeo-bench` config plugin sets this true so
+ * the BrowserStack runner can pull `BENCH_SPAN <json>` lines out of
+ * the device console after each run. Production consumers leave the
+ * key unset (or false) and inherit the legacy behavior.
  *
- * Idempotency: only redirects on the first call. A second call
- * (e.g. if a future codepath ever re-invoked the bridge) is a
- * no-op since the dup2 result has already replaced fd 1/2.
+ * Strategy when enabled: dup2 stdout/stderr onto the write end of a
+ * pipe before `node_start`, spawn a detached pthread that reads the
+ * pipe line-by-line and forwards each line to `os_log` under the
+ * `com.comapeo.nodejs` subsystem.
  *
- * Performance: one extra pthread alive for the lifetime of the
- * Node process. read() on the pipe blocks; we don't busy-loop. A
- * line-buffered fgets keeps allocations bounded by line length
- * (BENCH_SPAN lines are typically <500 bytes, well under the
- * 64 KiB pipe buffer).
+ * Idempotency: pthread_once gates first-call setup so a second call
+ * is a no-op.
+ *
+ * Performance: one extra pthread alive for the lifetime of the Node
+ * process. read() on the pipe blocks; no busy-loop. Line-buffered
+ * fgets bounds allocations by line length (BENCH_SPAN lines are
+ * typically <500 bytes, well under the 64 KiB pipe buffer).
  */
 static os_log_t kNodeStdoutLog;
 static pthread_once_t kNodeStdoutOnce = PTHREAD_ONCE_INIT;
@@ -88,7 +90,11 @@ static void NodeMobileSetupLogPipe(void) {
 }
 
 int32_t NodeMobileStartNode(int argc, const char *argv[]) {
-    pthread_once(&kNodeStdoutOnce, NodeMobileSetupLogPipe);
+    NSNumber *redirectFlag = [[NSBundle mainBundle]
+        objectForInfoDictionaryKey:@"ComapeoStdoutToOsLog"];
+    if (redirectFlag != nil && [redirectFlag boolValue]) {
+        pthread_once(&kNodeStdoutOnce, NodeMobileSetupLogPipe);
+    }
     // libUV requires all arguments to reside in contiguous memory.
     // Compute total size needed for all argument strings.
     size_t total_size = 0;
