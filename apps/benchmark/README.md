@@ -51,11 +51,12 @@ there. The module sees no bench-specific code:
   path-imports the framing helpers (`server-helper.js`,
   `simple-rpc.js`, `message-port.js`) from the module's production
   `backend/lib/` so the wire framing is bit-identical to production.
-  `BenchRpcServer` (`backend/lib/bench-rpc.js`) registers only `echo`
-  and `payload(sizeBytes)` methods. Telemetry sinks
+  `BenchRpcServer` (`backend/lib/bench-rpc.js`) registers `echo`,
+  `payload(sizeBytes)`, and `ingestSpans` methods. Telemetry sinks
   (`backend/lib/telemetry-sink.js`) are configurable via
-  `--telemetry=<spec>` on argv: `noop` (default), `file:<path>`, or
-  `http(s)://<url>`.
+  `--telemetry=<spec>` on argv: `log` (default; one stdout line per
+  span so logcat / device console captures them), `noop`, or
+  `file:<path>`.
 - **RN side.** `App.tsx` uses `unstable_messagePort` from
   `@comapeo/core-react-native` — a generic escape hatch one level
   below the public `comapeo` `MapeoClient` — to send raw frames over
@@ -230,6 +231,6 @@ No `BrowserStackLocal` tunnel needed; no receiver process; no
 | `backend/index.js` | nodejs-mobile entry, control + comapeo socket bind |
 | `backend/lib/bench-rpc.js` | `echo` / `payload(sizeBytes)` RPC dispatch |
 | `backend/lib/boot-spans.js` | `boot.<phase>` span helper |
-| `backend/lib/telemetry-sink.js` | `LogSink` (default) / `JsonFileSink` / `HttpSink` / `NoopSink` |
+| `backend/lib/telemetry-sink.js` | `LogSink` (default) / `JsonFileSink` / `NoopSink` |
 | `backend/rollup.config.js` | Single ESM bundle to `backend/dist/` |
 | `plugins/with-comapeo-bench/` | Sets module override + copies bundle into prebuild output |

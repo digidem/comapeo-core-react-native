@@ -113,51 +113,11 @@ export class JsonFileSink {
 }
 
 /**
- * Fire-and-forget HTTP POST sink. Intended for orchestrated runs where
- * the bench app POSTs to a host-side receiver via the BrowserStack
- * Local tunnel. Failures are silently swallowed so the on-device
- * experience is unaffected when no receiver is reachable — that's
- * deliberate: the bench app must be useful standalone.
- *
- * @returns {TelemetrySink}
- */
-export class HttpSink {
-  /**
-   * @param {string} url
-   * @param {{ runId?: string, device?: string }} [defaults]
-   */
-  constructor(url, defaults = {}) {
-    this.url = url;
-    this.defaults = defaults;
-  }
-
-  /** @param {BenchSpan} span */
-  recordSpan(span) {
-    // No await — we don't want sink latency on the hot path. Errors are
-    // logged once per type to avoid flooding the console when the
-    // receiver is down.
-    const body = JSON.stringify(mergeDefaults(span, this.defaults));
-    fetch(this.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    }).catch((e) => {
-      if (!this._loggedError) {
-        console.warn("HttpSink: POST failed (subsequent errors suppressed):", e?.message ?? e);
-        this._loggedError = true;
-      }
-    });
-  }
-
-  close() {}
-}
-
-/**
  * Lifts per-process defaults onto a span before emit. `runId` lands at
- * top level (matching the receiver's wire format expectation, and the
- * RN side's convention). `device` tucks into `attrs.device` so the
- * summarizer can group spans across files post-hoc. Span-supplied
- * values win over defaults so per-call overrides still work.
+ * top level (the RN side's convention). `device` tucks into
+ * `attrs.device` so the summarizer can group spans across files
+ * post-hoc. Span-supplied values win over defaults so per-call
+ * overrides still work.
  *
  * @param {BenchSpan} span
  * @param {{ runId?: string, device?: string }} defaults
@@ -182,8 +142,6 @@ function mergeDefaults(span, defaults) {
  *   - `log`               → LogSink (explicit)
  *   - `noop`              → NoopSink (drops every span)
  *   - `file:<path>`       → JsonFileSink writing NDJSON to `<path>`
- *   - `http://<url>`      → HttpSink POSTing each span as JSON
- *   - `https://<url>`     → ditto
  *
  * Unknown specs throw at startup so a typo doesn't silently drop spans.
  *
@@ -195,9 +153,8 @@ export function createSinkFromArg(spec, defaults = {}) {
   if (!spec || spec === "log") return new LogSink(defaults);
   if (spec === "noop") return new NoopSink();
   if (spec.startsWith("file:")) return new JsonFileSink(spec.slice("file:".length), defaults);
-  if (spec.startsWith("http://") || spec.startsWith("https://")) return new HttpSink(spec, defaults);
   throw new Error(
-    `Unknown --telemetry spec: ${spec}. Expected "log", "noop", "file:<path>", or "http(s)://<url>".`,
+    `Unknown --telemetry spec: ${spec}. Expected "log", "noop", or "file:<path>".`,
   );
 }
 
