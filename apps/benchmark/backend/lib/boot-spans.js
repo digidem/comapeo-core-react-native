@@ -1,34 +1,15 @@
 import { startSpan } from "./telemetry-sink.js";
 
 /**
- * Names of every boot phase the Sentry plan §7.4.2 enumerates. Re-used
- * by the bench backend (see `apps/benchmark/backend/index.js`) and
- * intended to be picked up by the production `backend/index.js` when
- * Sentry plan Phase 3 lands. Keeping the names identical means the
- * same dashboards work for both transports.
+ * Server-side boot phases the bench backend records. Three matching
+ * names from the Sentry plan §7.4.2 taxonomy so future production
+ * instrumentation can land on the same span names without breaking
+ * dashboards. Three more native-side phases (`ipc-connect (control)`,
+ * `rootkey-load`, `ipc-connect (comapeo)`) live in the native loader
+ * and are out of scope for the bench backend — they'll be added when
+ * the production loaders adopt shared instrumentation.
  *
- * Three of the six are server-side (Node) and three are native-side:
- *
- *   server-side (Node measures these):
- *     - listen-control
- *     - init
- *     - construct
- *
- *   native-side (Android/iOS measure these; deferred to Sentry plan):
- *     - ipc-connect (control)
- *     - rootkey-load
- *     - ipc-connect (comapeo)
- *
- * The bench backend only records the three server-side phases; the
- * native-side phases will be added when the production loaders adopt
- * shared instrumentation.
- *
- * @typedef {"listen-control"
- *   | "ipc-connect (control)"
- *   | "rootkey-load"
- *   | "init"
- *   | "construct"
- *   | "ipc-connect (comapeo)"} BootPhase
+ * @typedef {"listen-control" | "init" | "construct"} BootPhase
  */
 
 /**

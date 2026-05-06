@@ -121,6 +121,7 @@ async function loadAllSpans(dir: string): Promise<Span[]> {
 }
 
 type DeviceKey = string;
+type RttSide = "rn" | "backend";
 
 /**
  * Per-device, per-size RPC table row.
@@ -150,19 +151,22 @@ type BootRow = {
   max: number;
 };
 
-function summarizeRpc(spans: Span[]): RpcRow[] {
+function summarizeRpc(spans: Span[], side: RttSide): RpcRow[] {
   const buckets = new Map<string, number[]>();
   for (const s of spans) {
     if (s.op !== "rpc") continue;
-    // Two `op:"rpc"` shapes flow through the receiver:
+    // Two `op:"rpc"` shapes:
     //   - RN-side: `attrs.rttSide === "rn"`, the user-facing
-    //     round-trip-time metric we care about
-    //   - Backend-side: emitted by `bench-rpc.js` per handler call,
-    //     sub-ms by design (server-side compute only)
-    // Aggregating them together skews the percentiles because the
-    // backend spans dominate the count and pull p50 toward zero.
-    // Filter to RN-side only for the RTT table.
-    if ((s.attrs as Record<string, unknown> | undefined)?.rttSide !== "rn") continue;
+    //     round-trip metric (App.tsx batches these via `ingestSpans`)
+    //   - Backend-side: `attrs.rttSide === "backend"`, the server-side
+    //     handler duration (sub-ms by design — String.repeat from a
+    //     cache + JSON.stringify)
+    // Pre-Option-2 NDJSON files captured backend spans without the
+    // attr; treat absent rttSide on op:"rpc" as backend so legacy
+    // results in `apps/benchmark/results/` still group.
+    const rttSide =
+      (s.attrs as Record<string, unknown> | undefined)?.rttSide ?? "backend";
+    if (rttSide !== side) continue;
     const dev = s.attrs?.device ?? "unknown";
     const sz = s.attrs?.bytes;
     if (typeof sz !== "number") continue;
@@ -269,12 +273,14 @@ async function rewriteResultsMd(args: Args, body: string) {
 async function main() {
   const args = parseArgs();
   const spans = await loadAllSpans(args.resultsDir);
-  const rpc = summarizeRpc(spans);
+  const rpcRn = summarizeRpc(spans, "rn");
+  const rpcBackend = summarizeRpc(spans, "backend");
   const boot = summarizeBoot(spans);
 
   const generatedAt = new Date().toISOString();
   const devices = new Set([
-    ...rpc.map((r) => r.device),
+    ...rpcRn.map((r) => r.device),
+    ...rpcBackend.map((r) => r.device),
     ...boot.map((r) => r.device),
   ]);
 
@@ -283,8 +289,15 @@ async function main() {
     `\`${path.relative(PROJECT_ROOT, args.resultsDir)}/\` at ` +
     `${generatedAt} — ${spans.length} spans across ${devices.size} ` +
     `device${devices.size === 1 ? "" : "s"}._\n\n` +
-    "#### RPC throughput (RN-thread RTT, ms)\n\n" +
-    renderRpcTable(rpc) +
+    "#### RPC round-trip — RN side (ms)\n\n" +
+    "Per-request round-trip latency as observed from React Native: " +
+    "send frame → backend handler → response. This is the user-facing " +
+    "metric.\n\n" +
+    renderRpcTable(rpcRn) +
+    "\n#### RPC handler — backend side (ms)\n\n" +
+    "Server-side handler duration only (no IPC). The diff against the " +
+    "RN side is approximately the JSI + framing + UDS overhead.\n\n" +
+    renderRpcTable(rpcBackend) +
     "\n#### Boot phases (server-side, ms)\n\n" +
     renderBootTable(boot) +
     "\n";

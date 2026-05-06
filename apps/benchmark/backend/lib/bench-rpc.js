@@ -49,11 +49,18 @@ function payload(sizeBytes) {
  *   - `payload({ sizeBytes })` returns an ASCII string of `sizeBytes`
  *     length. Used for per-size throughput measurements.
  *
- * Each request emits an `op:"rpc"` span on the supplied sink with the
- * server-side handler duration in `durationMs` and the response payload
- * size in `attrs.bytes`. RN-thread (round-trip) timing is recorded
- * separately on the bench app side so end-to-end vs. server-only timing
- * can be diffed.
+ * Each user-facing request (`echo`, `payload`) emits an `op:"rpc"`
+ * span tagged `attrs.rttSide:"backend"` with the server-side handler
+ * duration in `durationMs` and the response payload size in
+ * `attrs.bytes`. The RN side records its own `rttSide:"rn"` span per
+ * request, so the summarizer can render both columns and the diff
+ * (RN_RTT − backend_handler ≈ JSI + framing + UDS overhead) is one
+ * eye-line away.
+ *
+ * `ingestSpans` is housekeeping — RN's bulk span flush at end of run
+ * — and is intentionally NOT timed: the call body is a forwarding
+ * `console.log` loop and emitting a span here would pollute the
+ * percentile data with one large outlier per run.
  */
 export class BenchRpcServer extends ServerHelper {
   /** @param {{ sink: import("./telemetry-sink.js").TelemetrySink }} options */
@@ -90,7 +97,11 @@ export class BenchRpcServer extends ServerHelper {
     const { id, method, params } =
       /** @type {{ id: string, method: string, params?: unknown }} */ (msg);
 
-    const span = startSpan(this.sink, "rpc", `rpc.${method}`);
+    // Only the user-facing RPCs (echo, payload) get measured. The
+    // span emit for `ingestSpans` would be one big outlier per run
+    // since its body is the bulk span flush itself.
+    const measure = method !== "ingestSpans";
+    const span = measure ? startSpan(this.sink, "rpc", `rpc.${method}`) : null;
     /** @type {unknown} */
     let result;
     /** @type {{ message: string } | undefined} */
@@ -100,13 +111,15 @@ export class BenchRpcServer extends ServerHelper {
     } catch (e) {
       error = { message: e instanceof Error ? e.message : String(e) };
     }
-    const responseBytes =
-      typeof result === "string"
-        ? result.length
-        : result == null
-          ? 0
-          : JSON.stringify(result).length;
-    span.end({ bytes: responseBytes, error: !!error });
+    if (span) {
+      const responseBytes =
+        typeof result === "string"
+          ? result.length
+          : result == null
+            ? 0
+            : JSON.stringify(result).length;
+      span.end({ bytes: responseBytes, error: !!error, rttSide: "backend" });
+    }
 
     port.postMessage(error ? { id, error } : { id, result });
   }
