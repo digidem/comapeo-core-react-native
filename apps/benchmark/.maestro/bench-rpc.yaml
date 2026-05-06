@@ -8,11 +8,6 @@ appId: com.comapeo.core.benchmark
 # sizes, and reads back the on-screen p50/p95/p99 panel. Spans are also
 # written to the app's documents directory; "Export results" opens the
 # system share sheet.
-#
-# Sibling `bench-rpc-receiver.yaml` is the same flow but with the
-# "POST spans" toggle enabled, intended for orchestrated BrowserStack
-# runs that ship spans to a host-side `bench-receiver.ts` via
-# BrowserStack Local.
 
 - launchApp:
     clearState: true

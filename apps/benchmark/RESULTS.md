@@ -154,7 +154,7 @@ build finishes. Boot spans are present in subsequent runs.
 
 > **Date:** YYYY-MM-DD &nbsp;·&nbsp; **Git SHA:** `<sha>` &nbsp;·&nbsp;
 > **Build:** [BS dashboard](https://app-automate.browserstack.com/dashboard/v2/builds/<build_id>) &nbsp;·&nbsp;
-> **Flow:** `bench-rpc-receiver.yaml`
+> **Flow:** `bench-rpc.yaml`
 
 #### RPC throughput
 

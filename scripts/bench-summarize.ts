@@ -1,5 +1,6 @@
 /**
- * Reads NDJSON span files written by `scripts/bench-receiver.ts`,
+ * Reads NDJSON span files written by `scripts/run-on-browserstack.ts`'s
+ * logcat parser (or by the on-device `JsonFileSink` for local runs),
  * groups by `attrs.device`, computes percentiles per (op, name, size),
  * and rewrites the AUTOSUMMARY-marked section of
  * `apps/benchmark/RESULTS.md`.
