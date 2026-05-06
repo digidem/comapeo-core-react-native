@@ -54,8 +54,45 @@ type BenchSpan = {
   name: string;
   startTimestamp: number;
   durationMs: number;
-  attrs: { bytes: number; rttSide: "rn" };
+  attrs: { bytes: number; rttSide: "rn"; device: string };
 };
+
+/**
+ * Stable device label used as `attrs.device` on every span this run
+ * emits. Matches the format the native loader builds for the bench
+ * backend's `--device=<tag>` arg ("<MANUFACTURER> <MODEL> (Android
+ * <RELEASE>)") so the summarizer can group RN-side and backend-side
+ * spans under one row even when each side computes its own label.
+ *
+ * Falls back to `Platform.OS` when constants are unavailable (web /
+ * stubbed test runners). On iOS, `Platform.constants` exposes
+ * `systemName` / `systemVersion` rather than Android's Brand/Model;
+ * we still produce a recognisable label so a future iOS run lands
+ * in the right RESULTS.md row without further plumbing.
+ */
+function deriveDeviceTag(): string {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Platform = require("react-native").Platform as {
+    OS: string;
+    constants?: Record<string, unknown>;
+  };
+  const c = Platform.constants ?? {};
+  if (Platform.OS === "android") {
+    const brand = (c.Manufacturer ?? c.Brand ?? "android") as string;
+    const model = (c.Model ?? "device") as string;
+    const release = (c.Release ?? "?") as string;
+    return `${brand} ${model} (Android ${release})`;
+  }
+  if (Platform.OS === "ios") {
+    const sysName = (c.systemName ?? "iOS") as string;
+    const sysVer = (c.systemVersion ?? "?") as string;
+    const model = (c.model ?? "device") as string;
+    return `Apple ${model} (${sysName} ${sysVer})`;
+  }
+  return Platform.OS;
+}
+
+const DEVICE_TAG = deriveDeviceTag();
 
 type SizeStats = {
   sizeBytes: number;
@@ -229,7 +266,7 @@ export default function App() {
             name: "rpc.payload",
             startTimestamp: startMs,
             durationMs,
-            attrs: { bytes: sizeBytes, rttSide: "rn" },
+            attrs: { bytes: sizeBytes, rttSide: "rn", device: DEVICE_TAG },
           };
           allSpans.push(span);
           if (postEnabled) {

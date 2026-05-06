@@ -70,8 +70,8 @@ type CliArgs = {
   appAndroid?: string;
   appIos?: string;
   flow: string;
-  deviceAndroid: string;
-  deviceIos: string;
+  devicesAndroid: string[];
+  devicesIos: string[];
   buildName: string;
   project?: string;
 };
@@ -80,8 +80,8 @@ function parseArgs(): CliArgs {
   const args = process.argv.slice(2);
   const out: CliArgs = {
     flow: "bench-rpc.yaml",
-    deviceAndroid: DEFAULT_DEVICES.android,
-    deviceIos: DEFAULT_DEVICES.ios,
+    devicesAndroid: [DEFAULT_DEVICES.android],
+    devicesIos: [DEFAULT_DEVICES.ios],
     buildName: `comapeo-bench-${new Date().toISOString().replace(/[:.]/g, "-")}`,
     // BrowserStack accounts that lock down project creation require
     // an existing project name. `BENCH_BROWSERSTACK_PROJECT` lets that
@@ -99,10 +99,15 @@ function parseArgs(): CliArgs {
         out.appIos = v; i++; break;
       case "--flow":
         out.flow = v; i++; break;
+      // Singular still accepted for back-compat; both forms feed the
+      // same CSV-or-single-value parser. Multi-device runs go through
+      // BS as a single build with N parallel sessions.
       case "--device-android":
-        out.deviceAndroid = v; i++; break;
+      case "--devices-android":
+        out.devicesAndroid = parseDeviceList(v); i++; break;
       case "--device-ios":
-        out.deviceIos = v; i++; break;
+      case "--devices-ios":
+        out.devicesIos = parseDeviceList(v); i++; break;
       case "--build-name":
         out.buildName = v; i++; break;
       case "--project":
@@ -122,6 +127,17 @@ function parseArgs(): CliArgs {
     printUsageAndExit(1);
   }
   return out;
+}
+
+/**
+ * Splits CSV (`Pixel 7-13.0,Pixel 8-14.0`) and trims; single-value
+ * inputs come through unchanged. Empties are dropped so a trailing
+ * comma in a list (or a list piped from `xargs`) doesn't submit
+ * `""` as a device name.
+ */
+function parseDeviceList(v: string | undefined): string[] {
+  if (!v) return [];
+  return v.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 function printUsageAndExit(code: number): never {
@@ -257,7 +273,7 @@ async function triggerBuild(args: {
   platform: "android" | "ios";
   appUrl: string;
   testSuiteUrl: string;
-  device: string;
+  devices: string[];
   flow: string;
   buildName: string;
   project?: string;
@@ -266,7 +282,7 @@ async function triggerBuild(args: {
     app: args.appUrl,
     testSuite: args.testSuiteUrl,
     buildName: args.buildName,
-    devices: [args.device],
+    devices: args.devices,
     // `execute` is a path RELATIVE to the zip's parent dir — BS auto-
     // prepends the parent (e.g. `flows/`) at extraction time. So
     // `execute: ["bench-rpc.yaml"]` resolves to
@@ -295,7 +311,8 @@ async function triggerBuild(args: {
   // when explicitly requested so BrowserStack uses its account-level
   // default project for builds when omitted.
   if (args.project) body.project = args.project;
-  console.log(`  → trigger ${args.platform} build on ${args.device} (flow=${args.flow})…`);
+  const deviceSummary = args.devices.length === 1 ? args.devices[0] : `${args.devices.length} devices`;
+  console.log(`  → trigger ${args.platform} build on ${deviceSummary} (flow=${args.flow})…`);
   const r = await bsFetch(`/${args.platform}/build`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -367,7 +384,7 @@ async function main() {
         platform: "android",
         appUrl,
         testSuiteUrl,
-        device: args.deviceAndroid,
+        devices: args.devicesAndroid,
         flow: args.flow,
         buildName: args.buildName,
         project: args.project,
@@ -380,7 +397,7 @@ async function main() {
         platform: "ios",
         appUrl,
         testSuiteUrl,
-        device: args.deviceIos,
+        devices: args.devicesIos,
         flow: args.flow,
         buildName: args.buildName,
         project: args.project,

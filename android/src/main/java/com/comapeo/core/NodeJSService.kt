@@ -414,15 +414,29 @@ class NodeJSService(
                     }
                 }
 
-                val exitCode = startNodeWithArguments(
-                    arrayOf(
-                        "node",
-                        jsFile.absolutePath,
-                        comapeoSocketFile.absolutePath,
-                        controlSocketFile.absolutePath,
-                        dataDir,
-                    )
+                // Base argv the backend's positional parser expects:
+                // socket paths + dataDir. `BuildConfig.COMAPEO_BACKEND_ARGS`
+                // (set by android/build.gradle from the
+                // `comapeoBackendArgs` Gradle property) appends extra
+                // flags after that — the bench plugin uses it to wire
+                // `--telemetry=http://...` and a `--device=<tag>` for
+                // span attribution. Whitespace-split so a single
+                // gradle string can carry multiple flags.
+                val baseArgs = arrayOf(
+                    "node",
+                    jsFile.absolutePath,
+                    comapeoSocketFile.absolutePath,
+                    controlSocketFile.absolutePath,
+                    dataDir,
                 )
+                val extraArgs = if (BuildConfig.COMAPEO_BACKEND_ARGS.isNotBlank()) {
+                    val deviceTag = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})"
+                    BuildConfig.COMAPEO_BACKEND_ARGS.trim().split("\\s+".toRegex()) +
+                        "--device=$deviceTag"
+                } else {
+                    emptyList()
+                }
+                val exitCode = startNodeWithArguments(baseArgs + extraArgs.toTypedArray())
                 log("NodeJS service completed with exit code $exitCode")
 
                 // Classify the exit. "Requested" means we asked for it

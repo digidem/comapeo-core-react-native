@@ -45,8 +45,24 @@ const [comapeoSocketPath, controlSocketPath, , ...rest] =
 // supported forms. Unspecified → NoopSink, which is the right default
 // for a "production-like" run where we want zero tracing overhead.
 const telemetryArg = rest.find((a) => a.startsWith("--telemetry="));
+// `--device=<tag>` is set by the native loader (see
+// android/src/main/java/com/comapeo/core/NodeJSService.kt) so backend
+// span emissions can carry device attribution without a round-trip
+// through RN. Falls back to `unknown` when the loader didn't set it
+// (production loader, or an iOS path that hasn't been wired yet).
+const deviceArg = rest.find((a) => a.startsWith("--device="));
+const deviceTag = deviceArg ? deviceArg.slice("--device=".length) : "unknown";
+// Per-process session id; lets the receiver group every span this
+// process emits (boot.* and rpc.*) into one NDJSON file. The RN side
+// generates its own runId per Run-benchmark tap; both end up tagged
+// with the same `attrs.device`, so the summarizer can re-correlate
+// across files post-hoc.
+const sessionRunId = `boot-${Date.now().toString(36)}-${Math.random()
+  .toString(36)
+  .slice(2, 8)}`;
 const sink = createSinkFromArg(
   telemetryArg ? telemetryArg.slice("--telemetry=".length) : undefined,
+  { runId: sessionRunId, device: deviceTag },
 );
 
 /** @type {BenchRpcServer | undefined} */

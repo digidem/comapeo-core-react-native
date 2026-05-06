@@ -106,6 +106,18 @@ function withBenchGradleProperty(config) {
         '\n# a configured screen lock (e.g. BrowserStack stock fleet) where the Android' +
         '\n# Keystore super-encryption layer fails on `setUnlockedDeviceRequired(true)`',
     );
+    // Routes the bench backend's telemetry sink to the host-side
+    // receiver via BrowserStackLocal (the receiver listens on
+    // localhost:8787 by default). Native loader appends a derived
+    // `--device=<brand model> (Android <ver>)` next to this so backend
+    // boot spans land alongside RN-side rpc spans, both tagged with
+    // device attribution.
+    upsertGradleProperty(
+      cfg.modResults,
+      'comapeoBackendArgs',
+      '--telemetry=http://localhost:8787/spans',
+      ' bench-only telemetry routing — read by android/build.gradle of @comapeo/core-react-native',
+    );
     return cfg;
   });
 }

@@ -43,7 +43,8 @@
     "prebackend:build": "npm run backend:install",
     "backend:build": "node ./scripts/build-backend.ts",
     "bench:receiver": "node ./scripts/bench-receiver.ts",
-    "bench:browserstack": "node --env-file=.env ./scripts/run-on-browserstack.ts"
+    "bench:browserstack": "node --env-file=.env ./scripts/run-on-browserstack.ts",
+    "bench:summarize": "node ./scripts/bench-summarize.ts"
   },
   "keywords": [
     "react-native",

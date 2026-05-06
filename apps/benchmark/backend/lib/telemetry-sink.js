@@ -54,16 +54,20 @@ export class NoopSink {
  * @returns {TelemetrySink}
  */
 export class JsonFileSink {
-  /** @param {string} filePath */
-  constructor(filePath) {
+  /**
+   * @param {string} filePath
+   * @param {{ runId?: string, device?: string }} [defaults]
+   */
+  constructor(filePath, defaults = {}) {
     this.filePath = filePath;
+    this.defaults = defaults;
     mkdirSync(path.dirname(filePath), { recursive: true });
   }
 
   /** @param {BenchSpan} span */
   recordSpan(span) {
     try {
-      appendFileSync(this.filePath, JSON.stringify(span) + "\n");
+      appendFileSync(this.filePath, JSON.stringify(mergeDefaults(span, this.defaults)) + "\n");
     } catch (e) {
       console.error("JsonFileSink: append failed", e);
     }
@@ -82,9 +86,13 @@ export class JsonFileSink {
  * @returns {TelemetrySink}
  */
 export class HttpSink {
-  /** @param {string} url */
-  constructor(url) {
+  /**
+   * @param {string} url
+   * @param {{ runId?: string, device?: string }} [defaults]
+   */
+  constructor(url, defaults = {}) {
     this.url = url;
+    this.defaults = defaults;
   }
 
   /** @param {BenchSpan} span */
@@ -92,10 +100,11 @@ export class HttpSink {
     // No await — we don't want sink latency on the hot path. Errors are
     // logged once per type to avoid flooding the console when the
     // receiver is down.
+    const body = JSON.stringify(mergeDefaults(span, this.defaults));
     fetch(this.url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(span),
+      body,
     }).catch((e) => {
       if (!this._loggedError) {
         console.warn("HttpSink: POST failed (subsequent errors suppressed):", e?.message ?? e);
@@ -105,6 +114,28 @@ export class HttpSink {
   }
 
   close() {}
+}
+
+/**
+ * Lifts per-process defaults onto a span before emit. `runId` lands at
+ * top level (matching the receiver's wire format expectation, and the
+ * RN side's convention). `device` tucks into `attrs.device` so the
+ * summarizer can group spans across files post-hoc. Span-supplied
+ * values win over defaults so per-call overrides still work.
+ *
+ * @param {BenchSpan} span
+ * @param {{ runId?: string, device?: string }} defaults
+ */
+function mergeDefaults(span, defaults) {
+  /** @type {any} */
+  const out = { ...span };
+  if (defaults.runId && !("runId" in out)) {
+    out.runId = defaults.runId;
+  }
+  if (defaults.device) {
+    out.attrs = { device: defaults.device, ...(span.attrs ?? {}) };
+  }
+  return out;
 }
 
 /**
@@ -118,12 +149,13 @@ export class HttpSink {
  * Unknown specs throw at startup so a typo doesn't silently drop spans.
  *
  * @param {string | undefined} spec
+ * @param {{ runId?: string, device?: string }} [defaults]
  * @returns {TelemetrySink}
  */
-export function createSinkFromArg(spec) {
+export function createSinkFromArg(spec, defaults = {}) {
   if (!spec || spec === "noop") return new NoopSink();
-  if (spec.startsWith("file:")) return new JsonFileSink(spec.slice("file:".length));
-  if (spec.startsWith("http://") || spec.startsWith("https://")) return new HttpSink(spec);
+  if (spec.startsWith("file:")) return new JsonFileSink(spec.slice("file:".length), defaults);
+  if (spec.startsWith("http://") || spec.startsWith("https://")) return new HttpSink(spec, defaults);
   throw new Error(
     `Unknown --telemetry spec: ${spec}. Expected "noop", "file:<path>", or "http(s)://<url>".`,
   );

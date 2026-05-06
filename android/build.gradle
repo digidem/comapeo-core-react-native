@@ -66,6 +66,15 @@ def comapeoBackendDir = (rootProject.findProperty('comapeoBackendDir') ?: projec
 // the bench app needs this hook.
 def comapeoStubRootKey = (rootProject.findProperty('comapeoStubRootKey') ?: project.findProperty('comapeoStubRootKey') ?: 'false').toString() == 'true'
 
+// Extra argv string passed verbatim to nodejs-mobile after the
+// canonical positional args (socket paths, dataDir). The loader
+// splits on whitespace at runtime, so this can hold one or more
+// CLI flags. Used by the bench app to wire its backend's HttpSink
+// at boot (`--telemetry=http://localhost:8787/spans`) so boot-phase
+// spans reach the host receiver — production consumers leave it
+// unset and the backend defaults to NoopSink.
+def comapeoBackendArgs = (rootProject.findProperty('comapeoBackendArgs') ?: project.findProperty('comapeoBackendArgs') ?: '').toString()
+
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
 apply from: expoModulesCorePlugin
 applyKotlinExpoModulesCorePlugin()
@@ -106,6 +115,7 @@ android {
         // requires.
         buildConfigField "String", "COMAPEO_BACKEND_DIR", "\"${comapeoBackendDir}\""
         buildConfigField "boolean", "COMAPEO_STUB_ROOTKEY", "${comapeoStubRootKey}"
+        buildConfigField "String", "COMAPEO_BACKEND_ARGS", "\"${comapeoBackendArgs}\""
         externalNativeBuild {
             cmake {
                 cppFlags ''
