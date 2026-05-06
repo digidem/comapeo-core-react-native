@@ -129,6 +129,27 @@ export class BenchRpcServer extends ServerHelper {
             : 64;
         return payload(sizeBytes);
       }
+      case "ingestSpans": {
+        // RN side accumulates RTT spans during the bench loop and
+        // ships them all over the bench RPC socket once the run
+        // completes. We re-emit each via `console.log` so they surface
+        // through the same nodejs-mobile→logcat (Android) /
+        // pipe→os_log (iOS) path the boot phases use. Why this round-
+        // trip rather than RN's own `console.log`: in iOS release
+        // builds, `RCTLog`'s default level filter (INFO suppressed)
+        // means JS `console.log` never reaches the device console.
+        // Routing through nodejs-mobile bypasses that filter entirely.
+        // Called once per bench run, post-measurement, so the
+        // round-trip cost doesn't contaminate the RTT samples.
+        const spans = /** @type {any} */ (params)?.spans;
+        if (Array.isArray(spans)) {
+          for (const span of spans) {
+            console.log("BENCH_SPAN " + JSON.stringify(span));
+          }
+          return { count: spans.length };
+        }
+        return { count: 0 };
+      }
       default:
         throw new Error(`Unknown bench RPC method: ${method}`);
     }

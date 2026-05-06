@@ -153,6 +153,15 @@ function summarizeRpc(spans: Span[]): RpcRow[] {
   const buckets = new Map<string, number[]>();
   for (const s of spans) {
     if (s.op !== "rpc") continue;
+    // Two `op:"rpc"` shapes flow through the receiver:
+    //   - RN-side: `attrs.rttSide === "rn"`, the user-facing
+    //     round-trip-time metric we care about
+    //   - Backend-side: emitted by `bench-rpc.js` per handler call,
+    //     sub-ms by design (server-side compute only)
+    // Aggregating them together skews the percentiles because the
+    // backend spans dominate the count and pull p50 toward zero.
+    // Filter to RN-side only for the RTT table.
+    if ((s.attrs as Record<string, unknown> | undefined)?.rttSide !== "rn") continue;
     const dev = s.attrs?.device ?? "unknown";
     const sz = s.attrs?.bytes;
     if (typeof sz !== "number") continue;

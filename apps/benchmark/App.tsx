@@ -277,15 +277,6 @@ export default function App() {
             attrs: { bytes: sizeBytes, rttSide: "rn", device: DEVICE_TAG },
           };
           allSpans.push(span);
-          // BENCH_SPAN-prefixed line lands in Android logcat (under
-          // ReactNativeJS) / iOS device console. The BS dispatch
-          // script grep's these out of the pulled device log post-
-          // build — replaces the earlier fetch+receiver pipeline that
-          // had to fight cleartext-traffic policy and BS Local
-          // tunneling. Standalone runs that don't pull logs ignore
-          // this line; the on-device JsonFileSink + Documents export
-          // still works the same.
-          console.log("BENCH_SPAN " + JSON.stringify({ ...span, runId }));
         }
         stats.push(summarise(samples, sizeBytes));
       }
@@ -297,6 +288,23 @@ export default function App() {
       const ndjson = allSpans.map((s) => JSON.stringify({ ...s, runId })).join("\n") + "\n";
       file.create();
       file.write(ndjson);
+
+      // Ship every span over the bench RPC socket so the backend
+      // re-emits them via stdout — which lands in Android logcat
+      // (and iOS os_log via our `dup2`+pipe redirect). Necessary
+      // because RN's own `console.log` is suppressed by RCTLog's
+      // default level filter in iOS release builds, so a direct
+      // RN-side console call wouldn't show up in BS device logs.
+      // Single batched call after measurement so per-span overhead
+      // doesn't contaminate the RTT samples.
+      try {
+        await client.request(
+          "ingestSpans",
+          { spans: allSpans.map((s) => ({ ...s, runId })) },
+        );
+      } catch (e) {
+        console.warn("bench: ingestSpans failed", e);
+      }
 
       setReport({
         runId,
