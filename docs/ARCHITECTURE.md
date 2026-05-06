@@ -32,6 +32,11 @@ to it, and the alternatives we considered along the way. Companion docs:
   did not use Android Intent broadcasts / `Messenger` / a bound service
   for FGS↔main state notification, and did not collapse the boot sequence
   into a single broadcast. Rationales below.
+- Optional **Sentry observability** is wired up via an Expo config
+  plugin (`app.plugin.js`) and the `@comapeo/core-react-native/sentry`
+  sub-export. The FGS process gets its own Sentry SDK init via a
+  guarded bridge (zero runtime cost when the consumer doesn't use
+  Sentry). See §7.
 
 ---
 
@@ -553,7 +558,139 @@ gaps. The remaining ones are inherent to the platform or out of scope:
 
 ---
 
-## 7. Alternatives considered
+## 7. Sentry observability (optional)
+
+Companion doc: [`sentry-integration-plan.md`](./sentry-integration-plan.md).
+This section is the architectural overview; the plan has the
+phasing, decision log, and per-file change list.
+
+Sentry is **opt-in**. Consumers that don't register the Expo
+config plugin and don't import the `@comapeo/core-react-native/sentry`
+sub-export pay nothing — no DSN ends up in the APK/IPA, no
+`io.sentry` classes are loaded at runtime, no Sentry-shaped
+captures fire from this module.
+
+### 7.1 Three event streams
+
+When the integration is wired up, the module emits to three
+Sentry scopes that the dashboard splits via the `proc` tag:
+
+```
+                    ┌────────────────────────────────────────────────┐
+   proc: main       │  React Native main process                     │
+   layer: rn        │    @sentry/react-native (host-managed)         │
+                    │    src/sentry.ts adapter:                      │
+                    │      - state ERROR → captureException          │
+                    │      - messageerror → captureException (warn)  │
+                    │      - state transitions → breadcrumbs         │
+                    └────────────────────────────────────────────────┘
+
+                    ┌────────────────────────────────────────────────┐
+   proc: fgs        │  :ComapeoCore FGS process (Android only)       │
+   layer: native    │    SentryFgsBridge → SentryAndroid.init        │
+                    │      - boot transaction + phase spans          │
+                    │      - state-transition breadcrumbs            │
+                    │      - control-frame breadcrumbs               │
+                    │      - FGS-lifecycle breadcrumbs               │
+                    │      - timeout events (startup, fgsStop)       │
+                    │      - rootkey-load captureException           │
+                    └────────────────────────────────────────────────┘
+
+                    ┌────────────────────────────────────────────────┐
+   proc: backend    │  Embedded nodejs-mobile (Phase 3 — pending)    │
+   layer: backend   │    @sentry/node via loader.mjs                 │
+                    │      - per-RPC method spans                    │
+                    │      - handleFatal captureException            │
+                    │      - @comapeo/core OTel spans (Phase 4)      │
+                    └────────────────────────────────────────────────┘
+```
+
+The same FGS-local error (rootkey load failure, watchdog
+timeout) reaches all three scopes via the existing cross-process
+attribution path (§5.5): the FGS captures it directly, then
+`error-native` re-broadcasts to Node which captures it from
+the backend scope, and the `error` control frame propagates
+to the main-app process where the JS adapter captures it
+again. Sentry de-dupes via fingerprinting; the three vantage
+points carry FGS context (logcat tail, foreground state),
+backend stack trace, and main-process state-machine trail
+respectively.
+
+### 7.2 Build-time config flow
+
+The Expo config plugin (`app.plugin.js` at module root) is the
+single source of truth for DSN / environment / release / sample
+rates. At `expo prebuild` it writes:
+
+- **Android**: meta-data on the main `<application>` tag
+  (`com.comapeo.core.sentry.dsn`, `…environment`, `…release`,
+  `…sampleRate`, `…tracesSampleRate`, `…rpcArgsBytes`,
+  `…captureApplicationDataDefault`). meta-data is shared across
+  processes within the package, so both the main process and
+  the `:ComapeoCore` FGS process read the same values.
+- **iOS**: keys in `Info.plist` with the `ComapeoCore` prefix
+  (e.g. `ComapeoCoreSentryDsn`).
+
+Native readers — `SentryConfig.kt` and `SentryConfig.swift` —
+return a typed `SentryConfig?` (`null` when DSN is absent =
+"Sentry off"). `release` defaults to
+`versionName + "+" + versionCode` (Android) /
+`CFBundleShortVersionString + "+" + CFBundleVersion` (iOS) when
+the plugin didn't supply one, so successive EAS builds of the
+same marketing version produce distinct release tags.
+
+The FGS process's Sentry SDK is initialised in
+`ComapeoCoreService.onCreate` from the manifest meta-data —
+because Android creates a fresh `Application` instance per
+process, the host's `@sentry/react-native` (which inits in the
+main `MainApplication`) doesn't reach the FGS. The bridge fills
+that gap.
+
+### 7.3 The Guard / Impl split (Android)
+
+`SentryFgsBridge.kt` — the public entry point that the rest of
+the native code calls — has **zero `io.sentry.*` imports**. It
+delegates to `SentryFgsBridgeImpl.kt` only after a `Class.forName`
+probe (with `initialize=false`) confirms the SDK is on the
+runtime classpath. The Gradle dep is `compileOnly` — the
+runtime classes come transitively from the consumer's
+`@sentry/react-native@^6` peer dep. When that peer dep is
+absent, the bridge stays inert and the module continues to
+function.
+
+This split matters because the JVM/Dalvik verifier inspects
+bytecode references at class-load time of the *containing*
+class. Putting any `io.sentry.*` reference in `SentryFgsBridge`
+itself would force the bridge class to fail loading on a
+Sentry-less classpath — even if the offending method is never
+called. The Impl class is only loaded when a method on it is
+actually invoked, which happens only after `isEnabled()`
+returned `true`.
+
+### 7.4 What this design *doesn't* attempt
+
+- **Native crashes inside `nodejs-mobile`** (V8 abort, addon
+  SIGSEGV, OOM) are not captured by us. They surface as host-
+  process crashes that `sentry-android` / `sentry-cocoa`
+  catches at the JNI/Cocoa layer. We do not bundle
+  `sentry-native` into the embedded runtime.
+- **iOS multi-process Sentry**. iOS runs everything in one
+  process; the host's `@sentry/react-native` SDK already
+  covers it. The §6.3 JS adapter is the only iOS-side
+  integration layer.
+- **DSN secrecy**. Sentry DSNs are not high-secret values —
+  they identify a project rather than authenticate writes,
+  and they appear in stripped binaries of every Sentry-using
+  app's APK/IPA. Treating them as build-time public config is
+  intentional.
+- **PII capture**. Per the plan §7.4.9, observation contents,
+  precise location, peer identities, raw project IDs, and
+  user-entered text are never captured even with the
+  capture-application-data toggle on.
+
+---
+
+## 8. Alternatives considered
 
 ### 7.1 FGS↔main process state notification (Android)
 
@@ -642,7 +779,7 @@ constraint. Both are small.
 
 ---
 
-## 8. References
+## 9. References
 
 - `backend/index.js` — boot sequence, `handleFatal`, init handler.
 - `backend/lib/simple-rpc.js` — control socket server, replay, error
@@ -650,5 +787,7 @@ constraint. Both are small.
 - `ios/NodeJSService.swift`, `android/.../NodeJSService.kt` — native
   lifecycle state.
 - `src/ComapeoCoreModule.ts` — JS-facing observers (`comapeo`, `state`).
+- `docs/sentry-integration-plan.md` — Sentry integration plan (§7
+  is the architectural overview).
 - [GitHub issue #29](https://github.com/digidem/comapeo-core-react-native/issues/29)
   — original "expose Node.js lifecycle state to JS" tracking issue.

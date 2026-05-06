@@ -1674,7 +1674,23 @@ actively configure it.
 
 ## 10. Phasing
 
-### 10.1 Phase 1 — JS-side error capture (smallest delivery)
+### Status snapshot
+
+| Phase | Status | Notes |
+|---|---|---|
+| 10.1 — Phase 1 (JS adapter) | **landed** | `src/sentry.ts` + `src/sentry-internal.ts`; `configureSentry` sub-export. |
+| 10.2 — Phase 2a (plugin + native readers) | **landed** | `app.plugin.js`; `SentryConfig.{kt,swift}` + tests. |
+| 10.2 — Phase 2b (Android FGS native captures) | **landed** | `SentryFgsBridge.{kt,Impl}` + bridge wired into `ComapeoCoreService` and `NodeJSService`; 9 JVM tests. iOS Phase 2b not needed (single-process app — JS adapter covers it). |
+| 10.3 — Phase 3 (backend loader + RPC tracing) | **pending** | Biggest remaining piece. Needs `@sentry/node` + `import-in-the-middle` + multi-entry rollup + `loader.mjs`. Native already passes argv (see bench branch's `comapeoBackendArgs`); backend just needs to consume it. |
+| 10.4 — Phase 4 (`@comapeo/core` OTel forwarding) | **pending** | Blocked on `@comapeo/core` PR #1051 landing. Verification work only. |
+| 10.5 — Phase 5 (capture-application-data toggle) | **pending** | `SharedPreferences` / `UserDefaults` store, restart-to-activate semantics. |
+| 10.6 — Phase 6 (refinements) | **pending** | Sample-rate tuning from real data; optional dual-bundle if size matters. |
+
+What's *not* shipping with the integration even after all phases: `sentry-native` inside `nodejs-mobile` (V8 abort / addon SIGSEGV stays a host-process crash; sentry-android catches those at the JNI layer — see plan §7.5).
+
+---
+
+### 10.1 Phase 1 — JS-side error capture (smallest delivery) — landed
 
 - `configureSentry({ sentry })` adapter handoff (§4.3).
 - `state` listeners capture ERROR transitions and
@@ -1690,14 +1706,14 @@ is closed in Phase 2.)
 Cost: ~50 LOC in `src/sentry.ts`, no native or backend
 changes, zero risk to other consumers.
 
-### 10.2 Phase 2 — Expo config plugin + native config consumption
+### 10.2 Phase 2 — Expo config plugin + native config consumption — landed
 
 Phase 2 splits in two because the plugin-and-readers part has
 zero dependency cost and the native-side direct-Sentry-SDK part
 adds a non-trivial Gradle / podspec coupling. The phasing
 reflects that:
 
-**Phase 2a — plugin + native config readers**
+**Phase 2a — plugin + native config readers — landed**
 
 - New `app.plugin.js` at module root (§4.1).
 - iOS reads Info.plist into `SentryConfig` at load time;
@@ -1716,7 +1732,7 @@ reflects that:
 Cost: ~150 LOC plugin + Kotlin + Swift + tests. Zero new
 runtime deps.
 
-**Phase 2b — FGS-process direct Sentry calls (Android only)**
+**Phase 2b — FGS-process direct Sentry calls (Android only) — landed**
 
 iOS doesn't need a Phase 2b — it's a single-process app and
 the host's `@sentry/react-native` already covers everything
@@ -1784,7 +1800,7 @@ main, the production backend (Phase 3) can implement it as a
 `SentryAdapterSink` — the comment in `telemetry-sink.js`
 already foreshadows this.
 
-### 10.3 Phase 3 — backend loader + RPC tracing
+### 10.3 Phase 3 — backend loader + RPC tracing — pending
 
 - Add `@sentry/node@^8`, `@sentry/core@^8`, and
   `import-in-the-middle` to `backend/package.json`.
@@ -1812,7 +1828,7 @@ Cost: ~300 LOC across loader/rollup config/native/JS;
 ~150–250 KB bundle delta on every consumer **on disk** but
 zero runtime cost when DSN is absent (§5.1).
 
-### 10.4 Phase 4 — `@comapeo/core` OpenTelemetry forwarding
+### 10.4 Phase 4 — `@comapeo/core` OpenTelemetry forwarding — pending
 
 - Bump `@comapeo/core` once PR #1051 lands.
 - Verify Sentry's OTel integration picks up the spans
@@ -1823,7 +1839,7 @@ Value: deep traces inside core operations (sync, indexing,
 hypercore) — the data Sentry's performance tab is designed
 to surface.
 
-### 10.5 Phase 5 — capture-application-data toggle
+### 10.5 Phase 5 — capture-application-data toggle — pending
 
 - Native preference store (Android `SharedPreferences`,
   iOS `UserDefaults`) with `getCaptureApplicationData` /
@@ -1840,7 +1856,7 @@ debugging without exposing PII.
 
 Cost: ~150 LOC native + JS + backend.
 
-### 10.6 Phase 6 — refinements
+### 10.6 Phase 6 — refinements — pending
 
 - Tune sample rates from production data.
 - Optional: dual backend bundles for Sentry-free consumers

@@ -79,12 +79,24 @@ Run `npx pod-install` after installing the npm package.
 
 # Optional: Sentry integration
 
-This module can forward its lifecycle errors and (in later phases) RPC tracing
-into the host app's `@sentry/react-native`. Sentry is opt-in — if you don't
-register the plugin and don't import the sub-export, no Sentry code path is
-exercised and no DSN ends up in your APK/IPA.
+This module can forward its native-side and JS-side lifecycle events
+into the host app's `@sentry/react-native`. Sentry is opt-in — if you
+don't register the plugin and don't import the sub-export, no Sentry
+code path is exercised and no DSN ends up in your APK/IPA. See
+[`docs/ARCHITECTURE.md` §7](./docs/ARCHITECTURE.md) for the
+architectural overview and
+[`docs/sentry-integration-plan.md`](./docs/sentry-integration-plan.md)
+for the design plan and per-phase status.
 
-### 1. Register the Expo config plugin
+### 1. Install `@sentry/react-native` in your app
+
+`@sentry/react-native` is an optional peer dep of this module. Install
+it in the host app and run `Sentry.init(...)` once at startup as
+documented at <https://docs.sentry.io/platforms/react-native/>. The
+runtime classes shipped with `@sentry/react-native` also satisfy the
+Android FGS-process bridge — no extra Android dependency to declare.
+
+### 2. Register the Expo config plugin
 
 In `app.config.js` (must be `.js`, not `app.json`, to read `process.env`):
 
@@ -110,9 +122,11 @@ export default {
 The plugin runs at `expo prebuild` and bakes the DSN, environment, and other
 options into AndroidManifest meta-data and Info.plist keys. Sourcing values
 from `process.env` lets EAS build profiles produce different builds without
-code changes — see `docs/sentry-integration-plan.md` §4.1 for the full pattern.
+code changes — see
+[`docs/sentry-integration-plan.md` §4.1](./docs/sentry-integration-plan.md)
+for the matching `eas.json` example with per-profile env vars.
 
-### 2. Hand off the host's Sentry SDK
+### 3. Hand off the host's Sentry SDK
 
 ```ts
 import * as Sentry from "@sentry/react-native";
