@@ -174,7 +174,7 @@ const ANDROID_INPUT = {
 // so polywasm replaces the absent `globalThis.WebAssembly` before the
 // shared `index.js` (and undici through the maps plugin) is evaluated.
 const IOS_INPUT = {
-  index: path.join(__dirname, "index-ios.js"),
+  index: path.join(__dirname, "index.ios.js"),
 };
 
 const sharedOutput: OutputOptions = {
