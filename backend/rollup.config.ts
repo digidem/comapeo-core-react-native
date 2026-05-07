@@ -14,6 +14,7 @@ import alias from "@rollup/plugin-alias";
 import commonjs from "@rollup/plugin-commonjs";
 import { default as esmShim } from "@rollup/plugin-esm-shim";
 import json from "@rollup/plugin-json";
+import { isJsFile, stringToUUID } from "@sentry/bundler-plugin-core";
 import { sentryRollupPlugin } from "@sentry/rollup-plugin";
 import type { OutputOptions, Plugin, RollupOptions } from "rollup";
 import { minify } from "rollup-plugin-esbuild";
@@ -141,10 +142,12 @@ function buildPlugins({
   platform,
   outDir,
   shouldMinify,
+  debugIdMap,
 }: {
   platform: "android" | "ios";
   outDir: string;
   shouldMinify: boolean;
+  debugIdMap: Map<string, string>;
 }): Plugin[] {
   return [
     alias({
@@ -175,13 +178,17 @@ function buildPlugins({
     json(),
     shouldMinify ? minify() : undefined,
     copyStaticAssetsPlugin(outDir),
-    // Inject `//# debugId=<uuid>` into the bundle and `"debug_id"` into
-    // the sourcemap so Sentry symbolicates by ID, independent of the
-    // consumer's release. Upload is disabled — published tarballs carry
-    // the maps; consumers run `comapeo-rn-upload-sourcemaps` from CI to
-    // push them to their own Sentry project. Debug IDs are
-    // `stringToUUID(chunk.code)` so identical bundle bytes produce
-    // identical IDs across re-publishes.
+    // Capture the debug ID sentry-rollup-plugin will compute for this
+    // chunk so `relocateSourcemapsPlugin` can read it directly at
+    // writeBundle. Must run *before* sentry-rollup-plugin in
+    // renderChunk so both see the same `code` input.
+    captureDebugIdsPlugin(debugIdMap),
+    // Inject `_sentryDebugIdIdentifier` (runtime snippet) into the
+    // bundle so Sentry symbolicates by ID, independent of the consumer's
+    // release. Upload is disabled — published tarballs carry the maps;
+    // consumers run `comapeo-rn-upload-sourcemaps` from CI to push them
+    // to their own Sentry project. Debug IDs are `stringToUUID(chunk.code)`
+    // so identical bundle bytes produce identical IDs across re-publishes.
     sentryRollupPlugin({
       sourcemaps: { disable: "disable-upload" },
       telemetry: false,
@@ -201,6 +208,33 @@ function cleanOutputDirPlugin(dir: string): Plugin {
     name: "clean-output-dir",
     buildStart() {
       rmSync(dir, { force: true, recursive: true });
+    },
+  };
+}
+
+/**
+ * Captures the debug ID sentry-rollup-plugin will derive for each
+ * chunk, by computing it ourselves on the same `code` input.
+ * `stringToUUID` is the public helper from `@sentry/bundler-plugin-core`
+ * that sentry-rollup-plugin uses internally — calling it on the same
+ * bytes produces the same ID by construction. Plugin order matters:
+ * this must run *before* `sentryRollupPlugin` in `renderChunk` so we
+ * see the same `code` parameter (we return `null` to avoid mutating
+ * it).
+ *
+ * The captured IDs are then read by `relocateSourcemapsPlugin` at
+ * `writeBundle`, avoiding a regex scan over the bundle's runtime
+ * `_sentryDebugIdIdentifier` snippet — the snippet's exact format is
+ * an implementation detail of bundler-plugin-core's runtime SDK
+ * contract, but `stringToUUID(code)` is a public, stable helper.
+ */
+function captureDebugIdsPlugin(idMap: Map<string, string>): Plugin {
+  return {
+    name: "capture-debug-ids",
+    renderChunk(code, chunk) {
+      if (!isJsFile(chunk.fileName)) return null;
+      idMap.set(chunk.fileName, stringToUUID(code));
+      return null;
     },
   };
 }
@@ -230,16 +264,19 @@ function cleanOutputDirPlugin(dir: string): Plugin {
  *     we relocate, so the map needs the ID embedded directly to be
  *     resolvable from any directory.
  *
+ * Both keys are written for back-compat: sentry-cli <2.39 reads
+ * `debug_id` (snake_case), 2.39+ reads either, 3.0+ writes `debugId`
+ * only. Consumers' sentry-cli pin comes from their @sentry/react-native
+ * version, so we can't assume 2.39+.
+ *
  * Idempotent: `cleanOutputDirPlugin` wipes `outDir` before the build
  * starts; this plugin wipes its target dir at `writeBundle` time so a
  * stale map from a previous build can't leak through.
  */
-const SENTRY_DBID_RE =
-  /sentry-dbid-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/;
-
 function relocateSourcemapsPlugin(
   outDir: string,
   sourcemapDir: string,
+  idMap: Map<string, string>,
 ): Plugin {
   return {
     name: "relocate-sourcemaps",
@@ -251,6 +288,13 @@ function relocateSourcemapsPlugin(
       await Promise.all(
         mapNames.map(async (name) => {
           const bundleName = name.slice(0, -".map".length);
+          const debugId = idMap.get(bundleName);
+          if (!debugId) {
+            throw new Error(
+              `relocate-sourcemaps: no captured debug ID for ${bundleName}; ` +
+                "is captureDebugIdsPlugin in plugins[] before sentryRollupPlugin?",
+            );
+          }
           const bundlePath = path.join(outDir, bundleName);
           const mapSrc = path.join(outDir, name);
           const mapDst = path.join(sourcemapDir, name);
@@ -258,14 +302,6 @@ function relocateSourcemapsPlugin(
             readFile(bundlePath, "utf8"),
             readFile(mapSrc, "utf8"),
           ]);
-          const dbidMatch = bundleSource.match(SENTRY_DBID_RE);
-          if (!dbidMatch) {
-            throw new Error(
-              `relocate-sourcemaps: no debug ID found in ${bundlePath}; ` +
-                "did sentry-rollup-plugin run before this plugin?",
-            );
-          }
-          const debugId = dbidMatch[1];
 
           // Spec-compliant trailing `//# debugId=` comment. The
           // sentry-rollup-plugin writes `_sentryDebugIdIdentifier`
@@ -315,6 +351,15 @@ const sharedOutput: OutputOptions = {
  * Embed-&-Sign'd xcframework binary at NATIVE_LIB_DIR/<key>.framework/<key>.
  * See `rollup-plugin-addon-loader.js` for the helper bodies.
  */
+// One Map per output config. Populated by `captureDebugIdsPlugin` in
+// `renderChunk` and read by `relocateSourcemapsPlugin` in `writeBundle`.
+// Per-config (rather than one shared Map) so a stale entry from a
+// previous output can't bleed across — rollup runs the configs
+// sequentially.
+const androidDebugDebugIds = new Map<string, string>();
+const androidMainDebugIds = new Map<string, string>();
+const iosDebugIds = new Map<string, string>();
+
 const config: RollupOptions[] = [
   {
     input: sharedInput,
@@ -330,8 +375,13 @@ const config: RollupOptions[] = [
         outDir: ANDROID_OUT_DEBUG,
         // Android debug does not minify the bundle.
         shouldMinify: false,
+        debugIdMap: androidDebugDebugIds,
       }),
-      relocateSourcemapsPlugin(ANDROID_OUT_DEBUG, ANDROID_SOURCEMAPS_DEBUG),
+      relocateSourcemapsPlugin(
+        ANDROID_OUT_DEBUG,
+        ANDROID_SOURCEMAPS_DEBUG,
+        androidDebugDebugIds,
+      ),
     ],
   },
   {
@@ -347,8 +397,13 @@ const config: RollupOptions[] = [
         platform: "android",
         outDir: ANDROID_OUT_MAIN,
         shouldMinify: true,
+        debugIdMap: androidMainDebugIds,
       }),
-      relocateSourcemapsPlugin(ANDROID_OUT_MAIN, ANDROID_SOURCEMAPS_MAIN),
+      relocateSourcemapsPlugin(
+        ANDROID_OUT_MAIN,
+        ANDROID_SOURCEMAPS_MAIN,
+        androidMainDebugIds,
+      ),
     ],
   },
   {
@@ -364,8 +419,9 @@ const config: RollupOptions[] = [
         platform: "ios",
         outDir: IOS_OUT,
         shouldMinify: true,
+        debugIdMap: iosDebugIds,
       }),
-      relocateSourcemapsPlugin(IOS_OUT, IOS_SOURCEMAPS),
+      relocateSourcemapsPlugin(IOS_OUT, IOS_SOURCEMAPS, iosDebugIds),
     ],
   },
 ];
