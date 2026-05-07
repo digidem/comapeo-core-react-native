@@ -205,7 +205,7 @@ jobs:
       - name: Run tests
         id: run
         env:
-          APP_URL: ${{ needs.android-build.outputs.app_url }}
+          APP_URL: ${{ needs.build-android.outputs.app_url }}
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
           BROWSERSTACK_PROJECT_NAME: ${{ vars.BROWSERSTACK_PROJECT_NAME }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
