@@ -86,7 +86,7 @@ jobs:
         run: |
           APK_RELATIVE_PATH="apps/e2e/android/app/build/outputs/apk/release/app-release.apk"
 
-          APP_URL=$(curl --fail --show-error -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+          APP_URL=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
             -F "file=@$APK_RELATIVE_PATH" | jq -r '.app_url')
 
@@ -165,7 +165,7 @@ jobs:
         run: |
           IPA_RELATIVE_PATH="apps/e2e/ios/corereactnativee2e.ipa"
 
-          APP_URL=$(curl --fail --show-error -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+          APP_URL=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
             -F "file=@$IPA_RELATIVE_PATH" | jq -r '.app_url')
 
@@ -197,7 +197,7 @@ jobs:
 
           zip -r "$ZIP_NAME" maestro/e2e.yaml
 
-          TEST_SUITE_URL=$(curl --fail --show-error -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+          TEST_SUITE_URL=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/test-suite" \
             -F "file=@$ZIP_NAME" | jq -r '.test_suite_url')
 

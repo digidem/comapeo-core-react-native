@@ -54,7 +54,7 @@ runs:
           --arg project "$PROJECT_NAME" \
           '{app: $app, testSuite: $suite, devices: $devices, project: $project, deviceLogs: true, maestroVersion: "latest"}')
 
-        BUILD_ID=$(curl -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+        BUILD_ID=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
           -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/build" \
           -H "Content-Type: application/json" \
           -d "$PAYLOAD" \
@@ -76,7 +76,7 @@ runs:
         ELAPSED=0
 
         while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
-          RESPONSE=$(curl -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+          RESPONSE=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             "https://api-cloud.browserstack.com/app-automate/maestro/v2/builds/$BUILD_ID")
 
           STATUS=$(echo "$RESPONSE" | jq -r '.status')
