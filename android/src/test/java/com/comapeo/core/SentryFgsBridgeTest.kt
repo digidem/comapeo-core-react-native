@@ -37,7 +37,7 @@ class SentryFgsBridgeTest {
     @Test
     fun isEnabledFindsSentryAndroidOnTestClasspath() {
         // The android/build.gradle declares
-        // `testImplementation "io.sentry:sentry-android-core:7.20.1"`,
+        // `testImplementation "io.sentry:sentry-android-core:8.32.0"`,
         // so the JVM unit-test classpath has the SDK. Probe should
         // succeed.
         assertTrue(

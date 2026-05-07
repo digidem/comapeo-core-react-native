@@ -182,9 +182,9 @@ JS through the control-socket `init` frame. That has a real cost:
    called `configureSentry`.
 3. **State observability gap.** `state.getState()` reflects only
    transitions captured *after* the JS listener is attached.
-   Errors that fire before `configureSentry` runs (rootkey load
-   races, FGS-side watchdog timeouts) miss Sentry entirely under
-   the JS-driven model.
+   Errors that fire before the consumer imports the JS adapter
+   (rootkey load races, FGS-side watchdog timeouts) miss Sentry
+   entirely under the JS-driven model.
 
 Three configuration vectors solve this together:
 
@@ -192,7 +192,7 @@ Three configuration vectors solve this together:
 |---|---|---|
 | **Expo config plugin** (build-time) | At native process start, before any IPC | DSN, environment, release, sample rates. The single source of truth. |
 | **Persisted native preference** (runtime, restart-to-activate) | At native process start | The "capture application data" toggle (§9). |
-| **JS adapter handoff** (`configureSentry`) | When RN bridge is up | Hands the host app's already-initialized `@sentry/react-native` to this module so JS-side listeners can call `captureException` / `startSpan`. Does **not** carry DSN. |
+| **JS adapter auto-detect** (side-effect import) | When the consumer imports `@comapeo/core-react-native/sentry` | The sub-export probes `@sentry/react-native` via `require`-then-catch and attaches state listeners against it for `captureException` / breadcrumbs. Does **not** carry DSN. |
 
 ### 4.1 Build-time: Expo config plugin (primary)
 
@@ -555,9 +555,9 @@ module's two-socket boot.
 
 ### 5.1 Bundle strategy: multi-entry with lazy `@sentry/node` chunk
 
-**Pinned versions**: `@sentry/node@^8`, `@sentry/react-native@^6`,
-`@sentry/core@^8`, `import-in-the-middle` (whatever
-`@sentry/node@8` resolves it at). These are the
+**Pinned versions**: `@sentry/node@^8`, `@sentry/react-native@^7`,
+`@sentry/core@^9` (RN v7 re-exports it), `import-in-the-middle`
+(whatever `@sentry/node@8` resolves it at). These are the
 OpenTelemetry-first majors — required for the §5.6 forwarding
 of `@comapeo/core` PR #1051 spans to "just work" without glue
 code.
@@ -1647,7 +1647,7 @@ actively configure it.
 
 | Phase | Status | Notes |
 |---|---|---|
-| 10.1 — Phase 1 (JS adapter) | **landed** | `src/sentry.ts` + `src/sentry-internal.ts`; `configureSentry` sub-export. |
+| 10.1 — Phase 1 (JS adapter) | **landed** | `src/sentry.ts` + `src/sentry-internal.ts`; auto-detects `@sentry/react-native` at import time, no explicit handoff call. |
 | 10.2 — Phase 2a (plugin + native readers) | **landed** | `app.plugin.js`; `SentryConfig.{kt,swift}` + tests. |
 | 10.2 — Phase 2b (Android FGS native captures) | **landed** | `SentryFgsBridge.{kt,Impl}` + bridge wired into `ComapeoCoreService` and `NodeJSService`; 9 JVM tests. iOS Phase 2b not needed (single-process app — JS adapter covers it). |
 | 10.3 — Phase 3 (backend loader + RPC tracing) | **pending** | Biggest remaining piece. Needs `@sentry/node` + `import-in-the-middle` + multi-entry rollup + `loader.mjs`. Native already passes argv (see bench branch's `comapeoBackendArgs`); backend just needs to consume it. |
@@ -1712,13 +1712,13 @@ the §6.3 JS adapter forwards. Phase 2b is Android-specific.
 
 Shipped:
 
-- `io.sentry:sentry-android-core:7.20.1` added to
+- `io.sentry:sentry-android-core:8.32.0` added to
   `android/build.gradle` as `compileOnly` so this module never
   pulls sentry-android into consumers who don't use Sentry.
   The runtime classes come transitively from
-  `@sentry/react-native@^6`. Pin matches the API surface RN
-  v6.x exposes; bumping should be done in lock-step with the
-  RN peer-dep range.
+  `@sentry/react-native@^7` (which ships sentry-android 8.32.x —
+  first line that has the structured-log API the bridge calls).
+  Bumping should be done in lock-step with the RN peer-dep range.
 - `SentryFgsBridge.kt` / `SentryFgsBridgeImpl.kt` — guard /
   impl split. The guard's `Class.forName` probe (with
   `initialize=false` so the SDK's `<clinit>` doesn't run on
@@ -1931,7 +1931,7 @@ Cost: ~150 LOC native + JS + backend.
 
 | Question | Decision |
 |---|---|
-| Sentry SDK versions | `@sentry/node@^8`, `@sentry/react-native@^6`, `@sentry/core@^8`. OpenTelemetry-first majors so PR #1051 forwarding works without glue (§5.1). |
+| Sentry SDK versions | `@sentry/node@^8`, `@sentry/react-native@^7`, `@sentry/core@^9` (RN v7 re-exports it). OpenTelemetry-first majors so PR #1051 forwarding works without glue (§5.1). |
 | `@comapeo/ipc@^8` client-side hook | Confirmed: `createMapeoClient` accepts `onRequestHook` directly. Pattern lifted from [`comapeo-mobile/src/frontend/lib/createMapeoApi.ts`](https://github.com/digidem/comapeo-mobile/blob/develop/src/frontend/lib/createMapeoApi.ts) (§6.2). |
 | `release` source | Default to `versionName + "+" + versionCode` (Android) / `CFBundleShortVersionString + "+" + CFBundleVersion` (iOS). Successive EAS builds of the same marketing version produce distinct releases. Plugin override always wins (§4.1). |
 | Boot transaction sample rate | Force 100% even when overall `tracesSampleRate` is low. Boot is once-per-process and high-value. Document quota implications (§7.4.2). |
@@ -2019,7 +2019,7 @@ Concrete touch list, by phase, for code review.
 **Phase 2b — landed (Android only)**
 
 - `android/build.gradle` — add `compileOnly` +
-  `testImplementation` on `io.sentry:sentry-android-core:7.20.1`.
+  `testImplementation` on `io.sentry:sentry-android-core:8.32.0`.
 - `android/src/main/java/com/comapeo/core/SentryFgsBridge.kt`
   (new) — guard layer: `Class.forName` probe (with
   `initialize=false`) gates every public method; no
