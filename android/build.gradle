@@ -42,6 +42,12 @@ def comapeoAbiFilters = {
     return effective
 }()
 
+// Entry filename inside `nodejs-project/`. Default `index.mjs` (the
+// production bundle). Consumers shipping a sibling entry file (e.g.
+// `apps/benchmark/`) drop it into their own `assets/nodejs-project/`
+// and override here; AGP merges the assets at APK build time.
+def comapeoEntryFile = (rootProject.findProperty('comapeoEntryFile') ?: project.findProperty('comapeoEntryFile') ?: 'index.mjs').toString()
+
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
 apply from: expoModulesCorePlugin
 applyKotlinExpoModulesCorePlugin()
@@ -76,6 +82,8 @@ android {
         versionCode 1
         versionName "0.1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Java-string-literal form (embedded quotes) is what `buildConfigField` needs.
+        buildConfigField "String", "COMAPEO_ENTRY_FILE", "\"${comapeoEntryFile}\""
         externalNativeBuild {
             cmake {
                 cppFlags ''
@@ -87,6 +95,7 @@ android {
             abiFilters(*comapeoAbiFilters)
         }
     }
+
     lintOptions {
         abortOnError false
     }
@@ -98,9 +107,6 @@ android {
             // native module instance × ABI). Both directories ship into the
             // same APK `lib/<abi>/` segment.
             jniLibs.srcDirs 'libnode/bin/', 'src/main/jniLibs/'
-            assets {
-                srcDirs 'src/main/assets'
-            }
         }
     }
     externalNativeBuild {
@@ -111,6 +117,8 @@ android {
     }
     buildFeatures {
         prefab true
+        // AGP 8.x default is off; needed for `buildConfigField` above.
+        buildConfig true
     }
     packagingOptions {
         excludes += [

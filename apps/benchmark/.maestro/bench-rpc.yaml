@@ -1,0 +1,34 @@
+appId: com.comapeo.core.benchmark
+---
+# UDS / RPC bridge benchmark — bench app launches its own bench backend
+# (rolled up from `apps/benchmark/backend/`, dropped into the consumer
+# app's `nodejs-project/` by the `with-comapeo-bench` Expo plugin and
+# loaded via the module's `comapeoEntryFile` override), waits for the
+# service to reach STARTED, runs a sweep across the default payload
+# sizes, and reads back the on-screen p50/p95/p99 panel. Spans are also
+# written to the app's documents directory; "Export results" opens the
+# system share sheet.
+
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible:
+      id: "service-state"
+      text: "STARTED"
+    timeout: 60000
+
+- tapOn:
+    id: "send-button"
+
+- extendedWaitUntil:
+    visible:
+      id: "benchmark-result"
+    timeout: 120000
+
+- assertVisible:
+    id: "benchmark-result"
+- assertVisible:
+    text: "p50"
+- assertVisible:
+    text: "p99"

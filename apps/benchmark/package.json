@@ -1,0 +1,36 @@
+{
+  "name": "core-react-native-benchmark",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "backend:install": "npm ci --prefix backend",
+    "backend:build": "npm run build --prefix backend",
+    "prebuild:bundle": "npm run backend:install && npm run backend:build",
+    "prebuild": "npm run prebuild:bundle && expo prebuild --no-install",
+    "android": "npm run prebuild:bundle && expo run:android",
+    "android:release": "npm run prebuild:bundle && expo run:android --variant release --no-install",
+    "ios": "npm run prebuild:bundle && expo run:ios",
+    "ios:release": "npm run prebuild:bundle && expo run:ios --configuration Release",
+    "ios:archive": "./scripts/build-ipa.sh"
+  },
+  "dependencies": {
+    "expo": "55.0.17",
+    "expo-file-system": "~55.0.17",
+    "expo-sharing": "~55.0.18",
+    "react": "19.2.5",
+    "react-native": "0.83.6",
+    "react-native-safe-area-context": "5.6.2"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.0",
+    "@types/react": "19.2.14",
+    "typescript": "5.9.3"
+  },
+  "private": true,
+  "expo": {
+    "autolinking": {
+      "nativeModulesDir": "../.."
+    }
+  }
+}

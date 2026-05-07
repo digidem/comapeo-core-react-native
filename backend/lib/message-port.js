@@ -60,12 +60,28 @@ export class SocketMessagePort extends TypedEmitter {
       // TODO: Emit error, handle in consumer
       console.error("FramedStream error", error);
     });
+    // Without this listener, an `ERR_STREAM_WRITE_AFTER_END` raised
+    // by a stray write during graceful teardown bubbles to
+    // `uncaughtException` and exits the process despite an orderly
+    // shutdown. Log + swallow: postMessage already gates on `closed`.
+    socket.on("error", (error) => {
+      console.warn(
+        "SocketMessagePort: underlying socket error",
+        /** @type {NodeJS.ErrnoException} */ (error).code ?? error.message,
+      );
+    });
   }
 
   /**
    * @param {JsonValue} message
    */
   postMessage(message) {
+    // Catches writes posted after close. Writes posted *before* close
+    // but executed after (via streamx microtasks) escape this guard;
+    // the host's `uncaughtException` handler must filter the resulting
+    // `ERR_STREAM_WRITE_AFTER_END` during shutdown — see
+    // `apps/benchmark/backend/index.js`.
+    if (this.#state === "closed") return;
     this.#framedStream.write(Buffer.from(JSON.stringify(message)));
   }
 

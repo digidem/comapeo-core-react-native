@@ -1,0 +1,35 @@
+appId: com.comapeo.core.benchmark
+---
+# Per-payload-size variant of bench-rpc.yaml: only 1MB selected. Note
+# 1MB is NOT in the default selection — the flow deselects the three
+# defaults and selects 1MB explicitly. Timeout is bumped because each
+# round-trip moves a megabyte through the bridge.
+
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible:
+      id: "service-state"
+      text: "STARTED"
+    timeout: 60000
+
+- tapOn:
+    id: "size-64"
+- tapOn:
+    id: "size-1024"
+- tapOn:
+    id: "size-65536"
+- tapOn:
+    id: "size-1048576"
+
+- tapOn:
+    id: "send-button"
+
+- extendedWaitUntil:
+    visible:
+      id: "benchmark-result"
+    timeout: 180000
+
+- assertVisible:
+    text: "1MB"

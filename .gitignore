@@ -83,3 +83,19 @@ build/
 
 # eslint
 .eslintcache
+
+# Local secrets (BrowserStack credentials etc). The .example file is
+# checked in and lists the variables; copy it to .env and fill in.
+.env
+.env.local
+.env.*.local
+
+# Bench result NDJSONs, written by `scripts/bench-summarize.ts` after
+# pulling device logs from a BrowserStack build. Treat as build
+# artifacts; copy out of this dir if you want to commit a specific
+# run's results.
+apps/benchmark/results/
+
+# `apps/benchmark/scripts/build-ipa.sh` output (xcarchive + IPA staged
+# for BrowserStack upload). Regenerable; never commit.
+apps/benchmark/ios-build/

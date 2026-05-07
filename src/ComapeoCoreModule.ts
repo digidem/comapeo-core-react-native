@@ -68,8 +68,21 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
   }
 }
 
-const messagePort = new CoreMessagePort() as unknown as MessagePort;
+const corePort = new CoreMessagePort();
+const messagePort = corePort as unknown as MessagePort;
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort);
+
+/**
+ * Escape hatch for consumers that need to bypass `MapeoClient` and
+ * speak directly to a non-Mapeo backend bundle (e.g. the bench app
+ * via `comapeoEntryFile`). `unstable_` per RN convention — not part
+ * of the supported surface; production should use `comapeo`.
+ *
+ * `createMapeoClient` above already attaches a `message` listener;
+ * frames not shaped like `{ id, method, params }` are ignored by the
+ * prod RPC, leaving them safely available for custom consumers.
+ */
+export const unstable_messagePort = corePort;
 
 type StateEvents = {
   stateChange: (state: ComapeoState, error: ComapeoErrorInfo | null) => void;

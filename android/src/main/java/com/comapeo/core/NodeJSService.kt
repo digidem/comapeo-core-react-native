@@ -43,7 +43,8 @@ private data class ErrorNativeMessage(
 const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
-const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
+// Override via `comapeoEntryFile` Gradle property; see android/build.gradle.
+val NODEJS_PROJECT_INDEX_FILENAME: String = BuildConfig.COMAPEO_ENTRY_FILE
 
 /**
  * Bound on `ipcDeferred.await()` inside `sendErrorNativeFrame`. If the
@@ -409,15 +410,17 @@ class NodeJSService(
                     }
                 }
 
-                val exitCode = startNodeWithArguments(
-                    arrayOf(
-                        "node",
-                        jsFile.absolutePath,
-                        comapeoSocketFile.absolutePath,
-                        controlSocketFile.absolutePath,
-                        dataDir,
-                    )
-                )
+                // `--device=<tag>` is read by downstream telemetry (bench, Sentry).
+                // Production backend ignores unknown flags so it's a safe no-op.
+                val deviceTag = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})"
+                val exitCode = startNodeWithArguments(arrayOf(
+                    "node",
+                    jsFile.absolutePath,
+                    comapeoSocketFile.absolutePath,
+                    controlSocketFile.absolutePath,
+                    dataDir,
+                    "--device=$deviceTag",
+                ))
                 log("NodeJS service completed with exit code $exitCode")
 
                 // Classify the exit. "Requested" means we asked for it

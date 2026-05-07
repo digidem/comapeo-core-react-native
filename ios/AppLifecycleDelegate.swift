@@ -86,20 +86,16 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             }
         },
         resolveJSEntryPoint: {
-            // Hand nodejs-mobile the read-only path inside the .app
-            // bundle directly. Nothing in the rolled-up backend writes
-            // back into `nodejs-project/` at runtime: native `.node`
-            // files live in `<App>.app/Frameworks/<name>__<version>.framework/`
-            // (loaded via `process.dlopen` against `NATIVE_LIB_DIR`,
-            // set in the `nodeEntryPoint` closure above), drizzle
-            // migrations are `fs.readFile`d, and SQLite/blobs/indexes
-            // go to `privateStorageDir`.
+            // Read directly from the .app bundle: nothing in the
+            // rolled-up backend writes back to `nodejs-project/` at
+            // runtime. (Android extracts on first launch instead
+            // because the APK doesn't expose its assets as a
+            // filesystem path.)
             //
-            // Android extracts on first launch instead because the APK
-            // doesn't expose a filesystem-readable path to its assets
-            // the way `<App>.app/<name>/` does on iOS.
+            // Entry filename overridable via Info.plist `ComapeoEntryFile`.
+            let entryFile = (Bundle.main.object(forInfoDictionaryKey: "ComapeoEntryFile") as? String) ?? "index.mjs"
             let bundleEntry = (Bundle.main.bundlePath as NSString)
-                .appendingPathComponent("nodejs-project/index.mjs")
+                .appendingPathComponent("nodejs-project/\(entryFile)")
             return FileManager.default.fileExists(atPath: bundleEntry)
                 ? bundleEntry
                 : nil

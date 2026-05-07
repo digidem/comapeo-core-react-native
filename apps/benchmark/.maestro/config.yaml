@@ -1,0 +1,12 @@
+# Workspace config for the bench Maestro suite. Picked up automatically
+# when Maestro runs against this directory; the BrowserStack runner zips
+# everything under here into a single parent folder so BS sees the same
+# layout.
+#
+# `flows` constrains discovery to bench-only YAMLs — keeps stray editor
+# files (`.swp`, `.DS_Store`) and accidental sibling additions out of the
+# uploaded zip. The runner's `bench-summarize.ts` and the BS dispatch
+# script don't read this file directly; it's purely for Maestro's CLI
+# `maestro test` discovery.
+flows:
+  - "bench-*.yaml"
