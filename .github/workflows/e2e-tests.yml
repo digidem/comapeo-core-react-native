@@ -159,6 +159,9 @@ jobs:
 
       - name: Upload
         id: upload
+        env:
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
         run: |
           IPA_RELATIVE_PATH="apps/e2e/ios/corereactnativee2e.ipa"
 
