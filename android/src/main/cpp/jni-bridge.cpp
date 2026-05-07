@@ -56,21 +56,24 @@ int start_redirecting_stdout_stderr() {
 
     if (pthread_create(&thread_stdout, nullptr, thread_stdout_func, nullptr) != 0)
         return -1;
-    pthread_detach(thread_stdout);
 
     if (pthread_create(&thread_stderr, nullptr, thread_stderr_func, nullptr) != 0)
         return -1;
-    pthread_detach(thread_stderr);
 
     return 0;
 }
 
 void stop_redirecting_stdout_stderr() {
-    // Cleanup stdout and stderr redirection.
-    close(pipe_stdout[0]);
+    // Close all write-end refs (STDOUT_FILENO is a dup2 alias of pipe_stdout[1]) so
+    // the pumps see EOF, then join so the buffer drains before JNI returns.
+    close(STDOUT_FILENO);
     close(pipe_stdout[1]);
-    close(pipe_stderr[0]);
+    close(STDERR_FILENO);
     close(pipe_stderr[1]);
+    pthread_join(thread_stdout, nullptr);
+    pthread_join(thread_stderr, nullptr);
+    close(pipe_stdout[0]);
+    close(pipe_stderr[0]);
 }
 
 class NodeJSService : public JavaClass<NodeJSService> {
