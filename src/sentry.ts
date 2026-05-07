@@ -50,6 +50,20 @@ interface SentryEvent {
 type EventProcessor = (event: SentryEvent) => SentryEvent | null;
 
 /**
+ * Subset of `Scope` we need on the persistent global scope. The
+ * sub-export's `setTag` / `addEventProcessor` writes go through
+ * here — *not* the top-level `Sentry.setTag` helper, which
+ * targets the current/isolation scope and can be replaced or
+ * forked when the consumer calls `Sentry.init` after our import
+ * has already run (Metro hoists ESM imports above non-import
+ * code, so our scope writes land before init).
+ */
+interface SentryGlobalScope {
+  setTag(key: string, value: string | number | boolean): void;
+  addEventProcessor(processor: EventProcessor): void;
+}
+
+/**
  * Methods this module calls on Sentry. Hand-rolled rather than
  * `Pick<typeof import("@sentry/react-native"), …>` so importing
  * this file doesn't fail typecheck for consumers without the
@@ -76,13 +90,11 @@ export interface SentryAdapter {
   addBreadcrumb(breadcrumb: SentryBreadcrumb): void;
   setTag(key: string, value: string | number | boolean): void;
   /**
-   * Registers a global event processor that runs on every event
-   * before it's sent. We use it to inject our own values into
-   * `event.modules` (the bundled-backend deps that the SDK's
-   * `ModulesLoader` integration can't see, plus our own version
-   * label).
+   * Persistent global scope — singleton from module load, not
+   * forked or replaced by `Sentry.init`. Writes here survive the
+   * pre-init / post-init scope handoff.
    */
-  addEventProcessor(processor: EventProcessor): void;
+  getGlobalScope(): SentryGlobalScope;
   startSpan<T>(
     options: { name: string; op?: string; forceTransaction?: boolean },
     callback: (span: SentrySpan) => T,
@@ -128,13 +140,24 @@ export function setSentryAdapterForTests(adapter: SentryAdapter | null): void {
 // backend deps that `ModulesLoader` can't introspect (rolled
 // into a single `index.mjs`), so the Modules / Discover UI has
 // the full dep map.
+//
+// We target the **global scope** rather than the top-level
+// `setTag` / `addEventProcessor` helpers. The latter write to
+// the current/isolation scope, which the consumer's
+// `Sentry.init` may fork or replace — and Metro's import
+// hoisting (and `inlineRequires: true`) means this side-effect
+// import runs BEFORE the consumer's init call even when
+// `import "@comapeo/core-react-native/sentry"` appears below
+// `Sentry.init({...})` in source. The global scope is a
+// persistent module-level singleton; writes here survive init.
 {
   const adapter = activeAdapter();
   if (adapter) {
-    adapter.setTag(SentryTags.proc, SentryTags.procMain);
-    adapter.setTag(SentryTags.layer, SentryTags.layerRn);
-    adapter.setTag("comapeo.module.version", COMAPEO_MODULE_VERSION_LABEL);
-    adapter.addEventProcessor((event) => {
+    const globalScope = adapter.getGlobalScope();
+    globalScope.setTag(SentryTags.proc, SentryTags.procMain);
+    globalScope.setTag(SentryTags.layer, SentryTags.layerRn);
+    globalScope.setTag("comapeo.module.version", COMAPEO_MODULE_VERSION_LABEL);
+    globalScope.addEventProcessor((event) => {
       event.modules = {
         ...event.modules,
         "@comapeo/core-react-native": COMAPEO_MODULE_VERSION_LABEL,
