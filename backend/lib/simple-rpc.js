@@ -2,8 +2,12 @@ import { ServerHelper } from "./server-helper.js";
 import { SocketMessagePort } from "./message-port.js";
 
 /**
+ * @typedef {{ type: "stopping" } | { type: "error", phase: string, message: string, stack?: string }} TerminalFrame
+ */
+
+/**
  * Control-socket server: routes inbound requests by message `type` and
- * broadcasts readiness transitions to all connected clients.
+ * broadcasts lifecycle transitions to all connected clients.
  *
  * The readiness state machine has three phases. They reflect the two-stage
  * boot the host now drives — control socket first, then `MapeoManager`
@@ -21,9 +25,10 @@ import { SocketMessagePort } from "./message-port.js";
  *     bound. Emitted as `{type:"ready"}`. RPC clients (the React Native
  *     module) can safely connect and call methods.
  *
- * Late-connecting clients receive both replayed messages in order, so a
- * native control-IPC client that finishes `waitForFile()` + retry-connect
- * after the one-shot broadcast still sees the transitions.
+ * Late-connecting clients receive replays in order: readiness frames
+ * (`started` then `ready`) followed by the latest terminal frame
+ * (`stopping` or `error`) if one has been emitted, so they converge on
+ * the same state an early joiner would have seen.
  *
  * Methods registered on the constructor are invoked with the full inbound
  * message — handlers can read fields beyond `type` (e.g. `init.rootKey`).
@@ -36,6 +41,8 @@ export class SimpleRpcServer extends ServerHelper {
   #clients = new Set();
   /** @type {"pre-listening" | "started" | "ready"} */
   #readinessPhase = "pre-listening";
+  /** @type {TerminalFrame | null} */
+  #terminalFrame = null;
 
   /**
    * @param {TMethods} methods
@@ -58,14 +65,14 @@ export class SimpleRpcServer extends ServerHelper {
     this.#clients.add(messagePort);
     messagePort.start();
 
-    // Replay readiness for late-connecting clients. Order matters:
-    // `started` always before `ready`, so a client that watches for
-    // `started` separately sees it before the `ready` follow-up.
     if (this.#readinessPhase === "started" || this.#readinessPhase === "ready") {
       messagePort.postMessage({ type: "started" });
     }
     if (this.#readinessPhase === "ready") {
       messagePort.postMessage({ type: "ready" });
+    }
+    if (this.#terminalFrame !== null) {
+      messagePort.postMessage(this.#terminalFrame);
     }
   }
 
@@ -115,51 +122,16 @@ export class SimpleRpcServer extends ServerHelper {
     return this.#readinessPhase;
   }
 
-  /**
-   * Broadcast an arbitrary JSON-serializable message to every connected
-   * client. Used by the host to fan out lifecycle signals like
-   * `{type:"stopping"}` that don't fit the readiness-phase replay model
-   * (they're one-shot announcements, not state machine transitions).
-   *
-   * Non-replayed: a client connecting after this fires gets nothing.
-   * For lifecycle frames the caller should rely on the natural close of
-   * the socket as the follow-up signal — a `stopping` frame followed
-   * by socket close is the "we initiated graceful shutdown" pair.
-   *
-   * @param {import("type-fest").JsonValue} message
-   */
+  /** @param {TerminalFrame | { type: string } & import("type-fest").JsonObject} message */
   broadcast(message) {
+    if (message.type === "stopping" || message.type === "error") {
+      this.#terminalFrame = /** @type {TerminalFrame} */ (message);
+    }
     for (const client of this.#clients) {
       try {
         client.postMessage(message);
       } catch (e) {
-        // Best-effort: a single broken client shouldn't block the rest.
         console.error("broadcast: client postMessage threw", e);
-      }
-    }
-  }
-
-  /**
-   * Broadcast `{type:"error", phase, message, stack?}` to every connected
-   * client. Used by the host's uncaughtException handler and by explicit
-   * boot-failure paths so native can transition to its `error` state.
-   *
-   * Non-replayed: a client connecting after this fires gets nothing,
-   * because the process is about to exit and the socket will close
-   * shortly anyway. Native's existing connection-close handling covers
-   * that case.
-   *
-   * @param {{ phase: string, message: string, stack?: string }} payload
-   */
-  broadcastError(payload) {
-    const frame = { type: "error", ...payload };
-    for (const client of this.#clients) {
-      try {
-        client.postMessage(frame);
-      } catch (e) {
-        // Best-effort: a single client whose socket already errored
-        // shouldn't block the rest from seeing the error frame.
-        console.error("broadcastError: client postMessage threw", e);
       }
     }
   }
