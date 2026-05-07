@@ -65,52 +65,25 @@ public class ComapeoCoreModule: Module {
         }
 
         OnDestroy {
-            // OnDestroy fires reliably on iOS JS reload as of
-            // expo-modules-core's PR #33760 (merged Dec 2024, shipped in
-            // SDK 53+). Previously, a strong-reference cycle through
-            // `MainValueConverter` kept `AppContext` alive across
-            // reloads — and as long as `AppContext` stayed alive, its
-            // `ModuleHolder`s stayed alive, their deinits never ran,
-            // and the `.moduleDestroy` event that triggers OnDestroy
-            // was never posted. PR #33760 changed
-            // `MainValueConverter.appContext` to a weak reference,
-            // which removes the cycle so `AppContext` can be released
-            // on reload. Verified against the installed
-            // `expo-modules-core@55.0.23`:
-            //   ios/Core/MainValueConverter.swift:7
-            //     `private(set) weak var appContext: AppContext?`
-            //   ios/Core/ModuleHolder.swift:140
-            //     `deinit { post(event: .moduleDestroy) }`
-            // On reload: AppContext deinits → its module registry
-            // releases each ModuleHolder → each ModuleHolder's deinit
-            // fires `.moduleDestroy` → this block runs.
+            // Relies on expo-modules-core PR #33760 (shipped in SDK 53+,
+            // verified against expo-modules-core@55.0.23): weak
+            // `MainValueConverter.appContext` lets AppContext deinit on
+            // JS reload, which fires .moduleDestroy and runs this block.
+            // If a future SDK reintroduces the strong-ref cycle, the
+            // fallback is to drive disconnect() from
+            // RCTBridgeWillReloadNotification /
+            // RCTJavaScriptWillStartLoadingNotification.
             //
-            // `disconnect()` is already synchronous on iOS
-            // (`shutdown(2)` → join receive loop → `close(2)`), so the
-            // backend observes EOF before the OnDestroy block returns
-            // and the rpc-reflector subscription cleanup runs against
-            // the prior session's connection.
-            //
-            // If a future SDK upgrade or a third-party module
-            // reintroduces a strong reference that pins `AppContext`,
-            // the fallback is to subscribe to
-            // `RCTBridgeWillReloadNotification` /
-            // `RCTJavaScriptWillStartLoadingNotification` in OnCreate
-            // and call `disconnect()` from the notification handler.
-            // We don't pre-emptively wire that here — only one
-            // teardown path makes the lifecycle easier to reason about.
+            // disconnect() is already synchronous on iOS (shutdown +
+            // join + close), so the backend observes EOF before this
+            // block returns.
             self.ipc?.disconnect()
             self.ipc = nil
         }
 
         OnAppEntersForeground {
-            // `connect()` on NodeJSIPC is idempotent: it early-returns
-            // when the IPC is already .connected/.connecting/.disconnecting
-            // and resets a prior .error state so a fresh connect attempt
-            // can succeed. Calling it on every foreground is the cheap
-            // way to recover from a transient connection failure (e.g.
-            // an iOS suspension that closed the underlying fd) without
-            // tracking IPC state at this layer.
+            // Idempotent reconnect to recover from a transient failure
+            // (e.g. iOS suspension closed the underlying fd).
             self.ipc?.connect()
         }
 

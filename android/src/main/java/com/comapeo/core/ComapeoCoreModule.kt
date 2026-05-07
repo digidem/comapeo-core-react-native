@@ -100,17 +100,10 @@ class ComapeoCoreModule : Module() {
     }
 
     override fun definition() = ModuleDefinition {
-        // OnCreate / OnDestroy are bound to the Expo `AppContext`, whose
-        // lifetime is the React Native JS runtime — not the Android
-        // Activity. They fire on every JS context tear-down/rebuild
-        // (dev reload, `DevSettings.reload()`, fast-refresh full
-        // reload), which is exactly the reconnect boundary we want for
-        // the RPC sockets: the previous JS session's rpc-reflector
-        // client is gone, but its event-listener subscriptions are
-        // still attached on the backend's MapeoManager. Closing the
-        // socket here forces the backend to observe the disconnect and
-        // tear those subscriptions down before the next JS session
-        // opens a fresh connection from a new OnCreate.
+        // OnCreate / OnDestroy are bound to the Expo AppContext (JS runtime
+        // lifetime), so they fire on every JS reload — the boundary at
+        // which rpc-reflector subscriptions on MapeoManager need to be
+        // torn down before a fresh client connects.
         OnCreate {
             val socketFile =
                 File(appContext.persistentFilesDirectory, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
@@ -201,28 +194,16 @@ class ComapeoCoreModule : Module() {
         }
 
         OnDestroy {
-            // Synchronous close so the AF_UNIX socket FD is released on
-            // this thread before OnDestroy returns. The fire-and-forget
-            // disconnect() would let the next OnCreate open a new
-            // connection while the old socket is still alive in a
-            // launched coroutine; a synchronous close means the backend
-            // sees EOF on the previous session before it accepts the
-            // new connection, so rpc-reflector's per-connection cleanup
-            // path (server.close → removeListener for every prior
-            // subscription) runs against the right connection.
+            // Synchronous close: backend must see EOF on the previous
+            // session before the next OnCreate opens a new connection, or
+            // rpc-reflector cleanup runs against the wrong connection.
             ipc.close()
             controlIpc.close()
         }
 
         OnActivityEntersForeground {
-            // `connect()` is idempotent on `NodeJSIPC`: it early-returns
-            // when the IPC is already in Connected/Connecting/Disconnecting
-            // and resets a prior `Error` state so the next attempt can
-            // succeed. Calling it on every foreground transition is
-            // therefore the cheap way to recover from a transient
-            // connection failure (e.g. the FGS was killed and respawned
-            // while the app was backgrounded) without us tracking the
-            // IPC state ourselves at this layer.
+            // Idempotent reconnect to recover from a transient failure
+            // (e.g. FGS killed and respawned while backgrounded).
             ipc.connect()
             controlIpc.connect()
         }

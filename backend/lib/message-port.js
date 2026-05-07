@@ -100,16 +100,9 @@ export class SocketMessagePort extends TypedEmitter {
     this.#state = "closed";
     this.#queue.length = 0;
     this.#framedStream.destroy();
-    // Emit after `#state = "closed"` and `#framedStream.destroy()` so a
-    // listener that synchronously inspects state or writes a final
-    // postMessage observes the "closed" state and the destroyed
-    // stream. Consumers (notably `ComapeoRpcServer`, which wires
-    // `messagePort.on("close", () => server.close())` to remove every
-    // RPC event-listener subscription registered against
-    // `MapeoManager` for this connection) rely on this event firing
-    // exactly once when the underlying socket goes away — without it
-    // the rpc-reflector cleanup never runs, and listeners accumulate
-    // across client reconnects (e.g. on every React Native JS reload).
+    // ComapeoRpcServer wires `messagePort.on("close", () => server.close())`
+    // to clear rpc-reflector subscriptions registered against MapeoManager;
+    // without this emit, listeners leak on every reconnect (e.g. RN reload).
     this.emit("close");
   }
 }

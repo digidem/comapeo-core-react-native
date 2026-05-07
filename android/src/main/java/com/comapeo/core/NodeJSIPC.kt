@@ -235,29 +235,14 @@ class NodeJSIPC(
     }
 
     /**
-     * Synchronous, terminal teardown for module-destroy lifecycle.
+     * Synchronous, terminal teardown. Unlike [disconnect], the underlying
+     * [LocalSocket] is closed on the calling thread, so the Node.js peer
+     * observes EOF before [close] returns — required when a fresh
+     * `OnCreate` will open a new connection immediately after.
      *
-     * Unlike [disconnect] — which launches a coroutine and returns
-     * immediately — [close] closes the underlying [LocalSocket] on the
-     * calling thread before returning, so the peer (the Node.js backend
-     * over the AF_UNIX socket) observes EOF before [close] returns.
-     * That ordering is the point: it lets a caller running in a tight
-     * lifecycle window (e.g. the Expo module's `OnDestroy`, immediately
-     * before a fresh `OnCreate` opens a new connection) guarantee the
-     * old socket is gone before the new one is opened, so the backend's
-     * per-connection state (notably any rpc-reflector event-listener
-     * subscriptions registered against the long-lived handler) is torn
-     * down on the same reload that starts a fresh client.
-     *
-     * After [close] the instance must not be reused: the scope is
-     * cancelled and a fresh [NodeJSIPC] should be constructed.
+     * The instance must not be reused after [close]; construct a new one.
      */
     fun close() {
-        // Cancel the scope first so the receive/send coroutines stop
-        // touching the streams as we close them. socket.close() will
-        // also unblock any in-flight read/write with an IOException;
-        // the cancelled scope means the coroutines exit without
-        // re-entering disconnect().
         scope.cancel()
         sendChannel.close()
         try { dataOutputStream?.close() } catch (_: Exception) {}

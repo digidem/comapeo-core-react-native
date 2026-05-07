@@ -289,19 +289,10 @@ class NodeJSIPCTest {
     }
 
     /**
-     * `close()` is the synchronous teardown path used from
-     * `ComapeoCoreModule.OnDestroy` (the Expo lifecycle hook that fires on
-     * React Native JS context reload). The contract — distinct from
-     * `disconnect()` — is that the underlying socket FD is released on the
-     * calling thread before `close()` returns, so the peer (the Node.js
-     * backend over AF_UNIX) observes EOF before the next `OnCreate` opens a
-     * fresh connection. That ordering is what lets the backend's
-     * per-connection rpc-reflector cleanup run against the prior session
-     * rather than the new one.
-     *
-     * This test pins that contract: after `close()` returns, the server's
-     * blocking read on the same connection unblocks immediately with EOF
-     * (`-1` from `DataInputStream.read()`).
+     * Pins the synchronous-close contract: after [NodeJSIPC.close] returns,
+     * the peer's blocking read must already have observed EOF. A regression
+     * to a launched-coroutine teardown would race with the next `OnCreate`
+     * and break rpc-reflector cleanup.
      */
     @Test
     fun closeReleasesSocketSynchronously() {
@@ -311,17 +302,10 @@ class NodeJSIPCTest {
 
         startMockServer { input, _ ->
             connected.countDown()
-            // Block until the client closes its end. Without
-            // synchronous close on the client, this read would only
-            // unblock after the OS GC's the orphaned fd — racy and
-            // user-visible-slow.
             try {
-                val n = input.read()
-                readResult.set(n)
+                readResult.set(input.read())
             } catch (e: IOException) {
-                // Some kernels surface peer-close as IOException rather
-                // than EOF; either is a valid EOF signal — treat both
-                // as "peer closed".
+                // Some kernels surface peer-close as IOException; treat as EOF.
                 readResult.set(-1)
             }
             readReturned.countDown()
@@ -329,33 +313,17 @@ class NodeJSIPCTest {
 
         val ipc = NodeJSIPC(socketFile) { msg -> receivedMessages.add(msg) }
         assertTrue("Should connect within 10s", connected.await(10, TimeUnit.SECONDS))
-        // Let the IPC settle into Connected and start its receive loop
-        // before we close — otherwise we're testing a connect-cancel
-        // race rather than steady-state synchronous close.
+        // Let the receive loop settle so we test steady-state close, not
+        // a connect-cancel race.
         Thread.sleep(200)
 
-        // The synchronous-close contract: the moment close() returns,
-        // the server's blocking read must already have observed EOF.
-        // We give the kernel a generous 1s window to deliver FIN — far
-        // longer than necessary on a local AF_UNIX socket but short
-        // enough that a regression to the old fire-and-forget close
-        // (which depends on the launched coroutine eventually running
-        // on Dispatchers.IO) shows up as a test failure.
         ipc.close()
 
         assertTrue(
-            "Server-side read must unblock with EOF within 1s of close() returning. " +
-                "Regression: if close() reverts to a launched-coroutine teardown, the " +
-                "FD release happens after the JS reload has already opened a new " +
-                "connection and the rpc-reflector cleanup runs against the wrong " +
-                "connection.",
+            "Server-side read must unblock with EOF within 1s of close() returning",
             readReturned.await(1, TimeUnit.SECONDS)
         )
-        assertEquals(
-            "Server's read must return -1 (EOF) — peer closed cleanly.",
-            -1,
-            readResult.get()
-        )
+        assertEquals(-1, readResult.get())
     }
 
     @Test
