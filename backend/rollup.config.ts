@@ -23,8 +23,6 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const MAPS_STUB_PATH = path.join(__dirname, "lib", "maps-stub.js");
-
 /**
  * Per-platform output dirs. `scripts/build-backend.ts` sets these env
  * vars to write directly into the final native-asset trees
@@ -66,20 +64,24 @@ const IOS_SOURCEMAPS =
   process.env.SOURCEMAPS_DIR_IOS ?? `${IOS_OUT}-sourcemaps`;
 
 /**
- * Resolves `@comapeo/core`'s `./fastify-plugins/maps.js` import to the
- * iOS-only no-op stub. Scoped tightly to the `@comapeo/core/src/` importer
- * so unrelated packages with a similarly-named file aren't caught.
+ * iOS-only: redirects undici's `require('../llhttp/llhttp_simd-wasm.js')`
+ * call to the non-SIMD wasm module beside it. polywasm 0.2 doesn't
+ * implement WASM SIMD (opcode 0xfd) — it compiles the SIMD bytes
+ * successfully but throws `Unsupported instruction: 0xFD` lazily on
+ * the first export call, which undici's try/catch around `compile`
+ * doesn't intercept. Aliasing at bundle time forces the non-SIMD
+ * path so the SIMD bytes never reach polywasm.
  */
-function stubComapeoMapsPlugin(): Plugin {
+function aliasUndiciSimdWasmPlugin(): Plugin {
   return {
-    name: "stub-comapeo-maps-plugin",
+    name: "alias-undici-simd-wasm",
     resolveId(source, importer) {
       if (
-        source === "./fastify-plugins/maps.js" &&
+        source === "../llhttp/llhttp_simd-wasm.js" &&
         importer &&
-        importer.includes("@comapeo/core/src/")
+        importer.includes("/undici/lib/dispatcher/")
       ) {
-        return MAPS_STUB_PATH;
+        return path.resolve(path.dirname(importer), "../llhttp/llhttp-wasm.js");
       }
       return null;
     },
@@ -89,8 +91,8 @@ function stubComapeoMapsPlugin(): Plugin {
 /**
  * Runtime data files copied alongside the rollup output into the per-
  * platform output dir. Identical for Android and iOS: only the bundled
- * JS differs (iOS has the maps fastify plugin stubbed out — see
- * `stubComapeoMapsPlugin` above).
+ * JS differs (iOS prefixes a polywasm bootstrap and aliases undici's
+ * SIMD wasm — see `aliasUndiciSimdWasmPlugin` above).
  *
  *   - `package.json`: required by Node's module resolver to set the
  *     unpacked nodejs-project tree's module type.
@@ -156,9 +158,10 @@ function buildPlugins({
         },
       ],
     }),
-    // iOS-only: stub the maps fastify plugin so undici stays out of the
-    // bundle. See lib/maps-stub.js.
-    ...(platform === "ios" ? [stubComapeoMapsPlugin()] : []),
+    // iOS-only: redirect undici's SIMD llhttp wasm to the non-SIMD
+    // module so polywasm doesn't trip on opcode 0xfd at runtime. See
+    // aliasUndiciSimdWasmPlugin above.
+    ...(platform === "ios" ? [aliasUndiciSimdWasmPlugin()] : []),
     // Native addon loader rewrite is identical for both platforms:
     // every loader pattern (`bindings`, `node-gyp-build`, `require.addon`)
     // becomes `__loadAddon(name, version)`. The helper itself differs
@@ -208,9 +211,15 @@ function cleanOutputDirPlugin(dir: string): Plugin {
   };
 }
 
-
-const sharedInput = {
+const ANDROID_INPUT = {
   index: path.join(__dirname, "index.js"),
+};
+
+// iOS uses a thin entry that imports `lib/install-polywasm.js` first
+// so polywasm replaces the absent `globalThis.WebAssembly` before the
+// shared `index.js` (and undici through the maps plugin) is evaluated.
+const IOS_INPUT = {
+  index: path.join(__dirname, "index.ios.js"),
 };
 
 const sharedOutput: OutputOptions = {
@@ -222,10 +231,10 @@ const sharedOutput: OutputOptions = {
 /**
  * Three outputs from the same source tree: Android debug, Android release, and iOS.
  * Android gets the full bundle — its nodejs-mobile build permits JIT, so undici
- * (and therefore the maps fastify plugin) loads cleanly. iOS gets the same bundle but with
- * `@comapeo/core`'s maps plugin swapped for a no-op (see lib/maps-stub.js)
- * because nodejs-mobile iOS runs V8 with `--jitless` and undici's
- * WebAssembly init would crash module load.
+ * (and therefore the maps fastify plugin) loads cleanly. iOS uses a wrapper
+ * entry (`index-ios.js`) that installs polywasm as `globalThis.WebAssembly`
+ * before the shared `index.js` runs, so undici can compile its non-SIMD
+ * llhttp wasm under nodejs-mobile's jitless V8.
  *
  * Each output's `banner` defines `__loadAddon(name, version)` with the
  * platform-appropriate `process.dlopen` target — Android does
@@ -244,7 +253,7 @@ const iosDebugIds = new Map<string, string>();
 
 const config: RollupOptions[] = [
   {
-    input: sharedInput,
+    input: ANDROID_INPUT,
     output: {
       ...sharedOutput,
       dir: ANDROID_OUT_DEBUG,
@@ -267,7 +276,7 @@ const config: RollupOptions[] = [
     ],
   },
   {
-    input: sharedInput,
+    input: ANDROID_INPUT,
     output: {
       ...sharedOutput,
       dir: ANDROID_OUT_MAIN,
@@ -289,7 +298,7 @@ const config: RollupOptions[] = [
     ],
   },
   {
-    input: sharedInput,
+    input: IOS_INPUT,
     output: {
       ...sharedOutput,
       dir: IOS_OUT,
