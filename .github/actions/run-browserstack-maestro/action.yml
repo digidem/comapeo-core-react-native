@@ -66,12 +66,13 @@ runs:
           --arg suite "$TEST_SUITE_URL" \
           --argjson devices "$DEVICES" \
           --arg project "$BROWSERSTACK_PROJECT" \
+          --argjson timeout "$TIMEOUT" \
           '{
             app: $app,
             testSuite: $suite,
             devices: $devices,
             project: $project,
-            setEnvVariables: { "TIMEOUT": $TIMEOUT },
+            setEnvVariables: { "TIMEOUT": $timeout },
             deviceLogs: true,
             maestroVersion: "latest"
           }'
