@@ -265,6 +265,6 @@ jobs:
           timeout: 1800
           devices: >-
             [
-            "iPhone 13-15",
+            "iPhone 15-17",
             "iPhone 17-26"
             ]
