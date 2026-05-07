@@ -221,7 +221,7 @@ jobs:
         with:
           app_url: ${{ needs.build-android.outputs.app_url }}
           test_suite_url: ${{ needs.upload-test-suite.outputs.test_suite_url }}
-          project_name: ${{ vars.BROWSERSTACK_PROJECT_NAME_TESTS }}
+          browserstack_project: ${{ vars.BROWSERSTACK_PROJECT_TESTS }}
           browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
           browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           # TODO: Adjust based on actual timing
@@ -256,7 +256,7 @@ jobs:
         with:
           app_url: ${{ needs.build-ios.outputs.app_url }}
           test_suite_url: ${{ needs.upload-test-suite.outputs.test_suite_url }}
-          project_name: ${{ vars.BROWSERSTACK_PROJECT_NAME_TESTS }}
+          browserstack_project: ${{ vars.BROWSERSTACK_PROJECT_TESTS }}
           browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
           browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           # TODO: Adjust based on actual timing

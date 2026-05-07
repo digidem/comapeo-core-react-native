@@ -12,8 +12,8 @@ inputs:
   devices:
     description: JSON array of device strings
     required: true
-  project_name:
-    description: BrowserStack project name
+  browserstack_project:
+    description: BrowserStack project
     required: true
   browserstack_username:
     description: BrowserStack username
@@ -42,7 +42,7 @@ runs:
         APP_URL: ${{ inputs.app_url }}
         TEST_SUITE_URL: ${{ inputs.test_suite_url }}
         DEVICES: ${{ inputs.devices }}
-        PROJECT_NAME: ${{ inputs.project_name }}
+        BROWSERSTACK_PROJECT: ${{ inputs.browserstack_project }}
         BROWSERSTACK_USERNAME: ${{ inputs.browserstack_username }}
         BROWSERSTACK_ACCESS_KEY: ${{ inputs.browserstack_access_key }}
       shell: bash
@@ -51,7 +51,7 @@ runs:
           --arg app "$APP_URL" \
           --arg suite "$TEST_SUITE_URL" \
           --argjson devices "$DEVICES" \
-          --arg project "$PROJECT_NAME" \
+          --arg project "$BROWSERSTACK_PROJECT" \
           '{app: $app, testSuite: $suite, devices: $devices, project: $project, deviceLogs: true, maestroVersion: "latest"}')
 
         BUILD_ID=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
