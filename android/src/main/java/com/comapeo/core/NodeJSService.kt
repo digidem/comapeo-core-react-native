@@ -278,12 +278,12 @@ class NodeJSService(
                 NodeJSIPC(
                     controlSocketFile,
                     onConnectionStateChange = { ipcState ->
-                        // Breadcrumb only — `applyAndEmit` already
-                        // captures the captureException on the
-                        // ERROR state derived from a bad disconnect.
-                        SentryFgsBridge.addBreadcrumb(
-                            category = "comapeo.ipc",
-                            message = "control IPC: ${ipcState.javaClass.simpleName}",
+                        // applyAndEmit already captures the
+                        // exception on the ERROR state derived
+                        // from a bad disconnect — crumb only.
+                        logCrumb(
+                            SentryCategories.IPC,
+                            "control IPC: ${ipcState.javaClass.simpleName}",
                             level = if (ipcState is NodeJSIPC.State.Error) "warning" else "info",
                             data = if (ipcState is NodeJSIPC.State.Error) {
                                 mapOf("error" to (ipcState.exception.message ?: ipcState.exception.javaClass.simpleName))
@@ -356,15 +356,13 @@ class NodeJSService(
             updated
         }
         if (prev.state != committed.state) {
-            log("NodeJSService state: ${prev.state} -> ${committed.state}")
             if (prev.state == State.STARTING) cancelStartupWatchdog()
 
-            // FGS-process state-transition breadcrumb. The
-            // main-process JS adapter emits its own via the second
-            // control-socket connection.
-            SentryFgsBridge.addBreadcrumb(
-                category = "comapeo.state",
-                message = "${prev.state} → ${committed.state}",
+            // FGS-process state-transition breadcrumb. The main
+            // process emits its own via src/sentry.ts.
+            logCrumb(
+                SentryCategories.STATE,
+                "${prev.state} → ${committed.state}",
                 level = if (committed.state == State.ERROR) "error" else "info",
                 data = mapOf(
                     "from" to prev.state.name,
@@ -438,7 +436,7 @@ class NodeJSService(
         if (nodeJob != null) {
             throw IllegalStateException("NodeJS service is already running")
         }
-        log("Starting NodeJS service")
+        logCrumb(SentryCategories.BOOT, "start()")
 
         // Open boot transaction BEFORE the STOPPED→STARTING
         // transition; applyAndEmit's close-on-terminal logic only
@@ -500,7 +498,11 @@ class NodeJSService(
                     withContext(Dispatchers.IO) {
                         nodeProjectDir.deleteRecursively()
                         copyAssetFolder(NODEJS_PROJECT_DIRNAME, nodeProjectDir)
-                        log("Copied $NODEJS_PROJECT_DIRNAME into data directory")
+                        logCrumb(
+                            SentryCategories.BOOT,
+                            "asset copy complete",
+                            data = mapOf("dir" to NODEJS_PROJECT_DIRNAME),
+                        )
                     }
                 }
 
@@ -513,7 +515,12 @@ class NodeJSService(
                         dataDir,
                     )
                 )
-                log("NodeJS service completed with exit code $exitCode")
+                logCrumb(
+                    SentryCategories.BOOT,
+                    "node thread exited",
+                    level = if (exitCode == 0) "info" else "warning",
+                    data = mapOf("exitCode" to exitCode),
+                )
 
                 // Classify the exit. "Requested" means we asked for it
                 // (stop()) or the backend announced it (`stopping`) or
@@ -536,6 +543,18 @@ class NodeJSService(
                 callback.onComplete(exitCode)
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting node", e)
+                // captureException so the runtime-launch failure is
+                // a first-class Sentry event with the full stack;
+                // applyAndEmit below drives ERROR but the JS adapter
+                // only synthesises a thin Error from the phase/msg.
+                SentryFgsBridge.captureException(
+                    e,
+                    tags = mapOf(
+                        SentryTags.PHASE to "node-runtime",
+                        SentryTags.STATE to "ERROR",
+                        SentryTags.SOURCE to "startNodeWithArguments",
+                    ),
+                )
                 val info = ErrorInfo("node-runtime", e.message ?: e.javaClass.simpleName)
                 // The thread has unwound, so mark the runtime as exited
                 // alongside the backend-error transition. Without this,
@@ -571,15 +590,14 @@ class NodeJSService(
      * ordering or throughput reason to avoid a real parser here.
      */
     private fun handleControlMessage(message: String) {
-        log("Control IPC received: $message")
         when (val frame = ControlFrame.parse(message)) {
             ControlFrame.Started -> {
-                SentryFgsBridge.addBreadcrumb(category = "comapeo.control", message = "received: started")
+                logCrumb(SentryCategories.CONTROL, "received: started")
                 applyAndEmit { it.copy(backendState = BackendState.ControlBound) }
                 sendInitFrame()
             }
             ControlFrame.Ready -> {
-                SentryFgsBridge.addBreadcrumb(category = "comapeo.control", message = "received: ready")
+                logCrumb(SentryCategories.CONTROL, "received: ready")
                 // `ready` is the natural close point for the
                 // boot.init-frame span opened in sendInitFrame().
                 bootSpans.remove("init-frame")?.let {
@@ -588,7 +606,7 @@ class NodeJSService(
                 applyAndEmit { it.copy(backendState = BackendState.Ready) }
             }
             ControlFrame.Stopping -> {
-                SentryFgsBridge.addBreadcrumb(category = "comapeo.control", message = "received: stopping")
+                logCrumb(SentryCategories.CONTROL, "received: stopping")
                 // Backend is gracefully shutting down. The next thing
                 // we'll see is the socket close; the derivation maps
                 // this to STOPPING and the subsequent runtime exit
@@ -596,9 +614,9 @@ class NodeJSService(
                 applyAndEmit { it.copy(backendState = BackendState.Stopping) }
             }
             is ControlFrame.Error -> {
-                SentryFgsBridge.addBreadcrumb(
-                    category = "comapeo.control",
-                    message = "received: error",
+                logCrumb(
+                    SentryCategories.CONTROL,
+                    "received: error",
                     level = "error",
                     data = mapOf("phase" to frame.phase, "message" to frame.message),
                 )
@@ -611,10 +629,9 @@ class NodeJSService(
                 // Logged but not raised to ERROR: a single bad frame
                 // shouldn't take down the lifecycle. The main-app
                 // Module surfaces `messageerror` separately.
-                log("NodeJSService: ${frame.detail}")
-                SentryFgsBridge.addBreadcrumb(
-                    category = "comapeo.control",
-                    message = "malformed control frame",
+                logCrumb(
+                    SentryCategories.CONTROL,
+                    "malformed control frame",
                     level = "warning",
                     data = mapOf("detail" to frame.detail),
                 )
@@ -682,7 +699,7 @@ class NodeJSService(
         }
         serviceScope.launch {
             ipcDeferred.await().sendMessage(frame)
-            log("Sent init frame to backend")
+            logCrumb(SentryCategories.BOOT, "init frame sent")
         }
     }
 
@@ -768,14 +785,16 @@ class NodeJSService(
         applyAndEmit { it.copy(stopRequested = true) }
         try {
             val message = json.encodeToString(ShutdownMessage())
-            log(message)
             val ipc = ipcDeferred.await()
             ipc.sendMessage(message)
-            log("Sent shutdown message to NodeJS service")
+            logCrumb(SentryCategories.STATE, "shutdown frame sent")
             nodeJob?.join()
-            log("nodeJob completed")
         } catch (e: Exception) {
-            log("Error during stop: ${e.message}")
+            logCrumb(
+                SentryCategories.STATE,
+                "stop() failed: ${e.message}",
+                level = "warning",
+            )
             nodeJob?.cancel()
         } finally {
             nodeJob = null
@@ -786,6 +805,7 @@ class NodeJSService(
     }
 
     fun destroy() {
+        logCrumb(SentryCategories.STATE, "destroy()")
         deleteSocketFiles()
         nodeJob?.cancel()
         serviceScope.cancel()
@@ -800,7 +820,6 @@ class NodeJSService(
                 stopRequested = true,
             )
         }
-        log("NodeJS service destroyed")
     }
 
     private fun deleteSocketFiles() {

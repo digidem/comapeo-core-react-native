@@ -22,3 +22,15 @@ export const SentryTags = {
   layerNative: "native",
   layerNode: "node",
 } as const;
+
+/**
+ * Breadcrumb category names. Single source of truth for the
+ * dot-separated category strings so a typo can't silently route
+ * crumbs to the wrong dashboard filter.
+ */
+export const SentryCategories = {
+  /** State-machine transitions (STOPPED → STARTING → STARTED …). */
+  state: "comapeo.state",
+  /** Control-socket parse failures (the `messageerror` event). */
+  control: "comapeo.control",
+} as const;

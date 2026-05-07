@@ -690,11 +690,72 @@ returned `true`.
   user-entered text are never captured even with the
   capture-application-data toggle on.
 
+### 7.5 Metadata reference
+
+Single source of truth for what we emit. Constants live in
+`SentryTags.{kt,swift}` / `src/sentry-tags.ts` (tags) and
+`SentryCategories.{kt,swift}` / `src/sentry-tags.ts`
+(breadcrumb categories). Update those files first, then
+this table.
+
+#### Tags (set on captureException / captureMessage / span)
+
+| Key | Values | Where |
+|---|---|---|
+| `proc` | `main` (host UI process) · `fgs` (Android `:ComapeoCore`) | Process-level on FGS-side init; per-call on iOS, RN, and main-process Android |
+| `layer` | `rn` · `native` · `node` (Phase 3) | Same as `proc` |
+| `comapeo.phase` | `rootkey` · `node-runtime` · `starting-timeout` · `shutdown-timeout` · `node-runtime-unexpected` · `ipc` · `listen-control` · `init` · `construct` · `runtime` · `errorNativeForward` | Captured exceptions and timeout messages |
+| `comapeo.state` | `STOPPED` · `STARTING` · `STARTED` · `STOPPING` · `ERROR` | ERROR captureExceptions only |
+| `source` | `control-socket` · `rootkey-store` · `startNodeWithArguments` · `comapeo-core` (Phase 3) | Captured exceptions, narrows the origin within a phase |
+| `timeout` | `startup` · `shutdown` · `fgsStop` · `errorNativeForward` · `waitForFile` · `connectRetry` | `captureMessage` events for timeout firings |
+| `timeoutMs` | numeric string | Timeout messages (so the dashboard can chart configured vs. actual durations) |
+
+#### Breadcrumb categories
+
+| Category | What it carries | `data` fields |
+|---|---|---|
+| `comapeo.state` | Every state-machine transition | `from`, `to`, `backendState`, `nodeRuntime`, `stopRequested` (Android), `from`, `to` (iOS) |
+| `comapeo.control` | Control-socket frames the parser accepted, plus malformed | `phase`+`message` (error frames), `detail` (malformed) |
+| `comapeo.ipc` | NodeJSIPC connection-state transitions | `error` (only when `State.Error`) |
+| `comapeo.fgs` | FGS lifecycle (Android only) | `startId`, `action`, `exitCode` (varies by callsite) |
+| `comapeo.boot` | Boot-phase progress (start, asset copy, init frame, exit) | varies — `dir`, `exitCode`, etc. |
+
+#### Spans
+
+| Operation | Description | When it opens / closes |
+|---|---|---|
+| `comapeo.boot` (root tx) | "boot" — forced 100% sampled | Opens in `start()`; closes on first non-`STARTING` transition with status `ok` (STARTED), `internal_error` (ERROR), or `cancelled` (STOPPING/STOPPED) |
+| `boot.rootkey-load` | "Load 16-byte rootkey from RootKeyStore" | Wraps `RootKeyStore.loadOrInitialize()` in `sendInitFrame()` |
+| `boot.init-frame` | "Send init frame, await ready" | Opens after the init frame is sent; closes when the `ready` control frame is received |
+
+#### Standard captureMessage events
+
+| Message | Level | Tags |
+|---|---|---|
+| `comapeo: startup timeout fired` | `error` | `timeout:startup`, `comapeo.phase:starting-timeout`, `timeoutMs` |
+| `comapeo: stop timeout fired` (iOS) / `comapeo: FGS stop timeout fired` (Android) | `error` | `timeout:shutdown` (iOS) / `timeout:fgsStop` (Android), `comapeo.phase:shutdown-timeout` |
+| `comapeo: error-native frame dropped` (Android FGS) | `warning` | `timeout:errorNativeForward`, `comapeo.phase:<inner>`, `timeoutMs` |
+
+#### Standard captureException tag sets
+
+| Origin | `comapeo.phase` | `source` | `comapeo.state` | Where |
+|---|---|---|---|---|
+| Rootkey-store load failure | `rootkey` | `rootkey-store` | `ERROR` | FGS-side (Android) and iOS native |
+| Node-runtime launch failure | `node-runtime` | `startNodeWithArguments` | `ERROR` | Android FGS only (iOS lifts the throw via the same path) |
+| Synthesised JS-side ERROR | from `info.errorPhase` | (none) | `ERROR` | `src/sentry.ts` |
+| Control-socket parse failure | (none) | `control-socket` | (none, level `warning`) | `src/sentry.ts` |
+
+The plan's §7.4.9 never-capture list is enforced at every emit
+site (no observation contents, precise location, peer
+identities, raw project IDs, or user-entered text). Phase 5's
+`before_send` processor will add a defensive substring scrub
+on top.
+
 ---
 
 ## 8. Alternatives considered
 
-### 7.1 FGS↔main process state notification (Android)
+### 8.1 FGS↔main process state notification (Android)
 
 The current approach (§4.4) is a second `NodeJSIPC` connection to
 `control.sock`. We considered:
@@ -716,7 +777,7 @@ for a channel that carries ~6 messages per process lifetime." That cost
 is real but small. If profiling later shows it matters, **ContentProvider
 + ContentObserver** is the runner-up.
 
-### 7.2 Rootkey storage: Why not `expo-secure-store`?
+### 8.2 Rootkey storage: Why not `expo-secure-store`?
 
 Detailed comparison: see
 [`root-key-storage-and-migration-plan.md`](./root-key-storage-and-migration-plan.md).
@@ -755,7 +816,7 @@ Net: ~215 lines of ours doing exactly what we need with stronger
 at-rest properties; `expo-secure-store` is ~740 lines doing a
 different problem.
 
-### 7.3 Single-socket variants
+### 8.3 Single-socket variants
 
 Earlier prototypes carried lifecycle frames over the comapeo socket
 (prepended to the RPC stream). Rejected because:
@@ -765,7 +826,7 @@ Earlier prototypes carried lifecycle frames over the comapeo socket
 - The replay semantics for `started`/`ready` only make sense for the
   control surface; carrying replay through RPC was nonsense.
 
-### 7.4 Eager rootkey injection
+### 8.4 Eager rootkey injection
 
 Prototype: ship the rootkey in `argv` to the Node process so the
 backend reads it from `process.argv[N]` on boot, no handshake needed.

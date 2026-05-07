@@ -20,3 +20,17 @@ enum SentryTags {
     static let layerNative = "native"
     static let layerNode = "node"
 }
+
+/// Breadcrumb category names. Single source of truth for the
+/// dot-separated category strings so a typo can't silently route
+/// crumbs to the wrong dashboard filter.
+enum SentryCategories {
+    /// State-machine transitions (STOPPED → STARTING → STARTED …).
+    static let state = "comapeo.state"
+    /// Control-socket frames (started/ready/stopping/error/malformed).
+    static let control = "comapeo.control"
+    /// NodeJSIPC connection state transitions.
+    static let ipc = "comapeo.ipc"
+    /// Boot phases (start, asset copy, rootkey load, init frame, ready).
+    static let boot = "comapeo.boot"
+}

@@ -30,3 +30,21 @@ object SentryTags {
     const val LAYER_NATIVE = "native"
     const val LAYER_NODE = "node"
 }
+
+/**
+ * Breadcrumb category names. Single source of truth for the
+ * dot-separated category strings so a typo can't silently route
+ * crumbs to the wrong dashboard filter.
+ */
+object SentryCategories {
+    /** State-machine transitions (STOPPED → STARTING → STARTED …). */
+    const val STATE = "comapeo.state"
+    /** Control-socket frames (started/ready/stopping/error/malformed). */
+    const val CONTROL = "comapeo.control"
+    /** FGS (foreground-service) lifecycle (Android only). */
+    const val FGS = "comapeo.fgs"
+    /** NodeJSIPC connection state transitions. */
+    const val IPC = "comapeo.ipc"
+    /** Boot phases (start, asset copy, rootkey load, init frame, ready). */
+    const val BOOT = "comapeo.boot"
+}
