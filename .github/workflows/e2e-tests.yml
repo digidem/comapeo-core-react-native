@@ -55,17 +55,16 @@ jobs:
         if: steps.cache-libnode.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Install npm dependencies
         run: |
           npm install --ignore-scripts
           npx patch-package
 
-      - name: Expo prebuild (generates apps/e2e/android)
-        working-directory: apps/e2e
-        run: npx expo prebuild --platform android --no-install
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Build backend bundle
+        run: npm run backend:build
 
       - name: Set up E2E app
         working-directory: apps/e2e
