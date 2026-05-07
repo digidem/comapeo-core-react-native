@@ -191,7 +191,7 @@ jobs:
         run: |
           ZIP_NAME="maestro_tests.zip"
 
-          zip -r "$ZIP_NAME" maestro/e2e.yml
+          zip -r "$ZIP_NAME" maestro/e2e.yaml
 
           ZIP_PATH="$(pwd)/$ZIP_NAME"
 
