@@ -480,7 +480,6 @@ class NodeJSService(
                     tags = mapOf(
                         SentryTags.TIMEOUT to "startup",
                         SentryTags.PHASE to "starting-timeout",
-                        SentryTags.TIMEOUT_MS to startupTimeoutMs.toString(),
                     ),
                 )
                 // Send error-native to backend so the main-app process
@@ -748,7 +747,6 @@ class NodeJSService(
                         tags = mapOf(
                             SentryTags.TIMEOUT to "errorNativeForward",
                             SentryTags.PHASE to phase,
-                            SentryTags.TIMEOUT_MS to SEND_ERROR_NATIVE_TIMEOUT_MS.toString(),
                         ),
                     )
                     return@launch

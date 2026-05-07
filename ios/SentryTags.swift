@@ -10,7 +10,6 @@ enum SentryTags {
     static let state = "comapeo.state"
     static let source = "source"
     static let timeout = "timeout"
-    static let timeoutMs = "timeoutMs"
 
     // proc values — iOS is single-process, so always "main"
     static let procMain = "main"

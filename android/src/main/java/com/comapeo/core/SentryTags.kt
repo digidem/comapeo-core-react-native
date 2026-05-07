@@ -19,7 +19,6 @@ object SentryTags {
     const val STATE = "comapeo.state"
     const val SOURCE = "source"
     const val TIMEOUT = "timeout"
-    const val TIMEOUT_MS = "timeoutMs"
 
     // proc values
     const val PROC_MAIN = "main"

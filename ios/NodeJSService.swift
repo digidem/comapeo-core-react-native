@@ -146,13 +146,27 @@ class NodeJSService {
     /// Sentry boot transaction handle. Opened in `start()`, closed
     /// on the first non-`.starting` transition by `applyAndEmit`.
     /// `Any?` keeps `Sentry` types out of this file's signatures —
-    /// the bridge handles the cast. Mutated only on the
-    /// applyAndEmit / start paths, so no separate lock.
+    /// the bridge handles the cast.
+    ///
+    /// Touched from multiple threads (`start` from the consumer,
+    /// `sendInitFrame` from the IPC receive queue, the drain in
+    /// `applyAndEmit` from any caller). Every read and write goes
+    /// through `bootSentryQueue.sync`; bridge calls happen outside
+    /// the queue, same no-callbacks-under-sync discipline as
+    /// `lock`.
     fileprivate var bootTransaction: Any?
 
     /// In-flight `boot.<phase>` spans, keyed by phase. Drained by
-    /// `applyAndEmit` on terminal transition.
+    /// `applyAndEmit` on terminal transition. Same threading
+    /// discipline as `bootTransaction`.
     fileprivate var bootSpans: [String: Any] = [:]
+
+    /// Serial queue that owns access to `bootTransaction` and
+    /// `bootSpans`. `sync` is enough — the held work is just
+    /// snapshot-and-mutate, never an external callback.
+    fileprivate let bootSentryQueue = DispatchQueue(
+        label: "com.comapeo.core.bootSentry"
+    )
 
     var onStateChange: ((State) -> Void)?
 
@@ -337,14 +351,14 @@ class NodeJSService {
         let leavingStarting = (prev == .starting && derived != .starting)
         let watchdog = leavingStarting ? startupWatchdog : nil
         if leavingStarting { startupWatchdog = nil }
+        lock.unlock()
 
-        // Snapshot + clear the boot transaction / phase spans under
-        // the lock. Concurrent terminal transitions otherwise risk
-        // double-finishing: only the first thread to observe
-        // `bootTransaction` non-nil drains; subsequent ones see nil
-        // and skip. Reads/writes happen here; the actual
-        // `finishSpan` calls run outside the lock per the
-        // no-callbacks-under-lock discipline.
+        // Snapshot + clear the boot transaction / phase spans on
+        // `bootSentryQueue`. Concurrent terminal transitions
+        // otherwise risk double-finishing: only the first thread
+        // to observe `bootTransaction` non-nil drains; subsequent
+        // ones see nil and skip. Bridge calls happen outside the
+        // queue per the no-callbacks-under-sync discipline.
         let terminalStatus: String? = (prev != derived) ? {
             switch derived {
             case .started: return "ok"
@@ -353,18 +367,18 @@ class NodeJSService {
             case .starting: return nil
             }
         }() : nil
-        let drainTx: Any?
-        let drainSpans: [Any]
-        if let _ = terminalStatus, let tx = bootTransaction {
-            drainTx = tx
-            drainSpans = Array(bootSpans.values)
-            bootTransaction = nil
-            bootSpans.removeAll()
-        } else {
-            drainTx = nil
-            drainSpans = []
+        var drainTx: Any?
+        var drainSpans: [Any] = []
+        if terminalStatus != nil {
+            bootSentryQueue.sync {
+                if let tx = self.bootTransaction {
+                    drainTx = tx
+                    drainSpans = Array(self.bootSpans.values)
+                    self.bootTransaction = nil
+                    self.bootSpans.removeAll()
+                }
+            }
         }
-        lock.unlock()
 
         // Cancel the watchdog outside the lock — `cancel()` doesn't
         // currently take any of our locks but the no-callbacks-under-lock
@@ -403,9 +417,7 @@ class NodeJSService {
         // STOPPED → STARTING; applyAndEmit's close-on-terminal
         // logic only fires when bootTransaction is non-nil.
         let tx = SentryNativeBridge.startBootTransaction()
-        lock.lock()
-        bootTransaction = tx
-        lock.unlock()
+        bootSentryQueue.sync { bootTransaction = tx }
 
         // Reset component state for a fresh start cycle and transition
         // STOPPED → STARTING via the derivation. `_lastError` is cleared
@@ -444,7 +456,6 @@ class NodeJSService {
                     tags: [
                         SentryTags.timeout: "startup",
                         SentryTags.phase: "starting-timeout",
-                        SentryTags.timeoutMs: String(Int(self.startupTimeout * 1000)),
                     ]
                 )
                 self.applyAndEmit(error: info) {
@@ -500,9 +511,9 @@ class NodeJSService {
             logCrumb(category: SentryCategories.control, message: "received: ready")
             // `ready` is the natural close point for the
             // `boot.init-frame` span opened in sendInitFrame().
-            lock.lock()
-            let initFrameSpan = bootSpans.removeValue(forKey: "init-frame")
-            lock.unlock()
+            let initFrameSpan = bootSentryQueue.sync {
+                bootSpans.removeValue(forKey: "init-frame")
+            }
             if let span = initFrameSpan {
                 SentryNativeBridge.finishSpan(span, status: "ok")
             }
@@ -560,9 +571,7 @@ class NodeJSService {
         guard let ipc = controlIPC else { return }
         // `boot.rootkey-load` span: closed `ok` after a successful
         // load, `internal_error` after the catch.
-        lock.lock()
-        let txForRootkey = bootTransaction
-        lock.unlock()
+        let txForRootkey = bootSentryQueue.sync { bootTransaction }
         let rootkeySpan = SentryNativeBridge.startBootSpan(txForRootkey, phase: "rootkey-load")
         var keyBytes: Data
         do {
@@ -608,13 +617,9 @@ class NodeJSService {
         let frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
         // `boot.init-frame` span: from "init sent" to "ready
         // received" (closed in handleControlMessage).
-        lock.lock()
-        let txForInitFrame = bootTransaction
-        lock.unlock()
+        let txForInitFrame = bootSentryQueue.sync { bootTransaction }
         if let span = SentryNativeBridge.startBootSpan(txForInitFrame, phase: "init-frame") {
-            lock.lock()
-            bootSpans["init-frame"] = span
-            lock.unlock()
+            bootSentryQueue.sync { bootSpans["init-frame"] = span }
         }
         ipc.sendMessage(frame)
         logCrumb(category: SentryCategories.boot, message: "init frame sent")

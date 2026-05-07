@@ -712,7 +712,6 @@ this table.
 | `comapeo.state` | `STOPPED` · `STARTING` · `STARTED` · `STOPPING` · `ERROR` | ERROR captureExceptions only |
 | `source` | `control-socket` · `rootkey-store` · `startNodeWithArguments` · `comapeo-core` (Phase 3) | Captured exceptions, narrows the origin within a phase |
 | `timeout` | `startup` · `shutdown` · `fgsStop` · `errorNativeForward` · `waitForFile` · `connectRetry` | `captureMessage` events for timeout firings |
-| `timeoutMs` | numeric string | Timeout messages (so the dashboard can chart configured vs. actual durations) |
 
 #### Breadcrumb categories
 
@@ -736,9 +735,9 @@ this table.
 
 | Message | Level | Tags |
 |---|---|---|
-| `comapeo: startup timeout fired` | `error` | `timeout:startup`, `comapeo.phase:starting-timeout`, `timeoutMs` |
+| `comapeo: startup timeout fired` | `error` | `timeout:startup`, `comapeo.phase:starting-timeout` |
 | `comapeo: stop timeout fired` (iOS) / `comapeo: FGS stop timeout fired` (Android) | `error` | `timeout:shutdown` (iOS) / `timeout:fgsStop` (Android), `comapeo.phase:shutdown-timeout` |
-| `comapeo: error-native frame dropped` (Android FGS) | `warning` | `timeout:errorNativeForward`, `comapeo.phase:<inner>`, `timeoutMs` |
+| `comapeo: error-native frame dropped` (Android FGS) | `warning` | `timeout:errorNativeForward`, `comapeo.phase:<inner>` |
 
 #### Standard captureException tag sets
 
