@@ -4,6 +4,9 @@ import Fastify from "fastify";
 import { ComapeoRpcServer } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
+// TEMPORARY: remove with `lib/undici-smoke-test.js` once the maps
+// plugin's first real tile fetch has confirmed undici works on iOS.
+import { runUndiciSmokeTest } from "./lib/undici-smoke-test.js";
 
 // Resolved relative to this file at evaluation time. The drizzle
 // migrations directory is kept alongside the bundle by
@@ -204,6 +207,17 @@ process.on("unhandledRejection", (reason) => {
     }
     console.log(`Control socket listening on ${controlSocketPath}`);
     controlIpcServer.setReadinessPhase("started");
+
+    // TEMPORARY: prove undici works in the bundle before we let the
+    // maps plugin reach for it. Surfaces as `phase=undici-smoke-test`
+    // on the lifecycle error channel if the WASM/parser path is
+    // broken — most likely on iOS, where polywasm replaces a missing
+    // `WebAssembly` global.
+    try {
+      await runUndiciSmokeTest();
+    } catch (e) {
+      throw Object.assign(e, { phase: "undici-smoke-test" });
+    }
 
     // 2. Wait for native to send the rootKey. `initPromise` resolves on the
     // first valid init frame; rejects on a malformed one.
