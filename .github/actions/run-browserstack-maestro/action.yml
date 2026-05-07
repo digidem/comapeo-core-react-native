@@ -1,0 +1,95 @@
+name: Run BrowserStack Maestro Tests
+
+description: Triggers a BrowserStack Maestro build and polls until completion
+
+inputs:
+  app_url:
+    description: BrowserStack app URL (bs://...)
+    required: true
+  test_suite_url:
+    description: BrowserStack test suite URL (bs://...)
+    required: true
+  devices:
+    description: JSON array of device strings
+    required: true
+  project_name:
+    description: BrowserStack project name
+    required: true
+  browserstack_username:
+    description: BrowserStack username
+    required: true
+  browserstack_access_key:
+    description: BrowserStack access key
+    required: true
+  timeout:
+    description: Test run timeout in seconds
+    required: false
+    default: "600"
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      if: ${{ fromJson(inputs.timeout) < 30 }}
+      shell: bash
+      run: |
+        echo "timeout must be at least 30 seconds"
+        exit 1
+
+    - name: Trigger build
+      id: trigger
+      env:
+        APP_URL: ${{ inputs.app_url }}
+        TEST_SUITE_URL: ${{ inputs.test_suite_url }}
+        DEVICES: ${{ inputs.devices }}
+        PROJECT_NAME: ${{ inputs.project_name }}
+        BROWSERSTACK_USERNAME: ${{ inputs.browserstack_username }}
+        BROWSERSTACK_ACCESS_KEY: ${{ inputs.browserstack_access_key }}
+      shell: bash
+      run: |
+        PAYLOAD=$(jq -n \
+          --arg app "$APP_URL" \
+          --arg suite "$TEST_SUITE_URL" \
+          --argjson devices "$DEVICES" \
+          --arg project "$PROJECT_NAME" \
+          '{app: $app, testSuite: $suite, devices: $devices, project: $project, deviceLogs: true, maestroVersion: "latest"}')
+
+        BUILD_ID=$(curl -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+          -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/build" \
+          -H "Content-Type: application/json" \
+          -d "$PAYLOAD" \
+          | jq -r '.build_id')
+
+        echo "Triggered build: $BUILD_ID"
+        echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+
+    - name: Poll for result
+      env:
+        BUILD_ID: ${{ steps.trigger.outputs.build_id }}
+        BROWSERSTACK_USERNAME: ${{ inputs.browserstack_username }}
+        BROWSERSTACK_ACCESS_KEY: ${{ inputs.browserstack_access_key }}
+        TIMEOUT: ${{ fromJson(inputs.timeout) }}
+      shell: bash
+      run: |
+        MAX_WAIT=$TIMEOUT
+        POLL_INTERVAL=30
+        ELAPSED=0
+
+        while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+          RESPONSE=$(curl -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+            "https://api-cloud.browserstack.com/app-automate/maestro/v2/builds/$BUILD_ID")
+
+          STATUS=$(echo "$RESPONSE" | jq -r '.status')
+          echo "[${ELAPSED}s] Build $BUILD_ID status: $STATUS"
+
+          case "$STATUS" in
+            passed|completed) echo "Tests passed"; exit 0 ;;
+            failed)           echo "Tests failed"; exit 1 ;;
+          esac
+
+          sleep "$POLL_INTERVAL"
+          ELAPSED=$((ELAPSED + POLL_INTERVAL))
+        done
+
+        echo "Timed out after ${MAX_WAIT}s waiting for build $BUILD_ID"
+        exit 1
