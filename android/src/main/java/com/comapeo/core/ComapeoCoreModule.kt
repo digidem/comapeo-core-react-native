@@ -27,7 +27,7 @@ class ComapeoCoreModule : Module() {
      *
      * The control socket file lives in the app's filesDir, accessible from
      * any process that shares the same UID (i.e. the FGS and the main
-     * process). The IPC's `waitForFile` polls until the FGS / Node binds.
+     * process). The IPC's connect loop retries until the FGS / Node binds.
      */
     private lateinit var controlIpc: NodeJSIPC
 

@@ -1,0 +1,12 @@
+diff --git a/node_modules/@mapeo/mock-data/lib/faker.js b/node_modules/@mapeo/mock-data/lib/faker.js
+index e7dde41..8951a30 100644
+--- a/node_modules/@mapeo/mock-data/lib/faker.js
++++ b/node_modules/@mapeo/mock-data/lib/faker.js
+@@ -1,6 +1,6 @@
+ import { JSONSchemaFaker } from 'json-schema-faker'
+ import { faker } from '@faker-js/faker'
+-import deref from 'dereference-json-schema'
++import * as deref from 'dereference-json-schema'
+ // import { createRequire } from 'module'
+ // const require = createRequire(import.meta.url)
+ // const Geometry = require('@comapeo/geometry/json/geometry.json')

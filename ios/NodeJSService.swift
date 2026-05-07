@@ -143,6 +143,31 @@ class NodeJSService {
     /// `.stopping`, or `.stopped`). Stored under `lock`.
     private var startupWatchdog: DispatchWorkItem?
 
+    /// Sentry boot transaction handle. Opened in `start()`, closed
+    /// on the first non-`.starting` transition by `applyAndEmit`.
+    /// `Any?` keeps `Sentry` types out of this file's signatures —
+    /// the bridge handles the cast.
+    ///
+    /// Touched from multiple threads (`start` from the consumer,
+    /// `sendInitFrame` from the IPC receive queue, the drain in
+    /// `applyAndEmit` from any caller). Every read and write goes
+    /// through `bootSentryQueue.sync`; bridge calls happen outside
+    /// the queue, same no-callbacks-under-sync discipline as
+    /// `lock`.
+    fileprivate var bootTransaction: Any?
+
+    /// In-flight `boot.<phase>` spans, keyed by phase. Drained by
+    /// `applyAndEmit` on terminal transition. Same threading
+    /// discipline as `bootTransaction`.
+    fileprivate var bootSpans: [String: Any] = [:]
+
+    /// Serial queue that owns access to `bootTransaction` and
+    /// `bootSpans`. `sync` is enough — the held work is just
+    /// snapshot-and-mutate, never an external callback.
+    fileprivate let bootSentryQueue = DispatchQueue(
+        label: "com.comapeo.core.bootSentry"
+    )
+
     var onStateChange: ((State) -> Void)?
 
     /// Fires for control-socket frames the receiver can't process
@@ -156,13 +181,7 @@ class NodeJSService {
     /// `applyAndEmit` after every component-state mutation; kept as a
     /// stored property so external readers (`ComapeoCoreModule`) get
     /// O(1) access without having to take the lock.
-    private(set) var state: State = .stopped {
-        didSet {
-            if oldValue != state {
-                log("NodeJSService state: \(oldValue.rawValue) -> \(state.rawValue)")
-            }
-        }
-    }
+    private(set) var state: State = .stopped
 
     // Component state (all mutated only under `lock`).
     private var nodeRuntime: NodeRuntimeState = .notRunning
@@ -334,11 +353,54 @@ class NodeJSService {
         if leavingStarting { startupWatchdog = nil }
         lock.unlock()
 
+        // Snapshot + clear the boot transaction / phase spans on
+        // `bootSentryQueue`. Concurrent terminal transitions
+        // otherwise risk double-finishing: only the first thread
+        // to observe `bootTransaction` non-nil drains; subsequent
+        // ones see nil and skip. Bridge calls happen outside the
+        // queue per the no-callbacks-under-sync discipline.
+        let terminalStatus: String? = (prev != derived) ? {
+            switch derived {
+            case .started: return "ok"
+            case .error: return "internal_error"
+            case .stopping, .stopped: return "cancelled"
+            case .starting: return nil
+            }
+        }() : nil
+        var drainTx: Any?
+        var drainSpans: [Any] = []
+        if terminalStatus != nil {
+            bootSentryQueue.sync {
+                if let tx = self.bootTransaction {
+                    drainTx = tx
+                    drainSpans = Array(self.bootSpans.values)
+                    self.bootTransaction = nil
+                    self.bootSpans.removeAll()
+                }
+            }
+        }
+
         // Cancel the watchdog outside the lock — `cancel()` doesn't
         // currently take any of our locks but the no-callbacks-under-lock
         // discipline holds for any future addition here.
         watchdog?.cancel()
-        if prev != derived { onStateChange?(derived) }
+
+        if prev != derived {
+            logCrumb(
+                category: SentryCategories.state,
+                message: "\(prev.rawValue) → \(derived.rawValue)",
+                level: derived == .error ? "error" : "info",
+                data: ["from": prev.rawValue, "to": derived.rawValue]
+            )
+            if let status = terminalStatus, let tx = drainTx {
+                for span in drainSpans {
+                    SentryNativeBridge.finishSpan(span, status: status)
+                }
+                SentryNativeBridge.finishSpan(tx, status: status)
+            }
+
+            onStateChange?(derived)
+        }
     }
 
     func start() {
@@ -350,6 +412,12 @@ class NodeJSService {
         }
         nodeCompletionSemaphore = DispatchSemaphore(value: 0)
         lock.unlock()
+
+        // Open the boot transaction before applyAndEmit drives
+        // STOPPED → STARTING; applyAndEmit's close-on-terminal
+        // logic only fires when bootTransaction is non-nil.
+        let tx = SentryNativeBridge.startBootTransaction()
+        bootSentryQueue.sync { bootTransaction = tx }
 
         // Reset component state for a fresh start cycle and transition
         // STOPPED → STARTING via the derivation. `_lastError` is cleared
@@ -380,6 +448,15 @@ class NodeJSService {
                 let info = ErrorInfo(
                     phase: "starting-timeout",
                     message: "Service did not reach .started within \(Int(self.startupTimeout))s"
+                )
+                logCapture(
+                    category: SentryCategories.state,
+                    message: "comapeo: startup timeout fired",
+                    level: "error",
+                    tags: [
+                        SentryTags.timeout: "startup",
+                        SentryTags.phase: "starting-timeout",
+                    ]
                 )
                 self.applyAndEmit(error: info) {
                     self.backendState = .error(phase: info.phase, message: info.message)
@@ -425,30 +502,50 @@ class NodeJSService {
     /// latency or ordering and gains us forward-compat for additional
     /// fields.
     private func handleControlMessage(_ message: String) {
-        log("Control IPC received: \(message)")
         switch ControlFrame.parse(message) {
         case .started:
+            logCrumb(category: SentryCategories.control, message: "received: started")
             applyAndEmit { self.backendState = .controlBound }
             sendInitFrame()
         case .ready:
+            logCrumb(category: SentryCategories.control, message: "received: ready")
+            // `ready` is the natural close point for the
+            // `boot.init-frame` span opened in sendInitFrame().
+            let initFrameSpan = bootSentryQueue.sync {
+                bootSpans.removeValue(forKey: "init-frame")
+            }
+            if let span = initFrameSpan {
+                SentryNativeBridge.finishSpan(span, status: "ok")
+            }
             applyAndEmit { self.backendState = .ready }
         case .stopping:
+            logCrumb(category: SentryCategories.control, message: "received: stopping")
             // Backend is gracefully shutting down. The next thing we'll
             // see is the socket close; the derivation maps this to
             // STOPPING, and the subsequent runtime exit will derive to
             // STOPPED (via `.exited(_, .requested)`).
             applyAndEmit { self.backendState = .stopping }
         case .error(let phase, let message):
+            logCrumb(
+                category: SentryCategories.control,
+                message: "received: error",
+                level: "error",
+                data: ["phase": phase, "message": message]
+            )
             let info = ErrorInfo(phase: phase, message: message)
             applyAndEmit(error: info) {
                 self.backendState = .error(phase: phase, message: message)
             }
         case .malformed(let detail):
-            // Logged + forwarded via `onMessageError` (the JS bridge
-            // wires it to the `messageerror` event). Not raised to
-            // `.error`: single bad frame shouldn't take down a working
-            // session.
-            log("NodeJSService: \(detail)")
+            // Forwarded via `onMessageError` (the JS bridge wires it
+            // to the `messageerror` event). Not raised to `.error`:
+            // a single bad frame shouldn't take down a session.
+            logCrumb(
+                category: SentryCategories.control,
+                message: "malformed control frame",
+                level: "warning",
+                data: ["detail": detail]
+            )
             onMessageError?(detail)
         }
     }
@@ -472,10 +569,34 @@ class NodeJSService {
     /// the service and creating a new one once the device is unlocked.
     private func sendInitFrame() {
         guard let ipc = controlIPC else { return }
+        // `boot.rootkey-load` span: closed `ok` after a successful
+        // load, `internal_error` after the catch.
+        let txForRootkey = bootSentryQueue.sync { bootTransaction }
+        let rootkeySpan = SentryNativeBridge.startBootSpan(txForRootkey, phase: "rootkey-load")
         var keyBytes: Data
         do {
             keyBytes = try rootKeyProvider()
+            if let span = rootkeySpan {
+                SentryNativeBridge.finishSpan(span, status: "ok")
+            }
         } catch {
+            if let span = rootkeySpan {
+                SentryNativeBridge.finishSpan(span, status: "internal_error")
+            }
+            // Lands on the same scope as the JS adapter's capture;
+            // Sentry fingerprinting de-dupes the JS-adapter capture
+            // that lands on the same scope. The phase tag splits
+            // rootkey errors from other ERROR causes.
+            logException(
+                category: SentryCategories.boot,
+                error: error,
+                message: "Failed to load rootkey",
+                tags: [
+                    SentryTags.phase: "rootkey",
+                    SentryTags.state: "ERROR",
+                    SentryTags.source: "rootkey-store",
+                ]
+            )
             let info = ErrorInfo(phase: "rootkey", message: error.localizedDescription)
             applyAndEmit(error: info) {
                 self.backendState = .error(phase: info.phase, message: info.message)
@@ -494,8 +615,14 @@ class NodeJSService {
         }
         let b64 = keyBytes.base64EncodedString()
         let frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
+        // `boot.init-frame` span: from "init sent" to "ready
+        // received" (closed in handleControlMessage).
+        let txForInitFrame = bootSentryQueue.sync { bootTransaction }
+        if let span = SentryNativeBridge.startBootSpan(txForInitFrame, phase: "init-frame") {
+            bootSentryQueue.sync { bootSpans["init-frame"] = span }
+        }
         ipc.sendMessage(frame)
-        log("Sent init frame to backend")
+        logCrumb(category: SentryCategories.boot, message: "init frame sent")
     }
 
     /// Gracefully stops the Node.js process by sending a shutdown message.
@@ -528,14 +655,18 @@ class NodeJSService {
         let shutdownMessage = "{\"type\":\"shutdown\"}"
         if let ipc = controlIPC {
             ipc.sendMessageSync(shutdownMessage)
-            log("Sent shutdown message to Node.js")
+            logCrumb(category: SentryCategories.state, message: "shutdown frame sent")
         }
 
         // Wait for node thread to complete (node_start blocks until exit)
         let result = completionSem?.wait(timeout: .now() + timeout)
         let threadExited = (result != .timedOut)
         if !threadExited {
-            log("Graceful shutdown timed out after \(timeout)s — node thread still alive")
+            logCrumb(
+                category: SentryCategories.state,
+                message: "graceful shutdown timed out after \(timeout)s",
+                level: "warning"
+            )
         }
 
         cleanup(threadExited: threadExited)
@@ -595,7 +726,12 @@ class NodeJSService {
             privateStorageDir,
         ]
         let exitCode = nodeEntryPoint(args)
-        log("Node.js exited with code \(exitCode)")
+        logCrumb(
+            category: SentryCategories.boot,
+            message: "node thread exited",
+            level: exitCode == 0 ? "info" : "warning",
+            data: ["exitCode": exitCode]
+        )
 
         // Classify the exit. "Requested" means we asked for it (stop()
         // was called) or the backend announced it (`stopping` frame
@@ -667,6 +803,15 @@ class NodeJSService {
                 self.backendState = .unknown
             }
         } else {
+            logCapture(
+                category: SentryCategories.state,
+                message: "comapeo: stop timeout fired",
+                level: "error",
+                tags: [
+                    SentryTags.timeout: "shutdown",
+                    SentryTags.phase: "shutdown-timeout",
+                ]
+            )
             let info = ErrorInfo(
                 phase: "shutdown-timeout",
                 message: "Graceful shutdown timed out — node thread still alive"

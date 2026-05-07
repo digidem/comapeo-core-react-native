@@ -5,8 +5,26 @@
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/index.js",
+      "default": "./build/index.js"
+    },
+    "./sentry": {
+      "types": "./build/sentry.d.ts",
+      "import": "./build/sentry.js",
+      "default": "./build/sentry.js"
+    },
+    "./app.plugin": "./app.plugin.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "comapeo-rn-upload-sourcemaps": "./build/cli/upload-sourcemaps.js"
+  },
   "files": [
     "expo-module.config.json",
+    "app.plugin.js",
     "android/build.gradle",
     "android/CMakeLists.txt",
     "android/src/debug/",
@@ -33,13 +51,14 @@
     "clean": "expo-module clean",
     "lint": "expo-module lint --cache .",
     "test": "expo-module test",
-    "prepare": "expo-module prepare",
+    "prepare": "node scripts/write-version.mjs && expo-module prepare",
     "prepublishOnly": "expo-module prepublishOnly",
-    "prepack": "npm run backend:build",
+    "prepack": "node scripts/write-version.mjs && npm run backend:build",
+    "postinstall": "patch-package",
     "open:ios": "xed example/ios",
     "open:android": "open -a \"Android Studio\" example/android",
     "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh",
-    "backend:install": "npm ci --ignore-scripts --prefix backend",
+    "backend:install": "npm ci --ignore-scripts --prefix backend && npm --prefix backend run postinstall",
     "prebackend:build": "npm run backend:install",
     "backend:build": "node ./scripts/build-backend.ts"
   },
@@ -59,6 +78,7 @@
   "devDependencies": {
     "@eslint/compat": "2.0.5",
     "@eslint/js": "9.39.4",
+    "@sentry/react-native": "^7.13.0",
     "@types/node": "24.12.2",
     "@types/react": "19.2.14",
     "eslint": "9.39.4",
@@ -66,6 +86,7 @@
     "expo": "55.0.17",
     "expo-module-scripts": "55.0.2",
     "globals": "17.5.0",
+    "patch-package": "8.0.1",
     "prettier": "3.8.3",
     "react": "19.2.0",
     "react-native": "0.83.6",
@@ -73,9 +94,15 @@
     "typescript-eslint": "8.59.0"
   },
   "peerDependencies": {
+    "@sentry/react-native": "^7.13.0",
     "expo": "*",
     "react": "*",
     "react-native": "*"
+  },
+  "peerDependenciesMeta": {
+    "@sentry/react-native": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@comapeo/ipc": "^8.0.0"

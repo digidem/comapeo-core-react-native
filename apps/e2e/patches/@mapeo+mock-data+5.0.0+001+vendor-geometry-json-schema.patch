@@ -1,0 +1,174 @@
+diff --git a/node_modules/@mapeo/mock-data/lib/faker.js b/node_modules/@mapeo/mock-data/lib/faker.js
+index 496da3b..e7dde41 100644
+--- a/node_modules/@mapeo/mock-data/lib/faker.js
++++ b/node_modules/@mapeo/mock-data/lib/faker.js
+@@ -1,9 +1,166 @@
+ import { JSONSchemaFaker } from 'json-schema-faker'
+ import { faker } from '@faker-js/faker'
+ import deref from 'dereference-json-schema'
+-import { createRequire } from 'module'
+-const require = createRequire(import.meta.url)
+-const Geometry = require('@comapeo/geometry/json/geometry.json')
++// import { createRequire } from 'module'
++// const require = createRequire(import.meta.url)
++// const Geometry = require('@comapeo/geometry/json/geometry.json')
++const Geometry = {
++  "$schema": "http://json-schema.org/draft-07/schema#",
++  "$id": "http://comapeo.app/schemas/shared/geometry.json",
++  "title": "Geometry",
++  "type": "object",
++  "description": "A subset of the GeoJSON geometry object.",
++  "definitions": {
++    "position": {
++      "title": "Position",
++      "type": "array",
++      "minItems": 2,
++      "maxItems": 2,
++      "items": [
++        {
++          "type": "number",
++          "description": "longitude",
++          "minimum": -180,
++          "maximum": 180
++        },
++        {
++          "type": "number",
++          "description": "latitude",
++          "minimum": -90,
++          "maximum": 90
++        }
++      ]
++    },
++    "linearRing": {
++      "title": "LinearRing",
++      "type": "array",
++      "minItems": 4,
++      "items": {
++        "$ref": "#/definitions/position"
++      }
++    }
++  },
++  "oneOf": [
++    {
++      "title": "Point",
++      "type": "object",
++      "required": ["type", "coordinates"],
++      "properties": {
++        "type": {
++          "type": "string",
++          "const": "Point"
++        },
++        "coordinates": {
++          "$ref": "#/definitions/position"
++        }
++      },
++      "additionalProperties": false
++    },
++    {
++      "title": "LineString",
++      "type": "object",
++      "required": ["type", "coordinates"],
++      "properties": {
++        "type": {
++          "type": "string",
++          "const": "LineString"
++        },
++        "coordinates": {
++          "type": "array",
++          "items": {
++            "$ref": "#/definitions/position"
++          },
++          "minItems": 2
++        }
++      },
++      "additionalProperties": false
++    },
++    {
++      "title": "MultiLineString",
++      "type": "object",
++      "required": ["type", "coordinates"],
++      "properties": {
++        "type": {
++          "type": "string",
++          "const": "MultiLineString"
++        },
++        "coordinates": {
++          "type": "array",
++          "items": {
++            "type": "array",
++            "items": {
++              "$ref": "#/definitions/position"
++            },
++            "minItems": 2
++          },
++          "minItems": 1
++        }
++      },
++      "additionalProperties": false
++    },
++    {
++      "title": "Polygon",
++      "type": "object",
++      "required": ["type", "coordinates"],
++      "properties": {
++        "type": {
++          "type": "string",
++          "const": "Polygon"
++        },
++        "coordinates": {
++          "type": "array",
++          "items": {
++            "$ref": "#/definitions/linearRing"
++          },
++          "minItems": 1
++        }
++      },
++      "additionalProperties": false
++    },
++    {
++      "title": "MultiPoint",
++      "type": "object",
++      "required": ["type", "coordinates"],
++      "properties": {
++        "type": {
++          "type": "string",
++          "const": "MultiPoint"
++        },
++        "coordinates": {
++          "type": "array",
++          "items": {
++            "$ref": "#/definitions/position"
++          },
++          "minItems": 1
++        }
++      },
++      "additionalProperties": false
++    },
++    {
++      "title": "MultiPolygon",
++      "type": "object",
++      "required": ["type", "coordinates"],
++      "properties": {
++        "type": {
++          "type": "string",
++          "const": "MultiPolygon"
++        },
++        "coordinates": {
++          "type": "array",
++          "items": {
++            "type": "array",
++            "items": {
++              "$ref": "#/definitions/linearRing"
++            },
++            "minItems": 1
++          },
++          "minItems": 1
++        }
++      },
++      "additionalProperties": false
++    }
++  ]
++}
+ 
+ /**
+  * @typedef {typeof import('@comapeo/schema').docSchemas[import('@comapeo/schema/dist/types.js').SchemaName]} ValidSchema

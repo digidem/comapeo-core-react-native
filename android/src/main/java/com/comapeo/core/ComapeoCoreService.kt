@@ -45,12 +45,28 @@ class ComapeoCoreService : Service() {
     override fun onCreate() {
         super.onCreate()
         activeInstanceCount++
+
+        // Initialise the FGS-process Sentry SDK before anything
+        // emits. `loadFromManifest` returns null when the consumer
+        // didn't register the plugin, leaving the bridge inert.
+        SentryConfig.loadFromManifest(applicationContext)?.let { cfg ->
+            SentryFgsBridge.init(applicationContext, cfg)
+        }
+
+        logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
+
         nodeJSService = NodeJSService(applicationContext)
-        log("The service has been created".uppercase())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        log("onStartCommand startId: $startId action: ${intent?.action}")
+        logCrumb(
+            SentryCategories.FGS,
+            "onStartCommand",
+            data = mapOf(
+                "startId" to startId,
+                "action" to (intent?.action ?: "(restart)"),
+            ),
+        )
 
         when (intent?.action) {
             Actions.USER_FOREGROUND.name -> {
@@ -92,19 +108,27 @@ class ComapeoCoreService : Service() {
 
     private val nodeJSServiceCallback = object : NodeJSService.Callback {
         override fun onComplete(exitCode: Int) {
-            log("NodeJS service completed with exit code $exitCode")
+            logCrumb(
+                SentryCategories.FGS,
+                "NodeJS exited",
+                data = mapOf("exitCode" to exitCode),
+            )
             stopService()
         }
 
         override fun onError(e: Exception) {
-            log("NodeJS service error: ${e.message}")
+            logCrumb(
+                SentryCategories.FGS,
+                "NodeJS service error: ${e.message}",
+                level = "error",
+            )
             stopService()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        log("onDestroy")
+        logCrumb(SentryCategories.FGS, "ComapeoCoreService.onDestroy")
         isServiceStarted = false
         activeInstanceCount--
         serviceScope.launch {
@@ -112,15 +136,31 @@ class ComapeoCoreService : Service() {
                 withTimeout(10_000) {
                     nodeJSService.stop()
                 }
-                log("NodeJS service stopped")
             } catch (e: Exception) {
-                log("Error stopping NodeJS service: ${e.message}")
+                // Capture before the killProcess below. The flush
+                // call afterwards is what actually gets the event on
+                // the wire — without it, async transport can lose
+                // the capture under poor network conditions.
+                logCapture(
+                    SentryCategories.FGS,
+                    "comapeo: FGS stop timeout fired",
+                    level = "error",
+                    tags = mapOf(
+                        SentryTags.TIMEOUT to "fgsStop",
+                        SentryTags.PHASE to "shutdown-timeout",
+                    ),
+                )
             }
-            log("The service has been destroyed".uppercase())
             // Only kill the process if no new service instance has started.
             // During a stop→restart cycle, Android may create a new instance
             // in the same process before this coroutine completes.
             if (activeInstanceCount <= 0) {
+                logCrumb(SentryCategories.FGS, "killProcess: no active instances")
+                // Synchronous flush bounded at 2s — short enough to
+                // avoid stalling shutdown noticeably, long enough to
+                // deliver under typical network conditions. No-op
+                // when sentry-android isn't on the classpath.
+                SentryFgsBridge.flush(2_000)
                 Process.killProcess(Process.myPid())
             } else {
                 log("Skipping process kill — new service instance is active")
