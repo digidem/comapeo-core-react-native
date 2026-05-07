@@ -55,9 +55,9 @@ final class MockBackend {
     /// Sends a raw frame string on the connected client socket. Tests use
     /// this to inject `error` (or other) frames after the handshake
     /// completes — the production backend would broadcast these via
-    /// `controlIpcServer.broadcastError`. Returns false if the client
-    /// hasn't connected yet (call `waitForHandshake` first if you need to
-    /// guarantee connectivity).
+    /// `controlIpcServer.broadcast({type:"error", …})`. Returns false if
+    /// the client hasn't connected yet (call `waitForHandshake` first if
+    /// you need to guarantee connectivity).
     @discardableResult
     func sendFrame(_ raw: String) -> Bool {
         lock.lock()
