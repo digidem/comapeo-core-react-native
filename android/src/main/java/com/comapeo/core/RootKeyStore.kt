@@ -237,9 +237,9 @@ class RootKeyStore(private val context: Context) {
             // attacked by another app on the same device".
             .setUserAuthenticationRequired(false)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            builder.setUnlockedDeviceRequired(true)
-        }
+        // Not using setUnlockedDeviceRequired(true): generation fails
+        // on no-lock devices and disabling the lock later permanently
+        // invalidates the key — both are identity loss. See PR #57.
 
         val generator = KeyGenerator.getInstance(
             KeyProperties.KEY_ALGORITHM_AES,
