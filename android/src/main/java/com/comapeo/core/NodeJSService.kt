@@ -473,7 +473,8 @@ class NodeJSService(
                 // Capture BEFORE the applyAndEmit that drives ERROR
                 // so the breadcrumb stack ends with STARTING (the
                 // in-flight state) rather than the terminal ERROR.
-                SentryFgsBridge.captureMessage(
+                logCapture(
+                    SentryCategories.STATE,
                     "comapeo: startup timeout fired",
                     level = "error",
                     tags = mapOf(
@@ -542,13 +543,14 @@ class NodeJSService(
 
                 callback.onComplete(exitCode)
             } catch (e: Exception) {
-                Log.e(TAG, "Error starting node", e)
                 // captureException so the runtime-launch failure is
                 // a first-class Sentry event with the full stack;
                 // applyAndEmit below drives ERROR but the JS adapter
                 // only synthesises a thin Error from the phase/msg.
-                SentryFgsBridge.captureException(
+                logException(
+                    SentryCategories.BOOT,
                     e,
+                    message = "Error starting node",
                     tags = mapOf(
                         SentryTags.PHASE to "node-runtime",
                         SentryTags.STATE to "ERROR",
@@ -665,14 +667,14 @@ class NodeJSService(
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load rootkey", e)
             // FGS-scope capture. The same exception is forwarded to
             // Node via sendErrorNativeFrame and re-broadcast, then
             // re-captured by the main-process JS adapter with
-            // proc:main; Sentry de-dupes via fingerprinting and the
-            // three vantage points carry distinct context.
-            SentryFgsBridge.captureException(
+            // proc:main — Sentry de-dupes via fingerprinting.
+            logException(
+                SentryCategories.BOOT,
                 e,
+                message = "Failed to load rootkey",
                 tags = mapOf(
                     SentryTags.PHASE to "rootkey",
                     SentryTags.STATE to "ERROR",
@@ -733,19 +735,15 @@ class NodeJSService(
                     ipcDeferred.await()
                 }
                 if (ipc == null) {
-                    Log.w(
-                        TAG,
-                        "Dropping error-native frame: IPC not available within " +
-                            "${SEND_ERROR_NATIVE_TIMEOUT_MS}ms (phase=$phase)",
-                    )
                     // Warning rather than error: the FGS already
                     // captured the original cause locally; this
                     // only degrades cross-process attribution to
                     // the synthetic `node-runtime-unexpected` phase
                     // the main-app process derives from the
                     // control-socket close.
-                    SentryFgsBridge.captureMessage(
-                        "comapeo: error-native frame dropped",
+                    logCapture(
+                        SentryCategories.IPC,
+                        "comapeo: error-native frame dropped (phase=$phase)",
                         level = "warning",
                         tags = mapOf(
                             SentryTags.TIMEOUT to "errorNativeForward",

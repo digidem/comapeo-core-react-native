@@ -139,15 +139,11 @@ class ComapeoCoreService : Service() {
             } catch (e: Exception) {
                 // Capture before the killProcess below so the event
                 // has time to flush. Always actionable.
-                SentryFgsBridge.captureMessage(
+                logCapture(
+                    SentryCategories.FGS,
                     "comapeo: FGS stop timeout fired",
                     level = "error",
                     tags = mapOf(SentryTags.TIMEOUT to "fgsStop"),
-                )
-                logCrumb(
-                    SentryCategories.FGS,
-                    "FGS stop timeout: ${e.message}",
-                    level = "error",
                 )
             }
             // Only kill the process if no new service instance has started.

@@ -418,8 +418,9 @@ class NodeJSService {
                     phase: "starting-timeout",
                     message: "Service did not reach .started within \(Int(self.startupTimeout))s"
                 )
-                SentryNativeBridge.captureMessage(
-                    "comapeo: startup timeout fired",
+                logCapture(
+                    category: SentryCategories.state,
+                    message: "comapeo: startup timeout fired",
                     level: "error",
                     tags: [
                         SentryTags.timeout: "startup",
@@ -549,13 +550,19 @@ class NodeJSService {
                 SentryNativeBridge.finishSpan(span, status: "internal_error")
             }
             // Lands on the same scope as the JS adapter's capture;
-            // Sentry fingerprinting de-dupes. The phase tag splits
+            // Sentry fingerprinting de-dupes the JS-adapter capture
+            // that lands on the same scope. The phase tag splits
             // rootkey errors from other ERROR causes.
-            SentryNativeBridge.captureException(error, tags: [
-                SentryTags.phase: "rootkey",
-                SentryTags.state: "ERROR",
-                SentryTags.source: "rootkey-store",
-            ])
+            logException(
+                category: SentryCategories.boot,
+                error: error,
+                message: "Failed to load rootkey",
+                tags: [
+                    SentryTags.phase: "rootkey",
+                    SentryTags.state: "ERROR",
+                    SentryTags.source: "rootkey-store",
+                ]
+            )
             let info = ErrorInfo(phase: "rootkey", message: error.localizedDescription)
             applyAndEmit(error: info) {
                 self.backendState = .error(phase: info.phase, message: info.message)
@@ -761,8 +768,9 @@ class NodeJSService {
                 self.backendState = .unknown
             }
         } else {
-            SentryNativeBridge.captureMessage(
-                "comapeo: stop timeout fired",
+            logCapture(
+                category: SentryCategories.state,
+                message: "comapeo: stop timeout fired",
                 level: "error",
                 tags: [
                     SentryTags.timeout: "shutdown",

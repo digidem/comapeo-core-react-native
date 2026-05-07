@@ -751,35 +751,54 @@ identities, raw project IDs, or user-entered text). Phase 5's
 `before_send` processor will add a defensive substring scrub
 on top.
 
-### 7.6 When to log, when to breadcrumb
+### 7.6 When to log, when to breadcrumb, when to capture
 
-Logs and breadcrumbs serve different purposes and shouldn't be
-1-to-1.
+Logs, breadcrumbs, and captured events serve different
+purposes and shouldn't be 1-to-1.
 
-| | Logs (`logcat` / `os_log`) | Breadcrumbs |
-|---|---|---|
-| Cost | Effectively unbounded — OS rotates the buffer | Finite ring buffer (Sentry's default cap is 100 per scope) |
-| Visibility | Live during local debug only (`adb logcat`, Console.app, BrowserStack device logs) | Attached to captured events in the Sentry dashboard |
-| Audience | Developer at the keyboard | Developer reading a Sentry issue weeks later |
-| Cost of a low-signal entry | Negligible | Evicts an older, possibly higher-signal crumb |
+| | Logs (`logcat` / `os_log`) | Breadcrumbs | Captured events (`captureException` / `captureMessage`) |
+|---|---|---|---|
+| Cost | Unbounded — OS rotates the buffer | Finite ring buffer (Sentry's default 100 per scope) | Counted toward Sentry quota; surface as Issues |
+| Visibility | Live during local debug only | Attached to next captured event | First-class dashboard entries |
+| Audience | Developer at the keyboard | Reader of a captured event later | Triage reader |
+| Use for | Anything | Lifecycle context | Errors / notable non-error events |
 
-The codebase uses three categories at every emit site:
+The codebase has four helpers, each one mapping to a single
+combination of these primitives:
 
-- **`logCrumb` (both)** — events that meaningfully describe
-  app-lifecycle progress and would help diagnose a future
-  Sentry error. State transitions, control-socket frames,
-  IPC connection state, FGS lifecycle, boot phases. ~20–25
-  emissions per app session, well under the buffer cap.
-- **`log` only** — debug noise, cache-check diagnostics,
-  guard-rejection paths (`"Cannot stop ... not in
-  STARTING/STARTED"`, `"Skipping process kill — new instance
-  active"`). Useful in logcat for local debugging but worthless
-  as a breadcrumb because either (a) no event will fire to
-  surface it, or (b) it'd evict higher-signal crumbs.
-- **breadcrumb only** — `src/sentry.ts` JS adapter on Android.
-  The matching FGS-side `logCrumb` already produces the logcat
-  line; emitting from JS too would just round-trip through
-  Metro's bridge.
+- **`log()`** — logcat / os_log only. Debug noise,
+  cache-check diagnostics, guard-rejection paths
+  (`"Cannot stop ... not in STARTING/STARTED"`,
+  `"Skipping process kill — new instance active"`). Useful
+  for local debugging but worthless as a breadcrumb (no
+  event will surface it) or event (not actionable).
+- **`logCrumb(category, message, level, data)`** — log +
+  breadcrumb. Lifecycle progress events: state transitions,
+  control-socket frames, IPC state, FGS lifecycle, boot
+  phases. ~20–25 emissions per app session, well under the
+  buffer cap.
+- **`logException(category, throwable, message, tags)`** —
+  log + `captureException`. Use when you have a `Throwable`
+  in hand: the stack lands both in logcat (3-arg
+  `Log.e(TAG, msg, t)`) and on the Sentry event. Examples:
+  rootkey-load failure, node-runtime launch failure.
+- **`logCapture(category, message, level, tags)`** — log +
+  `captureMessage`. Use when you don't have a throwable but
+  the event is notable: timeouts (startup, shutdown,
+  fgsStop, errorNativeForward), dropped frames, protocol
+  violations. Sentry doesn't manufacture a stack from these.
+
+Plus one more shape that doesn't go through the helpers:
+**breadcrumb only** is used by `src/sentry.ts` (the JS
+adapter) on Android — the matching FGS-side `logCrumb`
+already produces the logcat line; emitting from JS too
+would just round-trip through Metro's bridge.
+
+`captureException` vs `captureMessage` — when in doubt:
+have a throwable → `logException`; making a synthetic
+exception just to use captureException would lose the
+"this isn't really a stack-traceable error" semantic and
+the dashboard's grouping wouldn't be useful.
 
 **iOS dual-crumb caveat.** On iOS, single-process means both
 the native bridge's breadcrumb and the JS adapter's breadcrumb
