@@ -152,6 +152,10 @@ internal object SentryFgsBridgeImpl {
         handle.finish()
     }
 
+    fun flush(timeoutMillis: Long) {
+        Sentry.flush(timeoutMillis)
+    }
+
     private fun parseLevel(level: String): SentryLevel = when (level.lowercase()) {
         "fatal" -> SentryLevel.FATAL
         "error" -> SentryLevel.ERROR

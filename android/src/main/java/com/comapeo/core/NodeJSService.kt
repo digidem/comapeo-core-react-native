@@ -386,20 +386,21 @@ class NodeJSService(
                 State.STARTING -> null
             }
             if (terminalStatus != null) {
-                bootTx.getAndSet(null)?.let {
-                    SentryFgsBridge.finishSpan(it, terminalStatus)
-                }
-                // Drain any in-flight phase spans alongside the
-                // transaction — they share the lifecycle and would
-                // otherwise stay open indefinitely. Pre-STARTED
-                // closure uses the same status as the parent so
-                // the dashboard doesn't show "boot.rootkey-load
-                // succeeded" alongside "comapeo.boot cancelled".
+                // Drain in-flight phase spans BEFORE finishing the
+                // parent transaction. Sentry's Transaction.finish
+                // closes the span tree — child spans finished after
+                // the parent are dropped. Pre-STARTED closure uses
+                // the same status as the parent so the dashboard
+                // doesn't show "boot.rootkey-load succeeded" alongside
+                // "comapeo.boot cancelled".
                 val phases = bootSpans.keys.toList()
                 for (phase in phases) {
                     bootSpans.remove(phase)?.let {
                         SentryFgsBridge.finishSpan(it, terminalStatus)
                     }
+                }
+                bootTx.getAndSet(null)?.let {
+                    SentryFgsBridge.finishSpan(it, terminalStatus)
                 }
             }
 

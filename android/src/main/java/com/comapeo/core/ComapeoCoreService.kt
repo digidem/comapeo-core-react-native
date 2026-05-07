@@ -137,8 +137,10 @@ class ComapeoCoreService : Service() {
                     nodeJSService.stop()
                 }
             } catch (e: Exception) {
-                // Capture before the killProcess below so the event
-                // has time to flush. Always actionable.
+                // Capture before the killProcess below. The flush
+                // call afterwards is what actually gets the event on
+                // the wire — without it, async transport can lose
+                // the capture under poor network conditions.
                 logCapture(
                     SentryCategories.FGS,
                     "comapeo: FGS stop timeout fired",
@@ -154,6 +156,11 @@ class ComapeoCoreService : Service() {
             // in the same process before this coroutine completes.
             if (activeInstanceCount <= 0) {
                 logCrumb(SentryCategories.FGS, "killProcess: no active instances")
+                // Synchronous flush bounded at 2s — short enough to
+                // avoid stalling shutdown noticeably, long enough to
+                // deliver under typical network conditions. No-op
+                // when sentry-android isn't on the classpath.
+                SentryFgsBridge.flush(2_000)
                 Process.killProcess(Process.myPid())
             } else {
                 log("Skipping process kill — new service instance is active")

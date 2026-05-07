@@ -94,7 +94,7 @@
     "typescript-eslint": "8.59.0"
   },
   "peerDependencies": {
-    "@sentry/react-native": "^7",
+    "@sentry/react-native": "^7.13.0",
     "expo": "*",
     "react": "*",
     "react-native": "*"

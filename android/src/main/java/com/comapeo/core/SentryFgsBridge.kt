@@ -183,6 +183,23 @@ object SentryFgsBridge {
         }
     }
 
+    /**
+     * Synchronously flush queued events. Call before
+     * `Process.killProcess` (FGS shutdown timeout) so a "stop
+     * timeout" capture isn't dropped along with the process. No-op
+     * when sentry-android isn't on the classpath or the bridge
+     * never initialised.
+     */
+    @JvmStatic
+    fun flush(timeoutMillis: Long) {
+        if (!initialized) return
+        try {
+            SentryFgsBridgeImpl.flush(timeoutMillis)
+        } catch (t: Throwable) {
+            Log.w(TAG, "flush threw", t)
+        }
+    }
+
     /** Test-only — reset the probe cache and init flag. */
     @JvmStatic
     internal fun resetForTests() {
