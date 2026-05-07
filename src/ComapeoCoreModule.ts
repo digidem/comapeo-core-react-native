@@ -73,21 +73,14 @@ const messagePort = corePort as unknown as MessagePort;
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort);
 
 /**
- * Raw `CoreMessagePort` singleton — escape hatch for consumers that
- * need to bypass the `MapeoClient` request/response machinery and
- * speak directly to whatever backend bundle the consumer has wired in
- * (e.g. the bench app at `apps/benchmark/` overrides the entry via
- * `comapeoEntryFile` and talks to its own `BenchRpcServer`).
+ * Escape hatch for consumers that need to bypass `MapeoClient` and
+ * speak directly to a non-Mapeo backend bundle (e.g. the bench app
+ * via `comapeoEntryFile`). `unstable_` per RN convention — not part
+ * of the supported surface; production should use `comapeo`.
  *
- * `unstable_` prefix follows the React/RN convention for APIs whose
- * shape may change without notice — this port exposes the framing
- * layer one level below the public `comapeo` client and isn't part of
- * the supported surface. Production consumers should use `comapeo`.
- *
- * Note: `createMapeoClient(messagePort)` above already adds a
- * `"message"` listener to this port. Custom requests with a different
- * shape than `{ id, method, params }` are treated as unknown frames
- * by the prod RPC machinery and silently ignored.
+ * `createMapeoClient` above already attaches a `message` listener;
+ * frames not shaped like `{ id, method, params }` are ignored by the
+ * prod RPC, leaving them safely available for custom consumers.
  */
 export const unstable_messagePort = corePort;
 

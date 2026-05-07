@@ -1,31 +1,11 @@
 /**
- * Reads NDJSON span files written by `scripts/run-on-browserstack.ts`'s
- * logcat parser (or by the on-device `JsonFileSink` for local runs),
- * groups by `attrs.device`, computes percentiles per (op, name, size),
- * and rewrites the AUTOSUMMARY-marked section of
- * `apps/benchmark/RESULTS.md`.
+ * Aggregates NDJSON span files (from `run-on-browserstack.ts` or the
+ * on-device `JsonFileSink`) and rewrites the AUTOSUMMARY section of
+ * `apps/benchmark/RESULTS.md`. Bucket by `attrs.device`; RPC rows by
+ * size, boot rows by phase. Anything outside the
+ * `<!-- BEGIN/END AUTOSUMMARY -->` markers is preserved verbatim.
  *
- * One pass over all `<resultsDir>/*.ndjson` (default
- * `apps/benchmark/results/`). RPC and boot spans are aggregated
- * separately:
- *   - `op:"rpc"` rows are bucketed by `attrs.bytes` (size class);
- *     percentiles over `durationMs`.
- *   - `op:"boot"` rows are bucketed by `name` (`boot.<phase>`);
- *     a single duration measurement per phase per session, so we
- *     report min / median / max across sessions for the same
- *     device.
- *
- * The generated section is delimited by:
- *
- *   <!-- BEGIN AUTOSUMMARY -->
- *   <!-- END AUTOSUMMARY -->
- *
- * Anything outside that envelope is preserved verbatim — which is
- * how curated commentary and per-run notes survive subsequent
- * summarizer runs.
- *
- * Usage:
- *   node scripts/bench-summarize.ts [--results-dir <path>] [--results-md <path>]
+ * Usage: node scripts/bench-summarize.ts [--results-dir <path>] [--results-md <path>]
  */
 
 import { readdir, readFile, writeFile, stat } from "node:fs/promises";
@@ -112,8 +92,7 @@ async function loadAllSpans(dir: string): Promise<Span[]> {
       try {
         spans.push(JSON.parse(line));
       } catch {
-        // Tolerate a partial trailing line (writer crash mid-flush);
-        // every full span before it is still usable.
+        // Tolerate a partial trailing line (writer crash mid-flush).
       }
     }
   }
@@ -123,9 +102,6 @@ async function loadAllSpans(dir: string): Promise<Span[]> {
 type DeviceKey = string;
 type RttSide = "rn" | "backend";
 
-/**
- * Per-device, per-size RPC table row.
- */
 type RpcRow = {
   device: DeviceKey;
   size: number;
@@ -137,11 +113,7 @@ type RpcRow = {
   max: number;
 };
 
-/**
- * Per-device, per-phase boot table row. With multiple sessions per
- * device, each phase has multiple measurements, so report a min /
- * median / max instead of the RPC-style p99.
- */
+// Boot phases get min/median/max across sessions, not p99 (sample is too small).
 type BootRow = {
   device: DeviceKey;
   phase: string;
@@ -155,15 +127,8 @@ function summarizeRpc(spans: Span[], side: RttSide): RpcRow[] {
   const buckets = new Map<string, number[]>();
   for (const s of spans) {
     if (s.op !== "rpc") continue;
-    // Two `op:"rpc"` shapes:
-    //   - RN-side: `attrs.rttSide === "rn"`, the user-facing
-    //     round-trip metric (App.tsx batches these via `ingestSpans`)
-    //   - Backend-side: `attrs.rttSide === "backend"`, the server-side
-    //     handler duration (sub-ms by design — String.repeat from a
-    //     cache + JSON.stringify)
-    // Pre-Option-2 NDJSON files captured backend spans without the
-    // attr; treat absent rttSide on op:"rpc" as backend so legacy
-    // results in `apps/benchmark/results/` still group.
+    // `attrs.rttSide`: "rn" = user-facing RTT, "backend" = server handler.
+    // Legacy NDJSONs missing the attr default to "backend".
     const rttSide =
       (s.attrs as Record<string, unknown> | undefined)?.rttSide ?? "backend";
     if (rttSide !== side) continue;

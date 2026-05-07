@@ -30,9 +30,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BENCH_DIR="$REPO_ROOT/apps/benchmark"
 OUT_DIR="${1:-$BENCH_DIR/ios-build}"
 
-# Load .env so APPLE_DEVELOPMENT_TEAM_ID propagates without forcing the
-# caller to source it themselves. `set -a` exports every var defined in
-# the file; `set +a` returns to the prior export behaviour.
+# Auto-source .env so APPLE_DEVELOPMENT_TEAM_ID propagates.
 if [[ -f "$REPO_ROOT/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
@@ -56,9 +54,7 @@ fi
 echo "==> staging bench bundle + iOS prebuild"
 cd "$BENCH_DIR"
 npm run prebuild:bundle
-# `--no-install` skips Pod install here so the archive step's own pod
-# install runs against the freshly-prebuild Podfile in one consistent
-# pass.
+# Skip pod install here; the archive step runs its own against the fresh Podfile.
 npx expo prebuild --no-install --platform ios
 
 cd "$BENCH_DIR/ios"
@@ -67,9 +63,7 @@ pod install --silent
 
 # --- archive ---------------------------------------------------------------
 
-# Workspace + scheme name are derived from the Expo prebuild output.
-# Expo sanitises the project name (parens / hyphens stripped) so this
-# slug isn't quite the human name from app.json.
+# Workspace + scheme are the slug Expo sanitises from app.json.
 WORKSPACE="$(ls -d ./*.xcworkspace | head -1)"
 SCHEME="$(basename "$WORKSPACE" .xcworkspace)"
 
@@ -97,9 +91,7 @@ xcodebuild archive \
 
 # --- export ---------------------------------------------------------------
 
-# Generated inline so the team id flows in without committing a plist
-# that varies per developer. `development` method = signed with the
-# Development cert; BS accepts any non-App-Store method.
+# Inline plist so the team id flows in per-dev. BS accepts any non-App-Store method.
 EXPORT_PLIST="$OUT_DIR/ExportOptions.plist"
 cat > "$EXPORT_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

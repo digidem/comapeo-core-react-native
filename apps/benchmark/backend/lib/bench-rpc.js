@@ -1,28 +1,19 @@
-// Path-imported from the module's production backend — see
-// apps/benchmark/backend/index.js for the rationale. Same wire framing
-// as production, by design.
+// Path-import; same framing as production by design — see index.js.
 import { ServerHelper } from "../../../../backend/lib/server-helper.js";
 import { SocketMessagePort } from "../../../../backend/lib/message-port.js";
 import { startSpan } from "./telemetry-sink.js";
 
-/**
- * Pre-allocated payload buffers, indexed by size class. A new bench run
- * with mixed sizes would otherwise spend its time in `String.repeat`
- * rather than measuring the bridge — this caches `"x".repeat(N)` once
- * per size encountered. Capped at 4 MiB to bound resident memory.
- *
- * @type {Map<number, string>}
- */
+// Cache `"x".repeat(N)` per size so a mixed-size sweep doesn't spend
+// its time in String.repeat rather than measuring the bridge. Capped
+// to bound resident memory.
+/** @type {Map<number, string>} */
 const payloadCache = new Map();
 const MAX_CACHED_PAYLOAD_BYTES = 4 * 1024 * 1024;
 
 /** @param {number} sizeBytes */
 function payload(sizeBytes) {
   const n = Math.max(0, Math.floor(sizeBytes));
-  if (n > MAX_CACHED_PAYLOAD_BYTES) {
-    // Don't cache huge payloads; just synthesize and discard.
-    return "x".repeat(n);
-  }
+  if (n > MAX_CACHED_PAYLOAD_BYTES) return "x".repeat(n);
   let s = payloadCache.get(n);
   if (!s) {
     s = "x".repeat(n);
@@ -32,35 +23,20 @@ function payload(sizeBytes) {
 }
 
 /**
- * Minimal request/response RPC server for the benchmark bundle. Speaks
- * the same length-prefixed JSON framing as the production
- * `ComapeoRpcServer` (via `SocketMessagePort`) so the native UDS layer
- * is exercised identically — only the on-the-wire payload schema and
- * the dispatch table differ.
+ * Bench RPC server. Same length-prefixed JSON framing as production's
+ * `ComapeoRpcServer` (via `SocketMessagePort`) so the UDS layer is
+ * exercised identically — only the dispatch table differs.
  *
- * Wire format:
- *   request:  { id: string, method: "echo" | "payload", params?: unknown }
- *   response: { id: string, result: unknown }
- *           | { id: string, error: { message: string } }
+ * Wire:
+ *   { id, method: "echo" | "payload" | "ingestSpans", params? }
+ *   → { id, result } | { id, error: { message } }
  *
- * Methods:
- *   - `echo(params)` returns `params` unchanged. Used for round-trip
- *     latency at the smallest payload class.
- *   - `payload({ sizeBytes })` returns an ASCII string of `sizeBytes`
- *     length. Used for per-size throughput measurements.
+ * `echo`/`payload` requests emit an `op:"rpc"` span with
+ * `rttSide:"backend"` and `bytes`; the RN side records a paired
+ * `rttSide:"rn"` span so the summarizer can diff bridge overhead.
  *
- * Each user-facing request (`echo`, `payload`) emits an `op:"rpc"`
- * span tagged `attrs.rttSide:"backend"` with the server-side handler
- * duration in `durationMs` and the response payload size in
- * `attrs.bytes`. The RN side records its own `rttSide:"rn"` span per
- * request, so the summarizer can render both columns and the diff
- * (RN_RTT − backend_handler ≈ JSI + framing + UDS overhead) is one
- * eye-line away.
- *
- * `ingestSpans` is housekeeping — RN's bulk span flush at end of run
- * — and is intentionally NOT timed: the call body is a forwarding
- * `console.log` loop and emitting a span here would pollute the
- * percentile data with one large outlier per run.
+ * `ingestSpans` is intentionally not timed — its body is a bulk
+ * `console.log` flush that would dominate the percentiles.
  */
 export class BenchRpcServer extends ServerHelper {
   /** @param {{ sink: import("./telemetry-sink.js").TelemetrySink }} options */
@@ -97,9 +73,7 @@ export class BenchRpcServer extends ServerHelper {
     const { id, method, params } =
       /** @type {{ id: string, method: string, params?: unknown }} */ (msg);
 
-    // Only the user-facing RPCs (echo, payload) get measured. The
-    // span emit for `ingestSpans` would be one big outlier per run
-    // since its body is the bulk span flush itself.
+    // ingestSpans is the bulk-flush at end of run — measuring it would dominate.
     const measure = method !== "ingestSpans";
     const span = measure ? startSpan(this.sink, "rpc", `rpc.${method}`) : null;
     /** @type {unknown} */
@@ -143,17 +117,10 @@ export class BenchRpcServer extends ServerHelper {
         return payload(sizeBytes);
       }
       case "ingestSpans": {
-        // RN side accumulates RTT spans during the bench loop and
-        // ships them all over the bench RPC socket once the run
-        // completes. We re-emit each via `console.log` so they surface
-        // through the same nodejs-mobile→logcat (Android) /
-        // pipe→os_log (iOS) path the boot phases use. Why this round-
-        // trip rather than RN's own `console.log`: in iOS release
-        // builds, `RCTLog`'s default level filter (INFO suppressed)
-        // means JS `console.log` never reaches the device console.
-        // Routing through nodejs-mobile bypasses that filter entirely.
-        // Called once per bench run, post-measurement, so the
-        // round-trip cost doesn't contaminate the RTT samples.
+        // Re-emit RN-side RTT spans via nodejs-mobile stdout so they
+        // surface through the same logcat / os_log path as boot spans.
+        // RN's own `console.log` is suppressed by RCTLog's level filter
+        // in iOS release builds; routing through here bypasses it.
         const spans = /** @type {any} */ (params)?.spans;
         if (Array.isArray(spans)) {
           for (const span of spans) {

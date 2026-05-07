@@ -43,13 +43,7 @@ private data class ErrorNativeMessage(
 const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
-// Entry filename inside `NODEJS_PROJECT_DIRNAME` that nodejs-mobile
-// runs. Sourced from `BuildConfig.COMAPEO_ENTRY_FILE` so consumers
-// can override via the `comapeoEntryFile` Gradle property (default
-// `index.mjs`) and drop a sibling entry file into their own
-// `app/src/main/assets/nodejs-project/` — AGP merges it with the
-// library's bundle. See android/build.gradle for the buildConfigField
-// declaration.
+// Override via `comapeoEntryFile` Gradle property; see android/build.gradle.
 val NODEJS_PROJECT_INDEX_FILENAME: String = BuildConfig.COMAPEO_ENTRY_FILE
 
 /**
@@ -416,13 +410,8 @@ class NodeJSService(
                     }
                 }
 
-                // Base argv the backend's positional parser expects:
-                // socket paths + dataDir. After that we append a
-                // `--device=<MANUFACTURER MODEL (Android REL)>` flag —
-                // a stable device tag downstream telemetry (bench
-                // spans today, Sentry tags once that lands) reads for
-                // attribution. The production backend ignores unknown
-                // flags so this is a no-op until something consumes it.
+                // `--device=<tag>` is read by downstream telemetry (bench, Sentry).
+                // Production backend ignores unknown flags so it's a safe no-op.
                 val deviceTag = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})"
                 val exitCode = startNodeWithArguments(arrayOf(
                     "node",

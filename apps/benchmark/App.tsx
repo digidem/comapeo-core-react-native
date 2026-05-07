@@ -16,30 +16,13 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 /**
- * Benchmark app entry. Drives the bench RPC bridge through the same
- * RN→native→Node UDS path as the production module, but talks to the
- * stripped backend in `apps/benchmark/backend/` (selected via the
- * module's `comapeoEntryFile` override that the
- * `with-comapeo-bench` config plugin sets) — so timings isolate the
- * framing / IPC / JSON-RPC bridge from `@comapeo/core` init noise.
- * See `apps/benchmark/README.md` for architecture + run instructions.
+ * Bench app entry. Drives the bench RPC bridge through the same
+ * RN→native→Node UDS path as production, talking to the stripped
+ * backend selected via `comapeoEntryFile`. See README.md.
  *
- * UI surface:
- *   - boot status (state observer): waits for "STARTED" before enabling
- *     the run button.
- *   - payload-size selector: subset of {64B, 1KB, 64KB, 1MB} per run.
- *   - "Run benchmark" button (testID="send-button"): runs warmup +
- *     steady-state sweep, records per-RPC RTT.
- *   - results panel (testID="benchmark-result"): per-size p50/p95/p99
- *     over the steady-state samples.
- *   - "Export results" button: writes NDJSON to the app's documents
- *     directory and opens the system share sheet.
- *
- * Span transport for orchestrated runs is logcat: every recorded span
- * is `console.log("BENCH_SPAN " + JSON)`'d, which lands in Android
- * logcat (RN bridge tag) / iOS device console. The BS dispatch script
- * pulls the device log post-build and grep's BENCH_SPAN lines into
- * NDJSON. No transport plumbing on the device.
+ * Span transport: every recorded span is `console.log("BENCH_SPAN
+ * <json>")`'d, lands in Android logcat / iOS device console; the BS
+ * dispatch script greps it out of pulled device logs.
  */
 
 const PAYLOAD_SIZES = [64, 1024, 65536, 1048576] as const;
@@ -57,17 +40,9 @@ type BenchSpan = {
 };
 
 /**
- * Stable device label used as `attrs.device` on every span this run
- * emits. Matches the format the native loader builds for the bench
- * backend's `--device=<tag>` arg ("<MANUFACTURER> <MODEL> (Android
- * <RELEASE>)") so the summarizer can group RN-side and backend-side
- * spans under one row even when each side computes its own label.
- *
- * Falls back to `Platform.OS` when constants are unavailable (web /
- * stubbed test runners). On iOS, `Platform.constants` exposes
- * `systemName` / `systemVersion` rather than Android's Brand/Model;
- * we still produce a recognisable label so a future iOS run lands
- * in the right RESULTS.md row without further plumbing.
+ * `attrs.device` for every span this run emits. Format must match the
+ * native loader's `--device=<tag>` so the summarizer groups RN-side
+ * and backend-side spans under one row.
  */
 function deriveDeviceTag(): string {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -83,16 +58,8 @@ function deriveDeviceTag(): string {
     return `${brand} ${model} (Android ${release})`;
   }
   if (Platform.OS === "ios") {
-    // Platform.constants on iOS exposes `osVersion` (NOT
-    // `systemVersion`) and `interfaceIdiom` ("phone" | "pad" | …).
-    // We deliberately don't try to identify the specific model
-    // (e.g. "iPhone 15 Pro") — that requires a native bridge or a
-    // package like `expo-device`, and the model match between RN
-    // and the backend's UIDevice.current.model would still come
-    // back as "iPhone" on both sides anyway. So we settle for a
-    // tag that exactly matches what NodeJSService.swift produces
-    // ("Apple iPhone (iOS 17.5)"), keeping the summarizer's
-    // group-by-`attrs.device` reliable.
+    // Tag matches NodeJSService.swift's `UIDevice.current.model`
+    // (always "iPhone"/"iPad") so summarizer groups RN + backend.
     const sysName = (c.systemName ?? "iOS") as string;
     const sysVer = (c.osVersion ?? c.systemVersion ?? Platform.Version ?? "?") as string;
     const idiom = String(c.interfaceIdiom ?? "phone").toLowerCase();
@@ -157,18 +124,12 @@ class BenchClient {
     this.ensureListener();
     const id = `bench-${this.nextId++}`;
     return new Promise((resolve) => {
-      // Per-request timeout so a lost frame / disconnected backend
-      // doesn't hang the run forever and leak the pending entry.
-      // Caller surfaces `error.message === "timeout"` through the same
-      // path as a backend-emitted error.
+      // Timeout so a disconnected backend doesn't hang the run.
       const timer = setTimeout(() => {
         if (this.pending.delete(id)) {
           resolve({ error: { message: `bench rpc timeout after ${timeoutMs}ms (method=${method})` } });
         }
       }, timeoutMs);
-      // `unref` so the timer doesn't keep the JS runtime alive on its
-      // own — RN's JS thread doesn't actually exit, but it's a good
-      // habit and avoids surprises if this code is ported back to Node.
       if (typeof (timer as unknown as { unref?: () => void }).unref === "function") {
         (timer as unknown as { unref: () => void }).unref();
       }
@@ -180,11 +141,8 @@ class BenchClient {
 
 function percentile(sortedAsc: number[], p: number): number {
   if (sortedAsc.length === 0) return Number.NaN;
-  // Linear interpolation between closest ranks (a.k.a. the "C=1" /
-  // NumPy default percentile method). For p=0.5 over 100 samples this
-  // averages indices 49 and 50; nearest-rank would return index 49
-  // alone, biasing low for small samples. Bench p99 is the usual
-  // outlier — `n*p=99` lands exactly on the 99th sample so weight=0.
+  // Linear interpolation between closest ranks (NumPy default).
+  // Nearest-rank biases low for small samples.
   const position = (sortedAsc.length - 1) * p;
   const lower = Math.floor(position);
   const upper = Math.ceil(position);
@@ -289,14 +247,10 @@ export default function App() {
       file.create();
       file.write(ndjson);
 
-      // Ship every span over the bench RPC socket so the backend
-      // re-emits them via stdout — which lands in Android logcat
-      // (and iOS os_log via our `dup2`+pipe redirect). Necessary
-      // because RN's own `console.log` is suppressed by RCTLog's
-      // default level filter in iOS release builds, so a direct
-      // RN-side console call wouldn't show up in BS device logs.
-      // Single batched call after measurement so per-span overhead
-      // doesn't contaminate the RTT samples.
+      // Round-trip via bench RPC so backend re-emits to stdout:
+      // RN's own console.log is suppressed by RCTLog's level filter
+      // in iOS release builds and won't reach BS device logs.
+      // Batched post-measurement to keep per-span overhead off the RTT.
       try {
         await client.request(
           "ingestSpans",
@@ -449,8 +403,6 @@ function Row(props: { label: string; children: React.ReactNode }) {
 }
 
 function getOs(): string {
-  // Avoid pulling in `react-native/Platform` types here — the check is
-  // best-effort metadata, not load-bearing logic.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const Platform = require("react-native").Platform as { OS: string };
   return Platform.OS;

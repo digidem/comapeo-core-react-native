@@ -42,18 +42,10 @@ def comapeoAbiFilters = {
     return effective
 }()
 
-// Override for the entry filename inside the bundled `nodejs-project/`
-// assets directory that the loader hands to nodejs-mobile. Defaults
-// to `index.mjs` (the production bundle, emitted by
-// `scripts/build-backend.ts`). A consumer that ships its own backend
-// bundle as a sibling file in the same `nodejs-project/` (e.g.
-// `index.bench.mjs`) sets `comapeoEntryFile=index.bench.mjs` in its
-// `android/gradle.properties` and drops the file into
-// `app/src/main/assets/nodejs-project/` itself; AGP's normal asset
-// merge places it alongside the library's own `index.mjs` in the
-// APK and the loader runs the override entry. The bench app at
-// `apps/benchmark/` uses this hook via its `with-comapeo-bench`
-// config plugin.
+// Entry filename inside `nodejs-project/`. Default `index.mjs` (the
+// production bundle). Consumers shipping a sibling entry file (e.g.
+// `apps/benchmark/`) drop it into their own `assets/nodejs-project/`
+// and override here; AGP merges the assets at APK build time.
 def comapeoEntryFile = (rootProject.findProperty('comapeoEntryFile') ?: project.findProperty('comapeoEntryFile') ?: 'index.mjs').toString()
 
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
@@ -90,10 +82,7 @@ android {
         versionCode 1
         versionName "0.1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-        // Surfaces `comapeoEntryFile` to runtime Kotlin via
-        // `BuildConfig.COMAPEO_ENTRY_FILE`. The Java-string literal
-        // form (with embedded quotes) is what `buildConfigField`
-        // requires.
+        // Java-string-literal form (embedded quotes) is what `buildConfigField` needs.
         buildConfigField "String", "COMAPEO_ENTRY_FILE", "\"${comapeoEntryFile}\""
         externalNativeBuild {
             cmake {
@@ -128,8 +117,7 @@ android {
     }
     buildFeatures {
         prefab true
-        // Required for `buildConfigField` above to actually generate
-        // the BuildConfig class; AGP 8.x flipped the default to off.
+        // AGP 8.x default is off; needed for `buildConfigField` above.
         buildConfig true
     }
     packagingOptions {

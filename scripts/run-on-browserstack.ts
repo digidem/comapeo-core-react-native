@@ -1,9 +1,8 @@
 /**
  * BrowserStack App Automate runner for the bench Maestro flows.
- * Uploads app + Maestro test suite, dispatches one or more builds
- * (auto-batched against the account's parallel+queued cap), waits
- * for terminal status, pulls device logs, and parses `BENCH_SPAN`
- * lines into NDJSON under `apps/benchmark/results/`.
+ * Auto-batches against the account's parallel+queued cap, waits for
+ * terminal status, pulls device logs, and parses `BENCH_SPAN` lines
+ * into NDJSON under `apps/benchmark/results/`.
  *
  * Usage:
  *   node --env-file=.env scripts/run-on-browserstack.ts \
@@ -20,20 +19,10 @@
  *     [--project <existing BrowserStack project name>] \
  *     [--maestro-version <2.0.7|latest|1.39.13>]
  *
- * Defaults: Android device list is `CURATED_ANDROID_DEVICES` below
- * (10 devices spanning Android 9–16 across 6 brands, fits one BS
- * 5+5 plan dispatch). Override singly with `--device-android` or
- * via CSV with `--devices-android`.
- *
  * `BENCH_BROWSERSTACK_PROJECT` env var supplies the project default
- * for accounts whose access key can't auto-create projects (HTTP 422
- * "create this project" error).
+ * for accounts whose access key can't auto-create projects.
  *
- * API references:
- *   https://www.browserstack.com/docs/app-automate/api-reference/maestro/apps
- *   https://www.browserstack.com/docs/app-automate/api-reference/maestro/tests
- *   https://www.browserstack.com/docs/app-automate/api-reference/maestro/builds
- *   https://www.browserstack.com/docs/test-reporting-and-analytics/how-to-guides/organize-test-runs
+ * BS API: https://www.browserstack.com/docs/app-automate/api-reference/maestro/builds
  */
 
 import { mkdtemp, rm, copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
@@ -50,11 +39,7 @@ const RESULTS_DIR = path.join(PROJECT_ROOT, "apps/benchmark/results");
 const API = "https://api-cloud.browserstack.com/app-automate/maestro/v2";
 const PLAN_API = "https://api-cloud.browserstack.com/app-automate/plan.json";
 
-/**
- * Default Android device sweep. Picked across the BS catalog to span
- * Android 9–16 and the variance spectrum (recent flagship → older
- * budget). Sized to fit one dispatch on a 5-parallel + 5-queued plan.
- */
+// Spans Android 9–16 + flagship → budget. Sized for one 5+5 dispatch.
 const CURATED_ANDROID_DEVICES = [
   "Samsung Galaxy S26 Ultra-16.0",
   "Google Pixel 10 Pro-16.0",
@@ -70,12 +55,7 @@ const CURATED_ANDROID_DEVICES = [
 
 const DEFAULT_IOS_DEVICE = "iPhone 15-17";
 
-/**
- * Maestro version pin. BS supports `latest`, `1.39.13` (current
- * default), and `2.0.7`. We pin 2.0.7 for the runner-side `http`
- * client and the perf fixes; floating to `latest` would risk a
- * surprise bump.
- */
+// Pinned to 2.0.7 for the runner-side `http` client + perf fixes.
 const MAESTRO_VERSION = "2.0.7";
 
 const CUSTOM_ID = {
@@ -105,9 +85,7 @@ function parseArgs(): CliArgs {
     flow: "bench-rpc.yaml",
     devicesAndroid: CURATED_ANDROID_DEVICES,
     devicesIos: [DEFAULT_IOS_DEVICE],
-    // Static `customBuildName` keeps Test Reporting & Analytics able
-    // to draw trend lines across runs. `buildIdentifier` is the
-    // per-run differentiator. Both are overridable via flags.
+    // Static name → Test R&A trend lines; identifier is per-run.
     customBuildName: "comapeo-bench",
     buildIdentifier: new Date().toISOString().replace(/[:.]/g, "-"),
     project: process.env.BENCH_BROWSERSTACK_PROJECT,
@@ -284,11 +262,7 @@ async function uploadTestSuite(zipPath: string, customId: string) {
   return testSuiteUrl;
 }
 
-/**
- * Returns the account's max devices per dispatch (parallel+queued).
- * Falls back to 5 if the plan endpoint changes shape, since 5 is the
- * floor on free/starter plans.
- */
+/** Account's max devices per dispatch; falls back to 5 (floor on free/starter). */
 async function fetchPlanCapacity(): Promise<number> {
   try {
     const r = await bsFetch(PLAN_API);
@@ -319,21 +293,11 @@ async function triggerBuild(args: BuildArgs): Promise<string> {
     app: args.appUrl,
     testSuite: args.testSuiteUrl,
     devices: args.devices,
-    // `execute` is RELATIVE to the zip's parent dir — BS auto-
-    // prepends the parent at extract time. So `bench-rpc.yaml` (no
-    // `flows/` prefix) resolves correctly.
+    // `execute` is relative to the zip's parent dir (BS prepends it).
     execute: [args.flow],
-    // Capture device logs and network HAR for every run; these are
-    // off by default on BS. Span data flows through the device log
-    // (LogSink in the bench backend + RN-side console.log emit
-    // BENCH_SPAN-prefixed lines that we grep post-build), so device
-    // logs are essential, not optional.
+    // Spans flow through the device log (BENCH_SPAN lines) — essential.
     deviceLogs: true,
     networkLogs: true,
-    // Test R&A organization. Static `customBuildName` makes the
-    // build show up in the same trend line each run; `buildIdentifier`
-    // differentiates the individual runs; `buildTag` is free-form
-    // for filtering on the dashboard.
     customBuildName: args.customBuildName,
     buildIdentifier: args.buildIdentifier,
     maestroVersion: args.maestroVersion,
@@ -359,10 +323,7 @@ const TERMINAL_STATUSES = new Set([
   "passed", "failed", "error", "done", "stopped", "timeout", "skipped",
 ]);
 
-/**
- * Polls build status until terminal. Returns the full build details
- * (with session/test IDs) so the caller can fetch device logs.
- */
+/** Polls until terminal; returns full build details (session/test IDs). */
 async function waitForBuildTerminal(buildId: string, pollMs = 15_000): Promise<Record<string, unknown>> {
   let lastStatus = "";
   while (true) {
@@ -381,10 +342,7 @@ function sleep(ms: number) {
   return new Promise<void>((r) => setTimeout(r, ms));
 }
 
-/**
- * Returns the per-test session+test IDs and device-log URL for every
- * device in a build. One row per device.
- */
+/** Per-device session+test IDs and device-log URL. */
 type DeviceLogRef = {
   device: string;
   sessionId: string;
@@ -399,8 +357,7 @@ async function listBuildDeviceLogs(buildId: string, build: Record<string, unknow
     const sessions = (dev.sessions ?? []) as Array<Record<string, unknown>>;
     for (const session of sessions) {
       const sessionId = String(session.id ?? "");
-      // Per-session detail surfaces test IDs + the pre-signed
-      // device-log URL we want to GET.
+      // Per-session detail has the pre-signed device_log URL.
       const detail = await bsFetch(`${API}/builds/${buildId}/sessions/${sessionId}`);
       const tcData = ((detail.testcases as Record<string, unknown>)?.data ?? []) as Array<Record<string, unknown>>;
       for (const tcGroup of tcData) {
@@ -421,10 +378,7 @@ async function listBuildDeviceLogs(buildId: string, build: Record<string, unknow
 
 const BENCH_SPAN_RE = /BENCH_SPAN (\{.*?\})\s*$/m;
 
-/**
- * Pulls a device log and writes every parseable BENCH_SPAN line to
- * NDJSON. Returns the count of spans parsed for this device.
- */
+/** Pulls device log, writes parseable BENCH_SPAN lines to NDJSON. */
 async function pullAndParseDeviceLog(ref: DeviceLogRef, outDir: string): Promise<number> {
   if (!ref.deviceLogUrl) {
     console.warn(`    skip ${ref.device}: no device_log URL (deviceLogs may not have been enabled)`);
@@ -438,18 +392,13 @@ async function pullAndParseDeviceLog(ref: DeviceLogRef, outDir: string): Promise
     return 0;
   }
   const text = await res.text();
-  // Logcat emits one log entry per line, but a span JSON could in
-  // principle contain newlines if a future contributor breaks the
-  // single-line invariant. Splitting on \n and matching per-line is
-  // the safe pattern.
   const lines = text.split("\n");
   const out: string[] = [];
   for (const line of lines) {
     const m = line.match(/BENCH_SPAN (\{.+\})/);
     if (!m) continue;
     try {
-      // Validate it's parseable JSON before committing it; a logcat
-      // truncation would otherwise leave a half-span in the file.
+      // Validate before committing — logcat truncation would otherwise leave half-spans.
       JSON.parse(m[1]!);
       out.push(m[1]!);
     } catch {
@@ -469,19 +418,13 @@ function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
 }
 
-/**
- * Runs the full build → wait → pull-logs cycle for one batch.
- */
 async function dispatchBatch(args: BuildArgs): Promise<{ buildId: string; spanCount: number }> {
   const buildId = await triggerBuild(args);
   console.log(`  ⏳ waiting for build to reach terminal…`);
   const build = await waitForBuildTerminal(buildId);
   const status = String(build.status);
   console.log(`  ✓ build ${status} in ${build.duration}s`);
-  // Even after the last session's `passed`, BS keeps the build
-  // `running` while it flushes logs/videos to S3 — but by the time
-  // overall status is terminal, device_log URLs are populated. Pull
-  // them now.
+  // device_log URLs are populated by the time overall status is terminal.
   console.log(`  ↓ pulling device logs…`);
   const refs = await listBuildDeviceLogs(buildId, build);
   let total = 0;

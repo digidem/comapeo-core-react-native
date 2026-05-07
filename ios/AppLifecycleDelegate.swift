@@ -86,27 +86,13 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             }
         },
         resolveJSEntryPoint: {
-            // Hand nodejs-mobile the read-only path inside the .app
-            // bundle directly. Nothing in the rolled-up backend writes
-            // back into `nodejs-project/` at runtime: native `.node`
-            // files live in `<App>.app/Frameworks/<name>__<version>.framework/`
-            // (loaded via `process.dlopen` against `NATIVE_LIB_DIR`,
-            // set in the `nodeEntryPoint` closure above), drizzle
-            // migrations are `fs.readFile`d, and SQLite/blobs/indexes
-            // go to `privateStorageDir`.
+            // Read directly from the .app bundle: nothing in the
+            // rolled-up backend writes back to `nodejs-project/` at
+            // runtime. (Android extracts on first launch instead
+            // because the APK doesn't expose its assets as a
+            // filesystem path.)
             //
-            // Android extracts on first launch instead because the APK
-            // doesn't expose a filesystem-readable path to its assets
-            // the way `<App>.app/<name>/` does on iOS.
-            //
-            // Entry filename inside the bundled `nodejs-project/` is
-            // read from the consumer app's `Info.plist`
-            // `ComapeoEntryFile` key (default `index.mjs`). Lets a
-            // consumer ship a sibling entry file inside
-            // `<App>.app/nodejs-project/` without touching this
-            // module's podspec — they drop the file in via a
-            // resource-copy build phase and set the Info.plist key to
-            // its filename.
+            // Entry filename overridable via Info.plist `ComapeoEntryFile`.
             let entryFile = (Bundle.main.object(forInfoDictionaryKey: "ComapeoEntryFile") as? String) ?? "index.mjs"
             let bundleEntry = (Bundle.main.bundlePath as NSString)
                 .appendingPathComponent("nodejs-project/\(entryFile)")

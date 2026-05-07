@@ -10,36 +10,13 @@ import { minify } from "rollup-plugin-esbuild";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/**
- * Bench bundle output. The bench app's `with-comapeo-bench` config
- * plugin reads `index.bench.mjs` from this path during `expo prebuild`
- * and drops it into the consumer app's `nodejs-project/` alongside
- * the production bundle's `index.mjs`; the module's loader is pointed
- * at the bench entry via the `comapeoEntryFile` override.
- *
- * No `package.json` is emitted — the production bundle already ships
- * one with `"type":"module"` in the same directory, which is all
- * Node's module resolver needs to evaluate `index.bench.mjs` as ESM.
- */
+// No `package.json` emitted — the production bundle's package.json
+// (with `"type":"module"`) sits beside us in `nodejs-project/`.
 const OUT_DIR = path.join(__dirname, "dist");
 
-/**
- * The bench backend imports framing helpers (server-helper.js,
- * simple-rpc.js, message-port.js) from the production backend's
- * `backend/lib/` via path-relative imports — keeps the wire framing
- * bit-identical to production, which is the whole point of the
- * benchmark. Rollup's `nodeResolve` walks the path-imported tree and
- * brings the helpers into the bundle directly; their dependencies
- * (`framed-stream`, `tiny-typed-emitter`, `ensure-error`) are listed
- * in this package's package.json and resolved out of
- * `apps/benchmark/backend/node_modules/`.
- *
- * Unlike the production rollup config there is no per-platform split:
- * the bench code never imports `@comapeo/core` (so no iOS maps-plugin
- * stub is needed) and never loads native addons (so no
- * platform-specific `__loadAddon` banner is needed). One ESM bundle
- * works on Android and iOS alike.
- */
+// One ESM bundle for both platforms: the bench code never imports
+// `@comapeo/core` (no iOS maps-plugin stub needed) and never loads
+// native addons (no per-platform `__loadAddon` banner needed).
 function cleanOutputDirPlugin() {
   return {
     name: "clean-output-dir",
@@ -50,9 +27,8 @@ function cleanOutputDirPlugin() {
 }
 
 export default {
-  // Named-input form so the emitted chunk is `index.bench.mjs` (vs.
-  // `index.mjs`) and can coexist with the production bundle's
-  // `index.mjs` in the same `nodejs-project/` directory.
+  // Named-input form → emitted chunk is `index.bench.mjs`, can coexist
+  // with the production `index.mjs` in the same `nodejs-project/`.
   input: { "index.bench": path.join(__dirname, "index.js") },
   output: {
     dir: OUT_DIR,

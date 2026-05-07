@@ -2,22 +2,11 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 /**
- * Telemetry sink interface used by the bench backend (and, eventually,
- * by the production backend once Sentry plan §6.x lands a
- * `SentryAdapterSink` implementing the same surface).
+ * Telemetry sink interface for bench spans. The eventual
+ * `SentryAdapterSink` (Sentry plan §6.x) will implement the same shape.
  *
- * Span shape:
- *   {
- *     op:   "boot" | "rpc",
- *     name: "boot.listen-control" | "boot.init" | "boot.construct"
- *           | "rpc.echo" | "rpc.payload" | ...,
- *     startTimestamp: number,   // ms since epoch
- *     durationMs:     number,   // sub-ms precision via process.hrtime.bigint
- *     attrs:          object,   // free-form per-call metadata (e.g. {bytes:1024})
- *   }
- *
- * Implementations MUST be non-throwing on `recordSpan` — a bad sink
- * cannot crash the backend mid-bench. Errors are logged and swallowed.
+ * `recordSpan` MUST NOT throw — a bad sink cannot crash the backend
+ * mid-bench. Errors are logged and swallowed.
  *
  * @typedef {{
  *   op: "boot" | "rpc",
@@ -33,33 +22,15 @@ import path from "node:path";
  * }} TelemetrySink
  */
 
-/**
- * Discards every span. Useful only when you want to confirm a run
- * works without any tracing overhead at all (e.g. measuring
- * "what's the floor of the bench backend itself").
- *
- * @returns {TelemetrySink}
- */
+/** Drops every span — measures the bench backend's own floor. */
 export class NoopSink {
   recordSpan() {}
   close() {}
 }
 
 /**
- * Writes one span per stdout line, prefixed with `BENCH_SPAN ` so a
- * downstream parser can distinguish them from regular log lines.
- * On Android this surfaces in `logcat` (under the `Comapeo:NodeJS`
- * tag for backend, `ReactNativeJS` for App.tsx); on iOS it lands in
- * the device console. BrowserStack captures both verbatim when the
- * build trigger sets `deviceLogs: true`, so the host runner just
- * grep's `BENCH_SPAN` out of the pulled log file post-build.
- *
- * Replaces the receiver/HTTP-tunnel approach as the default path for
- * BS dispatches: no BrowserStackLocal, no cleartext-traffic config,
- * no nodejs-mobile vs RN HTTP routing distinction. Both span sources
- * just write to stdout.
- *
- * @returns {TelemetrySink}
+ * One span per stdout line, prefixed `BENCH_SPAN ` so the host runner
+ * can grep it out of pulled device logs (Android logcat / iOS console).
  */
 export class LogSink {
   /**
@@ -82,12 +53,8 @@ export class LogSink {
 }
 
 /**
- * NDJSON-to-disk sink. One span per line; appends are sync so a process
- * crash mid-bench doesn't lose buffered spans. Used as the default
- * on-device transport: the bench app reads the file back to render the
- * results panel and offer "Export results".
- *
- * @returns {TelemetrySink}
+ * NDJSON-to-disk sink. Sync appends so a crash mid-bench doesn't lose
+ * buffered spans. Bench app reads the file back to render results.
  */
 export class JsonFileSink {
   /**
@@ -113,11 +80,9 @@ export class JsonFileSink {
 }
 
 /**
- * Lifts per-process defaults onto a span before emit. `runId` lands at
- * top level (the RN side's convention). `device` tucks into
- * `attrs.device` so the summarizer can group spans across files
- * post-hoc. Span-supplied values win over defaults so per-call
- * overrides still work.
+ * Merges per-process defaults onto a span. `runId` at top level (RN
+ * convention); `device` into `attrs.device` (summarizer groups by it).
+ * Span values win over defaults.
  *
  * @param {BenchSpan} span
  * @param {{ runId?: string, device?: string }} defaults
@@ -135,15 +100,9 @@ function mergeDefaults(span, defaults) {
 }
 
 /**
- * Parses a `--telemetry=<spec>` CLI arg into a sink instance.
- *
- *   - unspecified         → LogSink (the default; works in both
- *                           on-device standalone and BS dispatches)
- *   - `log`               → LogSink (explicit)
- *   - `noop`              → NoopSink (drops every span)
- *   - `file:<path>`       → JsonFileSink writing NDJSON to `<path>`
- *
- * Unknown specs throw at startup so a typo doesn't silently drop spans.
+ * `--telemetry=<spec>` → sink. Unspecified or `log` → LogSink;
+ * `noop` → NoopSink; `file:<path>` → JsonFileSink. Unknown throws so
+ * a typo doesn't silently drop spans.
  *
  * @param {string | undefined} spec
  * @param {{ runId?: string, device?: string }} [defaults]
@@ -159,12 +118,9 @@ export function createSinkFromArg(spec, defaults = {}) {
 }
 
 /**
- * Open a span. Returns an object with `.end(extraAttrs?)` that records
- * the span on the sink with measured duration.
- *
- * Uses `process.hrtime.bigint()` for sub-ms precision and Date.now() for
- * the wall-clock start timestamp (so spans can be correlated across
- * device clock skew when host-side aggregation is used).
+ * Open a span. Returns `{ end(extraAttrs?) }` that records on the sink.
+ * `hrtime.bigint()` for sub-ms duration; `Date.now()` for wall-clock
+ * start so spans correlate across device clock skew.
  *
  * @param {TelemetrySink} sink
  * @param {"boot" | "rpc"} op

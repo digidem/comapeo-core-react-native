@@ -1,63 +1,28 @@
 import { BenchRpcServer } from "./lib/bench-rpc.js";
 import { startBootSpan } from "./lib/boot-spans.js";
-// Path-imported from the module's production backend so the bench
-// bundle exercises the same control-socket framing as production —
-// rollup inlines this at bundle time. Out-of-tree imports for shared
-// helpers are intentional: any divergence here would invalidate the
-// benchmark's whole premise.
+// Path-import: rollup inlines so the bench bundle uses identical
+// framing to production. Divergence here would invalidate the bench.
 import { SimpleRpcServer } from "../../../backend/lib/simple-rpc.js";
 import { createSinkFromArg } from "./lib/telemetry-sink.js";
 
 /**
- * Bench-only nodejs-mobile entry. Identical state-machine shape to the
- * production `backend/index.js` (so the native loader is unchanged: same
- * positional args, same `started` / `ready` broadcasts on the control
- * socket, same `stopping` / `error` lifecycle frames) but with two
- * substitutions that isolate the bridge under test from `@comapeo/core`:
- *
- *   1. Init validation is relaxed. The production handler enforces a
- *      strict-base64 16-byte rootKey; here we accept any non-empty
- *      `init` frame so the bench app can use a fixed dummy rootKey
- *      without re-implementing the encoding rules.
- *   2. The comapeo-RPC socket runs `BenchRpcServer` (echo + payload
- *      methods) instead of `ComapeoRpcServer` (the full MapeoManager
- *      surface). `@comapeo/core` is therefore not imported and the
- *      rolled-up bundle excludes its drizzle migrations, sqlite addon,
- *      undici, etc. — exactly the noise we want to drop.
- *
- * Boot phases (`listen-control`, `init`, `construct`) are wrapped with
- * `startBootSpan` so the same Sentry-shaped taxonomy from §7.4.2 of the
- * Sentry plan emits to whichever sink the host configured. The three
- * native-side phases (`ipc-connect (control)`, `rootkey-load`,
- * `ipc-connect (comapeo)`) stay native-side; they're added by the
- * Sentry plan when production loaders adopt shared instrumentation.
+ * Bench-only nodejs-mobile entry. Same control-socket state machine as
+ * production so the native loader is unchanged; substitutes a relaxed
+ * `init` (any object payload accepted; rootKey ignored) and runs
+ * `BenchRpcServer` (echo + payload) on the comapeo socket instead of
+ * `ComapeoRpcServer` — keeps `@comapeo/core` out of the bundle so what
+ * we measure is the bridge, not application init noise.
  */
 
 console.log("Starting Comapeo Node BENCHMARK server...");
 
-// privateStorageDir (3rd positional arg) is consumed by the production
-// backend for sqlite + file resources; the bench backend doesn't touch
-// disk at the application layer, so it's deliberately unread here.
+// privateStorageDir (3rd positional) is unused: bench doesn't touch disk.
 const [comapeoSocketPath, controlSocketPath, , ...rest] =
   process.argv.slice(2);
 
-// `--telemetry=<spec>` selects the sink. Unspecified defaults to
-// LogSink — see `createSinkFromArg`. LogSink writes one stdout line
-// per span prefixed with `BENCH_SPAN `, which lands in logcat on
-// Android / device console on iOS, and the BS dispatch script
-// post-processes the pulled device log into NDJSON. Pass
-// `--telemetry=noop` to suppress entirely.
 const telemetryArg = rest.find((a) => a.startsWith("--telemetry="));
-// `--device=<tag>` is set by the native loader (see
-// android/src/main/java/com/comapeo/core/NodeJSService.kt) so backend
-// span emissions can carry device attribution. Falls back to
-// `unknown` when the loader didn't set it.
 const deviceArg = rest.find((a) => a.startsWith("--device="));
 const deviceTag = deviceArg ? deviceArg.slice("--device=".length) : "unknown";
-// Per-process session id; tags every span this process emits
-// (boot.* and rpc.*) so a downstream consumer can group them. The RN
-// side generates its own runId per Run-benchmark tap; both share the
-// same `attrs.device`, so the summarizer correlates them post-hoc.
 const sessionRunId = `boot-${Date.now().toString(36)}-${Math.random()
   .toString(36)
   .slice(2, 8)}`;
@@ -68,12 +33,6 @@ const sink = createSinkFromArg(
 
 /** @type {BenchRpcServer | undefined} */
 let benchRpcServer;
-/**
- * Set true once a graceful shutdown has been initiated. Used by the
- * `uncaughtException` filter below to distinguish a shutdown-race
- * write-after-end (benign — the peer is going away) from a real
- * runtime fault that should tear the process down.
- */
 let isShuttingDown = false;
 
 /** @type {(rootKey: unknown) => void} */
@@ -88,15 +47,7 @@ const initPromise = new Promise((resolve, reject) => {
 let initConsumed = false;
 
 const controlIpcServer = new SimpleRpcServer({
-  /**
-   * Bench init: relaxed shape check. Accepts any object payload —
-   * native passes a base64 rootKey string just like in production but
-   * the bench backend doesn't construct a MapeoManager so the bytes
-   * are never used. Rejecting on missing payload still surfaces a
-   * malformed native loader.
-   *
-   * @param {Record<string, unknown>} message
-   */
+  /** @param {Record<string, unknown>} message */
   init: (message) => {
     if (initConsumed) {
       console.warn("Bench: received init after manager construction; ignoring");
@@ -111,8 +62,7 @@ const controlIpcServer = new SimpleRpcServer({
   },
   shutdown: async () => {
     isShuttingDown = true;
-    // Match production's shutdown frame ordering so native lifecycle
-    // detection (graceful exit vs. crash) keeps working unchanged.
+    // `stopping` before close so native distinguishes graceful exit from crash.
     controlIpcServer.broadcast({ type: "stopping" });
     /** @type {Promise<void>[]} */
     const closePromises = [controlIpcServer.close()];
@@ -154,14 +104,10 @@ async function handleFatal(phase, error) {
 }
 
 /**
- * Filter for the streamx-microtask shutdown race described above.
- *
- * Returns true if `e` is an `ERR_STREAM_WRITE_AFTER_END` thrown while
- * a graceful shutdown is in progress — benign by definition (the
- * message was already destined for a peer being torn down). Returned
- * to both `uncaughtException` and `unhandledRejection` because Node's
- * internal writable surfaces this error via either path depending on
- * which microtask boundary it crosses.
+ * Filters the streamx-microtask shutdown race: `ERR_STREAM_WRITE_AFTER_END`
+ * raised while shutting down is benign (peer is going away). Caught in both
+ * `uncaughtException` and `unhandledRejection` since Node surfaces it via
+ * either path depending on which microtask boundary it crosses.
  *
  * @param {unknown} e
  */
@@ -192,7 +138,6 @@ process.on("unhandledRejection", (reason) => {
 
 (async () => {
   try {
-    // 1. Bind the control socket. Native is already polling for it.
     const listenSpan = startBootSpan(sink, "listen-control");
     try {
       await controlIpcServer.listen(controlSocketPath);
@@ -207,9 +152,7 @@ process.on("unhandledRejection", (reason) => {
     console.log(`Bench control socket listening on ${controlSocketPath}`);
     controlIpcServer.setReadinessPhase("started");
 
-    // 2. Wait for native to send the `init` frame. In the bench backend
-    //    this is just a synchronisation barrier — the rootKey is not
-    //    consumed.
+    // `init` is just a sync barrier here — rootKey is unused.
     const initSpan = startBootSpan(sink, "init");
     try {
       await initPromise;
@@ -222,7 +165,6 @@ process.on("unhandledRejection", (reason) => {
       initSpan.end();
     }
 
-    // 3. Build the bench RPC server and bind the comapeo socket.
     const constructSpan = startBootSpan(sink, "construct");
     try {
       benchRpcServer = new BenchRpcServer({ sink });

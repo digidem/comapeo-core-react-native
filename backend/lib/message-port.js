@@ -60,15 +60,10 @@ export class SocketMessagePort extends TypedEmitter {
       // TODO: Emit error, handle in consumer
       console.error("FramedStream error", error);
     });
-    // The underlying AF_UNIX socket emits its own 'error' event for
-    // events the framed-stream wrapper doesn't surface — most
-    // importantly `ERR_STREAM_WRITE_AFTER_END` when a producer attempts
-    // to post during the half-closed shutdown window. Without a
-    // listener here, a stray write during graceful teardown bubbles to
-    // `uncaughtException` and the process exits 1, even though the
-    // shutdown was orderly. Log + swallow: the writer side already
-    // detects close via `state === "closed"` (see `postMessage`) so a
-    // socket-level error post-close has no further consequence.
+    // Without this listener, an `ERR_STREAM_WRITE_AFTER_END` raised
+    // by a stray write during graceful teardown bubbles to
+    // `uncaughtException` and exits the process despite an orderly
+    // shutdown. Log + swallow: postMessage already gates on `closed`.
     socket.on("error", (error) => {
       console.warn(
         "SocketMessagePort: underlying socket error",
@@ -81,16 +76,11 @@ export class SocketMessagePort extends TypedEmitter {
    * @param {JsonValue} message
    */
   postMessage(message) {
-    // Drop writes after close. AF_UNIX writes against an ended socket
-    // raise `ERR_STREAM_WRITE_AFTER_END`; the natural shutdown race
-    // (in-flight RPC response posted while the server is closing its
-    // sockets) lands here. NOTE: this guard handles writes posted
-    // AFTER close completes. Writes posted BEFORE close completes but
-    // executed (via streamx's nextTick microtask) after the underlying
-    // socket has ended end up throwing past this check; the host
-    // process's `uncaughtException` handler must filter the resulting
+    // Catches writes posted after close. Writes posted *before* close
+    // but executed after (via streamx microtasks) escape this guard;
+    // the host's `uncaughtException` handler must filter the resulting
     // `ERR_STREAM_WRITE_AFTER_END` during shutdown — see
-    // `apps/benchmark/backend/index.js` for an example filter.
+    // `apps/benchmark/backend/index.js`.
     if (this.#state === "closed") return;
     this.#framedStream.write(Buffer.from(JSON.stringify(message)));
   }
