@@ -139,19 +139,18 @@ late-connecting client (the React Native module on Android races the
 FGS's IPC client; both connect to the same socket, see §4) would miss
 the events that already fired.
 
-Terminal lifecycle frames — `stopping` (via `broadcastStopping()`) and
-`error` (via `broadcastError()`) — are **also** cached and replayed,
-but only the latest one. The window between either frame and the
-natural socket close is non-zero (~100 ms for `error` before
-`process.exit(1)`; the duration of `Promise.all([close…])` for
-`stopping`), and a client that connects in that window would otherwise
-have to infer the terminal state from the disconnect alone. That
-inference is lossy in two ways: a graceful `stopping`-then-close looks
-identical to an unexpected crash to a client that missed the frame
-(STARTING/STARTED → ERROR per §5.4), and an `error` frame's phase and
-message are replaced by a synthetic `node-runtime-unexpected`. Caching
-the latest terminal frame closes both gaps with a single object
-reference of overhead.
+Terminal lifecycle frames — `stopping` and `error`, both sent via
+`broadcast()` — are **also** cached and replayed, but only the latest
+one. The window between either frame and the natural socket close is
+non-zero (~100 ms for `error` before `process.exit(1)`; the duration
+of `Promise.all([close…])` for `stopping`), and a client that connects
+in that window would otherwise have to infer the terminal state from
+the disconnect alone. That inference is lossy in two ways: a graceful
+`stopping`-then-close looks identical to an unexpected crash to a
+client that missed the frame (STARTING/STARTED → ERROR per §5.4), and
+an `error` frame's phase and message are replaced by a synthetic
+`node-runtime-unexpected`. Caching the latest terminal frame closes
+both gaps with a single object reference of overhead.
 
 ### 3.2 Why two sockets
 

@@ -110,7 +110,7 @@ const controlIpcServer = new SimpleRpcServer({
     // exit. AF_UNIX is a stream socket; the kernel guarantees that the
     // 'stopping' frame is delivered before the EOF (socket close),
     // allowing the peer to distinguish graceful shutdown from a crash.
-    controlIpcServer.broadcastStopping();
+    controlIpcServer.broadcast({ type: "stopping" });
     const closePromises = [controlIpcServer.close(), fastify.close()];
     if (comapeoRpcServer) closePromises.push(comapeoRpcServer.close());
     await Promise.all(closePromises);
@@ -166,7 +166,8 @@ async function handleFatal(phase, error) {
   const err = error instanceof Error ? error : new Error(String(error));
   console.error(`Fatal during ${phase}:`, err);
   try {
-    controlIpcServer.broadcastError({
+    controlIpcServer.broadcast({
+      type: "error",
       phase,
       message: err.message,
       stack: err.stack,
