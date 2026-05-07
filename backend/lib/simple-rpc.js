@@ -122,15 +122,9 @@ export class SimpleRpcServer extends ServerHelper {
     return this.#readinessPhase;
   }
 
-  /**
-   * `stopping` and `error` are cached for replay; otherwise fire-and-forget.
-   *
-   * @param {{ type: string } & import("type-fest").JsonObject} message
-   */
+  /** @param {TerminalFrame} message */
   broadcast(message) {
-    if (message.type === "stopping" || message.type === "error") {
-      this.#terminalFrame = /** @type {TerminalFrame} */ (message);
-    }
+    this.#terminalFrame = message;
     for (const client of this.#clients) {
       try {
         client.postMessage(message);
