@@ -15,6 +15,10 @@ import { activeAdapter, setOverrideAdapter } from "./sentry-internal";
 import { state } from "./ComapeoCoreModule";
 import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types";
 import { SentryTags } from "./sentry-tags";
+import {
+  BACKEND_MODULES,
+  COMAPEO_MODULE_VERSION_LABEL,
+} from "./version";
 
 type SentrySeverityLevel = "fatal" | "error" | "warning" | "info" | "debug";
 
@@ -37,6 +41,13 @@ interface SentryCaptureContext {
 interface SentrySpan {
   setStatus?(status: { code: number; message?: string }): void;
 }
+
+interface SentryEvent {
+  modules?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+type EventProcessor = (event: SentryEvent) => SentryEvent | null;
 
 /**
  * Methods this module calls on Sentry. Hand-rolled rather than
@@ -64,6 +75,14 @@ export interface SentryAdapter {
   ): string;
   addBreadcrumb(breadcrumb: SentryBreadcrumb): void;
   setTag(key: string, value: string | number | boolean): void;
+  /**
+   * Registers a global event processor that runs on every event
+   * before it's sent. We use it to inject our own values into
+   * `event.modules` (the bundled-backend deps that the SDK's
+   * `ModulesLoader` integration can't see, plus our own version
+   * label).
+   */
+  addEventProcessor(processor: EventProcessor): void;
   startSpan<T>(
     options: { name: string; op?: string; forceTransaction?: boolean },
     callback: (span: SentrySpan) => T,
@@ -102,11 +121,27 @@ export function setSentryAdapterForTests(adapter: SentryAdapter | null): void {
 // this hub — including default RN-SDK captures (JS errors, ANRs,
 // app-start transactions) — is filterable alongside our own
 // captures, not just the ones below where we set them per-call.
+//
+// `comapeo.module.version` is the primary filter axis for "did
+// this issue start after I bumped @comapeo/core-react-native?".
+// `event.modules` carries the same value plus the bundled
+// backend deps that `ModulesLoader` can't introspect (rolled
+// into a single `index.mjs`), so the Modules / Discover UI has
+// the full dep map.
 {
   const adapter = activeAdapter();
   if (adapter) {
     adapter.setTag(SentryTags.proc, SentryTags.procMain);
     adapter.setTag(SentryTags.layer, SentryTags.layerRn);
+    adapter.setTag("comapeo.module.version", COMAPEO_MODULE_VERSION_LABEL);
+    adapter.addEventProcessor((event) => {
+      event.modules = {
+        ...event.modules,
+        "@comapeo/core-react-native": COMAPEO_MODULE_VERSION_LABEL,
+        ...BACKEND_MODULES,
+      };
+      return event;
+    });
   }
 }
 
