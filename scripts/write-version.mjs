@@ -13,6 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,7 +25,13 @@ const backendPkg = JSON.parse(
 );
 
 let sha = "";
-let dirty = false;
+// `dirty` is the empty string when the working tree is clean,
+// or an 8-char hash digest of the working-tree state otherwise.
+// Using a hash (rather than a boolean flag) means two different
+// uncommitted edits produce two different version labels — so a
+// Sentry event from "fixing this bug" can be distinguished from
+// "fixing the next bug" without committing in between.
+let dirty = "";
 if (existsSync(join(root, ".git"))) {
   try {
     sha = execSync("git rev-parse --short=8 HEAD", {
@@ -33,13 +40,19 @@ if (existsSync(join(root, ".git"))) {
     })
       .toString()
       .trim();
-    const status = execSync("git status --porcelain", {
+    // `git diff HEAD` covers staged + unstaged changes to
+    // tracked files. `--binary` includes binary diffs verbatim
+    // so we don't lose entropy on non-text edits. Untracked
+    // files don't contribute (you'd have to `git add` them to
+    // matter).
+    const diff = execSync("git diff HEAD --binary", {
       cwd: root,
       stdio: ["ignore", "pipe", "ignore"],
-    })
-      .toString()
-      .trim();
-    dirty = status.length > 0;
+      maxBuffer: 256 * 1024 * 1024,
+    });
+    if (diff.length > 0) {
+      dirty = createHash("sha256").update(diff).digest("hex").slice(0, 8);
+    }
   } catch {
     // Not a git checkout (shallow tarball etc.) — leave SHA empty.
   }
@@ -69,20 +82,24 @@ export const COMAPEO_MODULE_VERSION = ${JSON.stringify(pkg.version)};
 export const COMAPEO_MODULE_GIT_SHA = ${JSON.stringify(sha)};
 
 /**
- * Whether the working tree had uncommitted changes at build time.
- * Always \`false\` for clean builds and npm-installed consumers.
+ * Hash of the working-tree state at build time.
+ * \`""\` for clean builds and npm-installed consumers; an 8-char
+ * sha256-prefix digest of \`git diff HEAD --binary\` otherwise.
+ * Two distinct sets of uncommitted edits yield two distinct
+ * digests, so each in-flight build is uniquely identifiable.
  */
 export const COMAPEO_MODULE_DIRTY = ${JSON.stringify(dirty)};
 
 /**
- * Composite version label — \`<version>+git<sha>[-dirty]\` when a
- * SHA is available, else just \`<version>\`. Use this as the value
- * of \`event.modules["@comapeo/core-react-native"]\` and the
+ * Composite version label —
+ * \`<version>+git<sha>[-dirty<hash>]\` when a SHA is available,
+ * else just \`<version>\`. Use this as the value of
+ * \`event.modules["@comapeo/core-react-native"]\` and the
  * \`comapeo.module.version\` tag so a single dimension covers
  * both release and source identity.
  */
 export const COMAPEO_MODULE_VERSION_LABEL = COMAPEO_MODULE_GIT_SHA
-  ? \`\${COMAPEO_MODULE_VERSION}+git\${COMAPEO_MODULE_GIT_SHA}\${COMAPEO_MODULE_DIRTY ? "-dirty" : ""}\`
+  ? \`\${COMAPEO_MODULE_VERSION}+git\${COMAPEO_MODULE_GIT_SHA}\${COMAPEO_MODULE_DIRTY ? \`-dirty\${COMAPEO_MODULE_DIRTY}\` : ""}\`
   : COMAPEO_MODULE_VERSION;
 
 /**
@@ -99,6 +116,6 @@ export const BACKEND_MODULES: Record<string, string> = ${JSON.stringify(backendM
 writeFileSync(join(root, "src", "version.ts"), out);
 console.log(
   `wrote src/version.ts: ${pkg.version}${
-    sha ? `+git${sha}${dirty ? "-dirty" : ""}` : ""
+    sha ? `+git${sha}${dirty ? `-dirty${dirty}` : ""}` : ""
   } (backend modules: ${Object.keys(backendModules).length})`,
 );
