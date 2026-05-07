@@ -56,7 +56,12 @@ data class SentryConfig(
         @JvmStatic
         fun loadFromManifest(context: Context): SentryConfig? {
             val meta = readApplicationMetaData(context) ?: return null
-            return load({ meta.getString(it) }) { resolveDefaultRelease(context) }
+            // Android's manifest parser coerces `android:value="true"`
+            // to Boolean and `"1.0"` to Float before the Bundle sees it,
+            // so `getString` returns null for anything that wasn't a
+            // pure string. `get(key)?.toString()` preserves the wire
+            // value regardless of underlying type.
+            return load({ meta.get(it)?.toString() }) { resolveDefaultRelease(context) }
         }
 
         /**
