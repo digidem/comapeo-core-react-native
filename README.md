@@ -126,41 +126,45 @@ code changes — see
 [`docs/sentry-integration-plan.md` §4.1](./docs/sentry-integration-plan.md)
 for the matching `eas.json` example with per-profile env vars.
 
-### 3. Hand off the host's Sentry SDK
+### 3. Import the sub-export
 
 ```ts
-import * as Sentry from "@sentry/react-native";
-import { configureSentry } from "@comapeo/core-react-native/sentry";
-
-Sentry.init({ /* options — DSN/environment/release auto-loaded from plist/manifest */ });
-
-configureSentry({ sentry: Sentry });
+import "@comapeo/core-react-native/sentry";
 ```
 
-After this call, the module's lifecycle ERROR transitions and `messageerror`
-events are captured to your Sentry project tagged with the relevant phase
-(`rootkey`, `starting-timeout`, `node-runtime-unexpected`, etc.). State
-transitions show up as breadcrumbs that ride along on the next event.
+That's it — importing the sub-export attaches the lifecycle listeners
+to the host's already-initialised Sentry hub. No explicit handoff
+call. As long as the host has run `Sentry.init(...)` (the
+`@sentry/react-native` SDK reads its DSN from the same Info.plist /
+manifest values your plugin wrote), errors and breadcrumbs flow
+automatically. ERROR state transitions surface tagged with the
+relevant phase (`rootkey`, `starting-timeout`,
+`node-runtime-unexpected`, etc.); state transitions show up as
+breadcrumbs that ride along on the next event.
 
 ### What gets captured automatically
 
-Once the plugin is registered with a `dsn`, the module captures three
-streams without any further setup:
+Once the plugin is registered with a `dsn`, the module captures
+events from three layers, tagged for filtering in the dashboard:
 
-- **JS-process events** (via the adapter you pass to `configureSentry`):
-  state-machine ERROR transitions and `messageerror` parse failures
-  tagged `proc:main`, `layer:rn`. State transitions emit breadcrumbs
-  on every cycle.
-- **FGS-process events** (Android only — `:ComapeoCore` foreground
-  service): boot transaction (`comapeo.boot`) with phase spans
-  (`boot.rootkey-load`, `boot.init-frame`), state-transition
-  breadcrumbs, control-frame breadcrumbs, FGS-lifecycle breadcrumbs,
-  watchdog-timeout events (`timeout:startup`, `timeout:fgsStop`),
-  and rootkey-load `captureException` — all tagged `proc:fgs`,
-  `layer:native` so the dashboard can split FGS-originated events
-  from main-process events.
-- **Backend-process events** (Phase 3, not yet shipped) — Node-side
-  RPC method spans and exceptions tagged `proc:backend`.
+- **`layer:rn`** (JS adapter, auto-attached when the sub-export
+  is imported) — state-machine ERROR transitions and
+  `messageerror` parse failures; every state transition rides
+  along as a breadcrumb.
+- **`layer:native`** (Kotlin / Swift) — `comapeo.boot`
+  transaction with phase spans (`boot.rootkey-load`,
+  `boot.init-frame`), state-transition breadcrumbs,
+  control-frame breadcrumbs, watchdog/shutdown timeout events,
+  rootkey-load `captureException`. On Android adds FGS-lifecycle
+  breadcrumbs.
+- **`layer:node`** (Phase 3, not yet shipped) — RPC method spans
+  and `handleFatal` exceptions from the embedded nodejs-mobile.
+
+Each event also carries a `proc` tag for the *actual* OS process:
+`proc:main` for everything on iOS (single-process), and
+`proc:main` (RN code) or `proc:fgs` (anything in
+`:ComapeoCore` — both the Kotlin FGS service and the embedded
+nodejs-mobile) on Android.
 
 The FGS-process Sentry SDK is initialised automatically in
 `ComapeoCoreService.onCreate` from the manifest meta-data your

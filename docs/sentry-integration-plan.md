@@ -446,75 +446,44 @@ The benefits stack:
   `if (sentryDsn) await import('@sentry/node')` short-circuits
   and the rollup-split `@sentry/node` chunk never loads.
 
-### 4.3 JS adapter handoff
+### 4.3 JS adapter — auto-detected at module load
 
 JS-side listeners (§6) need a callable Sentry object — `startSpan`,
-`captureException`, `getTraceData`. Because the host app already
-runs `Sentry.init()` from `@sentry/react-native` (which reads the
-same Info.plist / manifest values via its own auto-config),
-`configureSentry` exists purely to hand that initialized client
-to this module:
+`captureException`, `getTraceData`. Rather than make consumers
+write an explicit handoff, the sub-export probes for
+`@sentry/react-native` at module load via a `try { require(…) }`:
 
 ```ts
-// File: src/sentry.ts (new)
-import type * as SentryReactNative from "@sentry/react-native";
-
-export type SentryAdapter = Pick<
-  typeof SentryReactNative,
-  | "captureException"
-  | "captureMessage"
-  | "startSpan"
-  | "continueTrace"
-  | "getActiveSpan"
-  | "getTraceData"
-  | "addBreadcrumb"
->;
-
-export interface ComapeoSentryConfig {
-  /**
-   * The host app's already-initialized `@sentry/react-native`
-   * (or any object satisfying `SentryAdapter`). The module
-   * never calls `Sentry.init()`; the host app does, and the
-   * native SDK is initialized from manifest/plist values
-   * written by the config plugin.
-   */
-  sentry: SentryAdapter;
-}
-
-/**
- * Hand off the host app's Sentry adapter so this module's JS
- * listeners can call into it. Idempotent and one-shot.
- *
- * Must be called before the first `comapeo.*` RPC if you want
- * client-side spans on those calls. State observers attach
- * immediately on call.
- *
- * Note: this does NOT configure DSN/environment/release. Those
- * are baked into native config at build time by the Expo plugin
- * and read by both `@sentry/react-native` (in the main process)
- * and the embedded backend (in the FGS or iOS app process).
- */
-export function configureSentry(config: ComapeoSentryConfig): void;
+// src/sentry-internal.ts
+let detected: SentryAdapter | null = null;
+try {
+  detected = require("@sentry/react-native") as SentryAdapter;
+} catch { /* peer dep absent — module stays inert */ }
 ```
 
-Consumer usage in CoMapeo Mobile:
+The host's `Sentry.init(...)` populates the global hub; calls
+through `detected.captureException(...)` reach that hub via the
+SDK's static methods. No double-init, no race with the host's
+own integrations (`reactNavigationIntegration`, etc.).
+
+Consumer usage in CoMapeo Mobile reduces to a single side-effect
+import:
 
 ```ts
-import * as Sentry from "@sentry/react-native";
-import { configureSentry } from "@comapeo/core-react-native/sentry";
-
-// Sentry SDK reads DSN from Info.plist / manifest; the plugin
-// wrote those values at build time.
-Sentry.init({ /* override options if needed */ });
-
-configureSentry({ sentry: Sentry });
+import "@comapeo/core-react-native/sentry";
 ```
 
-Apps that don't want Sentry don't import the sub-export and don't
-register the plugin. The main barrel
-(`@comapeo/core-react-native`) keeps no Sentry imports; the only
-typecheck-time pull-in for opt-in consumers is the
-`SentryAdapter` type.
+Tests can override the auto-detected adapter for fakes:
+
+```ts
+import { setSentryAdapterForTests } from "@comapeo/core-react-native/sentry";
+setSentryAdapterForTests(fake);
+```
+
+Apps that don't want Sentry don't import the sub-export. Apps
+that do but haven't installed `@sentry/react-native` (or haven't
+called `Sentry.init`) get listeners attached but no captures —
+silently inert.
 
 ### 4.4 Runtime opt-in toggle (forward reference)
 
@@ -769,7 +738,7 @@ if (values.sentryDsn) {
     integrations: [
       Sentry.consoleLoggingIntegration(),
     ],
-    initialScope: { tags: { layer: "backend" } },
+    initialScope: { tags: { layer: "node" } },
   });
 
   // Stash the parsed config so index.mjs can read it back
@@ -874,7 +843,7 @@ Three failure surfaces in `backend/index.js` to retrofit:
    ```js
    if (sentryActive) {
      Sentry.captureException(err, {
-       tags: { phase, layer: "backend" },
+       tags: { phase, layer: "node" },
      });
      // Ensure the event is flushed before process.exit(1).
      await Sentry.flush(100).catch(() => {});
@@ -938,7 +907,7 @@ function makeSentryRequestHook() {
           } catch (error) {
             span.setStatus({ code: 2, message: "internal_error" });
             Sentry.captureException(error, {
-              tags: { layer: "backend", op: "rpc" },
+              tags: { layer: "node", op: "rpc" },
             });
             throw error;
           }
@@ -1123,7 +1092,7 @@ async (...args) => {
     } catch (e) {
       // Only capture if it didn't originate from a backend
       // event we already see in §5.5 — the backend tags its
-      // captures with `layer: "backend"`. Backend RPC failures
+      // captures with `layer: "node"`. Backend RPC failures
       // arrive here as plain errors, but Sentry de-dupes if
       // the same exception is captured twice with different
       // contexts. Acceptable.

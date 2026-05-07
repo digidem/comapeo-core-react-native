@@ -572,49 +572,51 @@ captures fire from this module.
 
 ### 7.1 Three event streams
 
-When the integration is wired up, the module emits to three
-Sentry scopes that the dashboard splits via the `proc` tag:
+Two tags split the emit sites in the dashboard:
+
+- **`proc`** — actual OS process. iOS is always `main`. Android
+  is `main` for code in the host UI process and `fgs` for code
+  in the `:ComapeoCore` foreground-service process (Kotlin FGS
+  code AND the embedded nodejs-mobile that runs there).
+- **`layer`** — `rn` for the JS adapter, `native` for
+  Kotlin/Swift, `node` for the embedded nodejs-mobile backend.
 
 ```
-                    ┌────────────────────────────────────────────────┐
-   proc: main       │  React Native main process                     │
-   layer: rn        │    @sentry/react-native (host-managed)         │
-                    │    src/sentry.ts adapter:                      │
-                    │      - state ERROR → captureException          │
-                    │      - messageerror → captureException (warn)  │
-                    │      - state transitions → breadcrumbs         │
-                    └────────────────────────────────────────────────┘
-
-                    ┌────────────────────────────────────────────────┐
-   proc: fgs        │  :ComapeoCore FGS process (Android only)       │
-   layer: native    │    SentryFgsBridge → SentryAndroid.init        │
-                    │      - boot transaction + phase spans          │
-                    │      - state-transition breadcrumbs            │
-                    │      - control-frame breadcrumbs               │
-                    │      - FGS-lifecycle breadcrumbs               │
-                    │      - timeout events (startup, fgsStop)       │
-                    │      - rootkey-load captureException           │
-                    └────────────────────────────────────────────────┘
-
-                    ┌────────────────────────────────────────────────┐
-   proc: backend    │  Embedded nodejs-mobile (Phase 3 — pending)    │
-   layer: backend   │    @sentry/node via loader.mjs                 │
-                    │      - per-RPC method spans                    │
-                    │      - handleFatal captureException            │
-                    │      - @comapeo/core OTel spans (Phase 4)      │
-                    └────────────────────────────────────────────────┘
+                              iOS (one process)         Android
+                              ────────────────────      ─────────────────────────
+  layer: rn    (JS adapter)   proc: main                proc: main
+  layer: native (Kotlin/Swift) proc: main               proc: main + proc: fgs
+  layer: node  (Phase 3)      proc: main                proc: fgs
 ```
+
+What each emit site captures:
+
+- **`layer:rn`** — `src/sentry.ts` adapter. State ERROR
+  transitions → `captureException`; `messageerror` → warning;
+  every state transition → breadcrumb.
+- **`layer:native, proc:main` (Android main process)** —
+  `ComapeoCoreModule.kt` (the RN bridge). Currently no native
+  emits from this process; reserved for future use.
+- **`layer:native, proc:fgs` (Android FGS) / `proc:main`
+  (iOS)** — `SentryFgsBridge` (Android) / equivalent Swift
+  bridge. `comapeo.boot` transaction with phase spans
+  (`boot.rootkey-load`, `boot.init-frame`), state-transition
+  breadcrumbs, control-frame breadcrumbs, FGS-lifecycle
+  breadcrumbs (Android only), timeout events, rootkey-load
+  `captureException`.
+- **`layer:node`** (Phase 3 — pending) — `@sentry/node` via
+  `loader.mjs`. Per-RPC method spans, `handleFatal`
+  `captureException`, `@comapeo/core` OTel spans (Phase 4).
 
 The same FGS-local error (rootkey load failure, watchdog
-timeout) reaches all three scopes via the existing cross-process
+timeout) reaches multiple scopes via the cross-process
 attribution path (§5.5): the FGS captures it directly, then
-`error-native` re-broadcasts to Node which captures it from
-the backend scope, and the `error` control frame propagates
-to the main-app process where the JS adapter captures it
-again. Sentry de-dupes via fingerprinting; the three vantage
-points carry FGS context (logcat tail, foreground state),
-backend stack trace, and main-process state-machine trail
-respectively.
+`error-native` re-broadcasts to Node which captures from the
+node layer, and the `error` control frame propagates to the
+main-app process where the JS adapter captures again. Sentry
+de-dupes via fingerprinting; each vantage point carries
+distinct context (FGS logcat / foreground state, node
+stacktrace, RN state-machine trail).
 
 ### 7.2 Build-time config flow
 

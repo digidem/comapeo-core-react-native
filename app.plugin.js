@@ -1,38 +1,25 @@
 // Expo config plugin for @comapeo/core-react-native.
 //
-// Phase 2 of the Sentry integration plan (see
-// docs/sentry-integration-plan.md §4.1). The plugin runs at
-// `expo prebuild` and writes the consumer's Sentry configuration
-// into AndroidManifest.xml meta-data and Info.plist keys, where
-// both `@sentry/react-native` (host-app's main process) and the
-// embedded backend (Phase 3 — argv at Node spawn) can read them.
+// Writes the consumer's Sentry configuration into AndroidManifest
+// meta-data and Info.plist keys at `expo prebuild`. Native readers
+// (SentryConfig.{kt,swift}) pick up the values; the embedded
+// backend (Phase 3) will pick them up via Node argv.
 //
-// When invoked without a `sentry` argument the plugin is a no-op:
-// no manifest entries written, no plist keys written. Native
-// treats absence as "Sentry off" (see SentryConfig.kt /
-// SentryConfig.swift). The example app under apps/example/ ships
-// unconfigured.
+// When invoked without a `sentry` argument the plugin actively
+// REMOVES every key it owns (handles `--no-clean` re-prebuilds
+// where stale entries from a previous run would otherwise survive).
 //
-// `release` is intentionally NOT defaulted here — when omitted,
-// the native readers build it from versionName + "+" + versionCode
-// (Android) / CFBundleShortVersionString + "+" + CFBundleVersion
-// (iOS) so successive EAS builds of the same marketing version
-// produce distinct release tags.
-//
-// This file uses ESM syntax because the package's package.json
-// declares `"type": "module"`. Expo's plugin resolver
-// (`@expo/config-plugins`) reads `plugin.default ?? plugin`, so
-// `export default` is the right shape.
+// `release` is omitted from the plugin args by default — the
+// native readers fall back to versionName+versionCode (Android) /
+// CFBundleShortVersionString+CFBundleVersion (iOS) so successive
+// EAS builds get distinct release tags.
 
-// `@expo/config-plugins` is CommonJS; pull the named functions via the
-// default-import-then-destructure dance Node ESM requires for CJS deps.
+// `@expo/config-plugins` is CommonJS; pull named functions via
+// default-import-then-destructure (this package is ESM).
 import configPlugins from "@expo/config-plugins";
 const { withAndroidManifest, withInfoPlist } = configPlugins;
 
-// Manifest meta-data names. Read by SentryConfig.kt via
-// PackageManager.getApplicationInfo(...).metaData. Living on the
-// main `<application>` tag means both the main process AND the
-// `:ComapeoCore` FGS process see them — metaData is shared
+// Manifest meta-data on the main `<application>` tag is shared
 // across processes within the package.
 const ANDROID_KEYS = {
   dsn: "com.comapeo.core.sentry.dsn",
@@ -45,11 +32,8 @@ const ANDROID_KEYS = {
     "com.comapeo.core.sentry.captureApplicationDataDefault",
 };
 
-// Info.plist keys. Read by SentryConfig.swift via
-// Bundle.main.infoDictionary. Prefixed with `ComapeoCore` to
-// avoid collisions with `@sentry/react-native`'s own auto-config
-// keys (`SentryDsn`, `SentryEnvironment`, …) — the host app's
-// Sentry SDK reads its own values via its own plugin.
+// Prefixed with `ComapeoCore` to avoid colliding with
+// `@sentry/react-native`'s own keys (`SentryDsn`, etc.).
 const IOS_KEYS = {
   dsn: "ComapeoCoreSentryDsn",
   environment: "ComapeoCoreSentryEnvironment",
@@ -62,28 +46,11 @@ const IOS_KEYS = {
 };
 
 function withComapeoCore(config, props) {
-  // Two flavours of "off":
-  //   - `props === undefined` (consumer registered the plugin
-  //     without args, or didn't register it at all)
-  //   - `props.sentry === undefined` (consumer registered the
-  //     plugin but disabled Sentry — e.g. they had it on
-  //     previously and turned it off)
-  //
-  // In both cases we still pass through the manifest /
-  // Info.plist mods so we can REMOVE any stale entries from a
-  // previous run. With `expo prebuild --no-clean` (the default
-  // when iterating locally) the prebuild dirs survive across
-  // runs, and a previously-written `<meta-data
-  // android:name="com.comapeo.core.sentry.dsn">` would otherwise
-  // continue shipping the old DSN.
-  if (!props || !props.sentry) {
-    config = withSentryAndroid(config, /* sentry= */ null);
-    config = withSentryIos(config, /* sentry= */ null);
-    return config;
-  }
-
-  const sentry = normalizeSentryProps(props.sentry);
-
+  // Always pass through both mods, even when Sentry is "off",
+  // so a `--no-clean` re-prebuild after disabling Sentry strips
+  // stale entries from the previous run rather than shipping
+  // the old DSN.
+  const sentry = props?.sentry ? normalizeSentryProps(props.sentry) : null;
   config = withSentryAndroid(config, sentry);
   config = withSentryIos(config, sentry);
   return config;
@@ -108,9 +75,8 @@ function normalizeSentryProps(sentry) {
     );
   }
 
-  // Coerce values. Numbers, booleans → strings (manifest
-  // meta-data and Info.plist values are string-typed in the
-  // native readers; keeps both surfaces uniform).
+  // Coerce numbers/booleans to strings — manifest meta-data and
+  // Info.plist values are string-typed in the native readers.
   const normalized = {
     dsn: sentry.dsn,
     environment: sentry.environment,
@@ -145,10 +111,8 @@ function withSentryAndroid(config, sentry) {
     application["meta-data"] = application["meta-data"] || [];
 
     if (sentry == null) {
-      // No-Sentry pass: strip every key the plugin owns. Keys
-      // we don't own (e.g. `io.sentry.dsn` from
-      // `@sentry/react-native`'s own config plugin) are left
-      // alone — the consumer's other plugins manage those.
+      // Off: strip only the keys this plugin owns. Other plugins'
+      // keys (e.g. `io.sentry.dsn` from @sentry/react-native) stay.
       for (const name of Object.values(ANDROID_KEYS)) {
         removeAndroidMetaData(application, name);
       }
@@ -216,10 +180,7 @@ function withSentryIos(config, sentry) {
     const plist = cfg.modResults;
 
     if (sentry == null) {
-      // No-Sentry pass: strip every key the plugin owns.
-      for (const key of Object.values(IOS_KEYS)) {
-        delete plist[key];
-      }
+      for (const key of Object.values(IOS_KEYS)) delete plist[key];
       return cfg;
     }
 

@@ -1,46 +1,26 @@
 import Foundation
 
-/// Phase 2 of the Sentry integration plan
-/// (docs/sentry-integration-plan.md §4.1, §4.2). Typed view of the
-/// Info.plist keys the Expo plugin (`app.plugin.js`) writes at
-/// prebuild time.
+/// Typed view of the Info.plist keys the Expo plugin
+/// (`app.plugin.js`) writes at prebuild time. `loadFromMainBundle`
+/// returns `nil` when no DSN is present (Sentry off).
 ///
-/// `loadFromBundle` returns `nil` when the DSN key is absent, which
-/// is the consumer's signal that Sentry was not configured (the
-/// plugin omits all entries when invoked without a `sentry`
-/// argument, or when not registered at all). Treat nil as "Sentry
-/// off" — do not init the SDK, do not pass `--sentryDsn` argv flags
-/// to the embedded backend (Phase 3).
-///
-/// Phase 2 ships the data type and reader; the actual native-side
-/// breadcrumb / span / event calls in `NodeJSService` are a Phase
-/// 2.5 follow-up because they require linking against `Sentry`
-/// (sentry-cocoa), which this PR deliberately doesn't add to the
-/// podspec or SwiftPM target. iOS doesn't have the FGS-process
-/// init split that Android has — the host app's
-/// `@sentry/react-native` already covers the single-process SDK.
+/// iOS is single-process; the host's `@sentry/react-native`
+/// already initialises sentry-cocoa. This module just reads
+/// config to attach native-side breadcrumbs / spans (see
+/// SentryNativeBridge.swift).
 struct SentryConfig: Equatable {
     let dsn: String
     let environment: String
     let release: String
     let sampleRate: Double?
     let tracesSampleRate: Double?
-    /// Cap on RPC argument bytes captured to Sentry. `nil` (or 0)
-    /// means RPC arguments are never captured — the default. Only
-    /// developer debug builds are expected to set this; see plan
-    /// §7.4.9 for the never-capture list.
+    /// Cap on RPC argument bytes captured. Defaults to never capture.
     let rpcArgsBytes: Int?
-    /// Per-environment default for the §9 capture-application-data
-    /// toggle when the user has not yet set it explicitly. `nil`
-    /// means absent → native treats as `false`. Wired via the
-    /// plugin so a consumer can opt internal/test builds in by
-    /// default without changing JS code.
+    /// Default for the capture-application-data toggle on fresh
+    /// installs. `nil` → treated as `false`.
     let captureApplicationDataDefault: Bool?
 
-    /// Info.plist keys. Must stay in sync with app.plugin.js's
-    /// `IOS_KEYS`. Prefixed with `ComapeoCore` to avoid colliding
-    /// with `@sentry/react-native`'s auto-config keys (`SentryDsn`,
-    /// …) — those belong to the host's Sentry SDK init.
+    /// Must stay in sync with `app.plugin.js`'s `IOS_KEYS`.
     enum Key {
         static let dsn = "ComapeoCoreSentryDsn"
         static let environment = "ComapeoCoreSentryEnvironment"
@@ -51,12 +31,9 @@ struct SentryConfig: Equatable {
         static let captureApplicationDataDefault = "ComapeoCoreSentryCaptureApplicationDataDefault"
     }
 
-    /// Production entry point. Reads `Bundle.main.infoDictionary`
-    /// and falls back to `CFBundleShortVersionString +
-    /// CFBundleVersion` for the release tag when the plugin didn't
-    /// supply one (§4.1) — successive EAS builds of the same
-    /// marketing version then get distinct release strings because
-    /// EAS auto-increments `CFBundleVersion`.
+    /// Default release: `CFBundleShortVersionString + "+" +
+    /// CFBundleVersion` so successive EAS builds of the same
+    /// marketing version get distinct releases.
     static func loadFromMainBundle() -> SentryConfig? {
         let info = Bundle.main.infoDictionary ?? [:]
         return load(
@@ -65,19 +42,10 @@ struct SentryConfig: Equatable {
         )
     }
 
-    /// Pure variant for unit-testing. Takes the plist-equivalent
-    /// dictionary and a producer for the `release` fallback so
-    /// tests can run without a real `Bundle.main.infoDictionary`.
-    ///
-    /// Returns nil when DSN is absent (sentry-off state).
-    ///
-    /// Returns nil with an `NSLog` warning when DSN is present but
-    /// `environment` is missing. The plugin refuses to prebuild in
-    /// that state, but a stale prebuild from before the requirement
-    /// was added would still ship — the original `fatalError`
-    /// behaviour crashed every cold start with no way to recover.
-    /// Treat the misconfigured combination as Sentry-off and let
-    /// the next `expo prebuild` rewrite the plist correctly.
+    /// Pure variant for unit-testing. The plugin refuses to
+    /// prebuild without `environment`, but a stale prebuild from
+    /// before that validation was added would still ship — log
+    /// loud and return nil (Sentry off) rather than crashing.
     static func load(
         from info: [String: Any],
         defaultRelease: () -> String

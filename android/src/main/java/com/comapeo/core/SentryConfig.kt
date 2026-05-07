@@ -6,28 +6,16 @@ import android.os.Build
 import android.os.Bundle
 
 /**
- * Phase 2 of the Sentry integration plan
- * (docs/sentry-integration-plan.md §4.1, §4.2). Typed view of the
- * AndroidManifest meta-data the Expo plugin (`app.plugin.js`) writes
- * at prebuild time.
+ * Typed view of the AndroidManifest meta-data the Expo plugin
+ * (`app.plugin.js`) writes at prebuild time.
  *
- * The meta-data lives on the manifest's main `<application>` tag, so
- * both the host app's main process AND the `:ComapeoCore` FGS process
- * see them — `PackageManager.getApplicationInfo(...).metaData` is
- * shared across processes within the package.
+ * The meta-data lives on the main `<application>` tag, so both
+ * the host UI process and the `:ComapeoCore` FGS process see them
+ * — `getApplicationInfo(...).metaData` is shared across processes
+ * within the package.
  *
- * `loadFromManifest` returns `null` when the DSN meta-data is absent,
- * which is the consumer's signal that Sentry was not configured
- * (the plugin omits all entries when invoked without a `sentry`
- * argument, or when not registered at all). Treat null as "Sentry
- * off" — do not init the SDK, do not pass `--sentryDsn` argv flags
- * to the embedded backend (Phase 3).
- *
- * Phase 2 ships the data class and reader; the actual native-side
- * Sentry SDK init in `ComapeoCoreService.onCreate` and the
- * native-side breadcrumb / span / event calls in `NodeJSService` are
- * a Phase 2.5 follow-up because they require adding `io.sentry`
- * Gradle deps that this PR deliberately doesn't touch.
+ * `loadFromManifest` returns `null` when the DSN is absent, which
+ * is the consumer's signal that Sentry isn't configured.
  */
 data class SentryConfig(
     val dsn: String,
@@ -35,19 +23,11 @@ data class SentryConfig(
     val release: String,
     val sampleRate: Double? = null,
     val tracesSampleRate: Double? = null,
-    /**
-     * Cap on RPC argument bytes captured to Sentry. `null` (or 0)
-     * means RPC arguments are never captured — the default. Only
-     * developer debug builds are expected to set this; see plan
-     * §7.4.9 for the never-capture list.
-     */
+    /** Cap on RPC argument bytes captured. Defaults to never capture. */
     val rpcArgsBytes: Int? = null,
     /**
-     * Per-environment default for the §9 capture-application-data
-     * toggle when the user has not yet set it explicitly. `null`
-     * means absent → native treats as `false`. Wired via the plugin
-     * so a consumer can opt internal/test builds in by default
-     * without changing JS code.
+     * Default value for the capture-application-data toggle on
+     * fresh installs. `null` → treated as `false`.
      */
     val captureApplicationDataDefault: Boolean? = null,
 ) {
@@ -63,18 +43,7 @@ data class SentryConfig(
         const val META_CAPTURE_APPLICATION_DATA_DEFAULT =
             "com.comapeo.core.sentry.captureApplicationDataDefault"
 
-        /**
-         * Read the typed config from the host app's manifest. Returns
-         * `null` when no DSN is present, which is the documented
-         * "Sentry off" state.
-         *
-         * Throws `IllegalStateException` only when a DSN is present
-         * but `environment` is missing — that combination indicates
-         * a build misconfiguration the plugin should have refused at
-         * prebuild time. Failing loud in that case is preferred to
-         * silently degrading; otherwise we'd ship Sentry events with
-         * no environment tag and they'd be impossible to filter.
-         */
+        /** Returns null when no DSN is present (Sentry off). */
         @JvmStatic
         fun loadFromManifest(context: Context): SentryConfig? {
             val meta = readApplicationMetaData(context) ?: return null
@@ -82,17 +51,10 @@ data class SentryConfig(
         }
 
         /**
-         * Pure variant for unit-testing. Takes a string-getter (so
-         * tests don't have to mock `android.os.Bundle`, which the
-         * JVM unit-test classpath leaves as a "not mocked" stub) and
-         * a producer for the `release` fallback (because the JVM
-         * unit-test classpath has no real `PackageManager` to read
-         * versionName/versionCode from).
-         *
-         * Returns null when DSN is absent (sentry-off state).
-         * Throws `IllegalStateException` when DSN is present but
-         * `environment` is missing — see the throws note on
-         * [loadFromManifest].
+         * Pure variant for unit-testing. The string-getter avoids
+         * mocking `android.os.Bundle` (unmocked on the JVM
+         * unit-test classpath); the release producer avoids
+         * mocking `PackageManager`.
          */
         @JvmStatic
         fun load(
@@ -101,23 +63,14 @@ data class SentryConfig(
         ): SentryConfig? {
             val dsn = metaString(META_DSN) ?: return null
             // The plugin refuses to prebuild without `environment`,
-            // but a stale prebuild from before the requirement was
-            // added would still ship — and the original "throw on
-            // missing" behaviour crashed every cold start with no
-            // way to recover. Treat the (DSN-present, environment-
-            // absent) state as a build misconfiguration that
-            // disables Sentry; log loud, return null. The host app
-            // continues to function; the missing manifest entry
-            // becomes visible the next time someone re-prebuilds
-            // and sees the plugin's prebuild-time validation fire.
+            // but a stale prebuild from before that validation was
+            // added would still ship. Log loud and return null
+            // (Sentry off) so the host doesn't crash on every cold
+            // start; re-prebuilding fixes it.
             val environment = metaString(META_ENVIRONMENT)
             if (environment == null) {
-                // System.err so the warning surfaces from JVM unit
-                // tests too (`android.util.Log.e` is unmocked on the
-                // unit-test classpath and would throw "Method e in
-                // android.util.Log not mocked"). On a real device
-                // this lands in logcat at the same level Log.e
-                // would emit.
+                // System.err rather than android.util.Log.e because
+                // the latter is unmocked on the JVM unit-test classpath.
                 System.err.println(
                     "[ComapeoCore.SentryConfig] $META_ENVIRONMENT missing " +
                         "from manifest while $META_DSN is set. Re-run " +
@@ -140,12 +93,6 @@ data class SentryConfig(
             )
         }
 
-        /**
-         * Pulls the `<application>` meta-data Bundle. Returns null on
-         * NameNotFoundException — defensive; the host app is always
-         * its own package so this should never miss in practice, but
-         * a missing manifest is preferable to a crash on cold start.
-         */
         private fun readApplicationMetaData(context: Context): Bundle? {
             return try {
                 if (Build.VERSION.SDK_INT >= 33) {
@@ -168,10 +115,9 @@ data class SentryConfig(
         }
 
         /**
-         * Default release tag when the plugin didn't supply one
-         * (§4.1): `versionName + "+" + versionCode`. Successive EAS
-         * builds of the same marketing version get distinct release
-         * strings because EAS auto-increments versionCode.
+         * Default release tag: `versionName + "+" + versionCode`.
+         * Successive EAS builds of the same marketing version get
+         * distinct releases because EAS auto-increments versionCode.
          */
         private fun resolveDefaultRelease(context: Context): String {
             val pkg = if (Build.VERSION.SDK_INT >= 33) {
