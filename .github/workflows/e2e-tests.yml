@@ -128,6 +128,11 @@ jobs:
         if: steps.cache-libnode.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
+      - name: Install npm dependencies
+        run: |
+          npm install --ignore-scripts
+          npx patch-package
+
       - name: Build backend bundle
         run: npm run backend:build
 
