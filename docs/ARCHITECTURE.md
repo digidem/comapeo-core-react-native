@@ -656,9 +656,11 @@ delegates to `SentryFgsBridgeImpl.kt` only after a `Class.forName`
 probe (with `initialize=false`) confirms the SDK is on the
 runtime classpath. The Gradle dep is `compileOnly` — the
 runtime classes come transitively from the consumer's
-`@sentry/react-native@^6` peer dep. When that peer dep is
-absent, the bridge stays inert and the module continues to
-function.
+`@sentry/react-native@^7` peer dep (which ships
+`sentry-android@8.32.x` — first line that has the structured-
+log API the bridge calls in `SentryFgsBridgeImpl.log`). When
+that peer dep is absent, the bridge stays inert and the
+module continues to function.
 
 This split matters because the JVM/Dalvik verifier inspects
 bytecode references at class-load time of the *containing*
@@ -763,30 +765,31 @@ purposes and shouldn't be 1-to-1.
 | Audience | Developer at the keyboard | Reader of a captured event later | Triage reader |
 | Use for | Anything | Lifecycle context | Errors / notable non-error events |
 
-The codebase has four helpers, each one mapping to a single
-combination of these primitives:
+The codebase has four helpers. `log()` is the foundation;
+the other three compose on top of it:
 
-- **`log()`** — logcat / os_log only. Debug noise,
-  cache-check diagnostics, guard-rejection paths
-  (`"Cannot stop ... not in STARTING/STARTED"`,
-  `"Skipping process kill — new instance active"`). Useful
-  for local debugging but worthless as a breadcrumb (no
-  event will surface it) or event (not actionable).
-- **`logCrumb(category, message, level, data)`** — log +
-  breadcrumb. Lifecycle progress events: state transitions,
-  control-socket frames, IPC state, FGS lifecycle, boot
-  phases. ~20–25 emissions per app session, well under the
-  buffer cap.
+- **`log(message, level, attributes)`** — the single
+  primitive. Always writes a logcat / os_log line at the
+  matching priority; also forwards to Sentry's
+  structured-log pipeline (`Sentry.logger.*` Android,
+  `SentrySDK.logger.*` iOS), which the SDK gates on
+  `enableLogs`. Use for debug noise, cache-check diagnostics,
+  guard-rejection paths.
+- **`logCrumb(category, message, level, data)`** — `log()`
+  + Sentry breadcrumb. Lifecycle progress events: state
+  transitions, control-socket frames, IPC state, FGS
+  lifecycle, boot phases. ~20–25 emissions per app session,
+  well under the breadcrumb buffer cap.
 - **`logException(category, throwable, message, tags)`** —
-  log + `captureException`. Use when you have a `Throwable`
-  in hand: the stack lands both in logcat (3-arg
-  `Log.e(TAG, msg, t)`) and on the Sentry event. Examples:
-  rootkey-load failure, node-runtime launch failure.
-- **`logCapture(category, message, level, tags)`** — log +
-  `captureMessage`. Use when you don't have a throwable but
-  the event is notable: timeouts (startup, shutdown,
-  fgsStop, errorNativeForward), dropped frames, protocol
-  violations. Sentry doesn't manufacture a stack from these.
+  `log()` (with throwable, so the stack lands in logcat via
+  3-arg `Log.e(TAG, msg, t)`) + `captureException`. Use when
+  you have a `Throwable` in hand. Examples: rootkey-load
+  failure, node-runtime launch failure.
+- **`logCapture(category, message, level, tags)`** —
+  `log()` + `captureMessage`. Use when you don't have a
+  throwable but the event is notable: timeouts (startup,
+  shutdown, fgsStop, errorNativeForward), dropped frames,
+  protocol violations.
 
 Plus one more shape that doesn't go through the helpers:
 **breadcrumb only** is used by `src/sentry.ts` (the JS
@@ -817,34 +820,26 @@ buffer. The right shape is: log per RPC (cheap), crumb only
 on RPC errors, and let the sampled-trace span infrastructure
 (`tracesSampleRate`) handle the success path.
 
-**Relationship to Sentry structured logs.** Sentry has a
-separate "Logs" pipeline (`SentrySDK.logger.*` /
-`Sentry.logger.*`, opt-in via `logs.isEnabled` /
-`enableLogs`), which is queryable independently in the Logs
-UI and is *not* attached to events the way breadcrumbs are.
-Two ways to populate it:
+**Sentry structured logs.** Sentry has a separate "Logs"
+pipeline (`SentrySDK.logger.*` / `Sentry.logger.*`),
+queryable independently in the Logs UI and *not* attached
+to events the way breadcrumbs are. Our `log()` primitive
+forwards every call through this pipeline; the SDK gates
+on `enableLogs` so it costs nothing for consumers who
+haven't opted in.
 
-- **Sentry Android Gradle plugin** with
-  `InstrumentationFeature.LOGCAT` — bytecode-rewrites
-  `android.util.Log.*` calls at build time so each one also
-  hits `Sentry.logger.*`. Android-only and requires adopting
-  the Gradle plugin (build-time coupling). iOS has no
-  equivalent — `os.log` and `SentrySDK.logger` are separate
-  pipelines.
-- **Wrap our `log()` / `logCrumb()` helpers** to also call
-  `Sentry.logger.info(...)` when `logs.isEnabled`. ~30 LOC
-  per platform; works cross-platform; SDK no-ops when logs
-  aren't enabled, so it's free for consumers who don't opt
-  in.
-
-We do **not** currently do either. The breadcrumb +
-captureException path covers production debugging well, and
-structured logs consume a separate Sentry quota that
-consumers haven't opted into. The wrapper is a small,
-deliberate follow-up if a use case appears (e.g.
-cross-process timeline reconstruction across `proc:main` /
-`proc:fgs` / `proc:node` — breadcrumbs don't cross scopes;
-logs would).
+To enable: set `enableLogs: true` on the
+`@comapeo/core-react-native` plugin (controls the Android
+FGS-process hub, where we own the SDK init) and on
+`Sentry.init({ enableLogs: true, ... })` in the host app
+(controls the main-process hub on Android and the
+single-process hub on iOS — that init is the host's, not
+ours, on those paths). When enabled, every `log` /
+`logCrumb` / `logException` / `logCapture` call lands in
+the Logs UI in addition to its primary destination,
+giving cross-process timeline reconstruction across
+`proc:main` / `proc:fgs` / `proc:node` (breadcrumbs don't
+cross scopes; logs do).
 
 ---
 

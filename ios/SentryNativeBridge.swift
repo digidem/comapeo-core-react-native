@@ -57,6 +57,41 @@ enum SentryNativeBridge {
         #endif
     }
 
+    /// Forward to Sentry's structured-log pipeline. The Cocoa SDK
+    /// silently drops the call when the host hasn't enabled logs
+    /// at init time (the host's `@sentry/react-native` config
+    /// owns the SDK options on iOS — there's no separate process
+    /// like Android's FGS).
+    static func log(
+        level: String,
+        message: String,
+        attributes: [String: Any] = [:]
+    ) {
+        #if canImport(Sentry)
+        let attrs = attributes.compactMapValues { $0 }
+        switch level.lowercased() {
+        case "trace":
+            attrs.isEmpty ? SentrySDK.logger.trace(message)
+                          : SentrySDK.logger.trace(message, attributes: attrs)
+        case "info":
+            attrs.isEmpty ? SentrySDK.logger.info(message)
+                          : SentrySDK.logger.info(message, attributes: attrs)
+        case "warn", "warning":
+            attrs.isEmpty ? SentrySDK.logger.warn(message)
+                          : SentrySDK.logger.warn(message, attributes: attrs)
+        case "error":
+            attrs.isEmpty ? SentrySDK.logger.error(message)
+                          : SentrySDK.logger.error(message, attributes: attrs)
+        case "fatal":
+            attrs.isEmpty ? SentrySDK.logger.fatal(message)
+                          : SentrySDK.logger.fatal(message, attributes: attrs)
+        default:
+            attrs.isEmpty ? SentrySDK.logger.debug(message)
+                          : SentrySDK.logger.debug(message, attributes: attrs)
+        }
+        #endif
+    }
+
     /// Returns an opaque transaction handle. `Any?` keeps the rest
     /// of the iOS module free of Sentry references.
     static func startBootTransaction() -> Any? {

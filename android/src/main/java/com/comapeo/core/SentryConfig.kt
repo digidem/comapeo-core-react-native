@@ -30,6 +30,14 @@ data class SentryConfig(
      * fresh installs. `null` → treated as `false`.
      */
     val captureApplicationDataDefault: Boolean? = null,
+    /**
+     * Opt in to Sentry structured logs (`Sentry.logger.*`). When
+     * `true`, the FGS hub initialises with `options.logs.isEnabled
+     * = true` and our log helpers route to the Logs UI in addition
+     * to the existing logcat / breadcrumb / event pipelines.
+     * `null` (or `false`) leaves logs off.
+     */
+    val enableLogs: Boolean? = null,
 ) {
     companion object {
         // Manifest meta-data keys. Must stay in sync with
@@ -42,6 +50,7 @@ data class SentryConfig(
         const val META_RPC_ARGS_BYTES = "com.comapeo.core.sentry.rpcArgsBytes"
         const val META_CAPTURE_APPLICATION_DATA_DEFAULT =
             "com.comapeo.core.sentry.captureApplicationDataDefault"
+        const val META_ENABLE_LOGS = "com.comapeo.core.sentry.enableLogs"
 
         /** Returns null when no DSN is present (Sentry off). */
         @JvmStatic
@@ -90,6 +99,7 @@ data class SentryConfig(
                 captureApplicationDataDefault = metaString(
                     META_CAPTURE_APPLICATION_DATA_DEFAULT,
                 )?.toBooleanStrictOrNull(),
+                enableLogs = metaString(META_ENABLE_LOGS)?.toBooleanStrictOrNull(),
             )
         }
 

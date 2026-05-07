@@ -19,6 +19,10 @@ struct SentryConfig: Equatable {
     /// Default for the capture-application-data toggle on fresh
     /// installs. `nil` → treated as `false`.
     let captureApplicationDataDefault: Bool?
+    /// Opt in to Sentry structured logs (`SentrySDK.logger.*`).
+    /// `nil` (or `false`) leaves logs off — `Sentry.logger.*`
+    /// calls become no-ops.
+    let enableLogs: Bool?
 
     /// Must stay in sync with `app.plugin.js`'s `IOS_KEYS`.
     enum Key {
@@ -29,6 +33,7 @@ struct SentryConfig: Equatable {
         static let tracesSampleRate = "ComapeoCoreSentryTracesSampleRate"
         static let rpcArgsBytes = "ComapeoCoreSentryRpcArgsBytes"
         static let captureApplicationDataDefault = "ComapeoCoreSentryCaptureApplicationDataDefault"
+        static let enableLogs = "ComapeoCoreSentryEnableLogs"
     }
 
     /// Default release: `CFBundleShortVersionString + "+" +
@@ -72,7 +77,8 @@ struct SentryConfig: Equatable {
             rpcArgsBytes: parseInt(info[Key.rpcArgsBytes]),
             captureApplicationDataDefault: parseStrictBool(
                 info[Key.captureApplicationDataDefault]
-            )
+            ),
+            enableLogs: parseStrictBool(info[Key.enableLogs])
         )
     }
 

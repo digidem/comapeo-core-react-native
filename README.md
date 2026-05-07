@@ -112,6 +112,11 @@ export default {
           // toggle by default. Production stays off-by-default.
           captureApplicationDataDefault:
             (process.env.SENTRY_ENVIRONMENT ?? "production") !== "production",
+          // Optional: opt into Sentry structured logs on the
+          // Android FGS process. Pair with `enableLogs: true` in
+          // your host-app `Sentry.init(...)` (covers main-process
+          // Android + iOS).
+          enableLogs: process.env.SENTRY_ENVIRONMENT !== "production",
         },
       }],
     ],

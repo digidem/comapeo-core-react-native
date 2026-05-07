@@ -125,6 +125,26 @@ object SentryFgsBridge {
     }
 
     /**
+     * Forward to Sentry's structured-log pipeline. SDK silently
+     * drops the call when `options.logs.isEnabled = false`, so
+     * callers don't need their own gate.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun log(
+        level: String,
+        message: String,
+        attributes: Map<String, Any?> = emptyMap(),
+    ) {
+        if (!initialized) return
+        try {
+            SentryFgsBridgeImpl.log(level, message, attributes)
+        } catch (t: Throwable) {
+            Log.w(TAG, "log($level) threw", t)
+        }
+    }
+
+    /**
      * Returns an opaque handle (`null` when disabled). Pass back to
      * [startBootSpan] / [finishSpan]. The opaque type keeps `io.sentry.*`
      * out of the Guard's bytecode.

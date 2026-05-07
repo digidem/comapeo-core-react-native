@@ -4,17 +4,36 @@ import android.util.Log
 
 const val TAG = "ComapeoCore"
 
-fun log(msg: String) {
-    Log.d(TAG, msg)
+/**
+ * Single entry point for diagnostic output. Always writes a
+ * logcat line at the matching priority; also forwards to
+ * Sentry's structured-log pipeline (no-op when the consumer
+ * hasn't opted in via `enableLogs: true` on the plugin).
+ *
+ * The semantic helpers (`logCrumb`, `logException`,
+ * `logCapture`) compose on top of this — they each do this
+ * `log` call plus their own Sentry breadcrumb / event.
+ */
+fun log(
+    message: String,
+    level: String = "debug",
+    attributes: Map<String, Any?> = emptyMap(),
+    throwable: Throwable? = null,
+) {
+    val line = if (attributes.isEmpty()) message else "$message $attributes"
+    when (level) {
+        "fatal", "error" -> if (throwable != null) Log.e(TAG, line, throwable) else Log.e(TAG, line)
+        "warn", "warning" -> if (throwable != null) Log.w(TAG, line, throwable) else Log.w(TAG, line)
+        "info" -> Log.i(TAG, line)
+        else -> Log.d(TAG, line)
+    }
+    SentryFgsBridge.log(level, message, attributes)
 }
 
 /**
- * Log + Sentry breadcrumb in one call. The breadcrumb is a
- * no-op when the FGS-process Sentry SDK isn't initialised;
- * the logcat line fires regardless.
- *
- * Use for app-lifecycle progress events that ride on the next
- * captured Sentry event but don't fire one themselves.
+ * Log + Sentry breadcrumb. Use for app-lifecycle progress
+ * events that ride on the next captured Sentry event but
+ * don't fire one themselves.
  */
 fun logCrumb(
     category: String,
@@ -22,23 +41,14 @@ fun logCrumb(
     level: String = "info",
     data: Map<String, Any?> = emptyMap(),
 ) {
-    val logLine = if (data.isEmpty()) message else "$message $data"
-    when (level) {
-        "error", "fatal" -> Log.e(TAG, "[$category] $logLine")
-        "warning", "warn" -> Log.w(TAG, "[$category] $logLine")
-        "debug" -> Log.d(TAG, "[$category] $logLine")
-        else -> Log.i(TAG, "[$category] $logLine")
-    }
+    log("[$category] $message", level, data + ("category" to category))
     SentryFgsBridge.addBreadcrumb(category, message, level, data)
 }
 
 /**
- * Log + Sentry captureException in one call. The throwable's
- * stack is preserved in logcat (`Log.e(TAG, msg, t)` 3-arg
- * form) and on the Sentry event.
- *
- * Use for caught exceptions where you want a Sentry issue with
- * the full stack trace.
+ * Log + Sentry captureException. Use when you have a
+ * `Throwable` in hand: the stack lands in logcat (3-arg
+ * `Log.e`) and on the Sentry event.
  */
 fun logException(
     category: String,
@@ -47,16 +57,22 @@ fun logException(
     tags: Map<String, String> = emptyMap(),
 ) {
     val msg = message ?: throwable.message ?: throwable.javaClass.simpleName
-    Log.e(TAG, "[$category] $msg", throwable)
+    log(
+        "[$category] $msg",
+        level = "error",
+        attributes = tags + mapOf(
+            "category" to category,
+            "exception.type" to throwable.javaClass.name,
+        ),
+        throwable = throwable,
+    )
     SentryFgsBridge.captureException(throwable, tags)
 }
 
 /**
- * Log + Sentry captureMessage in one call. No stack trace —
- * use [logException] when you have a throwable.
- *
- * Use for notable events that aren't exceptions (timeouts,
- * dropped frames, protocol violations).
+ * Log + Sentry captureMessage. Use for notable events that
+ * aren't exceptions (timeouts, dropped frames, protocol
+ * violations).
  */
 fun logCapture(
     category: String,
@@ -64,10 +80,6 @@ fun logCapture(
     level: String = "info",
     tags: Map<String, String> = emptyMap(),
 ) {
-    when (level) {
-        "fatal", "error" -> Log.e(TAG, "[$category] $message")
-        "warning", "warn" -> Log.w(TAG, "[$category] $message")
-        else -> Log.i(TAG, "[$category] $message")
-    }
+    log("[$category] $message", level, tags + ("category" to category))
     SentryFgsBridge.captureMessage(message, level, tags)
 }

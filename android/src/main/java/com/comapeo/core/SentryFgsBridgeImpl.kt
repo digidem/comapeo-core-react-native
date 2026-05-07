@@ -5,12 +5,16 @@ import io.sentry.Breadcrumb
 import io.sentry.ISpan
 import io.sentry.ITransaction
 import io.sentry.Sentry
+import io.sentry.SentryAttribute
+import io.sentry.SentryAttributes
 import io.sentry.SentryLevel
+import io.sentry.SentryLogLevel
 import io.sentry.SpanStatus
 import io.sentry.TracesSamplingDecision
 import io.sentry.TransactionContext
 import io.sentry.TransactionOptions
 import io.sentry.android.core.SentryAndroid
+import io.sentry.logger.SentryLogParameters
 
 /**
  * Implementation behind [SentryFgsBridge]. Contains every
@@ -29,10 +33,58 @@ internal object SentryFgsBridgeImpl {
             options.release = config.release
             options.sampleRate = config.sampleRate ?: 1.0
             options.tracesSampleRate = config.tracesSampleRate ?: 0.0
-            // Process-level tags on every event from this hub.
+            // Structured logs default off; opt in via the plugin's
+            // `enableLogs: true`. SDK no-ops `Sentry.logger().*` when
+            // false so the helpers can route unconditionally.
+            options.logs.isEnabled = config.enableLogs == true
             options.setTag(SentryTags.PROC, SentryTags.PROC_FGS)
             options.setTag(SentryTags.LAYER, SentryTags.LAYER_NATIVE)
         }
+    }
+
+    /**
+     * Forward a log entry to the Sentry Logs UI. SDK gates the
+     * call on `options.logs.isEnabled`, so callers don't need
+     * their own check.
+     */
+    fun log(level: String, message: String, attributes: Map<String, Any?>) {
+        val sentryLevel = parseLogLevel(level)
+        if (attributes.isEmpty()) {
+            when (sentryLevel) {
+                SentryLogLevel.TRACE -> Sentry.logger().trace(message)
+                SentryLogLevel.DEBUG -> Sentry.logger().debug(message)
+                SentryLogLevel.INFO -> Sentry.logger().info(message)
+                SentryLogLevel.WARN -> Sentry.logger().warn(message)
+                SentryLogLevel.ERROR -> Sentry.logger().error(message)
+                SentryLogLevel.FATAL -> Sentry.logger().fatal(message)
+            }
+        } else {
+            val attrs = SentryAttributes.of(
+                *attributes.entries.mapNotNull { (k, v) -> v?.let { sentryAttribute(k, it) } }.toTypedArray(),
+            )
+            Sentry.logger().log(sentryLevel, SentryLogParameters.create(attrs), message)
+        }
+    }
+
+    private fun sentryAttribute(key: String, value: Any): SentryAttribute = when (value) {
+        is String -> SentryAttribute.stringAttribute(key, value)
+        is Boolean -> SentryAttribute.booleanAttribute(key, value)
+        is Int -> SentryAttribute.integerAttribute(key, value)
+        // No `longAttribute` factory; `named` lets the SDK pick the
+        // wire type and avoids the precision loss of `toInt()`.
+        is Long -> SentryAttribute.named(key, value)
+        is Double -> SentryAttribute.doubleAttribute(key, value)
+        is Float -> SentryAttribute.doubleAttribute(key, value.toDouble())
+        else -> SentryAttribute.stringAttribute(key, value.toString())
+    }
+
+    private fun parseLogLevel(level: String): SentryLogLevel = when (level.lowercase()) {
+        "trace" -> SentryLogLevel.TRACE
+        "debug" -> SentryLogLevel.DEBUG
+        "warn", "warning" -> SentryLogLevel.WARN
+        "error" -> SentryLogLevel.ERROR
+        "fatal" -> SentryLogLevel.FATAL
+        else -> SentryLogLevel.INFO
     }
 
     fun addBreadcrumb(

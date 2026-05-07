@@ -44,10 +44,15 @@ interface SentrySpan {
  * this file doesn't fail typecheck for consumers without the
  * peer dep.
  *
- * The signatures match `@sentry/react-native@^6` (which
- * re-exports `@sentry/core@^8`); the auto-detected SDK
- * satisfies this type via structural compatibility.
+ * Signatures match `@sentry/react-native@^7` (which re-exports
+ * `@sentry/core@^9`); the auto-detected SDK satisfies this type
+ * via structural compatibility.
  */
+type LogMethod = (
+  message: string,
+  attributes?: Record<string, unknown>,
+) => void;
+
 export interface SentryAdapter {
   captureException(
     exception: unknown,
@@ -67,6 +72,19 @@ export interface SentryAdapter {
     headers: { sentryTrace?: string; baggage?: string },
     callback: () => T,
   ): T;
+  /**
+   * Sentry structured logs. SDK no-ops every call when
+   * `Sentry.init({ enableLogs: true })` wasn't set, so callers
+   * don't need their own gate.
+   */
+  logger: {
+    trace: LogMethod;
+    debug: LogMethod;
+    info: LogMethod;
+    warn: LogMethod;
+    error: LogMethod;
+    fatal: LogMethod;
+  };
 }
 
 /**
@@ -86,19 +104,22 @@ function handleStateChange(s: ComapeoState, info: ComapeoErrorInfo | null) {
   const adapter = activeAdapter();
   if (!adapter) return;
 
+  const data = info
+    ? {
+        state: s,
+        errorPhase: info.errorPhase,
+        errorMessage: info.errorMessage,
+      }
+    : { state: s };
   adapter.addBreadcrumb({
     category: "comapeo.state",
     type: "state",
     level: s === "ERROR" ? "error" : "info",
     message: `comapeo state → ${s}`,
-    data: info
-      ? {
-          state: s,
-          errorPhase: info.errorPhase,
-          errorMessage: info.errorMessage,
-        }
-      : { state: s },
+    data,
   });
+  const logFn = s === "ERROR" ? adapter.logger.error : adapter.logger.info;
+  logFn(`comapeo state → ${s}`, data);
 
   // Synthesised Error name encodes the phase so Sentry's grouping
   // treats e.g. rootkey vs. starting-timeout as distinct issues
@@ -134,6 +155,10 @@ function handleMessageError(err: Error) {
       [SentryTags.source]: "control-socket",
     },
     level: "warning",
+  });
+  adapter.logger.warn(truncated, {
+    [SentryTags.source]: "control-socket",
+    "exception.name": err.name,
   });
 }
 

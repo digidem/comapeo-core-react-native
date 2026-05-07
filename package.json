@@ -93,7 +93,7 @@
     "expo": "*",
     "react": "*",
     "react-native": "*",
-    "@sentry/react-native": "^6"
+    "@sentry/react-native": "^7"
   },
   "peerDependenciesMeta": {
     "@sentry/react-native": {

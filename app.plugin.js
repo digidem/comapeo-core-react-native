@@ -30,6 +30,7 @@ const ANDROID_KEYS = {
   rpcArgsBytes: "com.comapeo.core.sentry.rpcArgsBytes",
   captureApplicationDataDefault:
     "com.comapeo.core.sentry.captureApplicationDataDefault",
+  enableLogs: "com.comapeo.core.sentry.enableLogs",
 };
 
 // Prefixed with `ComapeoCore` to avoid colliding with
@@ -43,6 +44,7 @@ const IOS_KEYS = {
   rpcArgsBytes: "ComapeoCoreSentryRpcArgsBytes",
   captureApplicationDataDefault:
     "ComapeoCoreSentryCaptureApplicationDataDefault",
+  enableLogs: "ComapeoCoreSentryEnableLogs",
 };
 
 function withComapeoCore(config, props) {
@@ -96,6 +98,9 @@ function normalizeSentryProps(sentry) {
       ? "true"
       : "false";
   }
+  if (sentry.enableLogs !== undefined) {
+    normalized.enableLogs = sentry.enableLogs ? "true" : "false";
+  }
   return normalized;
 }
 
@@ -146,6 +151,11 @@ function withSentryAndroid(config, sentry) {
       ANDROID_KEYS.captureApplicationDataDefault,
       sentry.captureApplicationDataDefault,
     );
+    syncAndroidMetaData(
+      application,
+      ANDROID_KEYS.enableLogs,
+      sentry.enableLogs,
+    );
 
     return cfg;
   });
@@ -195,6 +205,7 @@ function withSentryIos(config, sentry) {
       IOS_KEYS.captureApplicationDataDefault,
       sentry.captureApplicationDataDefault,
     );
+    setOrDelete(plist, IOS_KEYS.enableLogs, sentry.enableLogs);
     return cfg;
   });
 }

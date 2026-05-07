@@ -51,6 +51,7 @@ class SentryConfigTest {
         assertNull(config.tracesSampleRate)
         assertNull(config.rpcArgsBytes)
         assertNull(config.captureApplicationDataDefault)
+        assertNull(config.enableLogs)
     }
 
     @Test
@@ -154,6 +155,46 @@ class SentryConfigTest {
             DEFAULT_RELEASE,
         )!!
         assertNull(config.captureApplicationDataDefault)
+    }
+
+    @Test
+    fun enableLogsParses() {
+        val on = SentryConfig.load(
+            mapGetter(
+                mapOf(
+                    SentryConfig.META_DSN to "https://x@sentry.io/1",
+                    SentryConfig.META_ENVIRONMENT to "qa",
+                    SentryConfig.META_ENABLE_LOGS to "true",
+                ),
+            ),
+            DEFAULT_RELEASE,
+        )!!
+        assertEquals(true, on.enableLogs)
+
+        val off = SentryConfig.load(
+            mapGetter(
+                mapOf(
+                    SentryConfig.META_DSN to "https://x@sentry.io/1",
+                    SentryConfig.META_ENVIRONMENT to "qa",
+                    SentryConfig.META_ENABLE_LOGS to "false",
+                ),
+            ),
+            DEFAULT_RELEASE,
+        )!!
+        assertEquals(false, off.enableLogs)
+
+        // Stray value rejected; native treats null as off.
+        val stray = SentryConfig.load(
+            mapGetter(
+                mapOf(
+                    SentryConfig.META_DSN to "https://x@sentry.io/1",
+                    SentryConfig.META_ENVIRONMENT to "qa",
+                    SentryConfig.META_ENABLE_LOGS to "yes",
+                ),
+            ),
+            DEFAULT_RELEASE,
+        )!!
+        assertNull(stray.enableLogs)
     }
 
     @Test
