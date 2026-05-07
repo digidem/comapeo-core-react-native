@@ -4,23 +4,14 @@ import { createMapeoServer } from "@comapeo/ipc/server.js";
 /** @import {MapeoManager} from '@comapeo/core' */
 
 /**
- * Per-request hook that wraps each RPC call in a Sentry transaction.
- * Mirrors `comapeo-mobile/src/backend/src/app.js` with one change:
- * `request.args` is not serialised by default. CoMapeo RPC args
- * routinely carry observation fields and attachment paths — PII
- * risk is high, so capture is opt-in via `rpcArgsBytes` (truncated
- * to that many chars when > 0).
+ * RPC args carry potential PII (observation fields, attachment paths)
+ * so capture is opt-in via `rpcArgsBytes`.
  *
- * The hook does NOT rethrow after `captureException`. rpc-reflector
- * sends the error response from inside its own `handleRequest` (the
- * `next` we invoke); rethrowing here leaks an unhandled rejection
- * out of `onRequestHook`'s return, which `process.on('unhandledRejection')`
- * would then funnel into `handleFatal` and kill the process for what
- * is in fact a routine per-RPC error.
+ * Errors are NOT rethrown — rpc-reflector already sends the error
+ * response from inside `next`, and an unhandled rejection here would
+ * funnel into `handleFatal` and kill the process for a routine RPC
+ * error.
  *
- * @param {{ sentry: any, rpcArgsBytes: number }} options
- */
-/**
  * @param {{ sentry: any, rpcArgsBytes: number }} options
  * @returns {NonNullable<Parameters<typeof createMapeoServer>[2]>['onRequestHook']}
  */

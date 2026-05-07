@@ -49,8 +49,7 @@ class ComapeoCoreService : Service() {
         // Initialise the FGS-process Sentry SDK before anything
         // emits. `loadFromManifest` returns null when the consumer
         // didn't register the plugin, leaving the bridge inert.
-        // The same config object is forwarded to NodeJSService so
-        // it can pass `--sentry*` flags to `loader.mjs` (Phase 3).
+        // Forwarded to NodeJSService so it can argv-pass to loader.mjs.
         val sentryConfig = SentryConfig.loadFromManifest(applicationContext)
         sentryConfig?.let { cfg ->
             SentryFgsBridge.init(applicationContext, cfg)

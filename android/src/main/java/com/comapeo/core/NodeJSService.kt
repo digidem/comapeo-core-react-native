@@ -43,11 +43,8 @@ private data class ErrorNativeMessage(
 const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
-// Spawn target. The loader parses argv (Sentry DSN/etc), conditionally
-// inits `@sentry/node`, and dynamically imports `index.mjs`. This
-// indirection keeps `Sentry.init()` ordered before `index.mjs`'s
-// imports — required for OpenTelemetry's `import-in-the-middle`
-// hook to patch modules. See `backend/loader.mjs` and plan §5.1.
+// `loader.mjs` parses `--sentry*` argv, optionally inits @sentry/node,
+// then dynamically imports `index.mjs`. See `backend/loader.mjs`.
 const val NODEJS_PROJECT_INDEX_FILENAME = "loader.mjs"
 
 /**
@@ -63,11 +60,8 @@ private const val SEND_ERROR_NATIVE_TIMEOUT_MS = 2_000L
 class NodeJSService(
     context: android.content.Context,
     /**
-     * Sentry config from the AndroidManifest meta-data. Forwarded to
-     * the spawned Node process as `--sentry*` argv flags so the
-     * loader (`backend/loader.mjs`) can `Sentry.init()` before
-     * importing `index.mjs`. `null` → no flags emitted, loader
-     * skips Sentry entirely. Plan §10.3 / §5.1.
+     * Forwarded to the spawned Node process as `--sentry*` argv flags
+     * for `backend/loader.mjs`. `null` → loader skips Sentry.
      */
     private val sentryConfig: SentryConfig? = null,
     /**
@@ -433,13 +427,8 @@ class NodeJSService(
     }
 
     /**
-     * Builds the argv passed to nodejs-mobile. Positionals match the
-     * shape `backend/index.js` parses (`process.argv.slice(2)`):
-     * `[node, entry, comapeoSocket, controlSocket, dataDir]`. The
-     * `--sentry*` flags are consumed by `backend/loader.mjs` via
-     * `node:util#parseArgs` and stripped before `index.mjs` sees
-     * `process.argv`. Built lazily so an unused [sentryConfig] field
-     * doesn't grow the array.
+     * Positionals are read by `backend/index.js`; `--sentry*` flags
+     * are consumed (and stripped) by `backend/loader.mjs`.
      */
     private fun buildBackendArgs(entryPath: String): Array<String> {
         val args = mutableListOf(
@@ -459,10 +448,8 @@ class NodeJSService(
             }
             cfg.rpcArgsBytes?.let { args += "--sentryRpcArgsBytes=$it" }
             if (cfg.enableLogs == true) args += "--sentryEnableLogs"
-            // captureApplicationData toggle (Phase 5) is read from
-            // `SentryPrefsStore` once that lands. Until then,
-            // `captureApplicationDataDefault` is a build-time hint
-            // only and the runtime toggle is treated as off.
+            // captureApplicationData (Phase 5) wires up via
+            // SentryPrefsStore once it lands.
         }
         return args.toTypedArray()
     }

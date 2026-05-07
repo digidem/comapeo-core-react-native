@@ -73,33 +73,16 @@ const messagePort = new CoreMessagePort() as unknown as MessagePort;
 
 const noop = () => {};
 
-/**
- * RPC client tracing hook. Mirrors comapeo-mobile's
- * `createMapeoApi.ts`. Inert when no Sentry adapter is registered
- * (i.e. consumer didn't import `@comapeo/core-react-native/sentry`)
- * or when there's no active root span (tracing disabled / no parent).
- *
- * Registered unconditionally because `comapeo` is a module-scoped
- * const — consumers may have imported and called methods before
- * the sub-export's side effects run. The `!parentSpan` short-circuit
- * is the no-op path; it costs one function call and one falsy check.
- *
- * `getTraceData` propagates the `sentry-trace`/`baggage` headers
- * via the request's metadata, which the backend's `onRequestHook`
- * (`backend/lib/comapeo-rpc.js`) reads via `Sentry.continueTrace`
- * to make the backend RPC span a child of the JS-side IPC span.
- */
+// RPC client tracing. Registered unconditionally so consumers that
+// imported `comapeo` before the `/sentry` sub-export's side effects
+// ran still get traced; the `!parentSpan` short-circuit is the no-op
+// path. The trace headers it injects on `request.metadata` are
+// consumed by `backend/lib/comapeo-rpc.js`.
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
   onRequestHook: (request, next) => {
     const adapter = activeAdapter();
     const parentSpan = adapter?.getActiveSpan();
     if (!adapter || !parentSpan) {
-      // Tracing disabled (no sub-export imported, or no active root
-      // span) — pass through with no metadata injection. `noop` on
-      // the catch matches comapeo-mobile and prevents an unhandled
-      // rejection when the IPC layer rejects (the IPC client itself
-      // already rejects the caller's promise; we just need to swallow
-      // here so this hook's return doesn't surface a duplicate).
       next(request).catch(noop);
       return;
     }
@@ -108,9 +91,7 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
       async (span) => {
         const traceData = adapter.getTraceData({ span });
         if (traceData["sentry-trace"]) {
-          // `request.metadata` isn't in @comapeo/ipc's request type
-          // yet — forward-compat field consumed by the backend's
-          // `onRequestHook` (`backend/lib/comapeo-rpc.js`).
+          // `metadata` isn't in @comapeo/ipc's request type yet.
           (request as unknown as { metadata?: Record<string, string> }).metadata = {
             "sentry-trace": traceData["sentry-trace"],
             baggage: traceData["baggage"] ?? "",

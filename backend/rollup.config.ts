@@ -168,9 +168,8 @@ function buildPlugins({
     // per output via the platform-specific banner — see `output.banner`
     // entries below.
     addonLoaderPlugin(),
-    // Rewrite `module.register('import-in-the-middle/hook.mjs', ...)`
-    // to point at the bundled `./importHook.js` chunk emitted from
-    // the dedicated rollup entry below — see plan §5.1.
+    // Rewrites `module.register('import-in-the-middle/hook.mjs', ...)`
+    // to point at the bundled `./importHook.js` entry below.
     importHookPlugin(),
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
     commonjs({ ignoreDynamicRequires: true }),
@@ -216,18 +215,10 @@ function cleanOutputDirPlugin(dir: string): Plugin {
 }
 
 
-// Multi-entry layout (plan §5.1). `loader.mjs` is the new spawn
-// target; `index.mjs` is now imported dynamically from the loader so
-// `Sentry.init()` runs before any module the OpenTelemetry import
-// hook needs to instrument.
-//
-// `importHook` and `lib/register` are bundled separately because
-// `module.register('import-in-the-middle/hook.mjs', ...)` requires
-// the hook to be loaded fresh in a child loader thread — it can't
-// be inlined into the calling chunk. `lib/register` is a sibling
-// dep that the hook resolves via the hard-coded relative path
-// `./lib/register.js`, so it has to land at exactly that path
-// alongside `importHook.js`.
+// `importHook` and `lib/register` are dedicated entries because
+// `module.register('import-in-the-middle/hook.mjs', ...)` loads the
+// hook fresh in a child loader thread — can't be inlined. `register`
+// resolves via the hardcoded relative path `./lib/register.js`.
 const sharedInput = {
   loader: path.join(__dirname, "loader.mjs"),
   index: path.join(__dirname, "index.js"),
@@ -239,23 +230,16 @@ const sharedOutput: OutputOptions = {
   format: "esm",
   sourcemap: true,
   entryFileNames: (chunk) => {
-    // `import-in-the-middle/hook.mjs` references `./lib/register.js`
-    // through its bundled output, and our path-rewrite plugin
-    // (`rollup-plugin-import-hook.mjs`) rewrites
-    // `module.register('import-in-the-middle/hook.mjs', ...)` to
-    // `module.register('./importHook.js', ...)`. Both names need
-    // to land on disk with `.js` extensions so the runtime
-    // resolution matches. The rest of the bundle (loader / index)
-    // keeps the historical `.mjs` extension.
+    // import-in-the-middle's bundled hook references `./lib/register.js`
+    // and `rollup-plugin-import-hook.mjs` rewrites the register call
+    // to `./importHook.js`. Both names must land with `.js`.
     if (chunk.name === "importHook" || chunk.name === "lib/register") {
       return "[name].js";
     }
     return "[name].mjs";
   },
-  // `chunkFileNames` keeps auto-emitted code-split chunks
-  // (`@sentry/node` and its transitive deps) in a `chunks/`
-  // subdirectory so the top-level `nodejs-project/` listing stays
-  // legible. Loaded only when the loader's argv check passes.
+  // `@sentry/node` + transitive deps land here, loaded only when the
+  // loader's argv check passes.
   chunkFileNames: "chunks/[name]-[hash].mjs",
 };
 

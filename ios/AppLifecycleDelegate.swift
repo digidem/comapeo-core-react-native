@@ -98,11 +98,6 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // Android extracts on first launch instead because the APK
             // doesn't expose a filesystem-readable path to its assets
             // the way `<App>.app/<name>/` does on iOS.
-            // Spawn target is `loader.mjs` — it parses `--sentry*`
-            // argv flags, optionally `Sentry.init()`s, then dynamically
-            // imports `index.mjs`. See backend/loader.mjs and plan
-            // §5.1 for why init must run before index's static
-            // imports.
             let bundleEntry = (Bundle.main.bundlePath as NSString)
                 .appendingPathComponent("nodejs-project/loader.mjs")
             return FileManager.default.fileExists(atPath: bundleEntry)

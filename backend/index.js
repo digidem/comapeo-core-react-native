@@ -5,18 +5,10 @@ import { ComapeoRpcServer } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 
-// Loader (`loader.mjs`) parses argv, calls `Sentry.init()` if
-// `--sentryDsn` was passed, and stashes the live `@sentry/node`
-// namespace plus parsed config on globalThis before dynamically
-// importing this file. Reading from globalThis (rather than
-// `import * as Sentry from "@sentry/node"`) keeps the rollup chunk
-// gated by the loader: this file never names `@sentry/node`
-// statically, so consumers who didn't pass `--sentryDsn` never
-// resolve the chunk.
-//
-// `__comapeoSentry` is a typed `any` deliberately — `@sentry/node`'s
-// type surface isn't reachable here without a static import that
-// would defeat the lazy-load.
+// loader.mjs stashes the live `@sentry/node` namespace + config on
+// globalThis when a DSN is present. Reading from globalThis (instead
+// of statically importing `@sentry/node`) keeps the rollup chunk
+// unloaded for consumers without Sentry.
 /** @type {any} */
 const Sentry =
   /** @type {any} */ (globalThis).__comapeoSentry ?? null;
@@ -164,8 +156,7 @@ const controlIpcServer = new SimpleRpcServer({
       console.warn("Received malformed error-native frame, ignoring", message);
       return;
     }
-    // `source: "native"` so handleFatal tags the Sentry event for
-    // cross-process FGS forwarding (Android rootkey/watchdog).
+    // Tagged so handleFatal can mark the Sentry event source:native.
     const err = new Error(message.message);
     /** @type {Error & { source?: string }} */ (err).source = "native";
     handleFatal(message.phase, err);
@@ -188,9 +179,6 @@ const controlIpcServer = new SimpleRpcServer({
 async function handleFatal(phase, error) {
   const err = error instanceof Error ? error : new Error(String(error));
   console.error(`Fatal during ${phase}:`, err);
-  // `error-native` frames carry a tag so cross-process forwarding
-  // (Android FGS-side rootkey/watchdog failures) is filterable in
-  // Sentry vs. an in-process throw.
   const isNativeForward =
     error != null &&
     typeof error === "object" &&
@@ -218,11 +206,8 @@ async function handleFatal(phase, error) {
   } catch (broadcastErr) {
     console.error("Failed to broadcast error frame", broadcastErr);
   }
-  // Give the broadcast a moment to flush over the socket before we
-  // tear the process down. The control socket is local AF_UNIX so the
-  // kernel buffer flush is fast; a 100ms cap is generous and bounds
-  // the worst case where the peer is slow to drain. Sentry's flush
-  // runs in parallel, capped at the same window.
+  // 100ms covers the AF_UNIX kernel buffer flush; Sentry flushes in
+  // parallel under the same cap.
   const flushPromise = Sentry
     ? Sentry.flush(100).catch(() => {})
     : Promise.resolve();

@@ -11,20 +11,13 @@
  * Consumers don't need to call anything explicitly. Tests can
  * inject a fake adapter via [setSentryAdapterForTests].
  *
- * The static `@sentry/react-native` import lives in this file
- * (and not in `sentry-internal.ts`) because the internal module
- * is reachable from the main barrel via `ComapeoCoreModule.ts`'s
- * RPC client tracing hook — pulling the SDK there would force
- * consumers to install the optional peer dep even when they never
- * opt in. Importing this sub-export is the consumer's signal that
- * they have the SDK installed.
+ * The static `@sentry/react-native` import lives here, not in
+ * `sentry-internal.ts`, so the main barrel doesn't transitively
+ * pull the optional peer dep.
  */
 import * as Sentry from "@sentry/react-native";
-// `@sentry/react-native@7` does not re-export `getTraceData` (it
-// lives in `@sentry/core` only). RN's package.json pins
-// `@sentry/core` as a direct dep so this import is safe whenever
-// `@sentry/react-native` is installed — i.e. the only world where
-// this sub-export is reachable.
+// `getTraceData` is not re-exported from `@sentry/react-native@7`;
+// `@sentry/core` is a direct dep of RN so this is safe.
 import { getTraceData as coreGetTraceData } from "@sentry/core";
 
 import {
@@ -127,11 +120,8 @@ export interface SentryAdapter {
   ): T;
   /**
    * Distributed-tracing headers for the active or supplied span.
-   * Lives on `@sentry/core` (not re-exported from
-   * `@sentry/react-native@^7`); the sub-export attaches it to the
-   * adapter at registration. Returns an object with `sentry-trace`
-   * and `baggage` keys when tracing is active, otherwise `null`-
-   * shaped (empty / both undefined).
+   * Lives on `@sentry/core`; the sub-export attaches it at
+   * registration since RN@7 doesn't re-export it.
    */
   getTraceData(options?: { span?: SentrySpan }): {
     "sentry-trace"?: string;
@@ -160,15 +150,8 @@ export function setSentryAdapterForTests(adapter: SentryAdapter | null): void {
   setOverrideAdapter(adapter);
 }
 
-// Register the SDK with the internal holder so the main barrel's
-// RPC client tracing hook (`ComapeoCoreModule.ts`, plan §6.2) can
-// see it. Runs at module load — same time as the global-scope
-// writes below — so by the time any RPC fires, the adapter is
-// either registered (consumer imported the sub-export) or null
-// (consumer didn't, hook short-circuits).
-//
-// `getTraceData` is attached here because it lives on `@sentry/core`
-// and isn't re-exported by `@sentry/react-native@7`.
+// Make the SDK visible to ComapeoCoreModule.ts's RPC tracing hook.
+// `getTraceData` is attached separately — see import note above.
 registerAdapter({
   ...(Sentry as unknown as Omit<SentryAdapter, "getTraceData">),
   getTraceData: coreGetTraceData as unknown as SentryAdapter["getTraceData"],
