@@ -7,9 +7,9 @@ import type { SentryAdapter } from "./sentry";
  * `require` throws, we catch, and the module stays inert. This
  * is the standard React Native pattern for optional peer deps.
  *
- * Tests can override the resolved adapter via [setOverrideAdapter];
- * call [resetOverrideAdapter] to fall back to the auto-detected
- * one.
+ * Tests can override the resolved adapter via
+ * [setOverrideAdapter]; pass `null` to fall back to the
+ * auto-detected one.
  */
 let detected: SentryAdapter | null = null;
 try {

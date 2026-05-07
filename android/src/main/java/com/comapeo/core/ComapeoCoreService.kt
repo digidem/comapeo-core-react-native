@@ -143,7 +143,10 @@ class ComapeoCoreService : Service() {
                     SentryCategories.FGS,
                     "comapeo: FGS stop timeout fired",
                     level = "error",
-                    tags = mapOf(SentryTags.TIMEOUT to "fgsStop"),
+                    tags = mapOf(
+                        SentryTags.TIMEOUT to "fgsStop",
+                        SentryTags.PHASE to "shutdown-timeout",
+                    ),
                 )
             }
             // Only kill the process if no new service instance has started.

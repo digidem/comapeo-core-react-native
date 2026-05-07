@@ -14,6 +14,7 @@ export const SentryTags = {
   state: "comapeo.state",
   source: "source",
   timeout: "timeout",
+  timeoutMs: "timeoutMs",
 
   procMain: "main",
   procFgs: "fgs",

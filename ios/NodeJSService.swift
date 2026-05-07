@@ -337,6 +337,33 @@ class NodeJSService {
         let leavingStarting = (prev == .starting && derived != .starting)
         let watchdog = leavingStarting ? startupWatchdog : nil
         if leavingStarting { startupWatchdog = nil }
+
+        // Snapshot + clear the boot transaction / phase spans under
+        // the lock. Concurrent terminal transitions otherwise risk
+        // double-finishing: only the first thread to observe
+        // `bootTransaction` non-nil drains; subsequent ones see nil
+        // and skip. Reads/writes happen here; the actual
+        // `finishSpan` calls run outside the lock per the
+        // no-callbacks-under-lock discipline.
+        let terminalStatus: String? = (prev != derived) ? {
+            switch derived {
+            case .started: return "ok"
+            case .error: return "internal_error"
+            case .stopping, .stopped: return "cancelled"
+            case .starting: return nil
+            }
+        }() : nil
+        let drainTx: Any?
+        let drainSpans: [Any]
+        if let _ = terminalStatus, let tx = bootTransaction {
+            drainTx = tx
+            drainSpans = Array(bootSpans.values)
+            bootTransaction = nil
+            bootSpans.removeAll()
+        } else {
+            drainTx = nil
+            drainSpans = []
+        }
         lock.unlock()
 
         // Cancel the watchdog outside the lock — `cancel()` doesn't
@@ -351,21 +378,10 @@ class NodeJSService {
                 level: derived == .error ? "error" : "info",
                 data: ["from": prev.rawValue, "to": derived.rawValue]
             )
-            // Close the boot transaction + drain in-flight phase
-            // spans on the first non-`.starting` transition.
-            let terminalStatus: String?
-            switch derived {
-            case .started: terminalStatus = "ok"
-            case .error: terminalStatus = "internal_error"
-            case .stopping, .stopped: terminalStatus = "cancelled"
-            case .starting: terminalStatus = nil
-            }
-            if let status = terminalStatus, let tx = bootTransaction {
-                bootTransaction = nil
-                for span in bootSpans.values {
+            if let status = terminalStatus, let tx = drainTx {
+                for span in drainSpans {
                     SentryNativeBridge.finishSpan(span, status: status)
                 }
-                bootSpans.removeAll()
                 SentryNativeBridge.finishSpan(tx, status: status)
             }
 
@@ -386,7 +402,10 @@ class NodeJSService {
         // Open the boot transaction before applyAndEmit drives
         // STOPPED → STARTING; applyAndEmit's close-on-terminal
         // logic only fires when bootTransaction is non-nil.
-        bootTransaction = SentryNativeBridge.startBootTransaction()
+        let tx = SentryNativeBridge.startBootTransaction()
+        lock.lock()
+        bootTransaction = tx
+        lock.unlock()
 
         // Reset component state for a fresh start cycle and transition
         // STOPPED → STARTING via the derivation. `_lastError` is cleared
@@ -481,7 +500,10 @@ class NodeJSService {
             logCrumb(category: SentryCategories.control, message: "received: ready")
             // `ready` is the natural close point for the
             // `boot.init-frame` span opened in sendInitFrame().
-            if let span = bootSpans.removeValue(forKey: "init-frame") {
+            lock.lock()
+            let initFrameSpan = bootSpans.removeValue(forKey: "init-frame")
+            lock.unlock()
+            if let span = initFrameSpan {
                 SentryNativeBridge.finishSpan(span, status: "ok")
             }
             applyAndEmit { self.backendState = .ready }
@@ -538,7 +560,10 @@ class NodeJSService {
         guard let ipc = controlIPC else { return }
         // `boot.rootkey-load` span: closed `ok` after a successful
         // load, `internal_error` after the catch.
-        let rootkeySpan = SentryNativeBridge.startBootSpan(bootTransaction, phase: "rootkey-load")
+        lock.lock()
+        let txForRootkey = bootTransaction
+        lock.unlock()
+        let rootkeySpan = SentryNativeBridge.startBootSpan(txForRootkey, phase: "rootkey-load")
         var keyBytes: Data
         do {
             keyBytes = try rootKeyProvider()
@@ -583,8 +608,13 @@ class NodeJSService {
         let frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
         // `boot.init-frame` span: from "init sent" to "ready
         // received" (closed in handleControlMessage).
-        if let span = SentryNativeBridge.startBootSpan(bootTransaction, phase: "init-frame") {
+        lock.lock()
+        let txForInitFrame = bootTransaction
+        lock.unlock()
+        if let span = SentryNativeBridge.startBootSpan(txForInitFrame, phase: "init-frame") {
+            lock.lock()
             bootSpans["init-frame"] = span
+            lock.unlock()
         }
         ipc.sendMessage(frame)
         logCrumb(category: SentryCategories.boot, message: "init frame sent")

@@ -679,9 +679,11 @@ returned `true`.
   catches at the JNI/Cocoa layer. We do not bundle
   `sentry-native` into the embedded runtime.
 - **iOS multi-process Sentry**. iOS runs everything in one
-  process; the host's `@sentry/react-native` SDK already
-  covers it. The §6.3 JS adapter is the only iOS-side
-  integration layer.
+  process, so there's no equivalent of Android's separate
+  FGS-process SDK init: native iOS code (boot transaction,
+  spans, breadcrumbs, captures from `SentryNativeBridge`)
+  emits against the host's already-initialised
+  `@sentry/react-native` hub directly.
 - **DSN secrecy**. Sentry DSNs are not high-secret values —
   they identify a project rather than authenticate writes,
   and they appear in stripped binaries of every Sentry-using

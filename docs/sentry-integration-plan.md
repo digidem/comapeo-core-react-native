@@ -1661,7 +1661,10 @@ What's *not* shipping with the integration even after all phases: `sentry-native
 
 ### 10.1 Phase 1 — JS-side error capture (smallest delivery) — landed
 
-- `configureSentry({ sentry })` adapter handoff (§4.3).
+- `@sentry/react-native` is auto-detected at module load
+  (require-then-catch); no explicit handoff call.
+  `setSentryAdapterForTests(adapter | null)` is exported
+  for test injection only.
 - `state` listeners capture ERROR transitions and
   `messageerror` events via `@sentry/react-native` (§6.3).
 - Ship as `@comapeo/core-react-native/sentry` sub-export.
