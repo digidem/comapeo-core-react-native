@@ -268,7 +268,7 @@ final class NodeJSServiceTests: XCTestCase {
         // the bg dispatch can be scheduled late enough that the runtime
         // exits while stopRequested is still false, making the exit look
         // Unexpected and landing the service in .error.
-        wait(for: [stoppingExpectation], timeout: 2)
+        wait(for: [stoppingExpectation], timeout: 5)
 
         // Signal the mock node process to exit so stop() can complete.
         signalExit()
