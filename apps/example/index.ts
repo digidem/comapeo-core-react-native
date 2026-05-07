@@ -21,13 +21,6 @@ Sentry.init({
 
 import "@comapeo/core-react-native/sentry";
 
-// TEMPORARY smoke-test markers — remove before merging. Confirms
-// end-to-end delivery to Sentry on each fresh build / cold start.
-Sentry.captureMessage("comapeo-core-react-native example smoke test", "info");
-Sentry.logger.info("comapeo example index.ts loaded", {
-  smokeTest: true,
-});
-
 import { registerRootComponent } from "expo";
 
 import App from "./App";
