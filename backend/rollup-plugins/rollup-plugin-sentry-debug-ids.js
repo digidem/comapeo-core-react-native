@@ -1,14 +1,9 @@
-// Two cooperating rollup plugins that provide the build-time half of
-// Sentry debug-ID-based symbolication for the rolled-up backend bundle.
-//
-// `@sentry/rollup-plugin` (in `disable-upload` mode, configured in
-// `rollup.config.ts`) does the runtime side: it injects the
-// `_sentryDebugIdIdentifier` snippet into the bundle so the Sentry
-// runtime SDK can attach the right debug ID to events. It does *not*
-// add the spec-compliant `//# debugId=` trailer to the bundle, and it
-// does *not* write `debug_id`/`debugId` into the sourcemap — both of
-// those normally happen during the plugin's own upload step, which we
-// disable so consumers can run their own upload.
+// `@sentry/rollup-plugin` injects the `_sentryDebugIdIdentifier` snippet into
+// the bundle so the Sentry runtime SDK can attach the right debug ID to events,
+// but it doesn't add a `//# debugId=` trailer to the bundle, nor
+// `debug_id`/`debugId` to the sourcemap — both of those normally happen during
+// the plugin's own upload step, which we disable so consumers can run their own
+// upload.
 //
 // `captureDebugIdsPlugin` runs in `renderChunk` *before* sentry-rollup-
 // plugin and computes the same debug ID by calling the shared
@@ -27,23 +22,12 @@
 //     it ships in the npm tarball but stays out of APK assets / IPA
 //     resources.
 //
-// The bundle's `//# sourceMappingURL=` reference becomes a dangling
-// path on disk — harmless on-device (the runtime never resolves it),
-// and the upload CLI passes both directories explicitly to sentry-cli
-// with `--no-rewrite` so the broken reference is ignored.
-//
 // `@sentry/bundler-plugin-core` is imported transitively via
 // `@sentry/rollup-plugin` rather than as a direct devDep, so we always
 // run on the exact version the rollup-plugin internally uses — that's
 // the only way to guarantee the IDs match.
 
-import {
-  mkdir,
-  readFile,
-  readdir,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { rmSync } from "node:fs";
 import path from "node:path";
 import { isJsFile, stringToUUID } from "@sentry/bundler-plugin-core";
@@ -95,12 +79,11 @@ export function relocateSourcemapsPlugin(outDir, sourcemapDir, idMap) {
             readFile(mapSrc, "utf8"),
           ]);
 
-          // Sanity check: our captured ID should appear verbatim in the
-          // bundle (inside `_sentryDebugIdIdentifier`). If not,
-          // sentry-rollup-plugin either didn't run, ran in a different
-          // order, or hashed different bytes. Catches plugin-order
-          // bugs and any future algorithmic divergence between the two
-          // sides.
+          // Sanity check: our captured ID should appear verbatim in the bundle
+          // (inside `_sentryDebugIdIdentifier`). If not, sentry-rollup-plugin
+          // either didn't run, ran in a different order, or hashed different
+          // bytes. Catches plugin-order bugs and any future algorithmic
+          // divergence between the two sides.
           if (!bundleSource.includes(debugId)) {
             throw new Error(
               `relocate-sourcemaps: captured debug ID ${debugId} not found ` +
@@ -109,18 +92,16 @@ export function relocateSourcemapsPlugin(outDir, sourcemapDir, idMap) {
             );
           }
 
-          // Spec-compliant trailing `//# debugId=` comment. Spec
-          // doesn't constrain ordering with `//# sourceMappingURL=`;
-          // appending is safe.
+          // Spec-compliant trailing `//# debugId=` comment. Spec doesn't
+          // constrain ordering with `//# sourceMappingURL=`; appending is safe.
           const patchedBundle = `${bundleSource}\n//# debugId=${debugId}\n`;
 
-          // Splice `"debug_id"`+`"debugId"` into the map JSON before
-          // the trailing `}`. Avoids a JSON.parse/stringify round-trip
-          // on a multi-MB string. Both keys are written for back-
-          // compat: sentry-cli <2.39 reads `debug_id` (snake_case),
-          // 2.39+ reads either, 3.0+ writes `debugId` only. Consumers'
-          // sentry-cli pin comes from their @sentry/react-native
-          // version, so we can't assume 2.39+.
+          // Splice `"debug_id"`+`"debugId"` into the map JSON before the
+          // trailing `}`. Avoids a JSON.parse/stringify round-trip on a
+          // multi-MB string. Both keys are written for back- compat: sentry-cli
+          // <2.39 reads `debug_id` (snake_case), 2.39+ reads either, 3.0+
+          // writes `debugId` only. Consumers' sentry-cli pin comes from their
+          // @sentry/react-native version, so we can't assume 2.39+.
           const lastBrace = mapSource.lastIndexOf("}");
           if (lastBrace === -1) {
             throw new Error(
