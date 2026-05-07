@@ -1,4 +1,6 @@
 appId: com.comapeo.core.e2e
+env:
+    TIMEOUT: ${TIMEOUT || 10000}
 ---
 - launchApp:
     clearState: true
@@ -8,4 +10,4 @@ appId: com.comapeo.core.e2e
 - extendedWaitUntil:
     visible: 
         id: "all-tests-passed"
-    timeout: 10000
+    timeout: ${TIMEOUT}
