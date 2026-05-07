@@ -1650,7 +1650,7 @@ actively configure it.
 | 10.1 — Phase 1 (JS adapter) | **landed** | `src/sentry.ts` + `src/sentry-internal.ts`; auto-detects `@sentry/react-native` at import time, no explicit handoff call. |
 | 10.2 — Phase 2a (plugin + native readers) | **landed** | `app.plugin.js`; `SentryConfig.{kt,swift}` + tests. |
 | 10.2 — Phase 2b (Android FGS native captures) | **landed** | `SentryFgsBridge.{kt,Impl}` + bridge wired into `ComapeoCoreService` and `NodeJSService`; 9 JVM tests. iOS Phase 2b not needed (single-process app — JS adapter covers it). |
-| 10.3 — Phase 3 (backend loader + RPC tracing) | **pending** | Biggest remaining piece. Needs `@sentry/node` + `import-in-the-middle` + multi-entry rollup + `loader.mjs`. Native already passes argv (see bench branch's `comapeoBackendArgs`); backend just needs to consume it. |
+| 10.3 — Phase 3 (backend loader + RPC tracing) | **landed** | `backend/loader.mjs` spawn target; `@sentry/node` + `import-in-the-middle` + multi-entry rollup with `importHook` / `lib/register` separate chunks; `handleFatal` captures via Sentry; `ComapeoRpcServer` registers `onRequestHook` when Sentry is active; client-side `ComapeoCoreModule.ts` propagates `sentry-trace`/`baggage` via request metadata. Native (Android `NodeJSService.kt` / iOS `NodeJSService.swift`) reads `SentryConfig` and forwards `--sentry*` argv flags to the loader. |
 | 10.4 — Phase 4 (`@comapeo/core` OTel forwarding) | **pending** | Blocked on `@comapeo/core` PR #1051 landing. Verification work only. |
 | 10.5 — Phase 5 (capture-application-data toggle) | **pending** | `SharedPreferences` / `UserDefaults` store, restart-to-activate semantics. |
 | 10.6 — Phase 6 (refinements) | **pending** | Sample-rate tuning from real data; optional dual-bundle if size matters. |
@@ -1772,7 +1772,7 @@ main, the production backend (Phase 3) can implement it as a
 `SentryAdapterSink` — the comment in `telemetry-sink.js`
 already foreshadows this.
 
-### 10.3 Phase 3 — backend loader + RPC tracing — pending
+### 10.3 Phase 3 — backend loader + RPC tracing — landed
 
 - Add `@sentry/node@^8`, `@sentry/core@^8`, and
   `import-in-the-middle` to `backend/package.json`.

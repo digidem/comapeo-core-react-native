@@ -182,12 +182,14 @@ continues to function unchanged.
 
 ### 4. Upload backend sourcemaps to your Sentry project
 
-The Node-backend bundle (the `index.mjs` that runs in nodejs-mobile)
-ships rolled-up + minified, so without sourcemaps stack traces in
-Sentry are unreadable. The bundle's sourcemaps ship inside the npm
-tarball with deterministic, content-hashed [Sentry debug IDs][] baked
-in at build time — symbolication is keyed off the IDs, so you do
-*not* have to align this module's version with your app's `release`.
+The Node-backend bundle (the `loader.mjs` spawn target plus its
+dynamically-imported `index.mjs`, the `import-in-the-middle` hook
+files, and the auto-emitted `@sentry/node` chunks) ships rolled-up +
+minified, so without sourcemaps stack traces in Sentry are unreadable.
+The bundle's sourcemaps ship inside the npm tarball with deterministic,
+content-hashed [Sentry debug IDs][] baked in at build time —
+symbolication is keyed off the IDs, so you do *not* have to align this
+module's version with your app's `release`.
 
 Add one step to your release pipeline (after `eas build`, or as part
 of the build's post-publish phase):

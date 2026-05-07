@@ -5,6 +5,25 @@ import { ComapeoRpcServer } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 
+// Loader (`loader.mjs`) parses argv, calls `Sentry.init()` if
+// `--sentryDsn` was passed, and stashes the live `@sentry/node`
+// namespace plus parsed config on globalThis before dynamically
+// importing this file. Reading from globalThis (rather than
+// `import * as Sentry from "@sentry/node"`) keeps the rollup chunk
+// gated by the loader: this file never names `@sentry/node`
+// statically, so consumers who didn't pass `--sentryDsn` never
+// resolve the chunk.
+//
+// `__comapeoSentry` is a typed `any` deliberately — `@sentry/node`'s
+// type surface isn't reachable here without a static import that
+// would defeat the lazy-load.
+/** @type {any} */
+const Sentry =
+  /** @type {any} */ (globalThis).__comapeoSentry ?? null;
+/** @type {{ rpcArgsBytes: number, captureApplicationData: boolean } | null} */
+const sentryConfig =
+  /** @type {any} */ (globalThis).__comapeoSentryConfig ?? null;
+
 // Resolved relative to this file at evaluation time. The drizzle
 // migrations directory is kept alongside the bundle by
 // `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` so this path
@@ -145,7 +164,11 @@ const controlIpcServer = new SimpleRpcServer({
       console.warn("Received malformed error-native frame, ignoring", message);
       return;
     }
-    handleFatal(message.phase, new Error(message.message));
+    // `source: "native"` so handleFatal tags the Sentry event for
+    // cross-process FGS forwarding (Android rootkey/watchdog).
+    const err = new Error(message.message);
+    /** @type {Error & { source?: string }} */ (err).source = "native";
+    handleFatal(message.phase, err);
   },
 });
 
@@ -165,6 +188,26 @@ const controlIpcServer = new SimpleRpcServer({
 async function handleFatal(phase, error) {
   const err = error instanceof Error ? error : new Error(String(error));
   console.error(`Fatal during ${phase}:`, err);
+  // `error-native` frames carry a tag so cross-process forwarding
+  // (Android FGS-side rootkey/watchdog failures) is filterable in
+  // Sentry vs. an in-process throw.
+  const isNativeForward =
+    error != null &&
+    typeof error === "object" &&
+    /** @type {{ source?: unknown }} */ (error).source === "native";
+  if (Sentry) {
+    try {
+      Sentry.captureException(err, {
+        tags: {
+          phase,
+          layer: "node",
+          ...(isNativeForward ? { source: "native" } : {}),
+        },
+      });
+    } catch (captureErr) {
+      console.error("Failed to capture Sentry event", captureErr);
+    }
+  }
   try {
     controlIpcServer.broadcast({
       type: "error",
@@ -178,8 +221,15 @@ async function handleFatal(phase, error) {
   // Give the broadcast a moment to flush over the socket before we
   // tear the process down. The control socket is local AF_UNIX so the
   // kernel buffer flush is fast; a 100ms cap is generous and bounds
-  // the worst case where the peer is slow to drain.
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  // the worst case where the peer is slow to drain. Sentry's flush
+  // runs in parallel, capped at the same window.
+  const flushPromise = Sentry
+    ? Sentry.flush(100).catch(() => {})
+    : Promise.resolve();
+  await Promise.all([
+    new Promise((resolve) => setTimeout(resolve, 100)),
+    flushPromise,
+  ]);
   process.exit(1);
 }
 
@@ -222,7 +272,10 @@ process.on("unhandledRejection", (reason) => {
         migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
         rootKey,
       });
-      comapeoRpcServer = new ComapeoRpcServer(comapeo);
+      comapeoRpcServer = new ComapeoRpcServer(comapeo, {
+        sentry: Sentry,
+        rpcArgsBytes: sentryConfig?.rpcArgsBytes ?? 0,
+      });
       await comapeoRpcServer.listen(comapeoSocketPath);
     } catch (e) {
       throw Object.assign(e, { phase: "construct" });

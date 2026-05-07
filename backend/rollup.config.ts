@@ -1,5 +1,6 @@
 import { rmSync } from "node:fs";
 import { cp } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
@@ -15,6 +16,7 @@ import addonLoaderPlugin, {
   androidAddonLoaderBanner,
   iosAddonLoaderBanner,
 } from "./rollup-plugins/rollup-plugin-addon-loader.js";
+import importHookPlugin from "./rollup-plugins/rollup-plugin-import-hook.mjs";
 import {
   captureDebugIdsPlugin,
   relocateSourcemapsPlugin,
@@ -22,6 +24,7 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
 
 const MAPS_STUB_PATH = path.join(__dirname, "lib", "maps-stub.js");
 
@@ -165,6 +168,10 @@ function buildPlugins({
     // per output via the platform-specific banner — see `output.banner`
     // entries below.
     addonLoaderPlugin(),
+    // Rewrite `module.register('import-in-the-middle/hook.mjs', ...)`
+    // to point at the bundled `./importHook.js` chunk emitted from
+    // the dedicated rollup entry below — see plan §5.1.
+    importHookPlugin(),
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
     commonjs({ ignoreDynamicRequires: true }),
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
@@ -209,14 +216,47 @@ function cleanOutputDirPlugin(dir: string): Plugin {
 }
 
 
+// Multi-entry layout (plan §5.1). `loader.mjs` is the new spawn
+// target; `index.mjs` is now imported dynamically from the loader so
+// `Sentry.init()` runs before any module the OpenTelemetry import
+// hook needs to instrument.
+//
+// `importHook` and `lib/register` are bundled separately because
+// `module.register('import-in-the-middle/hook.mjs', ...)` requires
+// the hook to be loaded fresh in a child loader thread — it can't
+// be inlined into the calling chunk. `lib/register` is a sibling
+// dep that the hook resolves via the hard-coded relative path
+// `./lib/register.js`, so it has to land at exactly that path
+// alongside `importHook.js`.
 const sharedInput = {
+  loader: path.join(__dirname, "loader.mjs"),
   index: path.join(__dirname, "index.js"),
+  importHook: require.resolve("import-in-the-middle/hook.mjs"),
+  "lib/register": require.resolve("import-in-the-middle/lib/register.js"),
 };
 
 const sharedOutput: OutputOptions = {
   format: "esm",
   sourcemap: true,
-  entryFileNames: "[name].mjs",
+  entryFileNames: (chunk) => {
+    // `import-in-the-middle/hook.mjs` references `./lib/register.js`
+    // through its bundled output, and our path-rewrite plugin
+    // (`rollup-plugin-import-hook.mjs`) rewrites
+    // `module.register('import-in-the-middle/hook.mjs', ...)` to
+    // `module.register('./importHook.js', ...)`. Both names need
+    // to land on disk with `.js` extensions so the runtime
+    // resolution matches. The rest of the bundle (loader / index)
+    // keeps the historical `.mjs` extension.
+    if (chunk.name === "importHook" || chunk.name === "lib/register") {
+      return "[name].js";
+    }
+    return "[name].mjs";
+  },
+  // `chunkFileNames` keeps auto-emitted code-split chunks
+  // (`@sentry/node` and its transitive deps) in a `chunks/`
+  // subdirectory so the top-level `nodejs-project/` listing stays
+  // legible. Loaded only when the loader's argv check passes.
+  chunkFileNames: "chunks/[name]-[hash].mjs",
 };
 
 /**

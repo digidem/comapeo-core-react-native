@@ -59,21 +59,44 @@ export function relocateSourcemapsPlugin(outDir, sourcemapDir, idMap) {
     async writeBundle() {
       rmSync(sourcemapDir, { force: true, recursive: true });
       await mkdir(sourcemapDir, { recursive: true });
-      const entries = await readdir(outDir);
-      const mapNames = entries.filter((name) => name.endsWith(".map"));
+      // Multi-entry layout puts `lib/register.js` in a subdir and
+      // auto-emitted code-split chunks (`@sentry/node` etc.) in
+      // `chunks/`. Walk recursively so their `.map` files are
+      // relocated too — leaving them in `outDir` would bloat the
+      // APK/IPA with debug data.
+      const mapRelPaths = (await readdir(outDir, { recursive: true })).filter(
+        (name) => name.endsWith(".map"),
+      );
       await Promise.all(
-        mapNames.map(async (name) => {
-          const bundleName = name.slice(0, -".map".length);
+        mapRelPaths.map(async (relPath) => {
+          const bundleName = relPath.slice(0, -".map".length);
           const debugId = idMap.get(bundleName);
-          if (!debugId) {
-            throw new Error(
-              `relocate-sourcemaps: no captured debug ID for ${bundleName}; ` +
-                "is captureDebugIdsPlugin in plugins[] before sentryRollupPlugin?",
-            );
-          }
           const bundlePath = path.join(outDir, bundleName);
-          const mapSrc = path.join(outDir, name);
-          const mapDst = path.join(sourcemapDir, name);
+          const mapSrc = path.join(outDir, relPath);
+          const mapDst = path.join(sourcemapDir, relPath);
+          // Mirror the subdir layout in the sourcemap tree so paths
+          // round-trip cleanly when the consumer's `sentry-cli` upload
+          // walks `sourcemapDir` and the comapeo-rn-upload-sourcemaps
+          // CLI matches each `.map` to its bundle by relative path.
+          await mkdir(path.dirname(mapDst), { recursive: true });
+
+          // Auto-emitted helper chunks (e.g.
+          // `chunks/_commonjsHelpers-*.mjs` from `@rollup/plugin-commonjs`,
+          // `chunks/lib-*.mjs` produced by code-splitting) skip the
+          // captureDebugIdsPlugin's renderChunk pass because they
+          // don't go through the normal entry pipeline. Without a
+          // debug ID we can't append the trailer or splice the map,
+          // but we still need to relocate the `.map` file so it
+          // doesn't ship with the APK/IPA. Move it across as-is —
+          // sentry-cli will still match these chunks by filename
+          // when the consumer's release CI uploads the bundle.
+          if (!debugId) {
+            const mapSourceUntagged = await readFile(mapSrc, "utf8");
+            await writeFile(mapDst, mapSourceUntagged, "utf8");
+            await unlink(mapSrc);
+            return;
+          }
+
           const [bundleSource, mapSource] = await Promise.all([
             readFile(bundlePath, "utf8"),
             readFile(mapSrc, "utf8"),

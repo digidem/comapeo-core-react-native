@@ -200,6 +200,12 @@ class NodeJSService {
         return _lastError
     }
 
+    /// Sentry config from Info.plist, forwarded to the backend via
+    /// `--sentry*` argv flags so `loader.mjs` can `Sentry.init()`
+    /// before importing `index.mjs`. `nil` → no flags emitted, the
+    /// loader skips Sentry. Plan §10.3.
+    private let sentryConfig: SentryConfig?
+
     /// Creates a NodeJSService with a custom directory.
     /// - Parameters:
     ///   - socketDir: Directory holding the Unix-domain socket files
@@ -213,6 +219,11 @@ class NodeJSService {
     ///   - resolveJSEntryPoint: Returns the path to the JS entry file.
     ///   - rootKeyProvider: Returns the 16-byte device rootkey. Invoked
     ///     during `starting` after the backend's `started` broadcast.
+    ///   - sentryConfig: Optional Sentry config from Info.plist; when
+    ///     non-nil, the spawned Node process gets `--sentry*` argv
+    ///     flags consumed by `backend/loader.mjs`. Defaults to
+    ///     `SentryConfig.loadFromMainBundle()` so production callers
+    ///     don't need to thread it; tests pass `nil`.
     ///   - startupTimeout: Maximum seconds in `.starting` before the
     ///     watchdog forces `.error`. Default 30s covers cold simulator
     ///     boots plus addon dlopens with margin; production callers may
@@ -223,10 +234,12 @@ class NodeJSService {
         nodeEntryPoint: @escaping NodeEntryPoint,
         resolveJSEntryPoint: @escaping () -> String?,
         rootKeyProvider: @escaping RootKeyProvider,
+        sentryConfig: SentryConfig? = SentryConfig.loadFromMainBundle(),
         startupTimeout: TimeInterval = 30
     ) {
         self.socketDir = socketDir
         self.privateStorageDir = privateStorageDir
+        self.sentryConfig = sentryConfig
         self.comapeoSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
         self.controlSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.controlSocketFilename)
 
@@ -679,7 +692,7 @@ class NodeJSService {
             lock.unlock()
             let info = ErrorInfo(
                 phase: "node-runtime",
-                message: "Could not find nodejs-project/index.mjs in app bundle"
+                message: "Could not find nodejs-project/loader.mjs in app bundle"
             )
             // Mark the runtime as exited alongside the backend-error so
             // the component triple is consistent — without this the
@@ -703,9 +716,12 @@ class NodeJSService {
         // ComapeoManager is constructed), driven by `handleControlMessage`.
 
         // argv shape matches Android's NodeJSService.kt:
-        //   [node, indexPath, comapeoSocketPath, controlSocketPath, privateStorageDir]
-        // The third positional is consumed by backend/index.js as
-        // `privateStorageDir` and handed to createComapeo({privateStorageDir,...}).
+        //   [node, --no-experimental-fetch, loaderPath, comapeoSocketPath,
+        //    controlSocketPath, privateStorageDir, ...sentryFlags]
+        // `loader.mjs` parses `--sentry*` flags via `node:util#parseArgs`,
+        // optionally calls `Sentry.init()`, then dynamically imports
+        // `index.mjs`. `index.mjs` reads positionals from
+        // `process.argv.slice(2)` unchanged.
         //
         // `--no-experimental-fetch` disables Node's built-in `globalThis.fetch`
         // (and thus the lazy-loaded undici under it). nodejs-mobile iOS runs
@@ -717,7 +733,7 @@ class NodeJSService {
         // global `fetch` from re-introducing the same load path. Android
         // doesn't need it (JIT is permitted), but the flag is harmless on
         // both platforms so we keep argv parity.
-        let args = [
+        var args: [String] = [
             "node",
             "--no-experimental-fetch",
             jsPath,
@@ -725,6 +741,7 @@ class NodeJSService {
             controlSocketPath,
             privateStorageDir,
         ]
+        args.append(contentsOf: buildSentryArgs())
         let exitCode = nodeEntryPoint(args)
         logCrumb(
             category: SentryCategories.boot,
@@ -771,6 +788,35 @@ class NodeJSService {
     ///   `start()` cannot be called again and violate the once-per-process
     ///   constraint of `NodeMobileStartNode`. When `true`, the service is
     ///   fully stopped and transitions to `.stopped`.
+    /// Maps `sentryConfig` into the `--sentry*` argv flags
+    /// `backend/loader.mjs` parses. `nil` config → empty array, the
+    /// loader skips `Sentry.init()` and the `@sentry/node` rollup
+    /// chunk is never resolved.
+    private func buildSentryArgs() -> [String] {
+        guard let cfg = sentryConfig else { return [] }
+        var out: [String] = [
+            "--sentryDsn=\(cfg.dsn)",
+            "--sentryEnvironment=\(cfg.environment)",
+            "--sentryRelease=\(cfg.release)",
+        ]
+        if let r = cfg.sampleRate {
+            out.append("--sentrySampleRate=\(r)")
+        }
+        if let r = cfg.tracesSampleRate {
+            out.append("--sentryTracesSampleRate=\(r)")
+        }
+        if let b = cfg.rpcArgsBytes {
+            out.append("--sentryRpcArgsBytes=\(b)")
+        }
+        if cfg.enableLogs == true {
+            out.append("--sentryEnableLogs")
+        }
+        // captureApplicationData toggle (Phase 5) lands when
+        // SentryPrefsStore arrives — until then the flag is omitted
+        // and the loader treats tracing as off.
+        return out
+    }
+
     func cleanup(threadExited: Bool = true) {
         controlIPC?.disconnect()
         controlIPC = nil
