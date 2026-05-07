@@ -51,15 +51,16 @@ type EventProcessor = (event: SentryEvent) => SentryEvent | null;
 
 /**
  * Subset of `Scope` we need on the persistent global scope. The
- * sub-export's `setTag` / `addEventProcessor` writes go through
- * here — *not* the top-level `Sentry.setTag` helper, which
- * targets the current/isolation scope and can be replaced or
- * forked when the consumer calls `Sentry.init` after our import
- * has already run (Metro hoists ESM imports above non-import
- * code, so our scope writes land before init).
+ * sub-export's writes go through here — *not* the top-level
+ * `Sentry.setTag` / `Sentry.setContext` helpers, which target
+ * the current/isolation scope and can be replaced or forked
+ * when the consumer calls `Sentry.init` after our import has
+ * already run (Metro hoists ESM imports above non-import code,
+ * so our scope writes land before init).
  */
 interface SentryGlobalScope {
   setTag(key: string, value: string | number | boolean): void;
+  setContext(name: string, context: Record<string, unknown> | null): void;
   addEventProcessor(processor: EventProcessor): void;
 }
 
@@ -134,21 +135,29 @@ export function setSentryAdapterForTests(adapter: SentryAdapter | null): void {
 // app-start transactions) — is filterable alongside our own
 // captures, not just the ones below where we set them per-call.
 //
-// `comapeo.module.version` is the primary filter axis for "did
-// this issue start after I bumped @comapeo/core-react-native?".
-// `event.modules` carries the same value plus the bundled
-// backend deps that `ModulesLoader` can't introspect (rolled
-// into a single `index.mjs`), so the Modules / Discover UI has
-// the full dep map.
+// `comapeo.rn` is the primary filter axis for "did this issue
+// start after I bumped @comapeo/core-react-native?". The value
+// is `<version>+git<sha>[-dirty<hash>]` so a single tag covers
+// both release and source identity, and you can `git checkout`
+// straight from a Sentry event.
+//
+// `event.modules` only carries `@comapeo/core-react-native`
+// itself — the JS-runtime dep that actually runs in the host's
+// RN bundle. The bundled-backend deps (@comapeo/core etc.) are
+// in a separate `comapeoBackend` context block. Putting them
+// in `event.modules` would collide with anything the consumer
+// imports directly from RN-side (e.g. `@comapeo/core` for type
+// or static exports may be a different version than the one
+// rolled into our backend bundle).
 //
 // We target the **global scope** rather than the top-level
-// `setTag` / `addEventProcessor` helpers. The latter write to
-// the current/isolation scope, which the consumer's
-// `Sentry.init` may fork or replace — and Metro's import
-// hoisting (and `inlineRequires: true`) means this side-effect
-// import runs BEFORE the consumer's init call even when
-// `import "@comapeo/core-react-native/sentry"` appears below
-// `Sentry.init({...})` in source. The global scope is a
+// `setTag` / `setContext` / `addEventProcessor` helpers. The
+// latter write to the current/isolation scope, which the
+// consumer's `Sentry.init` may fork or replace — and Metro's
+// import hoisting (and `inlineRequires: true`) means this
+// side-effect import runs BEFORE the consumer's init call even
+// when `import "@comapeo/core-react-native/sentry"` appears
+// below `Sentry.init({...})` in source. The global scope is a
 // persistent module-level singleton; writes here survive init.
 {
   const adapter = activeAdapter();
@@ -156,12 +165,12 @@ export function setSentryAdapterForTests(adapter: SentryAdapter | null): void {
     const globalScope = adapter.getGlobalScope();
     globalScope.setTag(SentryTags.proc, SentryTags.procMain);
     globalScope.setTag(SentryTags.layer, SentryTags.layerRn);
-    globalScope.setTag("comapeo.module.version", COMAPEO_MODULE_VERSION_LABEL);
+    globalScope.setTag("comapeo.rn", COMAPEO_MODULE_VERSION_LABEL);
+    globalScope.setContext("comapeoBackend", BACKEND_MODULES);
     globalScope.addEventProcessor((event) => {
       event.modules = {
         ...event.modules,
         "@comapeo/core-react-native": COMAPEO_MODULE_VERSION_LABEL,
-        ...BACKEND_MODULES,
       };
       return event;
     });
