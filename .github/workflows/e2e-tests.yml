@@ -226,28 +226,16 @@ jobs:
           browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           # TODO: Adjust based on actual timing
           timeout: 1800
-          devices: |
+          devices: >-
             [
-              "Google Pixel 5-11.0",
-              "Google Pixel 9-16.0",
-              "Huawei P30-9.0",
-              "Huawei Nova 11 SE-12.0",
-              "Motorola Moto G9 Play-10.0",
-              "Motorola Moto G71 5G-11.0",
-              "OnePlus 9-11.0",
-              "OnePlus 11R-13.0",
-              "OnePlus 12R-14.0",
-              "OnePlus 13R-15.0",
-              "Oppo Reno 3 Pro-10.0",
-              "Oppo Reno 6-11.0",
-              "Samsung Galaxy Note 9-8.1",
-              "Samsung Galaxy S10-9.0",
-              "Samsung Galaxy A51-10.0",
-              "Samsung Galaxy S23-13.0",
-              "Vivo V21-11.0",
-              "Vivo Y21-11.0",
-              "Xiaomi Redmi Note 9-10.0",
-              "Xiaomi Redmi Note 11-11.0"
+            "Google Pixel 9-16.0",
+            "Huawei Nova 11 SE-12.0",
+            "Motorola Moto G71 5G-11.0",
+            "OnePlus 13R-15.0",
+            "Oppo Reno 6-11.0",
+            "Samsung Galaxy Note 9-8.1",
+            "Vivo Y21-11.0",
+            "Xiaomi Redmi Note 11-11.0"
             ]
 
   test-ios:
@@ -273,9 +261,8 @@ jobs:
           browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           # TODO: Adjust based on actual timing
           timeout: 1800
-          devices: |
+          devices: >-
             [
-              "iPhone 13-15",
-              "iPhone 15-17",
-              "iPhone 17-26"
+            "iPhone 13-15",
+            "iPhone 17-26"
             ]
