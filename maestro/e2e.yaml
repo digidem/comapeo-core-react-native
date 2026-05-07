@@ -4,8 +4,6 @@ env:
 ---
 - launchApp:
     clearState: true
-- startRecording:
-    path: "maestro/recordings/e2e"
 - tapOn: "Run tests"
 - extendedWaitUntil:
     visible: 
