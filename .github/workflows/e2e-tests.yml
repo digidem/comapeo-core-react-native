@@ -114,14 +114,14 @@ jobs:
           node-version-file: package.json
 
       - name: Cache nodejs-mobile binaries
-        id: cache-libnode
+        id: cache-ios-framework
         uses: actions/cache@v4
         with:
-          path: android/libnode
+          path: ios/NodeMobile.xcframework
           # hashFiles(...) folds the BASE_URL (defined inside the
           # download script) into the cache key, so any swap of the
           # source repo automatically invalidates stale caches.
-          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
+          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-ios-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
 
       - name: Download nodejs-mobile binaries
         if: steps.cache-libnode.outputs.cache-hit != 'true'
