@@ -19,6 +19,9 @@
     "./app.plugin": "./app.plugin.js",
     "./package.json": "./package.json"
   },
+  "bin": {
+    "comapeo-rn-upload-sourcemaps": "./build/cli/upload-sourcemaps.js"
+  },
   "files": [
     "expo-module.config.json",
     "app.plugin.js",

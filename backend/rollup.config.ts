@@ -1,5 +1,12 @@
 import { rmSync } from "node:fs";
-import { cp } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  readFile,
+  readdir,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
@@ -7,6 +14,7 @@ import alias from "@rollup/plugin-alias";
 import commonjs from "@rollup/plugin-commonjs";
 import { default as esmShim } from "@rollup/plugin-esm-shim";
 import json from "@rollup/plugin-json";
+import { sentryRollupPlugin } from "@sentry/rollup-plugin";
 import type { OutputOptions, Plugin, RollupOptions } from "rollup";
 import { minify } from "rollup-plugin-esbuild";
 
@@ -37,6 +45,28 @@ const ANDROID_OUT_MAIN =
   path.join(__dirname, "dist/android/main");
 
 const IOS_OUT = process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
+
+/**
+ * Per-platform sourcemap relocation targets. The `.mjs.map` file rollup
+ * writes alongside the bundle is moved here after `writeBundle` so it
+ * never enters the per-platform asset/resource tree consumed by the
+ * APK / IPA builds. The maps still ship in the npm tarball (the parent
+ * of these dirs is whitelisted in `package.json`'s `files`) so the
+ * `comapeo-rn-upload-sourcemaps` CLI can resolve them at consumer build
+ * time.
+ *
+ * For the production build these are passed by `scripts/build-backend.ts`;
+ * the fallbacks keep the standalone `cd backend && npm run build` case
+ * working — maps land in `<outDir>-sourcemaps/` next to the bundle dir.
+ */
+const ANDROID_SOURCEMAPS_DEBUG =
+  process.env.SOURCEMAPS_DIR_ANDROID_DEBUG ?? `${ANDROID_OUT_DEBUG}-sourcemaps`;
+
+const ANDROID_SOURCEMAPS_MAIN =
+  process.env.SOURCEMAPS_DIR_ANDROID_MAIN ?? `${ANDROID_OUT_MAIN}-sourcemaps`;
+
+const IOS_SOURCEMAPS =
+  process.env.SOURCEMAPS_DIR_IOS ?? `${IOS_OUT}-sourcemaps`;
 
 /**
  * Resolves `@comapeo/core`'s `./fastify-plugins/maps.js` import to the
@@ -145,6 +175,18 @@ function buildPlugins({
     json(),
     shouldMinify ? minify() : undefined,
     copyStaticAssetsPlugin(outDir),
+    // Inject `//# debugId=<uuid>` into the bundle and `"debug_id"` into
+    // the sourcemap so Sentry symbolicates by ID, independent of the
+    // consumer's release. Upload is disabled — published tarballs carry
+    // the maps; consumers run `comapeo-rn-upload-sourcemaps` from CI to
+    // push them to their own Sentry project. Debug IDs are
+    // `stringToUUID(chunk.code)` so identical bundle bytes produce
+    // identical IDs across re-publishes.
+    sentryRollupPlugin({
+      sourcemaps: { disable: "disable-upload" },
+      telemetry: false,
+      release: { inject: false, create: false },
+    }),
   ];
 }
 
@@ -159,6 +201,92 @@ function cleanOutputDirPlugin(dir: string): Plugin {
     name: "clean-output-dir",
     buildStart() {
       rmSync(dir, { force: true, recursive: true });
+    },
+  };
+}
+
+/**
+ * Moves `*.map` files out of the rollup output dir into a sibling
+ * sourcemap dir after `writeBundle`, injecting `debug_id` (and the
+ * legacy `debugId`) into the map JSON on the way through. Keeps the
+ * bundle's `//# sourceMappingURL=index.mjs.map` line as a dangling
+ * reference — harmless on-device (the runtime never resolves it) and
+ * the upload CLI matches map-to-bundle by debug ID, not by adjacency.
+ *
+ * Why move instead of exclude in the platform packaging:
+ *   - Android: gradle `assets.exclude '**\/*.map'` would also work, but
+ *     CocoaPods folder references (`s.resources = ['nodejs-project']`)
+ *     have no equivalent — there's no public hook to exclude individual
+ *     files from a folder ref. Doing the move at build time keeps the
+ *     mechanism uniform across platforms.
+ *
+ * Why inject `debug_id` into the map ourselves (rather than letting
+ * sentry-cli do it at upload):
+ *   - With `sourcemaps.disable: "disable-upload"` the sentry-rollup-
+ *     plugin only writes `_sentryDebugIdIdentifier` into the bundle,
+ *     not into the map.
+ *   - sentry-cli's debug-ID-based association uses adjacency or
+ *     `sourceMappingURL` to find the map for a bundle. Both break once
+ *     we relocate, so the map needs the ID embedded directly to be
+ *     resolvable from any directory.
+ *
+ * Idempotent: `cleanOutputDirPlugin` wipes `outDir` before the build
+ * starts; this plugin wipes its target dir at `writeBundle` time so a
+ * stale map from a previous build can't leak through.
+ */
+const SENTRY_DBID_RE =
+  /sentry-dbid-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/;
+
+function relocateSourcemapsPlugin(
+  outDir: string,
+  sourcemapDir: string,
+): Plugin {
+  return {
+    name: "relocate-sourcemaps",
+    async writeBundle() {
+      rmSync(sourcemapDir, { force: true, recursive: true });
+      await mkdir(sourcemapDir, { recursive: true });
+      const entries = await readdir(outDir);
+      const mapNames = entries.filter((name) => name.endsWith(".map"));
+      await Promise.all(
+        mapNames.map(async (name) => {
+          const bundleName = name.slice(0, -".map".length);
+          const bundlePath = path.join(outDir, bundleName);
+          const mapSrc = path.join(outDir, name);
+          const mapDst = path.join(sourcemapDir, name);
+          const [bundleSource, mapSource] = await Promise.all([
+            readFile(bundlePath, "utf8"),
+            readFile(mapSrc, "utf8"),
+          ]);
+          const dbidMatch = bundleSource.match(SENTRY_DBID_RE);
+          if (!dbidMatch) {
+            throw new Error(
+              `relocate-sourcemaps: no debug ID found in ${bundlePath}; ` +
+                "did sentry-rollup-plugin run before this plugin?",
+            );
+          }
+          const debugId = dbidMatch[1];
+
+          // Spec-compliant trailing `//# debugId=` comment. The
+          // sentry-rollup-plugin writes `_sentryDebugIdIdentifier`
+          // (the runtime snippet) but only adds the trailing comment
+          // during its own upload step, which we disabled. Add it
+          // here so all sentry-cli versions and other tools that
+          // scan for the trailer find the ID. Spec doesn't constrain
+          // ordering with `//# sourceMappingURL=`, so just append.
+          const patchedBundle = `${bundleSource}\n//# debugId=${debugId}\n`;
+
+          const map = JSON.parse(mapSource);
+          map.debug_id = debugId;
+          map.debugId = debugId;
+
+          await Promise.all([
+            writeFile(bundlePath, patchedBundle, "utf8"),
+            writeFile(mapDst, JSON.stringify(map), "utf8"),
+          ]);
+          await unlink(mapSrc);
+        }),
+      );
     },
   };
 }
@@ -203,6 +331,7 @@ const config: RollupOptions[] = [
         // Android debug does not minify the bundle.
         shouldMinify: false,
       }),
+      relocateSourcemapsPlugin(ANDROID_OUT_DEBUG, ANDROID_SOURCEMAPS_DEBUG),
     ],
   },
   {
@@ -219,6 +348,7 @@ const config: RollupOptions[] = [
         outDir: ANDROID_OUT_MAIN,
         shouldMinify: true,
       }),
+      relocateSourcemapsPlugin(ANDROID_OUT_MAIN, ANDROID_SOURCEMAPS_MAIN),
     ],
   },
   {
@@ -235,6 +365,7 @@ const config: RollupOptions[] = [
         outDir: IOS_OUT,
         shouldMinify: true,
       }),
+      relocateSourcemapsPlugin(IOS_OUT, IOS_SOURCEMAPS),
     ],
   },
 ];

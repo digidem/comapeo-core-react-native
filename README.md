@@ -180,6 +180,36 @@ multi-process Android apps using this module — that's the
 the runtime classpath), the bridge stays inert and the module
 continues to function unchanged.
 
+### 4. Upload backend sourcemaps to your Sentry project
+
+The Node-backend bundle (the `index.mjs` that runs in nodejs-mobile)
+ships rolled-up + minified, so without sourcemaps stack traces in
+Sentry are unreadable. The bundle's sourcemaps ship inside the npm
+tarball with deterministic, content-hashed [Sentry debug IDs][] baked
+in at build time — symbolication is keyed off the IDs, so you do
+*not* have to align this module's version with your app's `release`.
+
+Add one step to your release pipeline (after `eas build`, or as part
+of the build's post-publish phase):
+
+```sh
+SENTRY_AUTH_TOKEN=… npx comapeo-rn-upload-sourcemaps \
+  --org   your-org \
+  --project your-project
+```
+
+Re-uploading is idempotent: Sentry de-dupes by debug ID. The CLI
+finds `@sentry/cli` via the transitive `@sentry/react-native` →
+`@sentry/cli` chain in your `node_modules`; if you don't use
+`@sentry/react-native`, add `@sentry/cli` to your devDeps yourself.
+
+`--targets <list>` (default: all) restricts the upload to a subset of
+`android-debug, android-main, ios`. `--url` points at a self-hosted
+Sentry. `SENTRY_ORG` / `SENTRY_PROJECT` env vars work in place of the
+flags.
+
+[Sentry debug IDs]: https://docs.sentry.io/platforms/javascript/sourcemaps/troubleshooting_js/debug-ids/
+
 # Contributing
 
 Contributions are very welcome! Please refer to guidelines described in the [contributing guide](https://github.com/expo/expo#contributing).
