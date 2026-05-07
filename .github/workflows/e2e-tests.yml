@@ -84,7 +84,7 @@ jobs:
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
         run: |
-          APK_RELATIVE_PATH="apps/e2e/android/app/build/outputs/apk/release/app-release.apk"
+          APK_RELATIVE_PATH="./apps/e2e/android/app/build/outputs/apk/release/app-release.apk"
 
           APP_URL=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
@@ -163,7 +163,7 @@ jobs:
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
         run: |
-          IPA_RELATIVE_PATH="apps/e2e/ios/corereactnativee2e.ipa"
+          IPA_RELATIVE_PATH="./apps/e2e/ios/corereactnativee2e.ipa"
 
           APP_URL=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
