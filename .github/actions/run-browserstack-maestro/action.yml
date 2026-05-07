@@ -3,6 +3,9 @@ name: Run BrowserStack Maestro Tests
 description: Triggers a BrowserStack Maestro build and polls until completion
 
 inputs:
+  platform:
+    description: Platform to run tests on (android or ios)
+    required: true
   app_url:
     description: BrowserStack app URL (bs://...)
     required: true
@@ -30,11 +33,20 @@ runs:
   using: composite
   steps:
     - name: Validate inputs
-      if: ${{ fromJson(inputs.timeout) < 30 }}
+      env:
+        PLATFORM: ${{ inputs.platform }}
+        TIMEOUT: ${{ fromJson(inputs.timeout) }}
       shell: bash
       run: |
-        echo "timeout must be at least 30 seconds"
-        exit 1
+        if [[ "$PLATFORM" != "android" && "$PLATFORM" != "ios" ]]; then
+          echo "platform must be android or ios"
+          exit 1
+        fi
+
+        if [[ "$TIMEOUT" -lt 30 ]]; then
+          echo "timeout must be at least 30 seconds"
+          exit 1
+        fi
 
     - name: Trigger build
       id: trigger
@@ -45,6 +57,7 @@ runs:
         BROWSERSTACK_PROJECT: ${{ inputs.browserstack_project }}
         BROWSERSTACK_USERNAME: ${{ inputs.browserstack_username }}
         BROWSERSTACK_ACCESS_KEY: ${{ inputs.browserstack_access_key }}
+        PLATFORM: ${{ inputs.platform }}
       shell: bash
       run: |
         PAYLOAD=$(jq -n \
@@ -55,7 +68,7 @@ runs:
           '{app: $app, testSuite: $suite, devices: $devices, project: $project, deviceLogs: true, maestroVersion: "latest"}')
 
         BUILD_ID=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
-          -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/build" \
+          -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/$PLATFORM/build" \
           -H "Content-Type: application/json" \
           -d "$PAYLOAD" \
           | jq -r '.build_id')

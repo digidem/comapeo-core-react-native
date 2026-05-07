@@ -219,6 +219,7 @@ jobs:
 
       - uses: ./.github/actions/run-browserstack-maestro
         with:
+          platform: android
           app_url: ${{ needs.build-android.outputs.app_url }}
           test_suite_url: ${{ needs.upload-test-suite.outputs.test_suite_url }}
           browserstack_project: ${{ vars.BROWSERSTACK_PROJECT_TESTS }}
@@ -254,6 +255,7 @@ jobs:
 
       - uses: ./.github/actions/run-browserstack-maestro
         with:
+          platform: android
           app_url: ${{ needs.build-ios.outputs.app_url }}
           test_suite_url: ${{ needs.upload-test-suite.outputs.test_suite_url }}
           browserstack_project: ${{ vars.BROWSERSTACK_PROJECT_TESTS }}
