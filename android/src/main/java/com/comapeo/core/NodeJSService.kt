@@ -42,13 +42,15 @@ private data class ErrorNativeMessage(
 
 const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
-// Asset subdirectory the loader copies into the app's filesDir and
-// runs `index.mjs` from. Sourced from `BuildConfig.COMAPEO_BACKEND_DIR`
-// so consumers can override via the `comapeoBackendDir` Gradle
-// property (default `nodejs-project`). See android/build.gradle for
-// the buildConfigField declaration.
-val NODEJS_PROJECT_DIRNAME: String = BuildConfig.COMAPEO_BACKEND_DIR
-const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
+const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
+// Entry filename inside `NODEJS_PROJECT_DIRNAME` that nodejs-mobile
+// runs. Sourced from `BuildConfig.COMAPEO_ENTRY_FILE` so consumers
+// can override via the `comapeoEntryFile` Gradle property (default
+// `index.mjs`) and drop a sibling entry file into their own
+// `app/src/main/assets/nodejs-project/` — AGP merges it with the
+// library's bundle. See android/build.gradle for the buildConfigField
+// declaration.
+val NODEJS_PROJECT_INDEX_FILENAME: String = BuildConfig.COMAPEO_ENTRY_FILE
 
 /**
  * Bound on `ipcDeferred.await()` inside `sendErrorNativeFrame`. If the
@@ -415,30 +417,21 @@ class NodeJSService(
                 }
 
                 // Base argv the backend's positional parser expects:
-                // socket paths + dataDir. After that we append:
-                //   - `--device=<MANUFACTURER MODEL (Android REL)>` —
-                //     a stable device tag the bench backend uses for
-                //     span attribution. Production backend ignores
-                //     unknown flags so this is a no-op there.
-                //   - whitespace-split tokens from
-                //     `BuildConfig.COMAPEO_BACKEND_ARGS` (set by the
-                //     `comapeoBackendArgs` Gradle property). Empty by
-                //     default; consumers like the bench plugin set
-                //     `--telemetry=<spec>` here when they want a
-                //     non-default sink.
-                val baseArgs = arrayOf(
+                // socket paths + dataDir. After that we append a
+                // `--device=<MANUFACTURER MODEL (Android REL)>` flag —
+                // a stable device tag downstream telemetry (bench
+                // spans today, Sentry tags once that lands) reads for
+                // attribution. The production backend ignores unknown
+                // flags so this is a no-op until something consumes it.
+                val deviceTag = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})"
+                val exitCode = startNodeWithArguments(arrayOf(
                     "node",
                     jsFile.absolutePath,
                     comapeoSocketFile.absolutePath,
                     controlSocketFile.absolutePath,
                     dataDir,
-                )
-                val deviceTag = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})"
-                val extraArgs = mutableListOf("--device=$deviceTag")
-                if (BuildConfig.COMAPEO_BACKEND_ARGS.isNotBlank()) {
-                    extraArgs += BuildConfig.COMAPEO_BACKEND_ARGS.trim().split("\\s+".toRegex())
-                }
-                val exitCode = startNodeWithArguments(baseArgs + extraArgs.toTypedArray())
+                    "--device=$deviceTag",
+                ))
                 log("NodeJS service completed with exit code $exitCode")
 
                 // Classify the exit. "Requested" means we asked for it
@@ -547,22 +540,7 @@ class NodeJSService(
      */
     private fun sendInitFrame() {
         val rootKeyBytes: ByteArray = try {
-            if (BuildConfig.COMAPEO_STUB_ROOTKEY) {
-                // Deterministic 16-zero-byte stub for builds that opt
-                // out of keystore-backed rootkey persistence (see
-                // android/build.gradle for the property doc and the
-                // bench app's `with-comapeo-bench` plugin for where
-                // it's set). The receiver MUST be a backend that
-                // doesn't construct a `MapeoManager` — the bench
-                // backend's relaxed init handler is the canonical
-                // example. Real identity material is never derived
-                // from this stub, so production consumers are
-                // protected by `comapeoStubRootKey` being false by
-                // default.
-                ByteArray(16)
-            } else {
-                RootKeyStore(applicationContext).loadOrInitialize()
-            }
+            RootKeyStore(applicationContext).loadOrInitialize()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load rootkey", e)
             val info = ErrorInfo("rootkey", e.message ?: e.javaClass.simpleName)

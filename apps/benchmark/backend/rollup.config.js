@@ -1,5 +1,4 @@
 import { rmSync } from "node:fs";
-import { cp } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
@@ -13,9 +12,14 @@ const __dirname = path.dirname(__filename);
 
 /**
  * Bench bundle output. The bench app's `with-comapeo-bench` config
- * plugin reads from this path during `expo prebuild` and copies the
- * tree into the consumer app's native asset/resource trees so
- * nodejs-mobile can find `<bundle>/index.mjs` at runtime.
+ * plugin reads `index.bench.mjs` from this path during `expo prebuild`
+ * and drops it into the consumer app's `nodejs-project/` alongside
+ * the production bundle's `index.mjs`; the module's loader is pointed
+ * at the bench entry via the `comapeoEntryFile` override.
+ *
+ * No `package.json` is emitted — the production bundle already ships
+ * one with `"type":"module"` in the same directory, which is all
+ * Node's module resolver needs to evaluate `index.bench.mjs` as ESM.
  */
 const OUT_DIR = path.join(__dirname, "dist");
 
@@ -36,20 +40,6 @@ const OUT_DIR = path.join(__dirname, "dist");
  * platform-specific `__loadAddon` banner is needed). One ESM bundle
  * works on Android and iOS alike.
  */
-function copyPackageJsonPlugin() {
-  return {
-    name: "copy-package-json",
-    async writeBundle() {
-      // Node's module resolver reads the unpacked tree's package.json
-      // to set `"type": "module"` so `index.mjs` evaluates as ESM.
-      await cp(
-        path.join(__dirname, "package.json"),
-        path.join(OUT_DIR, "package.json"),
-      );
-    },
-  };
-}
-
 function cleanOutputDirPlugin() {
   return {
     name: "clean-output-dir",
@@ -60,7 +50,10 @@ function cleanOutputDirPlugin() {
 }
 
 export default {
-  input: { index: path.join(__dirname, "index.js") },
+  // Named-input form so the emitted chunk is `index.bench.mjs` (vs.
+  // `index.mjs`) and can coexist with the production bundle's
+  // `index.mjs` in the same `nodejs-project/` directory.
+  input: { "index.bench": path.join(__dirname, "index.js") },
   output: {
     dir: OUT_DIR,
     format: "esm",
@@ -74,6 +67,5 @@ export default {
     nodeResolve({ preferBuiltins: true }),
     json(),
     minify(),
-    copyPackageJsonPlugin(),
   ],
 };

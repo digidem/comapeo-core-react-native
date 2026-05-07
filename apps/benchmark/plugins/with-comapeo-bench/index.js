@@ -1,5 +1,4 @@
 const {
-  IOSConfig,
   withDangerousMod,
   withGradleProperties,
   withInfoPlist,
@@ -16,31 +15,34 @@ const path = require('path');
  * for the native wiring; production consumers (`apps/example/`, third
  * parties) never apply it.
  *
- * Conceptually a stripped-down `expo-asset` plugin: copy a directory
- * tree into the prebuild output's native asset/resource locations and
- * point the module's loader at it via the override hook the module
- * exposes. Three mutations:
+ * Strategy: drop the bench bundle's single rolled-up file
+ * (`index.bench.mjs`) into the consumer's `nodejs-project/` next to
+ * the production bundle's own `index.mjs`, and tell the module's
+ * loader to run the bench file via the `comapeoEntryFile` /
+ * `ComapeoEntryFile` overrides exposed by `@comapeo/core-react-native`.
+ * Three mutations:
  *
- *   1. `withGradleProperties` — sets `comapeoBackendDir=nodejs-bench`
- *      in the consumer app's `android/gradle.properties`. The module's
- *      `android/build.gradle` reads this into
- *      `BuildConfig.COMAPEO_BACKEND_DIR`; the Kotlin loader uses it
- *      as the assets-subdir name when copying the bundle into
- *      `filesDir/` on first launch.
+ *   1. `withGradleProperties` — sets `comapeoEntryFile=index.bench.mjs`
+ *      in the consumer app's `android/gradle.properties`.
  *
- *   2. `withInfoPlist` — sets `ComapeoBackendDir=nodejs-bench` on the
- *      consumer app's `Info.plist`. The module's `AppLifecycleDelegate`
- *      reads this in `resolveJSEntryPoint` to pick the bundle path
- *      inside the `.app`.
+ *   2. `withInfoPlist` — sets `ComapeoEntryFile=index.bench.mjs` plus
+ *      `ComapeoStdoutToOsLog` (opt-in for the nodejs-mobile stdout →
+ *      os_log redirect; production leaves this off).
  *
- *   3. `withDangerousMod` (Android + iOS) — copies the rolled-up bench
- *      bundle from `apps/benchmark/backend/dist/` into:
- *        Android: `<platformProjectRoot>/app/src/main/assets/nodejs-bench/`
- *        iOS:     `<platformProjectRoot>/<projectName>/nodejs-bench/`
- *      Plus `withXcodeProject` registers the iOS dir as a blue-folder
- *      reference (`lastKnownFileType=folder`) under the project's
- *      Resources group so Xcode preserves the directory structure when
- *      copying it into the `.app` bundle.
+ *   3. `withDangerousMod` (Android) + `withXcodeProject` (iOS) — copies
+ *      the rolled-up bench entry from `apps/benchmark/backend/dist/`
+ *      into the consumer's `nodejs-project/`:
+ *
+ *      - Android: drops `index.bench.mjs` into
+ *        `<platformProjectRoot>/app/src/main/assets/nodejs-project/`.
+ *        AGP's normal asset merge places it alongside the library
+ *        module's `index.mjs` in the merged APK.
+ *      - iOS: copies `index.bench.mjs` into a source-tree overlay dir
+ *        (`<projectName>/nodejs-bench-overlay/`), then adds a Run
+ *        Script build phase that `cp`s the file into
+ *        `<App>.app/nodejs-project/` after CocoaPods' resource-copy
+ *        phase (which is what places the production `nodejs-project/`
+ *        from the comapeo-core-react-native pod into the .app).
  *
  * The bench bundle build is NOT triggered here — the bench app's
  * `package.json` `prebuild` script runs `npm run --prefix backend
@@ -52,18 +54,24 @@ const path = require('path');
  * (`with-comapeo-bench`) so existing `app.json` references continue
  * to work.
  */
-const BENCH_BUNDLE_DIR_NAME = 'nodejs-bench';
-const BENCH_BUNDLE_SOURCE_DIR = path.resolve(
-  __dirname,
-  '../../backend/dist',
-);
-const BENCH_BUNDLE_ENTRY = 'index.mjs';
+
+const BENCH_ENTRY_FILE = 'index.bench.mjs';
+const BENCH_BUNDLE_SOURCE_DIR = path.resolve(__dirname, '../../backend/dist');
+
+// Subdir inside the iOS prebuild output where we stash the bench
+// entry file before Xcode's build phase copies it into the .app.
+// Must not collide with the production `nodejs-project/` directory
+// CocoaPods materialises in the .app from the comapeo-core-react-native
+// pod's `s.resources`.
+const IOS_OVERLAY_DIR = 'nodejs-bench-overlay';
+
+const IOS_RUN_SCRIPT_NAME = 'Comapeo bench: copy entry into nodejs-project';
 
 function withComapeoBench(config) {
   config = withBenchGradleProperty(config);
   config = withBenchInfoPlist(config);
-  config = withBenchAndroidAssets(config);
-  config = withBenchIosResources(config);
+  config = withBenchAndroidEntryFile(config);
+  config = withBenchIosEntryFile(config);
   return config;
 }
 
@@ -71,30 +79,10 @@ function withBenchGradleProperty(config) {
   return withGradleProperties(config, (cfg) => {
     upsertGradleProperty(
       cfg.modResults,
-      'comapeoBackendDir',
-      BENCH_BUNDLE_DIR_NAME,
-      ' bench bundle override — read by android/build.gradle of @comapeo/core-react-native',
-    );
-    upsertGradleProperty(
-      cfg.modResults,
-      'comapeoStubRootKey',
-      'true',
-      ' bench-only opt-out of keystore-backed rootkey; required on devices without' +
-        '\n# a configured screen lock (e.g. BrowserStack stock fleet) where the Android' +
-        '\n# Keystore super-encryption layer fails on `setUnlockedDeviceRequired(true)`',
-    );
-    // Native loader still derives a `--device=<tag>` arg (read by the
-    // bench backend for span attribution). The bench backend's
-    // default sink is now LogSink — boot spans surface in logcat
-    // under the `Comapeo:NodeJS` tag, which BrowserStack captures
-    // when the build trigger sets `deviceLogs: true`. No telemetry
-    // URL needed; no BS Local; no cleartext-traffic config.
-    upsertGradleProperty(
-      cfg.modResults,
-      'comapeoBackendArgs',
-      '',
-      ' bench-only nodejs-mobile argv — empty here so native loader appends' +
-        '\n# only the device-tag flag; pass --telemetry=<spec> here to override sink',
+      'comapeoEntryFile',
+      BENCH_ENTRY_FILE,
+      ' bench entry override — read by android/build.gradle of @comapeo/core-react-native;' +
+        '\n# AGP merges the bench file from app/src/main/assets/nodejs-project/ with the library bundle',
     );
     return cfg;
   });
@@ -102,27 +90,18 @@ function withBenchGradleProperty(config) {
 
 function withBenchInfoPlist(config) {
   return withInfoPlist(config, (cfg) => {
-    cfg.modResults.ComapeoBackendDir = BENCH_BUNDLE_DIR_NAME;
-    // Boolean Info.plist key — see AppLifecycleDelegate.swift's
-    // rootKeyProvider closure for the runtime branch and the parallel
-    // Android `comapeoStubRootKey` property set above.
-    cfg.modResults.ComapeoStubRootKey = true;
+    cfg.modResults.ComapeoEntryFile = BENCH_ENTRY_FILE;
     // Opt the bench build into NodeMobileBridge.mm's pipe + dup2 →
     // os_log redirect. Production consumers leave this unset so
     // nodejs-mobile's stdout follows iOS's default routing — keeps
     // the os_log subsystem free of unredacted JS log lines and saves
     // an always-on reader thread.
     cfg.modResults.ComapeoStdoutToOsLog = true;
-    // String Info.plist key paired with Android's `comapeoBackendArgs`.
-    // NodeJSService.swift whitespace-splits it onto the nodejs-mobile
-    // argv. Empty for the default LogSink path; overridable per build
-    // when the user wants e.g. `--telemetry=file:/tmp/spans.ndjson`.
-    cfg.modResults.ComapeoBackendArgs = '';
     return cfg;
   });
 }
 
-function withBenchAndroidAssets(config) {
+function withBenchAndroidEntryFile(config) {
   return withDangerousMod(config, [
     'android',
     async (cfg) => {
@@ -133,59 +112,134 @@ function withBenchAndroidAssets(config) {
         'src',
         'main',
         'assets',
-        BENCH_BUNDLE_DIR_NAME,
+        'nodejs-project',
       );
-      await replaceDirectory(BENCH_BUNDLE_SOURCE_DIR, destDir);
+      await fsp.mkdir(destDir, { recursive: true });
+      await copyBenchEntryFiles(BENCH_BUNDLE_SOURCE_DIR, destDir);
       return cfg;
     },
   ]);
 }
 
-function withBenchIosResources(config) {
-  // 1. Copy the bundle into the Xcode project source root so it sits
-  //    next to the app's other in-tree resources.
+function withBenchIosEntryFile(config) {
+  // 1. Stash the bench entry file in the source tree so Xcode's Run
+  //    Script build phase has something stable to read from.
   config = withDangerousMod(config, [
     'ios',
     async (cfg) => {
       assertBundleExists();
-      const projectName = IOSConfig.XcodeUtils.getProjectName(
-        cfg.modRequest.projectRoot,
-      );
-      const destDir = path.join(
+      const overlayDir = path.join(
         cfg.modRequest.platformProjectRoot,
-        projectName,
-        BENCH_BUNDLE_DIR_NAME,
+        IOS_OVERLAY_DIR,
       );
-      await replaceDirectory(BENCH_BUNDLE_SOURCE_DIR, destDir);
+      await fsp.mkdir(overlayDir, { recursive: true });
+      await copyBenchEntryFiles(BENCH_BUNDLE_SOURCE_DIR, overlayDir);
       return cfg;
     },
   ]);
-  // 2. Register the directory as a folder reference (blue folder) on
-  //    the app target. `lastKnownFileType=folder` is the standard
-  //    Xcode encoding for "preserve directory structure when copying
-  //    to the .app" — what we need so nodejs-mobile finds
-  //    `<App>.app/nodejs-bench/index.mjs` at runtime.
+  // 2. Register a Run Script build phase that copies the bench entry
+  //    into the .app's `nodejs-project/` after CocoaPods' resource-copy
+  //    phase populates the production bundle there. Idempotent — a
+  //    re-prebuild just no-ops if the named phase already exists.
   config = withXcodeProject(config, (cfg) => {
-    const project = cfg.modResults;
-    const projectName = IOSConfig.XcodeUtils.getProjectName(
-      cfg.modRequest.projectRoot,
-    );
-    const relPath = path.join(projectName, BENCH_BUNDLE_DIR_NAME);
-    // Idempotency: re-running prebuild shouldn't accumulate duplicate
-    // file refs. `pbxProject.hasFile` checks by `file.path`.
-    if (project.hasFile && project.hasFile(relPath)) {
-      return cfg;
-    }
-    // `pbxProject.addResourceFile` unconditionally calls
-    // `correctForResourcesPath` which crashes if the project has no
-    // 'Resources' PBXGroup yet. Default Expo prebuild output has no
-    // such group, so create it first — `addToResourcesPbxGroup` later
-    // attaches the file ref under it.
-    IOSConfig.XcodeUtils.ensureGroupRecursively(project, 'Resources');
-    project.addResourceFile(relPath, { lastKnownFileType: 'folder' });
+    addOrUpdateBenchScriptPhase(cfg.modResults);
     return cfg;
   });
   return config;
+}
+
+async function copyBenchEntryFiles(srcDir, destDir) {
+  // Copy `index.bench.mjs` (and its sourcemap, if rollup emitted one).
+  // Both filenames are unique within `nodejs-project/` so AGP and the
+  // CocoaPods resource copy treat them as additions rather than
+  // conflicts with the production bundle.
+  const candidates = [BENCH_ENTRY_FILE, `${BENCH_ENTRY_FILE}.map`];
+  for (const name of candidates) {
+    const src = path.join(srcDir, name);
+    if (!fs.existsSync(src)) continue;
+    await fsp.cp(src, path.join(destDir, name));
+  }
+}
+
+/**
+ * Adds a `PBXShellScriptBuildPhase` to the first target that copies
+ * `<srcroot>/${IOS_OVERLAY_DIR}/${BENCH_ENTRY_FILE}` into
+ * `<App>.app/nodejs-project/`. Idempotent: identifies the existing
+ * phase by name and updates it in place.
+ */
+function addOrUpdateBenchScriptPhase(project) {
+  const target = project.getFirstTarget();
+  if (!target) return;
+  const targetUuid = target.uuid;
+
+  const existingUuid = findShellScriptPhaseByName(project, IOS_RUN_SCRIPT_NAME);
+  const inputPaths = [
+    `$(SRCROOT)/${IOS_OVERLAY_DIR}/${BENCH_ENTRY_FILE}`,
+  ];
+  const outputPaths = [
+    `$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/nodejs-project/${BENCH_ENTRY_FILE}`,
+  ];
+  // `set -euo pipefail` so a missing source or a failed copy fails
+  // the build loudly rather than producing a silently-broken .app.
+  // `mkdir -p` covers the case where production resource copy hasn't
+  // yet created `nodejs-project/` (shouldn't happen given default
+  // build-phase order, but cheap insurance).
+  const shellScript = [
+    'set -euo pipefail',
+    'DEST_DIR="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/nodejs-project"',
+    'mkdir -p "$DEST_DIR"',
+    `cp "$SCRIPT_INPUT_FILE_0" "$DEST_DIR/${BENCH_ENTRY_FILE}"`,
+  ].join('\n');
+
+  if (existingUuid) {
+    const phase =
+      project.hash.project.objects.PBXShellScriptBuildPhase[existingUuid];
+    phase.inputPaths = serializeStringArray(inputPaths);
+    phase.outputPaths = serializeStringArray(outputPaths);
+    phase.shellPath = '/bin/sh';
+    phase.shellScript = JSON.stringify(shellScript);
+    return;
+  }
+
+  project.addBuildPhase(
+    [],
+    'PBXShellScriptBuildPhase',
+    IOS_RUN_SCRIPT_NAME,
+    targetUuid,
+    {
+      shellPath: '/bin/sh',
+      shellScript,
+      inputPaths,
+      outputPaths,
+    },
+  );
+}
+
+function findShellScriptPhaseByName(project, name) {
+  const phases =
+    project.hash.project.objects.PBXShellScriptBuildPhase || {};
+  for (const uuid of Object.keys(phases)) {
+    const phase = phases[uuid];
+    // The xcode npm package stores comments under sibling `<uuid>_comment`
+    // keys and writes the human-readable name into the phase's `name`
+    // field; normalise both.
+    if (!phase || typeof phase !== 'object') continue;
+    const phaseName = unquote(phase.name);
+    if (phaseName === name) return uuid;
+  }
+  return null;
+}
+
+function serializeStringArray(arr) {
+  return arr.map((s) => JSON.stringify(s));
+}
+
+function unquote(s) {
+  if (typeof s !== 'string') return s;
+  if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) {
+    return s.slice(1, -1);
+  }
+  return s;
 }
 
 function upsertGradleProperty(props, key, value, comment) {
@@ -202,14 +256,8 @@ function upsertGradleProperty(props, key, value, comment) {
   props.push({ type: 'property', key, value });
 }
 
-async function replaceDirectory(srcDir, destDir) {
-  await fsp.rm(destDir, { recursive: true, force: true });
-  await fsp.mkdir(path.dirname(destDir), { recursive: true });
-  await fsp.cp(srcDir, destDir, { recursive: true });
-}
-
 function assertBundleExists() {
-  const entry = path.join(BENCH_BUNDLE_SOURCE_DIR, BENCH_BUNDLE_ENTRY);
+  const entry = path.join(BENCH_BUNDLE_SOURCE_DIR, BENCH_ENTRY_FILE);
   if (!fs.existsSync(entry)) {
     throw new Error(
       `with-comapeo-bench: bench bundle not found at ${entry}.\n` +

@@ -24,28 +24,22 @@ The bench app drops a stripped backend bundle into the consumer app's
 own native asset tree and tells the module's loader to read from
 there. The module sees no bench-specific code:
 
-- **Module-side override hooks.** `@comapeo/core-react-native` exposes
-  two paired overrides for non-production consumers:
-  - `comapeoBackendDir` — Gradle property →
-    `BuildConfig.COMAPEO_BACKEND_DIR` on Android; `ComapeoBackendDir`
-    Info.plist key on iOS. Defaults to `nodejs-project` (the
-    production bundle); `NodeJSService.kt` and
-    `AppLifecycleDelegate.swift` read it to choose the bundle subdir.
-  - `comapeoStubRootKey` — Gradle property →
-    `BuildConfig.COMAPEO_STUB_ROOTKEY` on Android; `ComapeoStubRootKey`
-    Info.plist key on iOS. Defaults to false. When true, the loader
-    sends a 16-zero-byte stub on the init frame instead of touching
-    the keystore/keychain. Required on devices without a configured
-    screen lock (BrowserStack's stock fleet falls in this bucket —
-    Android's super-encryption layer fails when
-    `setUnlockedDeviceRequired(true)` meets a missing user ECDH
-    key). Production consumers MUST leave this false.
+- **Module-side override hook.** `@comapeo/core-react-native` exposes
+  `comapeoEntryFile` for non-production consumers — Gradle property →
+  `BuildConfig.COMAPEO_ENTRY_FILE` on Android; `ComapeoEntryFile`
+  Info.plist key on iOS. Defaults to `index.mjs` (the production
+  bundle's entry inside `nodejs-project/`); `NodeJSService.kt` and
+  `AppLifecycleDelegate.swift` read it to choose the entry filename
+  nodejs-mobile runs from `nodejs-project/`.
 - **Bench plugin.** `plugins/with-comapeo-bench/` is an Expo config
-  plugin that (a) sets both overrides above, (b) copies the
-  rolled-up bench bundle from `backend/dist/` into the consumer app's
-  own native asset tree at prebuild time —
-  `android/app/src/main/assets/nodejs-bench/` on Android, an Xcode
-  folder reference under `<App>.app/nodejs-bench/` on iOS.
+  plugin that (a) sets the override above, (b) drops the
+  rolled-up bench entry (`index.bench.mjs`) from `backend/dist/` into
+  the consumer app's own `nodejs-project/` at prebuild time —
+  `android/app/src/main/assets/nodejs-project/` (AGP merges with the
+  library's `index.mjs`) on Android; on iOS the file is staged in
+  `<projectName>/nodejs-bench-overlay/` and an Xcode Run Script build
+  phase copies it into `<App>.app/nodejs-project/` after CocoaPods'
+  resource-copy phase.
 - **Bench backend.** `backend/index.js` reuses the production
   state machine (`pre-listening` → `started` → `ready`) and
   path-imports the framing helpers (`server-helper.js`,
@@ -157,7 +151,7 @@ BrowserStack" below.)
 ## Phases
 
 - ✅ **Phase 1–2:** shared sink + bench backend + dual-bundle build
-  wiring (now: generic `comapeoBackendDir` override + bench-app config
+  wiring (now: generic `comapeoEntryFile` override + bench-app config
   plugin).
 - ✅ **Phase 3:** bench app UI, RPC bridge wiring, on-device
   p50/p95/p99 render, "Export results", config plugin, Maestro flows.

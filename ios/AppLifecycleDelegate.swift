@@ -99,38 +99,28 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // doesn't expose a filesystem-readable path to its assets
             // the way `<App>.app/<name>/` does on iOS.
             //
-            // Bundle-subdir name is read from the consumer app's
-            // `Info.plist` `ComapeoBackendDir` key (default
-            // `nodejs-project`). Lets a consumer ship its own backend
-            // bundle in a sibling directory inside the .app without
-            // touching this module's podspec — they bundle the dir as
-            // an Xcode resource and set the Info.plist key to its name.
-            let dirName = (Bundle.main.object(forInfoDictionaryKey: "ComapeoBackendDir") as? String) ?? "nodejs-project"
+            // Entry filename inside the bundled `nodejs-project/` is
+            // read from the consumer app's `Info.plist`
+            // `ComapeoEntryFile` key (default `index.mjs`). Lets a
+            // consumer ship a sibling entry file inside
+            // `<App>.app/nodejs-project/` without touching this
+            // module's podspec — they drop the file in via a
+            // resource-copy build phase and set the Info.plist key to
+            // its filename.
+            let entryFile = (Bundle.main.object(forInfoDictionaryKey: "ComapeoEntryFile") as? String) ?? "index.mjs"
             let bundleEntry = (Bundle.main.bundlePath as NSString)
-                .appendingPathComponent("\(dirName)/index.mjs")
+                .appendingPathComponent("nodejs-project/\(entryFile)")
             return FileManager.default.fileExists(atPath: bundleEntry)
                 ? bundleEntry
                 : nil
         },
         rootKeyProvider: {
-            // Opt-out matching the Android `comapeoStubRootKey` Gradle
-            // property: when the consumer's `Info.plist` sets
-            // `ComapeoStubRootKey = YES`, the loader skips the keychain
-            // round-trip and returns 16 zero bytes. Intended only for
-            // builds whose backend doesn't construct a `MapeoManager`
-            // and never reads the rootkey value (the benchmark app is
-            // the canonical case). Production consumers MUST leave
-            // this unset so real identity material is encrypted at
-            // rest. See `apps/benchmark/plugins/with-comapeo-bench/`.
-            if Bundle.main.object(forInfoDictionaryKey: "ComapeoStubRootKey") as? Bool == true {
-                return Data(repeating: 0, count: 16)
-            }
             // Reads on first call generate-and-persist; subsequent calls in
             // the same install return the same bytes. Throws if the
             // keychain is unavailable (device locked since reboot) — the
             // service will surface that as `.error` and the next foreground
             // (which fires `applicationDidBecomeActive` again) retries.
-            return try AppLifecycleDelegate.rootKeyStore.loadOrInitialize()
+            try AppLifecycleDelegate.rootKeyStore.loadOrInitialize()
         }
     )
 

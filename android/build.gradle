@@ -42,39 +42,19 @@ def comapeoAbiFilters = {
     return effective
 }()
 
-// Override for the assets subdirectory the loader reads `index.mjs`
-// from. Defaults to `nodejs-project` (the production bundle path
-// emitted by `scripts/build-backend.ts`). A consumer that ships its
-// own backend bundle in a sibling assets directory (e.g.
-// `nodejs-bench/`) sets `comapeoBackendDir=nodejs-bench` in its
-// `android/gradle.properties` and supplies the directory at
-// `app/src/main/assets/nodejs-bench/` itself; AGP's normal asset merge
-// places it alongside `nodejs-project/` in the APK and the loader
-// reads the override path. The bench app at `apps/benchmark/` uses
-// this hook via its `with-comapeo-bench` config plugin.
-def comapeoBackendDir = (rootProject.findProperty('comapeoBackendDir') ?: project.findProperty('comapeoBackendDir') ?: 'nodejs-project').toString()
-
-// Opt-out for the keystore-backed rootkey. When set, the loader sends
-// a deterministic 16-zero-byte stub on the init frame instead of
-// calling `RootKeyStore.loadOrInitialize()`. Intended only for builds
-// whose backend doesn't construct a `MapeoManager` and never reads
-// the rootkey value (the benchmark app being the canonical case) —
-// production consumers MUST leave this unset so real identity
-// material is encrypted at rest. The keystore-backed path requires
-// the device to have a user ECDH key (set up by the user via screen
-// lock); BrowserStack's stock Samsung devices don't, which is why
-// the bench app needs this hook.
-def comapeoStubRootKey = (rootProject.findProperty('comapeoStubRootKey') ?: project.findProperty('comapeoStubRootKey') ?: 'false').toString() == 'true'
-
-// Extra argv string passed verbatim to nodejs-mobile after the
-// canonical positional args (socket paths, dataDir). The loader
-// splits on whitespace at runtime, so this can hold one or more
-// CLI flags. Default empty; production consumers leave it unset.
-// The bench app uses it to override its telemetry sink (e.g.
-// `--telemetry=file:/tmp/spans.ndjson`); the bench backend's
-// default sink writes spans to stdout where Android logcat picks
-// them up, so an empty value is the right path for the BS sweep.
-def comapeoBackendArgs = (rootProject.findProperty('comapeoBackendArgs') ?: project.findProperty('comapeoBackendArgs') ?: '').toString()
+// Override for the entry filename inside the bundled `nodejs-project/`
+// assets directory that the loader hands to nodejs-mobile. Defaults
+// to `index.mjs` (the production bundle, emitted by
+// `scripts/build-backend.ts`). A consumer that ships its own backend
+// bundle as a sibling file in the same `nodejs-project/` (e.g.
+// `index.bench.mjs`) sets `comapeoEntryFile=index.bench.mjs` in its
+// `android/gradle.properties` and drops the file into
+// `app/src/main/assets/nodejs-project/` itself; AGP's normal asset
+// merge places it alongside the library's own `index.mjs` in the
+// APK and the loader runs the override entry. The bench app at
+// `apps/benchmark/` uses this hook via its `with-comapeo-bench`
+// config plugin.
+def comapeoEntryFile = (rootProject.findProperty('comapeoEntryFile') ?: project.findProperty('comapeoEntryFile') ?: 'index.mjs').toString()
 
 def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
 apply from: expoModulesCorePlugin
@@ -110,13 +90,11 @@ android {
         versionCode 1
         versionName "0.1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-        // Surfaces `comapeoBackendDir` to runtime Kotlin via
-        // `BuildConfig.COMAPEO_BACKEND_DIR`. The Java-string literal
+        // Surfaces `comapeoEntryFile` to runtime Kotlin via
+        // `BuildConfig.COMAPEO_ENTRY_FILE`. The Java-string literal
         // form (with embedded quotes) is what `buildConfigField`
         // requires.
-        buildConfigField "String", "COMAPEO_BACKEND_DIR", "\"${comapeoBackendDir}\""
-        buildConfigField "boolean", "COMAPEO_STUB_ROOTKEY", "${comapeoStubRootKey}"
-        buildConfigField "String", "COMAPEO_BACKEND_ARGS", "\"${comapeoBackendArgs}\""
+        buildConfigField "String", "COMAPEO_ENTRY_FILE", "\"${comapeoEntryFile}\""
         externalNativeBuild {
             cmake {
                 cppFlags ''

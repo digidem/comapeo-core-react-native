@@ -76,8 +76,8 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort);
  * Raw `CoreMessagePort` singleton — escape hatch for consumers that
  * need to bypass the `MapeoClient` request/response machinery and
  * speak directly to whatever backend bundle the consumer has wired in
- * (e.g. the bench app at `apps/benchmark/` overrides the backend via
- * `comapeoBackendDir` and talks to its own `BenchRpcServer`).
+ * (e.g. the bench app at `apps/benchmark/` overrides the entry via
+ * `comapeoEntryFile` and talks to its own `BenchRpcServer`).
  *
  * `unstable_` prefix follows the React/RN convention for APIs whose
  * shape may change without notice — this port exposes the framing

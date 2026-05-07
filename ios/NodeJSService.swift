@@ -574,8 +574,7 @@ class NodeJSService {
 
         // argv shape matches Android's NodeJSService.kt:
         //   [node, indexPath, comapeoSocketPath, controlSocketPath, privateStorageDir]
-        //   + [--device=<tag>] (always; bench backend reads it; production ignores)
-        //   + tokens of ComapeoBackendArgs Info.plist value (whitespace-split)
+        //   + [--device=<tag>] (always; downstream telemetry reads it; production ignores)
         //
         // The third positional is consumed by backend/index.js as
         // `privateStorageDir` and handed to createComapeo({privateStorageDir,...}).
@@ -590,28 +589,22 @@ class NodeJSService {
         // global `fetch` from re-introducing the same load path. Android
         // doesn't need it (JIT is permitted), but the flag is harmless on
         // both platforms so we keep argv parity.
-        var args = [
+        //
+        // The trailing `--device=` flag carries a stable device tag for
+        // downstream telemetry attribution (bench spans today, Sentry tags
+        // once that lands). The production backend ignores unknown flags so
+        // this is a no-op until something consumes it. Format mirrors
+        // Android's `<MANUFACTURER MODEL (Android REL)>`.
+        let device = UIDevice.current
+        let args = [
             "node",
             "--no-experimental-fetch",
             jsPath,
             comapeoSocketPath,
             controlSocketPath,
             privateStorageDir,
+            "--device=Apple \(device.model) (\(device.systemName) \(device.systemVersion))",
         ]
-        // Append a device tag the bench backend reads for span
-        // attribution. Production backend ignores unknown flags.
-        // Format mirrors Android's `<MANUFACTURER MODEL (Android REL)>`.
-        let device = UIDevice.current
-        args.append("--device=Apple \(device.model) (\(device.systemName) \(device.systemVersion))")
-        // Optional Info.plist passthrough — paired with Android's
-        // `comapeoBackendArgs` Gradle property. The bench app's
-        // `with-comapeo-bench` plugin populates it; default is
-        // unset, in which case nothing is appended.
-        if let extraArgs = Bundle.main.object(forInfoDictionaryKey: "ComapeoBackendArgs") as? String,
-           !extraArgs.trimmingCharacters(in: .whitespaces).isEmpty
-        {
-            args.append(contentsOf: extraArgs.split(whereSeparator: { $0.isWhitespace }).map(String.init))
-        }
         let exitCode = nodeEntryPoint(args)
         log("Node.js exited with code \(exitCode)")
 

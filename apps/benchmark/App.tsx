@@ -19,7 +19,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
  * Benchmark app entry. Drives the bench RPC bridge through the same
  * RN→native→Node UDS path as the production module, but talks to the
  * stripped backend in `apps/benchmark/backend/` (selected via the
- * module's `comapeoBackendDir` override that the
+ * module's `comapeoEntryFile` override that the
  * `with-comapeo-bench` config plugin sets) — so timings isolate the
  * framing / IPC / JSON-RPC bridge from `@comapeo/core` init noise.
  * See `apps/benchmark/README.md` for architecture + run instructions.
