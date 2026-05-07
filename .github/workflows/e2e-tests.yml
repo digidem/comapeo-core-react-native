@@ -85,11 +85,11 @@ jobs:
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
         run: |
-          APK_PATH="$(pwd)/apps/e2e/android/app/build/outputs/apk/release/app-release.apk"
+          APK_RELATIVE_PATH="apps/e2e/android/app/build/outputs/apk/release/app-release.apk"
 
           APP_URL=$(curl -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
-            -F "file=@$APK_PATH" | jq -r '.app_url')
+            -F "file=@$APK_RELATIVE_PATH" | jq -r '.app_url')
 
           echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
 
@@ -161,11 +161,11 @@ jobs:
       - name: Upload
         id: upload
         run: |
-          IPA_PATH="$(pwd)/apps/e2e/ios/corereactnativee2e.ipa"
+          IPA_RELATIVE_PATH="apps/e2e/ios/corereactnativee2e.ipa"
 
           APP_URL=$(curl -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
-            -F "file=@$IPA_PATH" | jq -r '.app_url')
+            -F "file=@$IPA_RELATIVE_PATH" | jq -r '.app_url')
 
           echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
 
@@ -193,11 +193,9 @@ jobs:
 
           zip -r "$ZIP_NAME" maestro/e2e.yaml
 
-          ZIP_PATH="$(pwd)/$ZIP_NAME"
-
           TEST_SUITE_URL=$(curl -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \ 
             -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/test-suite" \
-            -F "file=@$ZIP_PATH" | jq -r '.test_suite_url')
+            -F "file=@$ZIP_NAME" | jq -r '.test_suite_url')
 
           echo "test_suite_url=$TEST_SUITE_URL" >> $GITHUB_OUTPUT
 
