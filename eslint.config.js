@@ -24,7 +24,11 @@ export default defineConfig([
   includeIgnoreFile(gitExcludePath),
   {
     name: "ignores",
-    ignores: ["android/**/*", "apps/**/*", "ios/**/*"],
+    // `.claude/**` excludes claude-code worktrees, which carry
+    // their own `apps/`, `backend/`, etc. trees that the
+    // root-level `apps/**` / etc. ignores don't match (they're
+    // nested under `.claude/worktrees/<name>/`).
+    ignores: ["android/**/*", "apps/**/*", "ios/**/*", ".claude/**/*"],
   },
   js.configs.recommended,
   tseslint.configs.recommended,

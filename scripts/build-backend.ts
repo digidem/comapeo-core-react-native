@@ -32,6 +32,21 @@ const ANDROID_MAIN_NODEJS_PROJECT_DIR = join(
 const ANDROID_JNILIBS_DIR = join(PROJECT_ROOT, "android/src/main/jniLibs");
 const ANDROID_LIBNODE_DIR = join(PROJECT_ROOT, "android/libnode/bin");
 const IOS_NODEJS_PROJECT_DIR = join(PROJECT_ROOT, "ios/nodejs-project");
+
+// Sourcemap relocation targets — sibling of the per-platform asset/
+// resource trees so they ship in the npm tarball but stay out of the
+// APK/IPA. The relocate-sourcemaps rollup plugin moves `*.map` here
+// after writeBundle. Consumed by `comapeo-rn-upload-sourcemaps` at
+// the consumer's CI step.
+const ANDROID_DEBUG_SOURCEMAPS_DIR = join(
+  PROJECT_ROOT,
+  "android/src/debug/nodejs-sourcemaps",
+);
+const ANDROID_MAIN_SOURCEMAPS_DIR = join(
+  PROJECT_ROOT,
+  "android/src/main/nodejs-sourcemaps",
+);
+const IOS_SOURCEMAPS_DIR = join(PROJECT_ROOT, "ios/nodejs-sourcemaps");
 // One xcframework per native module instance. CocoaPods picks them up
 // via `vendored_frameworks` in ComapeoCore.podspec; Xcode's standard
 // Embed & Sign phase places + codesigns them into <App>.app/Frameworks/
@@ -75,6 +90,9 @@ await $({
     OUTPUT_DIR_ANDROID_DEBUG: ANDROID_DEBUG_NODEJS_PROJECT_DIR,
     OUTPUT_DIR_ANDROID_MAIN: ANDROID_MAIN_NODEJS_PROJECT_DIR,
     OUTPUT_DIR_IOS: IOS_NODEJS_PROJECT_DIR,
+    SOURCEMAPS_DIR_ANDROID_DEBUG: ANDROID_DEBUG_SOURCEMAPS_DIR,
+    SOURCEMAPS_DIR_ANDROID_MAIN: ANDROID_MAIN_SOURCEMAPS_DIR,
+    SOURCEMAPS_DIR_IOS: IOS_SOURCEMAPS_DIR,
   },
 })`npm run build`;
 

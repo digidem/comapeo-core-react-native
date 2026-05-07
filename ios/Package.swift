@@ -26,6 +26,9 @@ let package = Package(
                 "NodeJSService.swift",
                 "ControlFrame.swift",
                 "Log.swift",
+                "SentryConfig.swift",
+                "SentryNativeBridge.swift",
+                "SentryTags.swift",
             ]
         ),
         .testTarget(

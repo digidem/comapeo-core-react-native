@@ -7,6 +7,7 @@ import alias from "@rollup/plugin-alias";
 import commonjs from "@rollup/plugin-commonjs";
 import { default as esmShim } from "@rollup/plugin-esm-shim";
 import json from "@rollup/plugin-json";
+import { sentryRollupPlugin } from "@sentry/rollup-plugin";
 import type { OutputOptions, Plugin, RollupOptions } from "rollup";
 import { minify } from "rollup-plugin-esbuild";
 
@@ -14,6 +15,10 @@ import addonLoaderPlugin, {
   androidAddonLoaderBanner,
   iosAddonLoaderBanner,
 } from "./rollup-plugins/rollup-plugin-addon-loader.js";
+import {
+  captureDebugIdsPlugin,
+  relocateSourcemapsPlugin,
+} from "./rollup-plugins/rollup-plugin-sentry-debug-ids.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,6 +42,28 @@ const ANDROID_OUT_MAIN =
   path.join(__dirname, "dist/android/main");
 
 const IOS_OUT = process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
+
+/**
+ * Per-platform sourcemap relocation targets. The `.mjs.map` file rollup
+ * writes alongside the bundle is moved here after `writeBundle` so it
+ * never enters the per-platform asset/resource tree consumed by the
+ * APK / IPA builds. The maps still ship in the npm tarball (the parent
+ * of these dirs is whitelisted in `package.json`'s `files`) so the
+ * `comapeo-rn-upload-sourcemaps` CLI can resolve them at consumer build
+ * time.
+ *
+ * For the production build these are passed by `scripts/build-backend.ts`;
+ * the fallbacks keep the standalone `cd backend && npm run build` case
+ * working — maps land in `<outDir>-sourcemaps/` next to the bundle dir.
+ */
+const ANDROID_SOURCEMAPS_DEBUG =
+  process.env.SOURCEMAPS_DIR_ANDROID_DEBUG ?? `${ANDROID_OUT_DEBUG}-sourcemaps`;
+
+const ANDROID_SOURCEMAPS_MAIN =
+  process.env.SOURCEMAPS_DIR_ANDROID_MAIN ?? `${ANDROID_OUT_MAIN}-sourcemaps`;
+
+const IOS_SOURCEMAPS =
+  process.env.SOURCEMAPS_DIR_IOS ?? `${IOS_OUT}-sourcemaps`;
 
 /**
  * Resolves `@comapeo/core`'s `./fastify-plugins/maps.js` import to the
@@ -111,10 +138,12 @@ function buildPlugins({
   platform,
   outDir,
   shouldMinify,
+  debugIdMap,
 }: {
   platform: "android" | "ios";
   outDir: string;
   shouldMinify: boolean;
+  debugIdMap: Map<string, string>;
 }): Plugin[] {
   return [
     alias({
@@ -145,6 +174,22 @@ function buildPlugins({
     json(),
     shouldMinify ? minify() : undefined,
     copyStaticAssetsPlugin(outDir),
+    // Capture the debug ID sentry-rollup-plugin will compute for this
+    // chunk so `relocateSourcemapsPlugin` can read it directly at
+    // writeBundle. Must run *before* sentry-rollup-plugin in
+    // renderChunk so both see the same `code` input.
+    captureDebugIdsPlugin(debugIdMap),
+    // Inject `_sentryDebugIdIdentifier` (runtime snippet) into the
+    // bundle so Sentry symbolicates by ID, independent of the consumer's
+    // release. Upload is disabled — published tarballs carry the maps;
+    // consumers run `comapeo-rn-upload-sourcemaps` from CI to push them
+    // to their own Sentry project. Debug IDs are `stringToUUID(chunk.code)`
+    // so identical bundle bytes produce identical IDs across re-publishes.
+    sentryRollupPlugin({
+      sourcemaps: { disable: "disable-upload" },
+      telemetry: false,
+      release: { inject: false, create: false },
+    }),
   ];
 }
 
@@ -162,6 +207,7 @@ function cleanOutputDirPlugin(dir: string): Plugin {
     },
   };
 }
+
 
 const sharedInput = {
   index: path.join(__dirname, "index.js"),
@@ -187,6 +233,15 @@ const sharedOutput: OutputOptions = {
  * Embed-&-Sign'd xcframework binary at NATIVE_LIB_DIR/<key>.framework/<key>.
  * See `rollup-plugin-addon-loader.js` for the helper bodies.
  */
+// One Map per output config. Populated by `captureDebugIdsPlugin` in
+// `renderChunk` and read by `relocateSourcemapsPlugin` in `writeBundle`.
+// Per-config (rather than one shared Map) so a stale entry from a
+// previous output can't bleed across — rollup runs the configs
+// sequentially.
+const androidDebugDebugIds = new Map<string, string>();
+const androidMainDebugIds = new Map<string, string>();
+const iosDebugIds = new Map<string, string>();
+
 const config: RollupOptions[] = [
   {
     input: sharedInput,
@@ -202,7 +257,13 @@ const config: RollupOptions[] = [
         outDir: ANDROID_OUT_DEBUG,
         // Android debug does not minify the bundle.
         shouldMinify: false,
+        debugIdMap: androidDebugDebugIds,
       }),
+      relocateSourcemapsPlugin(
+        ANDROID_OUT_DEBUG,
+        ANDROID_SOURCEMAPS_DEBUG,
+        androidDebugDebugIds,
+      ),
     ],
   },
   {
@@ -218,7 +279,13 @@ const config: RollupOptions[] = [
         platform: "android",
         outDir: ANDROID_OUT_MAIN,
         shouldMinify: true,
+        debugIdMap: androidMainDebugIds,
       }),
+      relocateSourcemapsPlugin(
+        ANDROID_OUT_MAIN,
+        ANDROID_SOURCEMAPS_MAIN,
+        androidMainDebugIds,
+      ),
     ],
   },
   {
@@ -234,7 +301,9 @@ const config: RollupOptions[] = [
         platform: "ios",
         outDir: IOS_OUT,
         shouldMinify: true,
+        debugIdMap: iosDebugIds,
       }),
+      relocateSourcemapsPlugin(IOS_OUT, IOS_SOURCEMAPS, iosDebugIds),
     ],
   },
 ];
