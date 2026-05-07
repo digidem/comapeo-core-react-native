@@ -5,6 +5,7 @@ import io.sentry.Breadcrumb
 import io.sentry.ISpan
 import io.sentry.ITransaction
 import io.sentry.Sentry
+import io.sentry.IScope
 import io.sentry.SentryAttribute
 import io.sentry.SentryAttributes
 import io.sentry.SentryLevel
@@ -48,22 +49,11 @@ internal object SentryFgsBridgeImpl {
      * their own check.
      */
     fun log(level: String, message: String, attributes: Map<String, Any?>) {
-        val sentryLevel = parseLogLevel(level)
-        if (attributes.isEmpty()) {
-            when (sentryLevel) {
-                SentryLogLevel.TRACE -> Sentry.logger().trace(message)
-                SentryLogLevel.DEBUG -> Sentry.logger().debug(message)
-                SentryLogLevel.INFO -> Sentry.logger().info(message)
-                SentryLogLevel.WARN -> Sentry.logger().warn(message)
-                SentryLogLevel.ERROR -> Sentry.logger().error(message)
-                SentryLogLevel.FATAL -> Sentry.logger().fatal(message)
-            }
-        } else {
-            val attrs = SentryAttributes.of(
-                *attributes.entries.mapNotNull { (k, v) -> v?.let { sentryAttribute(k, it) } }.toTypedArray(),
-            )
-            Sentry.logger().log(sentryLevel, SentryLogParameters.create(attrs), message)
-        }
+        val attrs = attributes.entries
+            .mapNotNull { (k, v) -> v?.let { sentryAttribute(k, it) } }
+            .toTypedArray()
+        val params = SentryLogParameters.create(SentryAttributes.of(*attrs))
+        Sentry.logger().log(parseLogLevel(level), params, message)
     }
 
     private fun sentryAttribute(key: String, value: Any): SentryAttribute = when (value) {
@@ -108,9 +98,7 @@ internal object SentryFgsBridgeImpl {
         throwable: Throwable,
         tags: Map<String, String>,
     ) {
-        Sentry.captureException(throwable) { scope ->
-            tags.forEach { (k, v) -> scope.setTag(k, v) }
-        }
+        Sentry.captureException(throwable) { scope -> applyTags(scope, tags) }
     }
 
     fun captureMessage(
@@ -118,9 +106,11 @@ internal object SentryFgsBridgeImpl {
         level: String,
         tags: Map<String, String>,
     ) {
-        Sentry.captureMessage(message, parseLevel(level)) { scope ->
-            tags.forEach { (k, v) -> scope.setTag(k, v) }
-        }
+        Sentry.captureMessage(message, parseLevel(level)) { scope -> applyTags(scope, tags) }
+    }
+
+    private fun applyTags(scope: IScope, tags: Map<String, String>) {
+        tags.forEach { (k, v) -> scope.setTag(k, v) }
     }
 
     /**
