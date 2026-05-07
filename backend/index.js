@@ -121,8 +121,8 @@ const controlIpcServer = new SimpleRpcServer({
    * main-app process). When the FGS-side `NodeJSService` enters ERROR
    * from a *local* cause (rootkey load failure, startup watchdog
    * timeout) while Node is still alive, it sends this frame. The
-   * backend re-broadcasts via `handleFatal` (which calls
-   * `broadcastError` and exits 1 after a 100ms flush) so the main-app
+   * backend re-broadcasts via `handleFatal` (which broadcasts the
+   * `error` frame and exits 1 after a 100ms flush) so the main-app
    * process sees a real `error` frame with the correct phase and
    * message — not a generic "unexpected disconnect" inferred from a
    * sudden socket close.

@@ -311,8 +311,8 @@ The model addresses three previously-broken paths:
 - **FGS-side local failure (rootkey, watchdog) before Node can
   broadcast** → see §5.5 (Native→Node error forwarding). The FGS
   ships an `error-native` frame to Node, the backend re-broadcasts
-  via `broadcastError`, and the main-app process gets a real `error`
-  frame with the actual phase rather than a generic disconnect.
+  it as an `error` frame, and the main-app process gets a real
+  `error` frame with the actual phase rather than a generic disconnect.
 
 ### 5.2 What feeds each component
 
@@ -423,8 +423,8 @@ Three failure surfaces, all converging on `ERROR`:
    `process.on("uncaughtException")` and
    `process.on("unhandledRejection")` route through
    `handleFatal(phase, error)` which calls
-   `controlIpcServer.broadcastError({phase, message, stack})` and
-   exits 1 after a 100ms flush wait. Boot-phase errors (`init`,
+   `controlIpcServer.broadcast({type:"error", phase, message, stack})`
+   and exits 1 after a 100ms flush wait. Boot-phase errors (`init`,
    `listen-control`, `construct`, `runtime`) follow the same path
    via the boot IIFE's catch. The `error-native` handler from §1 is
    what bridges Android FGS-local failures *into* this same path,
@@ -489,7 +489,7 @@ codebases.
 
 | # | Where | Default | Guards against | On expiry |
 |---|-------|---------|---------------|-----------|
-| 9 | `handleFatal` flush window | 100 ms | `broadcastError` not flushed before `process.exit(1)` | Hard exit |
+| 9 | `handleFatal` flush window | 100 ms | `error` frame not flushed before `process.exit(1)` | Hard exit |
 | 10 | `ServerHelper.listen` retry on `EADDRINUSE` | ~4 s (3 retries × 1 s) | Stale socket file blocking bind | Reject — caller surfaces ERROR with phase `listen-control` / `construct` |
 
 **Unbounded waits (with safety nets, not internal timeouts):**

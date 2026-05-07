@@ -122,9 +122,11 @@ export class SimpleRpcServer extends ServerHelper {
     return this.#readinessPhase;
   }
 
-  /** @param {TerminalFrame} message */
+  /** @param {TerminalFrame | { type: string } & import("type-fest").JsonObject} message */
   broadcast(message) {
-    this.#terminalFrame = message;
+    if (message.type === "stopping" || message.type === "error") {
+      this.#terminalFrame = /** @type {TerminalFrame} */ (message);
+    }
     for (const client of this.#clients) {
       try {
         client.postMessage(message);
