@@ -65,18 +65,25 @@ public class ComapeoCoreModule: Module {
         }
 
         OnDestroy {
+            // Relies on expo-modules-core PR #33760 (shipped in SDK 53+,
+            // verified against expo-modules-core@55.0.23): weak
+            // `MainValueConverter.appContext` lets AppContext deinit on
+            // JS reload, which fires .moduleDestroy and runs this block.
+            // If a future SDK reintroduces the strong-ref cycle, the
+            // fallback is to drive disconnect() from
+            // RCTBridgeWillReloadNotification /
+            // RCTJavaScriptWillStartLoadingNotification.
+            //
+            // disconnect() is already synchronous on iOS (shutdown +
+            // join + close), so the backend observes EOF before this
+            // block returns.
             self.ipc?.disconnect()
             self.ipc = nil
         }
 
         OnAppEntersForeground {
-            // `connect()` on NodeJSIPC is idempotent: it early-returns
-            // when the IPC is already .connected/.connecting/.disconnecting
-            // and resets a prior .error state so a fresh connect attempt
-            // can succeed. Calling it on every foreground is the cheap
-            // way to recover from a transient connection failure (e.g.
-            // an iOS suspension that closed the underlying fd) without
-            // tracking IPC state at this layer.
+            // Idempotent reconnect to recover from a transient failure
+            // (e.g. iOS suspension closed the underlying fd).
             self.ipc?.connect()
         }
 

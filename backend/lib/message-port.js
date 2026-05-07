@@ -100,5 +100,9 @@ export class SocketMessagePort extends TypedEmitter {
     this.#state = "closed";
     this.#queue.length = 0;
     this.#framedStream.destroy();
+    // ComapeoRpcServer wires `messagePort.on("close", () => server.close())`
+    // to clear rpc-reflector subscriptions registered against MapeoManager;
+    // without this emit, listeners leak on every reconnect (e.g. RN reload).
+    this.emit("close");
   }
 }

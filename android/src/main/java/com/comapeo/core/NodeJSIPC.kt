@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -231,6 +232,25 @@ class NodeJSIPC(
     fun sendMessage(message: String) {
         connect()
         sendChannel.trySend(message)
+    }
+
+    /**
+     * Synchronous, terminal teardown. Unlike [disconnect], the underlying
+     * [LocalSocket] is closed on the calling thread, so the Node.js peer
+     * observes EOF before [close] returns — required when a fresh
+     * `OnCreate` will open a new connection immediately after.
+     *
+     * The instance must not be reused after [close]; construct a new one.
+     */
+    fun close() {
+        scope.cancel()
+        sendChannel.close()
+        try { dataOutputStream?.close() } catch (_: Exception) {}
+        try { dataInputStream?.close() } catch (_: Exception) {}
+        if (::socket.isInitialized) {
+            try { socket.close() } catch (_: Exception) {}
+        }
+        state.value = State.Disconnected
     }
 }
 

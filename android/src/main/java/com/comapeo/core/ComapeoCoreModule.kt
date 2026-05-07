@@ -100,6 +100,10 @@ class ComapeoCoreModule : Module() {
     }
 
     override fun definition() = ModuleDefinition {
+        // OnCreate / OnDestroy are bound to the Expo AppContext (JS runtime
+        // lifetime), so they fire on every JS reload — the boundary at
+        // which rpc-reflector subscriptions on MapeoManager need to be
+        // torn down before a fresh client connects.
         OnCreate {
             val socketFile =
                 File(appContext.persistentFilesDirectory, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
@@ -190,19 +194,16 @@ class ComapeoCoreModule : Module() {
         }
 
         OnDestroy {
-            ipc.disconnect()
-            controlIpc.disconnect()
+            // Synchronous close: backend must see EOF on the previous
+            // session before the next OnCreate opens a new connection, or
+            // rpc-reflector cleanup runs against the wrong connection.
+            ipc.close()
+            controlIpc.close()
         }
 
         OnActivityEntersForeground {
-            // `connect()` is idempotent on `NodeJSIPC`: it early-returns
-            // when the IPC is already in Connected/Connecting/Disconnecting
-            // and resets a prior `Error` state so the next attempt can
-            // succeed. Calling it on every foreground transition is
-            // therefore the cheap way to recover from a transient
-            // connection failure (e.g. the FGS was killed and respawned
-            // while the app was backgrounded) without us tracking the
-            // IPC state ourselves at this layer.
+            // Idempotent reconnect to recover from a transient failure
+            // (e.g. FGS killed and respawned while backgrounded).
             ipc.connect()
             controlIpc.connect()
         }
