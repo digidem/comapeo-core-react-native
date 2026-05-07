@@ -82,8 +82,8 @@ jobs:
       - name: Upload APK
         id: upload
         env:
-          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
-          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
         run: |
           APK_PATH="$(pwd)/apps/e2e/android/app/build/outputs/apk/release/app-release.apk"
 
@@ -178,8 +178,8 @@ jobs:
       - name: Upload test suite to Browserstack
         id: upload
         env:
-          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
-          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
         run: |
           ZIP_NAME="maestro_tests.zip"
 
@@ -211,9 +211,9 @@ jobs:
         with:
           app_url: ${{ needs.build-android.outputs.app_url }}
           test_suite_url: ${{ needs.upload-test-suite.outputs.test_suite_url }}
-          project_name: ${{ vars.BROWSERSTACK_PROJECT_NAME }}
-          browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME }}
-          browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          project_name: ${{ vars.BROWSERSTACK_PROJECT_NAME_TESTS }}
+          browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
+          browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           # TODO: Adjust based on actual timing
           timeout: 1800
           devices: |
@@ -258,9 +258,9 @@ jobs:
         with:
           app_url: ${{ needs.build-ios.outputs.app_url }}
           test_suite_url: ${{ needs.upload-test-suite.outputs.test_suite_url }}
-          project_name: ${{ vars.BROWSERSTACK_PROJECT_NAME }}
-          browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME }}
-          browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          project_name: ${{ vars.BROWSERSTACK_PROJECT_NAME_TESTS }}
+          browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
+          browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           # TODO: Adjust based on actual timing
           timeout: 1800
           devices: |
