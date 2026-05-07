@@ -1,12 +1,5 @@
 import { rmSync } from "node:fs";
-import {
-  cp,
-  mkdir,
-  readFile,
-  readdir,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { cp } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
@@ -14,7 +7,6 @@ import alias from "@rollup/plugin-alias";
 import commonjs from "@rollup/plugin-commonjs";
 import { default as esmShim } from "@rollup/plugin-esm-shim";
 import json from "@rollup/plugin-json";
-import { isJsFile, stringToUUID } from "@sentry/bundler-plugin-core";
 import { sentryRollupPlugin } from "@sentry/rollup-plugin";
 import type { OutputOptions, Plugin, RollupOptions } from "rollup";
 import { minify } from "rollup-plugin-esbuild";
@@ -23,6 +15,10 @@ import addonLoaderPlugin, {
   androidAddonLoaderBanner,
   iosAddonLoaderBanner,
 } from "./rollup-plugins/rollup-plugin-addon-loader.js";
+import {
+  captureDebugIdsPlugin,
+  relocateSourcemapsPlugin,
+} from "./rollup-plugins/rollup-plugin-sentry-debug-ids.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -212,120 +208,6 @@ function cleanOutputDirPlugin(dir: string): Plugin {
   };
 }
 
-/**
- * Captures the debug ID sentry-rollup-plugin will derive for each
- * chunk, by computing it ourselves on the same `code` input.
- * `stringToUUID` is the public helper from `@sentry/bundler-plugin-core`
- * that sentry-rollup-plugin uses internally — calling it on the same
- * bytes produces the same ID by construction. Plugin order matters:
- * this must run *before* `sentryRollupPlugin` in `renderChunk` so we
- * see the same `code` parameter (we return `null` to avoid mutating
- * it).
- *
- * The captured IDs are then read by `relocateSourcemapsPlugin` at
- * `writeBundle`, avoiding a regex scan over the bundle's runtime
- * `_sentryDebugIdIdentifier` snippet — the snippet's exact format is
- * an implementation detail of bundler-plugin-core's runtime SDK
- * contract, but `stringToUUID(code)` is a public, stable helper.
- */
-function captureDebugIdsPlugin(idMap: Map<string, string>): Plugin {
-  return {
-    name: "capture-debug-ids",
-    renderChunk(code, chunk) {
-      if (!isJsFile(chunk.fileName)) return null;
-      idMap.set(chunk.fileName, stringToUUID(code));
-      return null;
-    },
-  };
-}
-
-/**
- * Moves `*.map` files out of the rollup output dir into a sibling
- * sourcemap dir after `writeBundle`, injecting `debug_id` (and the
- * legacy `debugId`) into the map JSON on the way through. Keeps the
- * bundle's `//# sourceMappingURL=index.mjs.map` line as a dangling
- * reference — harmless on-device (the runtime never resolves it) and
- * the upload CLI matches map-to-bundle by debug ID, not by adjacency.
- *
- * Why move instead of exclude in the platform packaging:
- *   - Android: gradle `assets.exclude '**\/*.map'` would also work, but
- *     CocoaPods folder references (`s.resources = ['nodejs-project']`)
- *     have no equivalent — there's no public hook to exclude individual
- *     files from a folder ref. Doing the move at build time keeps the
- *     mechanism uniform across platforms.
- *
- * Why inject `debug_id` into the map ourselves (rather than letting
- * sentry-cli do it at upload):
- *   - With `sourcemaps.disable: "disable-upload"` the sentry-rollup-
- *     plugin only writes `_sentryDebugIdIdentifier` into the bundle,
- *     not into the map.
- *   - sentry-cli's debug-ID-based association uses adjacency or
- *     `sourceMappingURL` to find the map for a bundle. Both break once
- *     we relocate, so the map needs the ID embedded directly to be
- *     resolvable from any directory.
- *
- * Both keys are written for back-compat: sentry-cli <2.39 reads
- * `debug_id` (snake_case), 2.39+ reads either, 3.0+ writes `debugId`
- * only. Consumers' sentry-cli pin comes from their @sentry/react-native
- * version, so we can't assume 2.39+.
- *
- * Idempotent: `cleanOutputDirPlugin` wipes `outDir` before the build
- * starts; this plugin wipes its target dir at `writeBundle` time so a
- * stale map from a previous build can't leak through.
- */
-function relocateSourcemapsPlugin(
-  outDir: string,
-  sourcemapDir: string,
-  idMap: Map<string, string>,
-): Plugin {
-  return {
-    name: "relocate-sourcemaps",
-    async writeBundle() {
-      rmSync(sourcemapDir, { force: true, recursive: true });
-      await mkdir(sourcemapDir, { recursive: true });
-      const entries = await readdir(outDir);
-      const mapNames = entries.filter((name) => name.endsWith(".map"));
-      await Promise.all(
-        mapNames.map(async (name) => {
-          const bundleName = name.slice(0, -".map".length);
-          const debugId = idMap.get(bundleName);
-          if (!debugId) {
-            throw new Error(
-              `relocate-sourcemaps: no captured debug ID for ${bundleName}; ` +
-                "is captureDebugIdsPlugin in plugins[] before sentryRollupPlugin?",
-            );
-          }
-          const bundlePath = path.join(outDir, bundleName);
-          const mapSrc = path.join(outDir, name);
-          const mapDst = path.join(sourcemapDir, name);
-          const [bundleSource, mapSource] = await Promise.all([
-            readFile(bundlePath, "utf8"),
-            readFile(mapSrc, "utf8"),
-          ]);
-
-          // Spec-compliant trailing `//# debugId=` comment. The
-          // sentry-rollup-plugin writes `_sentryDebugIdIdentifier`
-          // (the runtime snippet) but only adds the trailing comment
-          // during its own upload step, which we disabled. Add it
-          // here so all sentry-cli versions and other tools that
-          // scan for the trailer find the ID. Spec doesn't constrain
-          // ordering with `//# sourceMappingURL=`, so just append.
-          const patchedBundle = `${bundleSource}\n//# debugId=${debugId}\n`;
-
-          const map = JSON.parse(mapSource);
-          map.debug_id = debugId;
-          map.debugId = debugId;
-
-          await Promise.all([
-            writeFile(bundlePath, patchedBundle, "utf8"),
-            writeFile(mapDst, JSON.stringify(map), "utf8"),
-          ]);
-          await unlink(mapSrc);
-        }),
-      );
-    },
-  };
-}
 
 const sharedInput = {
   index: path.join(__dirname, "index.js"),
