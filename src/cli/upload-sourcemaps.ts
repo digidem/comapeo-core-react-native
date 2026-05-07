@@ -15,9 +15,10 @@
 //
 // Each (bundle, map) pair is keyed by a deterministic debug ID embedded
 // at build time (`stringToUUID(chunk.code)`); see
-// `backend/rollup.config.ts` and `relocateSourcemapsPlugin`. The upload
-// uses sentry-cli's `--debug-ids` mode, which keys symbolication off the
-// embedded ID, so the consumer's app `release` does not have to match.
+// `backend/rollup.config.ts` and `relocateSourcemapsPlugin`. sentry-cli
+// 2.x+ does debug-ID-based upload by default — symbolication keys off
+// the embedded ID, so the consumer's app `release` does not have to
+// match.
 //
 // Auth token is read from `SENTRY_AUTH_TOKEN`. Org and project come from
 // `--org`/`--project` (or `SENTRY_ORG`/`SENTRY_PROJECT`).
@@ -155,12 +156,21 @@ for (const name of selectedNames) {
   // it scans <PATHS> for `_sentryDebugIdIdentifier` / trailing
   // `//# debugId=` in JS files and `debug_id` in maps, then groups them
   // into artifact bundles keyed by debug ID. No `--debug-ids` flag.
+  //
+  // `--no-rewrite` skips sentry-cli's `discover_sourcemaps_location`
+  // step, which would otherwise follow the bundle's
+  // `//# sourceMappingURL=index.mjs.map` and look for an adjacent map
+  // — but our maps live in a sibling `nodejs-sourcemaps/` dir, so the
+  // walk warns and no-ops. The IDs are already embedded in both files
+  // (see `relocateSourcemapsPlugin`), which is exactly the case
+  // `--no-rewrite` is documented for.
   const result = spawnSync(
     process.execPath,
     [
       sentryCliBin,
       "sourcemaps",
       "upload",
+      "--no-rewrite",
       "--org",
       org,
       "--project",
