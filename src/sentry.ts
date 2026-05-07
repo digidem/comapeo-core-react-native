@@ -63,6 +63,7 @@ export interface SentryAdapter {
     captureContext?: SentryCaptureContext | SentrySeverityLevel,
   ): string;
   addBreadcrumb(breadcrumb: SentryBreadcrumb): void;
+  setTag(key: string, value: string | number | boolean): void;
   startSpan<T>(
     options: { name: string; op?: string; forceTransaction?: boolean },
     callback: (span: SentrySpan) => T,
@@ -96,6 +97,18 @@ export function setSentryAdapterForTests(adapter: SentryAdapter | null): void {
 }
 
 // ── State listeners ─────────────────────────────────────────────
+
+// Apply scope-default `proc` / `layer` tags so every event from
+// this hub — including default RN-SDK captures (JS errors, ANRs,
+// app-start transactions) — is filterable alongside our own
+// captures, not just the ones below where we set them per-call.
+{
+  const adapter = activeAdapter();
+  if (adapter) {
+    adapter.setTag(SentryTags.proc, SentryTags.procMain);
+    adapter.setTag(SentryTags.layer, SentryTags.layerRn);
+  }
+}
 
 state.addListener("stateChange", handleStateChange);
 state.addListener("messageerror", handleMessageError);
