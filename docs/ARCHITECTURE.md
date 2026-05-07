@@ -751,6 +751,82 @@ identities, raw project IDs, or user-entered text). Phase 5's
 `before_send` processor will add a defensive substring scrub
 on top.
 
+### 7.6 When to log, when to breadcrumb
+
+Logs and breadcrumbs serve different purposes and shouldn't be
+1-to-1.
+
+| | Logs (`logcat` / `os_log`) | Breadcrumbs |
+|---|---|---|
+| Cost | Effectively unbounded — OS rotates the buffer | Finite ring buffer (Sentry's default cap is 100 per scope) |
+| Visibility | Live during local debug only (`adb logcat`, Console.app, BrowserStack device logs) | Attached to captured events in the Sentry dashboard |
+| Audience | Developer at the keyboard | Developer reading a Sentry issue weeks later |
+| Cost of a low-signal entry | Negligible | Evicts an older, possibly higher-signal crumb |
+
+The codebase uses three categories at every emit site:
+
+- **`logCrumb` (both)** — events that meaningfully describe
+  app-lifecycle progress and would help diagnose a future
+  Sentry error. State transitions, control-socket frames,
+  IPC connection state, FGS lifecycle, boot phases. ~20–25
+  emissions per app session, well under the buffer cap.
+- **`log` only** — debug noise, cache-check diagnostics,
+  guard-rejection paths (`"Cannot stop ... not in
+  STARTING/STARTED"`, `"Skipping process kill — new instance
+  active"`). Useful in logcat for local debugging but worthless
+  as a breadcrumb because either (a) no event will fire to
+  surface it, or (b) it'd evict higher-signal crumbs.
+- **breadcrumb only** — `src/sentry.ts` JS adapter on Android.
+  The matching FGS-side `logCrumb` already produces the logcat
+  line; emitting from JS too would just round-trip through
+  Metro's bridge.
+
+**iOS dual-crumb caveat.** On iOS, single-process means both
+the native bridge's breadcrumb and the JS adapter's breadcrumb
+land on the same Sentry hub for every state transition. They
+carry different `data` payloads (native has the full
+`(backendState, nodeRuntime, stopRequested)` triple; JS has
+the simplified state derivation), so they're complementary,
+but they do roughly halve the effective lookback window. The
+JS adapter is the resilience layer when the native bridge is
+gated off (`#if canImport(Sentry)` false), so we keep both.
+
+**Phase 3 forward-look.** When backend RPC tracing lands, do
+NOT `logCrumb` every RPC method call — a noisy sync session
+can fire 100+ RPCs and evict every boot/state crumb from the
+buffer. The right shape is: log per RPC (cheap), crumb only
+on RPC errors, and let the sampled-trace span infrastructure
+(`tracesSampleRate`) handle the success path.
+
+**Relationship to Sentry structured logs.** Sentry has a
+separate "Logs" pipeline (`SentrySDK.logger.*` /
+`Sentry.logger.*`, opt-in via `logs.isEnabled` /
+`enableLogs`), which is queryable independently in the Logs
+UI and is *not* attached to events the way breadcrumbs are.
+Two ways to populate it:
+
+- **Sentry Android Gradle plugin** with
+  `InstrumentationFeature.LOGCAT` — bytecode-rewrites
+  `android.util.Log.*` calls at build time so each one also
+  hits `Sentry.logger.*`. Android-only and requires adopting
+  the Gradle plugin (build-time coupling). iOS has no
+  equivalent — `os.log` and `SentrySDK.logger` are separate
+  pipelines.
+- **Wrap our `log()` / `logCrumb()` helpers** to also call
+  `Sentry.logger.info(...)` when `logs.isEnabled`. ~30 LOC
+  per platform; works cross-platform; SDK no-ops when logs
+  aren't enabled, so it's free for consumers who don't opt
+  in.
+
+We do **not** currently do either. The breadcrumb +
+captureException path covers production debugging well, and
+structured logs consume a separate Sentry quota that
+consumers haven't opted into. The wrapper is a small,
+deliberate follow-up if a use case appears (e.g.
+cross-process timeline reconstruction across `proc:main` /
+`proc:fgs` / `proc:node` — breadcrumbs don't cross scopes;
+logs would).
+
 ---
 
 ## 8. Alternatives considered
