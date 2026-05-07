@@ -16,6 +16,8 @@ int pipe_stdout[2];
 int pipe_stderr[2];
 pthread_t thread_stdout;
 pthread_t thread_stderr;
+bool thread_stdout_created = false;
+bool thread_stderr_created = false;
 
 void *thread_stderr_func(void *) {
     ssize_t redirect_size;
@@ -56,22 +58,32 @@ int start_redirecting_stdout_stderr() {
 
     if (pthread_create(&thread_stdout, nullptr, thread_stdout_func, nullptr) != 0)
         return -1;
+    thread_stdout_created = true;
 
     if (pthread_create(&thread_stderr, nullptr, thread_stderr_func, nullptr) != 0)
         return -1;
+    thread_stderr_created = true;
 
     return 0;
 }
 
 void stop_redirecting_stdout_stderr() {
     // Close all write-end refs (STDOUT_FILENO is a dup2 alias of pipe_stdout[1]) so
-    // the pumps see EOF, then join so the buffer drains before JNI returns.
+    // the pumps see EOF, then join so the buffer drains before JNI returns. The
+    // _created flags guard against pthread_join on an uninitialized handle when
+    // pthread_create failed in start_redirecting_stdout_stderr.
     close(STDOUT_FILENO);
     close(pipe_stdout[1]);
     close(STDERR_FILENO);
     close(pipe_stderr[1]);
-    pthread_join(thread_stdout, nullptr);
-    pthread_join(thread_stderr, nullptr);
+    if (thread_stdout_created) {
+        pthread_join(thread_stdout, nullptr);
+        thread_stdout_created = false;
+    }
+    if (thread_stderr_created) {
+        pthread_join(thread_stderr, nullptr);
+        thread_stderr_created = false;
+    }
     close(pipe_stdout[0]);
     close(pipe_stderr[0]);
 }
