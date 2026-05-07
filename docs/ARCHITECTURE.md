@@ -139,15 +139,19 @@ late-connecting client (the React Native module on Android races the
 FGS's IPC client; both connect to the same socket, see §4) would miss
 the events that already fired.
 
-The other broadcast frames — `stopping` (via `broadcast()`) and `error`
-(via `broadcastError()`) — are explicitly **not** replayed. They're
-one-shot announcements that pair with the natural socket close: a late
-client connecting after either frame fires sees nothing on the wire,
-but observes the impending disconnect and infers ERROR / STOPPED from
-its own pre-disconnect state (see §5.4 for the disconnect-reason
-table). The control socket is short-lived in those scenarios — the
-process is about to exit — so the no-replay choice avoids buffering
-lifecycle history on a server that's tearing itself down.
+Terminal lifecycle frames — `stopping` (via `broadcastStopping()`) and
+`error` (via `broadcastError()`) — are **also** cached and replayed,
+but only the latest one. The window between either frame and the
+natural socket close is non-zero (~100 ms for `error` before
+`process.exit(1)`; the duration of `Promise.all([close…])` for
+`stopping`), and a client that connects in that window would otherwise
+have to infer the terminal state from the disconnect alone. That
+inference is lossy in two ways: a graceful `stopping`-then-close looks
+identical to an unexpected crash to a client that missed the frame
+(STARTING/STARTED → ERROR per §5.4), and an `error` frame's phase and
+message are replaced by a synthetic `node-runtime-unexpected`. Caching
+the latest terminal frame closes both gaps with a single object
+reference of overhead.
 
 ### 3.2 Why two sockets
 

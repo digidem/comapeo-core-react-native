@@ -110,7 +110,7 @@ const controlIpcServer = new SimpleRpcServer({
     // exit. AF_UNIX is a stream socket; the kernel guarantees that the
     // 'stopping' frame is delivered before the EOF (socket close),
     // allowing the peer to distinguish graceful shutdown from a crash.
-    controlIpcServer.broadcast({ type: "stopping" });
+    controlIpcServer.broadcastStopping();
     const closePromises = [controlIpcServer.close(), fastify.close()];
     if (comapeoRpcServer) closePromises.push(comapeoRpcServer.close());
     await Promise.all(closePromises);
