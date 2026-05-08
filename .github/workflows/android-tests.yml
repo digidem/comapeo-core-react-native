@@ -193,7 +193,12 @@ jobs:
             -no-snapshot-save -no-window -gpu swiftshader_indirect
             -noaudio -no-boot-anim
           disable-animations: false
-          script: ./scripts/run-android-instrumented-tests.sh
+          script: |
+            ./scripts/wait-for-emulator.sh
+            adb shell settings put global window_animation_scale 0.0 || { sleep 2; adb shell settings put global window_animation_scale 0.0; }
+            adb shell settings put global transition_animation_scale 0.0 || { sleep 2; adb shell settings put global transition_animation_scale 0.0; }
+            adb shell settings put global animator_duration_scale 0.0 || { sleep 2; adb shell settings put global animator_duration_scale 0.0; }
+            cd apps/example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -i -PreactNativeArchitectures=x86_64
 
       - name: Upload test results
         if: always()
