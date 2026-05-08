@@ -147,6 +147,29 @@ relevant phase (`rootkey`, `starting-timeout`,
 `node-runtime-unexpected`, etc.); state transitions show up as
 breadcrumbs that ride along on the next event.
 
+### 3a. Align the release on both sides
+
+The Node-backend hub (`@sentry/node` running inside nodejs-mobile)
+and the host RN hub (`@sentry/react-native`) are independent — for
+cross-side correlation they must use the same `release`. Pass the
+plugin-baked value to your host init:
+
+```ts
+import { getSentryRelease } from "@comapeo/core-react-native/sentry";
+import * as Sentry from "@sentry/react-native";
+
+Sentry.init({
+  release: getSentryRelease() ?? undefined,
+  // ...
+});
+```
+
+`getSentryRelease()` returns the `release` value the plugin wrote
+into the manifest / plist (default: `versionName+versionCode` on
+Android, `CFBundleShortVersionString+CFBundleVersion` on iOS, or
+whatever you set with `sentry.release` in your plugin args). The
+backend already gets the same value via `--sentryRelease`.
+
 ### What gets captured automatically
 
 Once the plugin is registered with a `dsn`, the module captures
@@ -162,8 +185,10 @@ events from three layers, tagged for filtering in the dashboard:
   control-frame breadcrumbs, watchdog/shutdown timeout events,
   rootkey-load `captureException`. On Android adds FGS-lifecycle
   breadcrumbs.
-- **`layer:node`** (Phase 3, not yet shipped) — RPC method spans
-  and `handleFatal` exceptions from the embedded nodejs-mobile.
+- **`layer:node`** — RPC method spans, `handleFatal` exceptions,
+  and `error-native` forwards from the embedded nodejs-mobile,
+  with device/os/app/culture context forwarded from native at
+  init time so events look the same as RN-side captures.
 
 Each event also carries a `proc` tag for the *actual* OS process:
 `proc:main` for everything on iOS (single-process), and

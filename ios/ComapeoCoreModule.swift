@@ -99,5 +99,12 @@ public class ComapeoCoreModule: Module {
             }
             return ["errorPhase": info.phase, "errorMessage": info.message]
         }
+
+        // Used by the JS sub-export's `getSentryRelease()` to align
+        // `Sentry.init({ release })` on the host side with the value
+        // the backend got via `--sentryRelease`.
+        Function("getSentryRelease") { () -> String? in
+            SentryConfig.loadFromMainBundle()?.release
+        }
     }
 }

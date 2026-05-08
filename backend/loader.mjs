@@ -45,10 +45,36 @@ if (dsn) {
       : 0,
     _experiments:
       values.sentryEnableLogs === true ? { enableLogs: true } : undefined,
-    integrations: [Sentry.consoleIntegration()],
+    // Function form preserves SDK defaults (inboundFilters, linkedErrors,
+    // nodeContext, etc.) — the array form would replace them.
+    integrations: (defaults) => [...defaults, Sentry.consoleIntegration()],
     initialScope: {
       tags: { proc: "fgs", layer: "node" },
     },
+  });
+
+  // Merges the native-supplied `sentryContext` (set later from the
+  // init control frame) onto every event. Field-level merge so
+  // `nodeContextIntegration`'s `runtime.version` / `app_start_time`
+  // survive while native overrides the Linux/Darwin-libnode view of
+  // device/os/culture.
+  /** @type {Record<string, any> | null} */
+  let nativeContext = null;
+  Sentry.addEventProcessor((event) => {
+    if (!nativeContext) return event;
+    event.contexts ??= {};
+    for (const k of ["device", "os", "app", "culture"]) {
+      if (nativeContext[k]) {
+        event.contexts[k] = { ...event.contexts[k], ...nativeContext[k] };
+      }
+    }
+    if (nativeContext.tags) {
+      event.tags = { ...nativeContext.tags, ...event.tags };
+    }
+    if (nativeContext.user) {
+      event.user = { ...event.user, ...nativeContext.user };
+    }
+    return event;
   });
 
   // Stash on globalThis so index.js never names `@sentry/node`
@@ -58,6 +84,11 @@ if (dsn) {
   /** @type {any} */ (globalThis).__comapeoSentryConfig = {
     rpcArgsBytes: rpcArgsBytesRaw ? Number(rpcArgsBytesRaw) : 0,
     captureApplicationData,
+  };
+  /** @type {any} */ (globalThis).__comapeoSentrySetNativeContext = (
+    /** @type {Record<string, any> | null} */ ctx,
+  ) => {
+    nativeContext = ctx;
   };
 }
 

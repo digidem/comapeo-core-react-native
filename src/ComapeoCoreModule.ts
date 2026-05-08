@@ -15,10 +15,24 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   postMessage(value: string): void;
   getState(): ComapeoState;
   getLastError(): ComapeoErrorInfo | null;
+  /** Returns the release string the plugin baked into the native config, or null. */
+  getSentryRelease(): string | null;
 }
 
 // This call loads the native module object from the JSI.
 const nativeModule = requireNativeModule<ComapeoCoreModule>("ComapeoCore");
+
+/**
+ * Release string the Expo plugin baked into the native config (the
+ * same value forwarded to the backend via `--sentryRelease`). Used
+ * by the `/sentry` sub-export's `getSentryRelease()` to align the
+ * host-side `Sentry.init({ release })` with the backend.
+ *
+ * Returns `null` when the consumer didn't register the plugin.
+ */
+export function readSentryRelease(): string | null {
+  return nativeModule.getSentryRelease();
+}
 
 type MessagePortEvents = {
   message: (message: JsonValue) => void;

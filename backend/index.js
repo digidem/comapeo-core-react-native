@@ -110,6 +110,21 @@ const controlIpcServer = new SimpleRpcServer({
       return;
     }
     initConsumed = true;
+    // `sentryContext` is best-effort; never let a malformed blob
+    // crash the boot path.
+    const setNativeCtx =
+      /** @type {any} */ (globalThis).__comapeoSentrySetNativeContext;
+    if (
+      typeof setNativeCtx === "function" &&
+      message.sentryContext &&
+      typeof message.sentryContext === "object"
+    ) {
+      try {
+        setNativeCtx(message.sentryContext);
+      } catch (e) {
+        console.warn("Failed to apply sentry context", e);
+      }
+    }
     resolveInit(rootKey);
   },
   shutdown: async () => {

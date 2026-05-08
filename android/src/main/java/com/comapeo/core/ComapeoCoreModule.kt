@@ -231,5 +231,13 @@ class ComapeoCoreModule : Module() {
             // sentinel-check.
             synchronized(stateLock) { lastError }
         }
+
+        // Used by the JS sub-export's `getSentryRelease()` to align
+        // `Sentry.init({ release })` on the host side with the value
+        // the backend got via `--sentryRelease`. Returns null when
+        // the plugin wasn't registered or the context is unavailable.
+        Function("getSentryRelease") {
+            appContext.reactContext?.let { SentryConfig.loadFromManifest(it)?.release }
+        }
     }
 }

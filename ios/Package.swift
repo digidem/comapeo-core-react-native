@@ -28,6 +28,7 @@ let package = Package(
                 "Log.swift",
                 "SentryConfig.swift",
                 "SentryNativeBridge.swift",
+                "SentryNativeContext.swift",
                 "SentryTags.swift",
             ]
         ),

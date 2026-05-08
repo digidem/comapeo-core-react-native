@@ -623,7 +623,18 @@ class NodeJSService {
             }
         }
         let b64 = keyBytes.base64EncodedString()
-        let frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
+        // Include `sentryContext` only when the consumer registered the
+        // plugin so non-Sentry installs skip the build cost. Best-effort:
+        // a builder failure shouldn't block boot.
+        let sentryCtxJson: String? = (sentryConfig != nil)
+            ? SentryNativeContext.buildJSON()
+            : nil
+        let frame: String
+        if let ctx = sentryCtxJson {
+            frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\",\"sentryContext\":\(ctx)}"
+        } else {
+            frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
+        }
         // `boot.init-frame` span: from "init sent" to "ready
         // received" (closed in handleControlMessage).
         let txForInitFrame = bootSentryQueue.sync { bootTransaction }

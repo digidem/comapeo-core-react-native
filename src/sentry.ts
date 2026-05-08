@@ -25,7 +25,7 @@ import {
   registerAdapter,
   setOverrideAdapter,
 } from "./sentry-internal";
-import { state } from "./ComapeoCoreModule";
+import { state, readSentryRelease } from "./ComapeoCoreModule";
 import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types";
 import { SentryTags } from "./sentry-tags";
 import {
@@ -148,6 +148,24 @@ export interface SentryAdapter {
  */
 export function setSentryAdapterForTests(adapter: SentryAdapter | null): void {
   setOverrideAdapter(adapter);
+}
+
+/**
+ * Release string the Expo plugin wrote into the native config and
+ * passed to the backend via `--sentryRelease`. Pass it to your
+ * `Sentry.init({ release })` so RN-side and Node-side events use the
+ * same release identifier — required for cross-side correlation in
+ * Sentry's UI.
+ *
+ * ```ts
+ * import { getSentryRelease } from "@comapeo/core-react-native/sentry";
+ * Sentry.init({ release: getSentryRelease() ?? undefined });
+ * ```
+ *
+ * Returns `null` when the consumer didn't register the plugin.
+ */
+export function getSentryRelease(): string | null {
+  return readSentryRelease();
 }
 
 // Make the SDK visible to ComapeoCoreModule.ts's RPC tracing hook.
