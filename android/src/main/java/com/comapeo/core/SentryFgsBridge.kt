@@ -149,24 +149,55 @@ object SentryFgsBridge {
      * [startBootSpan] / [finishSpan]. The opaque type keeps `io.sentry.*`
      * out of the Guard's bytecode.
      */
+    /**
+     * @param startElapsedRealtime `SystemClock.elapsedRealtime()` value
+     *   to backdate the transaction start to. `null` → start now.
+     */
     @JvmStatic
-    fun startBootTransaction(): Any? {
+    @JvmOverloads
+    fun startBootTransaction(startElapsedRealtime: Long? = null): Any? {
         if (!initialized) return null
         return try {
-            SentryFgsBridgeImpl.startBootTransaction()
+            SentryFgsBridgeImpl.startBootTransaction(startElapsedRealtime)
         } catch (t: Throwable) {
             Log.w(TAG, "startBootTransaction threw", t)
             null
         }
     }
 
+    /**
+     * @param startElapsedRealtime `SystemClock.elapsedRealtime()` value
+     *   to backdate the span start to. `null` → start now.
+     */
     @JvmStatic
-    fun startBootSpan(transaction: Any?, phase: String): Any? {
+    @JvmOverloads
+    fun startBootSpan(
+        transaction: Any?,
+        phase: String,
+        startElapsedRealtime: Long? = null,
+    ): Any? {
         if (!initialized || transaction == null) return null
         return try {
-            SentryFgsBridgeImpl.startBootSpan(transaction, phase)
+            SentryFgsBridgeImpl.startBootSpan(transaction, phase, startElapsedRealtime)
         } catch (t: Throwable) {
             Log.w(TAG, "startBootSpan($phase) threw", t)
+            null
+        }
+    }
+
+    /**
+     * Distributed-trace headers for the supplied transaction. Used by
+     * `NodeJSService` to forward the FGS-side `comapeo.boot` context
+     * to Node via `--sentryTrace`/`--sentryBaggage` argv so Node-side
+     * spans land as children of the same transaction.
+     */
+    @JvmStatic
+    fun getTraceData(transaction: Any?): Pair<String, String?>? {
+        if (!initialized || transaction == null) return null
+        return try {
+            SentryFgsBridgeImpl.getTraceData(transaction)
+        } catch (t: Throwable) {
+            Log.w(TAG, "getTraceData threw", t)
             null
         }
     }

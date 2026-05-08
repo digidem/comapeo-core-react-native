@@ -243,12 +243,37 @@ process.on("unhandledRejection", (reason) => {
   handleFatal("runtime", reason);
 });
 
+/**
+ * Wraps a boot phase in a Sentry span when active. No-op when Sentry
+ * isn't configured. Span ends with `internal_error` if the body throws.
+ *
+ * @template T
+ * @param {string} name
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+async function bootSpan(name, fn) {
+  if (!Sentry) return fn();
+  return Sentry.startSpan({ name, op: "boot" }, async (/** @type {any} */ span) => {
+    try {
+      const r = await fn();
+      span?.setStatus?.({ code: 1, message: "ok" });
+      return r;
+    } catch (e) {
+      span?.setStatus?.({ code: 2, message: "internal_error" });
+      throw e;
+    }
+  });
+}
+
 (async () => {
   try {
     // 1. Bind the control socket. Native is already polling for it; once
     // bound, the `started` broadcast tells native it can send the init frame.
     try {
-      await controlIpcServer.listen(controlSocketPath);
+      await bootSpan("boot.listen-control", () =>
+        controlIpcServer.listen(controlSocketPath),
+      );
     } catch (e) {
       throw Object.assign(e, { phase: "listen-control" });
     }
@@ -265,18 +290,22 @@ process.on("unhandledRejection", (reason) => {
     }
 
     // 3. Construct the manager and bind the comapeo RPC socket.
+    // boot.manager-init (stage D) wraps drizzle migrations + SQLite open
+    // + hypercore/fastify init + RPC socket bind.
     try {
-      comapeo = createComapeo({
-        privateStorageDir,
-        fastify,
-        migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
-        rootKey,
+      await bootSpan("boot.manager-init", async () => {
+        comapeo = createComapeo({
+          privateStorageDir,
+          fastify,
+          migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
+          rootKey,
+        });
+        comapeoRpcServer = new ComapeoRpcServer(comapeo, {
+          sentry: Sentry,
+          rpcArgsBytes: sentryConfig?.rpcArgsBytes ?? 0,
+        });
+        await comapeoRpcServer.listen(comapeoSocketPath);
       });
-      comapeoRpcServer = new ComapeoRpcServer(comapeo, {
-        sentry: Sentry,
-        rpcArgsBytes: sentryConfig?.rpcArgsBytes ?? 0,
-      });
-      await comapeoRpcServer.listen(comapeoSocketPath);
     } catch (e) {
       throw Object.assign(e, { phase: "construct" });
     }

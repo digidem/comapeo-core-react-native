@@ -1,6 +1,7 @@
 package com.comapeo.core
 
 import android.content.Context
+import android.os.SystemClock
 import io.sentry.Breadcrumb
 import io.sentry.ISpan
 import io.sentry.ITransaction
@@ -8,14 +9,18 @@ import io.sentry.Sentry
 import io.sentry.IScope
 import io.sentry.SentryAttribute
 import io.sentry.SentryAttributes
+import io.sentry.SentryDate
 import io.sentry.SentryLevel
 import io.sentry.SentryLogLevel
+import io.sentry.SentryNanotimeDate
+import io.sentry.SpanOptions
 import io.sentry.SpanStatus
 import io.sentry.TracesSamplingDecision
 import io.sentry.TransactionContext
 import io.sentry.TransactionOptions
 import io.sentry.android.core.SentryAndroid
 import io.sentry.logger.SentryLogParameters
+import java.util.Date
 
 /**
  * Implementation behind [SentryFgsBridge]. Contains every
@@ -121,26 +126,71 @@ internal object SentryFgsBridgeImpl {
      * `tracesSampleRate` so the boot transaction lands on the
      * wire even when consumers run with `tracesSampleRate=0.0`.
      */
-    fun startBootTransaction(): Any {
+    fun startBootTransaction(startElapsedRealtime: Long?): Any {
         val context = TransactionContext(
             "comapeo.boot",
             "boot",
             TracesSamplingDecision(true, 1.0),
         )
-        val opts = TransactionOptions().apply { isBindToScope = true }
+        val opts = TransactionOptions().apply {
+            isBindToScope = true
+            if (startElapsedRealtime != null) {
+                startTimestamp = elapsedRealtimeToSentryDate(startElapsedRealtime)
+            }
+        }
         return Sentry.startTransaction(context, opts)
     }
 
-    fun startBootSpan(transaction: Any, phase: String): Any {
+    fun startBootSpan(
+        transaction: Any,
+        phase: String,
+        startElapsedRealtime: Long?,
+    ): Any {
         require(transaction is ITransaction) {
             "transaction must be ITransaction, got ${transaction.javaClass.name}"
         }
         val description = when (phase) {
             "rootkey-load" -> "Load 16-byte rootkey from RootKeyStore"
             "init-frame" -> "Send init frame, await ready"
+            "fgs-launch" -> "From startForegroundService to FGS process ready"
+            "node-spawn" -> "From startNodeWithArguments to control 'started'"
             else -> phase
         }
+        if (startElapsedRealtime != null) {
+            val opts = SpanOptions().apply {
+                startTimestamp = elapsedRealtimeToSentryDate(startElapsedRealtime)
+            }
+            return transaction.startChild("boot.$phase", description, opts)
+        }
         return transaction.startChild("boot.$phase", description)
+    }
+
+    /**
+     * Returns `(sentryTrace, baggage)` for the given transaction —
+     * the W3C-compatible headers Node passes through `continueTrace`
+     * to make Node-side spans children of the FGS-side transaction.
+     * `baggage` may be `null` when the trace has no DSC info.
+     */
+    fun getTraceData(transaction: Any): Pair<String, String?> {
+        require(transaction is ITransaction) {
+            "transaction must be ITransaction, got ${transaction.javaClass.name}"
+        }
+        val trace = transaction.toSentryTrace().value
+        val baggage = transaction.toBaggageHeader(emptyList())?.value
+        return trace to baggage
+    }
+
+    /**
+     * Converts a `SystemClock.elapsedRealtime()` reading to a wall-clock
+     * `SentryDate`. We use elapsedRealtime (monotonic) as the timestamp
+     * source across the boot pipeline — system clock can jump from NTP
+     * sync mid-boot — and translate to wall-clock here for Sentry.
+     */
+    private fun elapsedRealtimeToSentryDate(startElapsedRealtime: Long): SentryDate {
+        val nowWallMs = System.currentTimeMillis()
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val startWallMs = nowWallMs - (nowElapsed - startElapsedRealtime)
+        return SentryNanotimeDate(Date(startWallMs), 0)
     }
 
     fun finishSpan(handle: Any, status: String) {

@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs";
-import { cp } from "node:fs/promises";
+import { cp, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,6 +121,14 @@ const STATIC_ASSET_PATHS = [
  * Copies the static asset paths from `backend/` into `outDir` after the
  * rollup write completes. Replaces the per-platform staging copy that
  * `scripts/build-backend.ts` used to do.
+ *
+ * Also drops the upstream `import-in-the-middle/lib/register.js` (CJS)
+ * verbatim at `lib/register.js`, plus a sibling `lib/package.json`
+ * marking the dir as commonjs. iitm's loader-thread hook generates ESM
+ * source `import { register } from '<file:.../lib/register.js>'`; if
+ * we let rollup bundle `lib/register` it emits a default-only ESM file
+ * that breaks the import. Letting Node load the real CJS via its
+ * ESM-over-CJS interop layer gives us the named exports iitm needs.
  */
 function copyStaticAssetsPlugin(outDir: string): Plugin {
   return {
@@ -133,6 +141,18 @@ function copyStaticAssetsPlugin(outDir: string): Plugin {
           }),
         ),
       );
+      const libDir = path.join(outDir, "lib");
+      await mkdir(libDir, { recursive: true });
+      await Promise.all([
+        cp(
+          require.resolve("import-in-the-middle/lib/register.js"),
+          path.join(libDir, "register.js"),
+        ),
+        writeFile(
+          path.join(libDir, "package.json"),
+          '{"type":"commonjs"}\n',
+        ),
+      ]);
     },
   };
 }
@@ -215,27 +235,29 @@ function cleanOutputDirPlugin(dir: string): Plugin {
 }
 
 
-// `importHook` and `lib/register` are dedicated entries because
+// `importHook` is a dedicated entry because
 // `module.register('import-in-the-middle/hook.mjs', ...)` loads the
-// hook fresh in a child loader thread — can't be inlined. `register`
-// resolves via the hardcoded relative path `./lib/register.js`.
+// hook fresh in a child loader thread — can't be inlined.
+//
+// `lib/register.js` is NOT bundled; copyStaticAssetsPlugin drops the
+// upstream CJS file at `lib/register.js` so iitm's loader-thread
+// `import { register } from '...'` finds named exports via Node's
+// ESM-over-CJS interop. Bundling it would emit a default-only ESM
+// shim and break iitm at runtime.
 const sharedInput = {
   loader: path.join(__dirname, "loader.mjs"),
   index: path.join(__dirname, "index.js"),
   importHook: require.resolve("import-in-the-middle/hook.mjs"),
-  "lib/register": require.resolve("import-in-the-middle/lib/register.js"),
 };
 
 const sharedOutput: OutputOptions = {
   format: "esm",
   sourcemap: true,
   entryFileNames: (chunk) => {
-    // import-in-the-middle's bundled hook references `./lib/register.js`
-    // and `rollup-plugin-import-hook.mjs` rewrites the register call
-    // to `./importHook.js`. Both names must land with `.js`.
-    if (chunk.name === "importHook" || chunk.name === "lib/register") {
-      return "[name].js";
-    }
+    // `rollup-plugin-import-hook.mjs` rewrites
+    // `register('import-in-the-middle/hook.mjs', ...)` to
+    // `register('./importHook.js', ...)` — must land with `.js`.
+    if (chunk.name === "importHook") return "[name].js";
     return "[name].mjs";
   },
   // `@sentry/node` + transitive deps land here, loaded only when the

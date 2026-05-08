@@ -514,6 +514,12 @@ class NodeJSService {
         switch ControlFrame.parse(message) {
         case .started:
             logCrumb(category: SentryCategories.control, message: "received: started")
+            let nodeSpawnSpan = bootSentryQueue.sync {
+                bootSpans.removeValue(forKey: "node-spawn")
+            }
+            if let span = nodeSpawnSpan {
+                SentryNativeBridge.finishSpan(span, status: "ok")
+            }
             applyAndEmit { self.backendState = .controlBound }
             sendInitFrame()
         case .ready:
@@ -745,6 +751,13 @@ class NodeJSService {
             privateStorageDir,
         ]
         args.append(contentsOf: buildSentryArgs())
+        // boot.node-spawn (stage B): wraps the JNI/UI call through to
+        // the `started` frame. Closed in handleControlMessage.
+        let nodeSpawnSpan = bootSentryQueue.sync { bootTransaction }
+            .flatMap { SentryNativeBridge.startBootSpan($0, phase: "node-spawn") }
+        if let span = nodeSpawnSpan {
+            bootSentryQueue.sync { bootSpans["node-spawn"] = span }
+        }
         let exitCode = nodeEntryPoint(args)
         logCrumb(
             category: SentryCategories.boot,
@@ -812,6 +825,13 @@ class NodeJSService {
             out.append("--sentryEnableLogs")
         }
         // captureApplicationData (Phase 5) wires up via SentryPrefsStore.
+
+        // Forward boot transaction's trace context so Node-side boot
+        // spans land as children of comapeo.boot.
+        let tx = bootSentryQueue.sync { bootTransaction }
+        if let trace = SentryNativeBridge.getTraceData(tx)?.trace {
+            out.append("--sentryTrace=\(trace)")
+        }
         return out
     }
 

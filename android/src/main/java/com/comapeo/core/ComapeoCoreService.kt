@@ -64,6 +64,16 @@ class ComapeoCoreService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Forward the activity's `serviceStartTimeMs` stamp so
+        // NodeJSService can backdate boot.fgs-launch. -1 means the
+        // intent didn't carry one (system restart); we'll skip the
+        // backdated span in that case.
+        val serviceStartElapsedMs =
+            intent?.getLongExtra(EXTRA_SERVICE_START_ELAPSED_MS, -1L) ?: -1L
+        if (serviceStartElapsedMs >= 0) {
+            nodeJSService.serviceStartElapsedMs = serviceStartElapsedMs
+        }
+
         logCrumb(
             SentryCategories.FGS,
             "onStartCommand",

@@ -206,6 +206,15 @@ class NodeJSService(
     private val ipcDeferred = CompletableDeferred<NodeJSIPC>()
 
     /**
+     * `SystemClock.elapsedRealtime()` value the activity stamped into
+     * the start-service intent, used to backdate `boot.fgs-launch`
+     * (stage A in the boot-tracing taxonomy). `-1L` when the FGS was
+     * restarted by the system without an intent.
+     */
+    @Volatile
+    var serviceStartElapsedMs: Long = -1L
+
+    /**
      * Sentry boot transaction handle. Opened in [start], closed in
      * [applyAndEmit] on the first non-STARTING transition. `Any?`
      * keeps `io.sentry.*` types out of this file.
@@ -451,6 +460,14 @@ class NodeJSService(
             if (cfg.enableLogs == true) args += "--sentryEnableLogs"
             // captureApplicationData (Phase 5) wires up via
             // SentryPrefsStore once it lands.
+
+            // Forward boot transaction's trace context so Node-side
+            // boot spans (loader-init, import-index, listen-control,
+            // manager-init) land as children of comapeo.boot.
+            SentryFgsBridge.getTraceData(bootTx.get())?.let { (trace, baggage) ->
+                args += "--sentryTrace=$trace"
+                if (baggage != null) args += "--sentryBaggage=$baggage"
+            }
         }
         return args.toTypedArray()
     }
@@ -478,7 +495,20 @@ class NodeJSService(
         // Open boot transaction BEFORE the STOPPED→STARTING
         // transition; applyAndEmit's close-on-terminal logic only
         // fires when bootTx is non-null at transition time.
-        bootTx.set(SentryFgsBridge.startBootTransaction())
+        // Backdate the transaction to when the activity called
+        // startForegroundService so boot.fgs-launch (stage A) can
+        // sit at the start of the timeline.
+        val backdatedStart =
+            if (serviceStartElapsedMs >= 0) serviceStartElapsedMs else null
+        val tx = SentryFgsBridge.startBootTransaction(backdatedStart)
+        bootTx.set(tx)
+        // boot.fgs-launch: time from `startForegroundService` call to
+        // here (NodeJSService.start). Open backdated, finish now.
+        if (tx != null && backdatedStart != null) {
+            SentryFgsBridge.startBootSpan(tx, "fgs-launch", backdatedStart)?.let {
+                SentryFgsBridge.finishSpan(it, "ok")
+            }
+        }
 
         // Reset component state for a fresh start cycle and transition
         // STOPPED → STARTING via the derivation. `lastError` is cleared
@@ -541,6 +571,13 @@ class NodeJSService(
                             data = mapOf("dir" to NODEJS_PROJECT_DIRNAME),
                         )
                     }
+                }
+
+                // boot.node-spawn (stage B): time from the JNI call
+                // through V8 init / loader.mjs parse / Sentry.init to
+                // the `started` frame. Closed in handleControlMessage.
+                SentryFgsBridge.startBootSpan(bootTx.get(), "node-spawn")?.let {
+                    bootSpans["node-spawn"] = it
                 }
 
                 val exitCode = startNodeWithArguments(
@@ -625,6 +662,9 @@ class NodeJSService(
         when (val frame = ControlFrame.parse(message)) {
             ControlFrame.Started -> {
                 logCrumb(SentryCategories.CONTROL, "received: started")
+                bootSpans.remove("node-spawn")?.let {
+                    SentryFgsBridge.finishSpan(it, "ok")
+                }
                 applyAndEmit { it.copy(backendState = BackendState.ControlBound) }
                 sendInitFrame()
             }

@@ -2,7 +2,14 @@
 // `index.js`'s static imports so OpenTelemetry's import-in-the-middle
 // hook can patch them.
 
+// Local name `register` (not aliased) so `rollup-plugin-import-hook.mjs`'s
+// `register('import-in-the-middle/hook.mjs', ...)` regex matches.
+import { register } from "node:module";
 import { parseArgs } from "node:util";
+
+// Captured at first line so `boot.loader-init` covers everything from
+// process spawn through Sentry.init.
+const loaderStartDate = new Date();
 
 const { values } = parseArgs({
   options: {
@@ -13,6 +20,8 @@ const { values } = parseArgs({
     sentryTracesSampleRate: { type: "string" },
     sentryRpcArgsBytes: { type: "string" },
     sentryEnableLogs: { type: "boolean" },
+    sentryTrace: { type: "string" },
+    sentryBaggage: { type: "string" },
     captureApplicationData: { type: "boolean", default: false },
   },
   allowPositionals: true,
@@ -27,10 +36,25 @@ const asString = (v) => (typeof v === "string" ? v : undefined);
 
 const dsn = asString(values.sentryDsn);
 const captureApplicationData = values.captureApplicationData === true;
+const sentryTrace = asString(values.sentryTrace);
+const sentryBaggage = asString(values.sentryBaggage);
+
+/** @type {any} */
+let Sentry = null;
 
 if (dsn) {
+  // Register iitm hook BEFORE importing @sentry/node so OTel
+  // auto-instrumentations registered during init can patch modules
+  // we import after. `@sentry/node@8`'s own `maybeInitializeEsmLoader`
+  // is gated on `typeof require === 'undefined'`, which `esm-shim`'s
+  // `createRequire` injection makes always-truthy in our bundle —
+  // the SDK's call is dead code, so we have to register ourselves.
+  // The string is rewritten to `'./importHook.js'` by
+  // `rollup-plugin-import-hook.mjs` so it lands on the bundled hook.
+  register("import-in-the-middle/hook.mjs", import.meta.url);
+
   // Dynamic import keeps the rollup chunk unloaded when Sentry is off.
-  const Sentry = await import("@sentry/node");
+  Sentry = await import("@sentry/node");
   const tracesSampleRateRaw = asString(values.sentryTracesSampleRate);
   const sampleRateRaw = asString(values.sentrySampleRate);
   Sentry.init({
@@ -47,7 +71,10 @@ if (dsn) {
       values.sentryEnableLogs === true ? { enableLogs: true } : undefined,
     // Function form preserves SDK defaults (inboundFilters, linkedErrors,
     // nodeContext, etc.) — the array form would replace them.
-    integrations: (defaults) => [...defaults, Sentry.consoleIntegration()],
+    integrations: (/** @type {any[]} */ defaults) => [
+      ...defaults,
+      Sentry.consoleIntegration(),
+    ],
     initialScope: {
       tags: { proc: "fgs", layer: "node" },
     },
@@ -60,7 +87,7 @@ if (dsn) {
   // device/os/culture.
   /** @type {Record<string, any> | null} */
   let nativeContext = null;
-  Sentry.addEventProcessor((event) => {
+  Sentry.addEventProcessor((/** @type {any} */ event) => {
     if (!nativeContext) return event;
     event.contexts ??= {};
     for (const k of ["device", "os", "app", "culture"]) {
@@ -77,6 +104,16 @@ if (dsn) {
     return event;
   });
 
+  // boot.loader-init (stage C, part 1): retroactive span covering
+  // everything from `loader.mjs` first line through `Sentry.init`.
+  // Recorded after init because we don't have a tracer until then.
+  const loaderInitSpan = Sentry.startInactiveSpan({
+    name: "boot.loader-init",
+    op: "boot",
+    startTime: loaderStartDate,
+  });
+  loaderInitSpan?.end();
+
   // Stash on globalThis so index.js never names `@sentry/node`
   // statically — keeps the rollup chunk gated by this argv check.
   const rpcArgsBytesRaw = asString(values.sentryRpcArgsBytes);
@@ -92,4 +129,22 @@ if (dsn) {
   };
 }
 
-await import("./index.js");
+if (Sentry && sentryTrace) {
+  // Continue the FGS-side `comapeo.boot` trace so Node-side spans
+  // (boot.import-index, boot.listen-control, boot.manager-init,
+  // RPC spans, etc.) land as children of the same transaction.
+  await Sentry.continueTrace(
+    { sentryTrace, baggage: sentryBaggage ?? "" },
+    () =>
+      // boot.import-index (stage C, part 2): dynamic import +
+      // index.js top-level eval. The IIFE inside index.js inherits
+      // the active span via AsyncLocalStorage, so its child spans
+      // (boot.listen-control, boot.manager-init) attach to the
+      // same trace.
+      Sentry.startSpan({ name: "boot.import-index", op: "boot" }, () =>
+        import("./index.js"),
+      ),
+  );
+} else {
+  await import("./index.js");
+}

@@ -121,6 +121,7 @@ enum SentryNativeBridge {
         switch phase {
         case "rootkey-load": description = "Load 16-byte rootkey from RootKeyStore"
         case "init-frame": description = "Send init frame, await ready"
+        case "node-spawn": description = "From nodeEntryPoint to control 'started'"
         default: description = phase
         }
         return tx.startChild(operation: "boot.\(phase)", description: description)
@@ -134,6 +135,22 @@ enum SentryNativeBridge {
         guard let span = handle as? Span else { return }
         span.status = parseStatus(status)
         span.finish()
+        #endif
+    }
+
+    /// Trace header for cross-process propagation to the Node hub.
+    /// Node passes it into `Sentry.continueTrace` so its boot spans
+    /// land as children of `comapeo.boot`. Baggage isn't exposed by
+    /// sentry-cocoa@8's public Span API — trace alone is enough for
+    /// parent-child stitching; we lose Dynamic Sampling Context but
+    /// boot transactions are forced-sampled anyway. Returns `nil`
+    /// when Sentry isn't linked or the handle is unrecognised.
+    static func getTraceData(_ transaction: Any?) -> (trace: String, baggage: String?)? {
+        #if canImport(Sentry)
+        guard let tx = transaction as? Span else { return nil }
+        return (tx.toTraceHeader().value(), nil)
+        #else
+        return nil
         #endif
     }
 
