@@ -742,6 +742,16 @@ class NodeJSService {
         // global `fetch` from re-introducing the same load path. Android
         // doesn't need it (JIT is permitted), but the flag is harmless on
         // both platforms so we keep argv parity.
+        // Open boot.node-spawn (stage B) BEFORE buildSentryArgs so
+        // the trace flag forwards node-spawn's span ID; that makes
+        // Node-side spans (loader-init, import-index, listen-control)
+        // children of node-spawn rather than the transaction. Closed
+        // in handleControlMessage on the `started` frame.
+        let nodeSpawnSpan = bootSentryQueue.sync { bootTransaction }
+            .flatMap { SentryNativeBridge.startBootSpan($0, phase: "node-spawn") }
+        if let span = nodeSpawnSpan {
+            bootSentryQueue.sync { bootSpans["node-spawn"] = span }
+        }
         var args: [String] = [
             "node",
             "--no-experimental-fetch",
@@ -751,13 +761,6 @@ class NodeJSService {
             privateStorageDir,
         ]
         args.append(contentsOf: buildSentryArgs())
-        // boot.node-spawn (stage B): wraps the JNI/UI call through to
-        // the `started` frame. Closed in handleControlMessage.
-        let nodeSpawnSpan = bootSentryQueue.sync { bootTransaction }
-            .flatMap { SentryNativeBridge.startBootSpan($0, phase: "node-spawn") }
-        if let span = nodeSpawnSpan {
-            bootSentryQueue.sync { bootSpans["node-spawn"] = span }
-        }
         let exitCode = nodeEntryPoint(args)
         logCrumb(
             category: SentryCategories.boot,
@@ -826,10 +829,13 @@ class NodeJSService {
         }
         // captureApplicationData (Phase 5) wires up via SentryPrefsStore.
 
-        // Forward boot transaction's trace context so Node-side boot
-        // spans land as children of comapeo.boot.
-        let tx = bootSentryQueue.sync { bootTransaction }
-        if let trace = SentryNativeBridge.getTraceData(tx)?.trace {
+        // Prefer the node-spawn span over the transaction so Node-side
+        // boot spans nest under it. Falls back to the transaction when
+        // node-spawn isn't open yet.
+        let traceParent: Any? = bootSentryQueue.sync {
+            bootSpans["node-spawn"] ?? bootTransaction
+        }
+        if let trace = SentryNativeBridge.getTraceData(traceParent)?.trace {
             out.append("--sentryTrace=\(trace)")
         }
         return out

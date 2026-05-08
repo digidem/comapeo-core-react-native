@@ -130,20 +130,27 @@ if (dsn) {
 }
 
 if (Sentry && sentryTrace) {
-  // Continue the FGS-side `comapeo.boot` trace so Node-side spans
-  // (boot.import-index, boot.listen-control, boot.manager-init,
-  // RPC spans, etc.) land as children of the same transaction.
+  // Continue the FGS-side `boot.node-spawn` span so Node-side boot
+  // spans (loader-init, import-index, listen-control) land as
+  // children of node-spawn — they happen during it.
   await Sentry.continueTrace(
     { sentryTrace, baggage: sentryBaggage ?? "" },
-    () =>
-      // boot.import-index (stage C, part 2): dynamic import +
-      // index.js top-level eval. The IIFE inside index.js inherits
-      // the active span via AsyncLocalStorage, so its child spans
-      // (boot.listen-control, boot.manager-init) attach to the
-      // same trace.
-      Sentry.startSpan({ name: "boot.import-index", op: "boot" }, () =>
-        import("./index.js"),
-      ),
+    async () => {
+      // `startInactiveSpan` records `boot.import-index` without
+      // making it the active span. If we used `startSpan` instead,
+      // index.js's IIFE would inherit it via AsyncLocalStorage and
+      // its spans (`listen-control`, `manager-init`) would parent
+      // to a finished `import-index` rather than `node-spawn`.
+      const importSpan = Sentry.startInactiveSpan({
+        name: "boot.import-index",
+        op: "boot",
+      });
+      try {
+        await import("./index.js");
+      } finally {
+        importSpan?.end();
+      }
+    },
   );
 } else {
   await import("./index.js");

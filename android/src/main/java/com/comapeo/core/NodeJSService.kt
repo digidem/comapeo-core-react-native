@@ -462,9 +462,13 @@ class NodeJSService(
             // SentryPrefsStore once it lands.
 
             // Forward boot transaction's trace context so Node-side
-            // boot spans (loader-init, import-index, listen-control,
-            // manager-init) land as children of comapeo.boot.
-            SentryFgsBridge.getTraceData(bootTx.get())?.let { (trace, baggage) ->
+            // boot spans (loader-init, import-index, listen-control)
+            // land as children of node-spawn (the FGS-side phase
+            // they overlap with). Falls back to the transaction
+            // trace when node-spawn isn't open yet (defensive — in
+            // practice the span is opened just before this).
+            val traceParent = bootSpans["node-spawn"] ?: bootTx.get()
+            SentryFgsBridge.getTraceData(traceParent)?.let { (trace, baggage) ->
                 args += "--sentryTrace=$trace"
                 if (baggage != null) args += "--sentryBaggage=$baggage"
             }
