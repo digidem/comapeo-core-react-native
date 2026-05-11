@@ -195,9 +195,12 @@ jobs:
           disable-animations: false
           script: |
             ./scripts/wait-for-emulator.sh
-            adb shell settings put global window_animation_scale 0.0 || { sleep 2; adb shell settings put global window_animation_scale 0.0; }
-            adb shell settings put global transition_animation_scale 0.0 || { sleep 2; adb shell settings put global transition_animation_scale 0.0; }
-            adb shell settings put global animator_duration_scale 0.0 || { sleep 2; adb shell settings put global animator_duration_scale 0.0; }
+            # Disable animations via settings (more reliable than input keyevent)
+            adb shell settings put global window_animation_scale 0.0
+            adb shell settings put global transition_animation_scale 0.0
+            adb shell settings put global animator_duration_scale 0.0
+            # -i prints per-test STARTED/PASSED/FAILED so a hanging test is
+            # identifiable
             cd apps/example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -i -PreactNativeArchitectures=x86_64
 
       - name: Upload test results

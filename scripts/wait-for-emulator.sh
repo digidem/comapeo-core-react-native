@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Lives in a file (rather than inline in the workflow) because
-# reactivecircus/android-emulator-runner runs the workflow's `script:`
-# line by line through `sh -c`, which breaks any multi-line construct
-# (function definition, while loop, etc.).
-#
 # On snapshot restore, sys.boot_completed flips before system_server
 # finishes binding settings/package/activity, so the next
 # `adb shell settings put` can fail with "Broken pipe". Poll each service
