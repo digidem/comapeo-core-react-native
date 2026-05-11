@@ -158,31 +158,10 @@ jobs:
           cd apps/example/android
           ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest :app:assembleDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
 
-      - name: Cache AVD snapshot
-        uses: actions/cache@v4
-        id: avd-cache
-        with:
-          path: |
-            ~/.android/avd/*
-            ~/.android/adb*
-          # Bump suffix to invalidate stale snapshots when emulator
-          # platform changes (Vulkan profile, RAM minimums) break restore.
-          key: avd-api${{ matrix.api-level }}-google_atd-x86_64-v2
-
-      - name: Create AVD and generate snapshot
-        if: steps.avd-cache.outputs.cache-hit != 'true'
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ matrix.api-level }}
-          target: google_atd
-          arch: x86_64
-          force-avd-creation: false
-          ram-size: 4096M
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
-          disable-animations: false
-          # Wait until userland is fully up before letting the action
-          # shut down the emulator — that's when the snapshot gets saved.
-          script: ./scripts/wait-for-emulator.sh
+      # Snapshot caching was tried but is not portable across GitHub
+      # runner machines on this google_atd image: restored snapshots
+      # boot but system_server is dead-on-arrival (DeadSystemException
+      # on the first adb input call). Cold boot every run instead.
 
       - name: Run instrumented tests
         timeout-minutes: 15
