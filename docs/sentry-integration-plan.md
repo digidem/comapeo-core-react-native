@@ -661,7 +661,7 @@ const sharedInput = {
 
 If install size becomes the bottleneck (it currently isn't —
 the existing `nodejs-project/` tree is dominated by V8 + native
-addons), Phase 6 adds a second backend bundle with the Sentry
+addons), Phase 7 adds a second backend bundle with the Sentry
 chunks stripped at build time, and `scripts/build-backend.ts`
 selects which to copy based on whether the consumer's
 `app.json` registered the plugin with a DSN. Not in v1.
@@ -1653,7 +1653,8 @@ actively configure it.
 | 10.3 — Phase 3 (backend loader + RPC tracing) | **landed** | `backend/loader.mjs` spawn target; `@sentry/node` + `import-in-the-middle` + multi-entry rollup with `importHook` / `lib/register` separate chunks; `handleFatal` captures via Sentry; `ComapeoRpcServer` registers `onRequestHook` when Sentry is active; client-side `ComapeoCoreModule.ts` propagates `sentry-trace`/`baggage` via request metadata. Native (Android `NodeJSService.kt` / iOS `NodeJSService.swift`) reads `SentryConfig` and forwards `--sentry*` argv flags to the loader. |
 | 10.4 — Phase 4 (`@comapeo/core` OTel forwarding) | **pending** | Blocked on `@comapeo/core` PR #1051 landing. Verification work only. |
 | 10.5 — Phase 5 (capture-application-data toggle) | **pending** | `SharedPreferences` / `UserDefaults` store, restart-to-activate semantics. |
-| 10.6 — Phase 6 (refinements) | **pending** | Sample-rate tuning from real data; optional dual-bundle if size matters. |
+| 10.6 — Phase 6 (Android historical exit reasons) | **pending** | Surface `ApplicationExitInfo` records on next start; isolates OEM-killer FGS deaths, LMK background kills, and "alive-for / backgrounded-for" durations per device. API 30+ only. |
+| 10.7 — Phase 7 (refinements) | **pending** | Sample-rate tuning from real data; optional dual-bundle if size matters. |
 
 What's *not* shipping with the integration even after all phases: `sentry-native` inside `nodejs-mobile` (V8 abort / addon SIGSEGV stays a host-process crash; sentry-android catches those at the JNI layer — see plan §7.5).
 
@@ -1828,7 +1829,262 @@ debugging without exposing PII.
 
 Cost: ~150 LOC native + JS + backend.
 
-### 10.6 Phase 6 — refinements — pending
+### 10.6 Phase 6 — Android historical exit reasons — pending
+
+Surface `ActivityManager.getHistoricalProcessExitReasons()` records
+to Sentry on the next process start. The goal is observability on
+two questions that nothing else in the integration answers:
+
+1. **How long is the app in the background before the system kills
+   it?** Aggregable by `Build.MANUFACTURER` / `Build.MODEL` so we
+   can see "Samsung A52 reliably kills our cold backend after
+   ~12 min backgrounded" type signals.
+2. **Is an OEM custom killer reaching past Android's FGS protection
+   and shooting our `:ComapeoCore` process?** Aggressive OEM
+   killers (MIUI, EMUI, OxygenOS, OneUI, etc.) bypass AOSP LMK and
+   send SIGKILL to foreground services; they show up as
+   `REASON_SIGNALED` + `processStateAtExit=
+   IMPORTANCE_FOREGROUND_SERVICE`, which is the smoking gun.
+
+#### 10.6.1 Scope and platform availability
+
+- **Android only.** iOS doesn't expose process-death post-mortems.
+- **API 30+ (Android 11) only** for the exit-reason data. Pre-30
+  devices emit one boot-time tag `exitReasons.supported=false` so
+  the dashboard can exclude them from death-rate math; nothing
+  else is collected.
+- Two callers: the main UI process (`MainApplication.onCreate` via
+  an `ApplicationLifecycleListener` from `expo-modules-core`) and
+  the FGS process (`ComapeoCoreService.onCreate`). Each reports
+  the exits for *its own* process name only — the AOSP API returns
+  all package processes when called without filters, but reporting
+  duplicates from both callers makes Sentry-side dedup harder than
+  filtering client-side.
+
+#### 10.6.2 New files
+
+- `android/src/main/java/com/comapeo/core/ExitReasonsCollector.kt`
+  — pure-logic decoder + emission. Single entry point
+  `collectAndReport(context, processName)` that:
+  1. No-ops on `Build.VERSION.SDK_INT < 30` after setting the
+     supported=false scope tag once.
+  2. Calls `ActivityManager.getHistoricalProcessExitReasons(
+     packageName, pid=0, maxNum=10)`. `maxNum=10` is enough —
+     anything older than the last 10 cold starts isn't useful.
+  3. Filters records: `processName` match AND
+     `timestamp > lastSeenAtMs` (read from prefs; see below).
+  4. For each kept record, emits a Sentry event via
+     `SentryFgsBridge.captureMessage` (FGS-side) or
+     `Sentry.captureMessage` directly (main-side) — see §10.6.5
+     for the tag/extra shape and level mapping.
+  5. Writes the new high-water `lastSeenAtMs` back to prefs
+     atomically (one `apply()` per process name).
+- `android/src/main/java/com/comapeo/core/BackgroundAnchors.kt` —
+  thin `SharedPreferences` wrapper holding two slots per process
+  name: `<proc>.backgrounded_at_wall_ms` and
+  `<proc>.process_started_at_wall_ms`. Wall-clock
+  (`System.currentTimeMillis()`) so values survive reboots and
+  cross-process reads. Stored under the same prefs file the
+  Phase 5 capture-application-data toggle will use — pick the
+  name now (`com.comapeo.core.prefs`) and document it so Phase 5
+  joins without a rename.
+- `android/src/main/java/com/comapeo/core/ExitReasonTags.kt` —
+  enum decode helpers. Plain `when` blocks; one for `reason`,
+  one for `processStateAtExit`. Keep these in a separate file so
+  the unit test can exercise them without instantiating
+  `ApplicationExitInfo` (which can't be constructed off-device).
+
+#### 10.6.3 Anchor write sites
+
+Wall-clock stamps written to `BackgroundAnchors`:
+
+- **`process_started_at_wall_ms` (main)**: in the main
+  `Application.onCreate` or earlier — the
+  `ApplicationLifecycleListener` from `expo-modules-core` runs
+  late enough but is still fine for "process alive duration"
+  measurement at second-resolution.
+- **`process_started_at_wall_ms` (fgs)**: in
+  `ComapeoCoreService.onCreate`, alongside the existing Sentry
+  init. (Don't reuse `serviceStartElapsedMs` — that's
+  `elapsedRealtime`, monotonic but not durable across process
+  death.)
+- **`backgrounded_at_wall_ms` (main)**: observe
+  `ProcessLifecycleOwner.get().lifecycle` for `ON_STOP`; stamp
+  there. Clear (set to `0`) on `ON_START` so derived
+  "backgrounded for X" only counts when the death actually
+  happened during background. The listener registration belongs
+  in the main `ApplicationLifecycleListener`, not in
+  `ComapeoCoreReactActivityLifecycleListener` (which is per-
+  Activity — `ProcessLifecycleOwner` is the cleaner anchor and
+  fires once per whole-process transition).
+- **`backgrounded_at_wall_ms` (fgs)**: skip. The FGS doesn't have
+  a foreground/background concept; "alive for" against
+  `process_started_at` is the right derived field for FGS deaths.
+
+#### 10.6.4 High-water timestamp persistence
+
+`lastSeenAtMs` is per-process-name (`main.exit_reasons.last_seen_ms`
+/ `fgs.exit_reasons.last_seen_ms`) so the two callers don't race
+each other on a shared key. The high-water value is the max
+`ApplicationExitInfo.getTimestamp()` of the records reported in
+the current run. First run on a fresh install: `lastSeenAtMs = 0`
+means we'd report every record in the buffer; that's noise. Defend
+against it by initialising `lastSeenAtMs` to `currentTimeMillis()`
+on first observation (when the prefs key is absent), so we only
+report exits that happen *after* the first time the collector ran.
+Document the trade-off: we'll miss the very first cohort of exits
+right after installing the feature, but in exchange we don't
+flood Sentry with the pre-feature backlog on every device's first
+update.
+
+#### 10.6.5 Sentry emission shape
+
+One `captureMessage` per kept record. Message text:
+`"android exit: <REASON_NAME>"` (e.g. `"android exit: REASON_SIGNALED"`).
+Stable string so Sentry's grouping treats them as one issue per
+reason, sliceable by tags.
+
+| Tag | Source | Notes |
+|---|---|---|
+| `proc` | `main` / `fgs` | Already in `SentryTags`. |
+| `exit.reason` | decoded `REASON_*` (lowercase, no prefix) | e.g. `low_memory`, `signaled`, `excessive_resource_usage`. |
+| `exit.process_state` | decoded `IMPORTANCE_*` | e.g. `cached`, `foreground_service`. |
+| `exit.signal` | signal number (when `reason=signaled`) | String. SIGKILL = `"9"`. |
+| `exit.intentional` | `true` for `USER_REQUESTED` / `USER_STOPPED` / `EXIT_SELF`; `false` otherwise | Lets dashboards exclude the "user / app did this on purpose" cohort from kill-rate metrics. |
+| `oem.killer.suspected` | `true` when `reason=signaled` ∧ `process_state ∈ {foreground, foreground_service}` ∧ `signal=9` | The headline tag for the OEM-aggressive-killer cohort. Pair with `Build.MANUFACTURER` / `Build.MODEL` (already in `SentryNativeContext`) in dashboard queries. |
+| `comapeo.fgs.killed_in_background` | `true` when `proc=fgs` ∧ a non-zero `main.backgrounded_at_wall_ms` was captured before the FGS exit timestamp | "FGS died while the user wasn't looking" — the cohort battery-optimization analysis cares about. |
+
+| Extra field | Value |
+|---|---|
+| `description` | `ApplicationExitInfo.description` (vendor string when present; Samsung/Xiaomi sometimes name their killer here). |
+| `pss_kb` / `rss_kb` | Memory at kill. |
+| `exit_timestamp_ms` | Raw wall-clock. |
+| `alive_for_ms` | `exit_timestamp − process_started_at_wall_ms`. Null when the anchor wasn't set. |
+| `backgrounded_for_ms` | `exit_timestamp − backgrounded_at_wall_ms`. Main-process only; null for FGS or when anchor was 0. |
+
+Level mapping:
+
+| Reason | Level |
+|---|---|
+| `LOW_MEMORY` · `SIGNALED` · `EXCESSIVE_RESOURCE_USAGE` · `DEPENDENCY_DIED` | `error` |
+| `ANR` · `CRASH` · `CRASH_NATIVE` · `INITIALIZATION_FAILURE` | `warning` (Sentry already captures the crash itself via `sentry-android` — this is just the matching post-mortem record so the two events can be cross-referenced) |
+| `USER_REQUESTED` · `USER_STOPPED` · `EXIT_SELF` · `PACKAGE_STATE_CHANGE` · `PACKAGE_UPDATED` · `PERMISSION_CHANGE` | `info` |
+| Anything else (incl. `OTHER`) | `info` |
+
+Breadcrumb category: `comapeo.exit` (add to `SentryCategories`).
+
+#### 10.6.6 Wiring
+
+- Main process: register an `ApplicationLifecycleListener` from
+  this module's `expo-module.config.json`. In `onCreate(Application)`,
+  schedule `ExitReasonsCollector.collectAndReport(context, mainProcessName)`
+  on a background `Handler` (or `lifecycleScope.launch(Dispatchers.IO)`)
+  so the prefs read + Sentry capture doesn't block app start. The
+  read is cheap (<10 ms typically), but no need to do it on the
+  critical path.
+- FGS process: call from `ComapeoCoreService.onCreate` *after*
+  `SentryFgsBridge.init(...)` succeeds, on `serviceScope.launch
+  (Dispatchers.IO)`. Pass the FGS process name
+  (`packageName + ":ComapeoCore"`).
+- Both call sites must use the same `BackgroundAnchors` instance
+  semantics — the prefs file is shared. The collector takes the
+  process-name argument explicitly rather than reading
+  `Process.myProcessName()` so the test can exercise both code
+  paths without spinning up two processes.
+
+#### 10.6.7 Why semantic separation matters
+
+`REASON_USER_STOPPED` and `REASON_USER_REQUESTED` are the user
+actively killing the app (Settings → Force stop, task-killer apps,
+OS update flows). They are arithmetically valid data points —
+`backgrounded_for_ms` and `alive_for_ms` derive correctly — but
+they have a different *meaning* from system-driven kills. Lumping
+them into the same dashboard cohort as `LOW_MEMORY` / `SIGNALED`
+would inflate the "battery-optimization killed us" metric every
+time an annoyed user force-stopped the app. The `exit.intentional`
+tag lets the OEM-killer dashboard query `exit.intentional:false
+oem.killer.suspected:true` and exclude the noise without losing
+the records (intentional exits are still useful for separate
+analysis like "how often do users force-stop us, and on which
+devices").
+
+#### 10.6.8 Caveats that affect the implementation
+
+- `getHistoricalProcessExitReasons(packageName, pid=0, maxNum=0)`
+  with `maxNum=0` (= unlimited) is documented as slow on some
+  devices. Use `maxNum=10`. Reports per-process so 10 is plenty.
+- Some OEM killers (older MIUI, Huawei EMUI) kill via `init`-level
+  paths that don't leave a clean `ApplicationExitInfo` record at
+  all. Best-effort — coverage isn't 100%. Document this in the
+  feature notes so dashboard math accounts for "missing" deaths
+  on certain vendors.
+- `getHistoricalProcessExitReasons` records persist across reboots
+  on most ROMs but not all (some clear them on boot). The
+  high-water timestamp handles this correctly — we just won't see
+  records older than the last surviving entry.
+- `description` and the tombstone via `traceInputStream()` can
+  contain process-internal memory addresses. Don't capture
+  `traceInputStream()` (it's a stream of bytes that could exceed
+  Sentry's event size limit and contain user-context strings on
+  some vendors); `description` is a short label and is safe to
+  forward as-is.
+- `ProcessLifecycleOwner` requires `androidx.lifecycle:lifecycle-
+  process` — check whether it's already on the runtime classpath
+  via React Native's transitive deps. If not, add a thin compile
+  dep matching the version expo brings in.
+- The FGS process gets its own `ProcessLifecycleOwner` instance
+  but the lifecycle events fired there reflect FGS activities only
+  (none in our case), so the FGS-side `backgrounded_at` slot stays
+  unused. That's intentional — the `comapeo.fgs.killed_in_
+  background` derivation reads the *main*-side anchor.
+
+#### 10.6.9 Tests
+
+- `ExitReasonsCollectorTest.kt` (JVM unit test): inject a fake
+  `getHistoricalProcessExitReasons` source returning hand-built
+  records (use small data classes mirroring the
+  `ApplicationExitInfo` fields you care about, since the real
+  class can't be instantiated off-device). Cover:
+  - First-run no-op: prefs unset → records seen this run set
+    `lastSeenAtMs` but emit nothing.
+  - Subsequent run: only records newer than `lastSeenAtMs` are
+    emitted; tag/extra/level mapping is correct.
+  - OEM-killer detection: `signaled` + `foreground_service` +
+    signal 9 sets `oem.killer.suspected=true`.
+  - Intentional exits: `user_stopped` sets `exit.intentional=true`
+    and level `info`, regardless of process state.
+  - Derived fields null-safe when anchors absent.
+- `ExitReasonTagsTest.kt`: decode-table coverage (every enum
+  value the AOSP javadoc lists, plus a fallthrough for unknown
+  ints — newer API levels can add reasons, and we want
+  `unknown:<int>` rather than a crash).
+- No new instrumentation test needed — the integration is
+  exercise-by-eye on a real device with a Samsung / Xiaomi /
+  OnePlus build in the test matrix.
+
+#### 10.6.10 Out of scope for Phase 6
+
+- Job/alarm restriction telemetry (the *other* half of OEM
+  aggression — they don't kill, they just stop dispatching
+  background work). Would require `JobScheduler`/`WorkManager`
+  observation. File as Phase 8 if it becomes a question.
+- iOS termination reasons. iOS reports `terminationReason` /
+  `terminationLogData` via `MetricKit` but the model is different
+  enough that combining it with the Android post-mortem in a
+  single phase is the wrong unit of work.
+- Histogram / metrics-product emission. Initially keep it as
+  events keyed on tags; if event volume becomes a problem or
+  histograms become useful, layer `Sentry.metrics.distribution`
+  on top in Phase 7.
+
+Value: actionable visibility into the single most user-impacting
+class of failure on Android (silent FGS kill in background), and
+the first quantitative answer to "which OEMs kill our process
+hardest".
+
+Cost: ~250 LOC Kotlin + ~150 LOC tests. No JS/iOS/backend changes.
+
+### 10.7 Phase 7 — refinements — pending
 
 - Tune sample rates from production data.
 - Optional: dual backend bundles for Sentry-free consumers
