@@ -26,6 +26,13 @@ data class SentryConfig(
     /** Cap on RPC argument bytes captured. Defaults to never capture. */
     val rpcArgsBytes: Int? = null,
     /**
+     * Default value for the diagnostics-enabled toggle on fresh
+     * installs. `null` → treated as `true` (diagnostics on by
+     * default). Once the user has explicitly written the prefs key
+     * their choice wins; this only applies when the key is absent.
+     */
+    val diagnosticsEnabledDefault: Boolean? = null,
+    /**
      * Default value for the capture-application-data toggle on
      * fresh installs. `null` → treated as `false`.
      */
@@ -65,6 +72,8 @@ data class SentryConfig(
         const val META_SAMPLE_RATE = "com.comapeo.core.sentry.sampleRate"
         const val META_TRACES_SAMPLE_RATE = "com.comapeo.core.sentry.tracesSampleRate"
         const val META_RPC_ARGS_BYTES = "com.comapeo.core.sentry.rpcArgsBytes"
+        const val META_DIAGNOSTICS_ENABLED_DEFAULT =
+            "com.comapeo.core.sentry.diagnosticsEnabledDefault"
         const val META_CAPTURE_APPLICATION_DATA_DEFAULT =
             "com.comapeo.core.sentry.captureApplicationDataDefault"
         const val META_ENABLE_LOGS = "com.comapeo.core.sentry.enableLogs"
@@ -118,6 +127,9 @@ data class SentryConfig(
                 sampleRate = metaString(META_SAMPLE_RATE)?.toDoubleOrNull(),
                 tracesSampleRate = metaString(META_TRACES_SAMPLE_RATE)?.toDoubleOrNull(),
                 rpcArgsBytes = metaString(META_RPC_ARGS_BYTES)?.toIntOrNull(),
+                diagnosticsEnabledDefault = metaString(
+                    META_DIAGNOSTICS_ENABLED_DEFAULT,
+                )?.toBooleanStrictOrNull(),
                 captureApplicationDataDefault = metaString(
                     META_CAPTURE_APPLICATION_DATA_DEFAULT,
                 )?.toBooleanStrictOrNull(),

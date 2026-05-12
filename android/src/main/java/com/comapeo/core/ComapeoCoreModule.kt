@@ -245,5 +245,58 @@ class ComapeoCoreModule : Module() {
                 SentryConfig.loadFromManifest(it)?.toSentryInitMap()
             } ?: emptyMap<String, Any>()
         }
+
+        // User's persisted sentry preferences, read at module
+        // construction. Snapshot-at-boot: changes don't take effect
+        // until next launch (see `setDiagnosticsEnabled` /
+        // `setCaptureApplicationData`). The JS `/sentry` sub-export
+        // reads this during `initSentry()` to decide whether to call
+        // `Sentry.init` and at what tier.
+        //
+        // Returns the baked-in defaults when no react context is
+        // available (test / pre-attach) so the JS side never gets
+        // null and can spread the map unconditionally.
+        Constant("sentryPreferences") {
+            val ctx = appContext.reactContext
+            if (ctx == null) {
+                mapOf(
+                    "diagnosticsEnabled" to ComapeoPrefs.DEFAULT_DIAGNOSTICS_ENABLED,
+                    "captureApplicationData" to ComapeoPrefs.DEFAULT_CAPTURE_APPLICATION_DATA,
+                )
+            } else {
+                val prefs = ComapeoPrefs.open(ctx)
+                mapOf(
+                    "diagnosticsEnabled" to prefs.readDiagnosticsEnabled(),
+                    "captureApplicationData" to prefs.readCaptureApplicationData(),
+                )
+            }
+        }
+
+        // Restart-to-activate: writes the new value to disk and, on
+        // a transition to `false`, wipes the sentry-android envelope
+        // cache so events queued in the current session never ship.
+        // The current process keeps emitting in-memory until the
+        // next launch; that's the documented trade-off.
+        AsyncFunction("setDiagnosticsEnabled") { value: Boolean ->
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "setDiagnosticsEnabled called before native context attached",
+                )
+            ComapeoPrefs.open(ctx).writeDiagnosticsEnabled(value)
+            if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
+        }
+
+        // Same shape as setDiagnosticsEnabled. The outbox wipe on
+        // `false` is full (not just trace envelopes) — selective
+        // wipe would be a lot of code for the same effect when an
+        // outbox is mixed.
+        AsyncFunction("setCaptureApplicationData") { value: Boolean ->
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "setCaptureApplicationData called before native context attached",
+                )
+            ComapeoPrefs.open(ctx).writeCaptureApplicationData(value)
+            if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
+        }
     }
 }

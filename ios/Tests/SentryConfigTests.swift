@@ -48,6 +48,7 @@ final class SentryConfigTests: XCTestCase {
         XCTAssertNil(config?.sampleRate)
         XCTAssertNil(config?.tracesSampleRate)
         XCTAssertNil(config?.rpcArgsBytes)
+        XCTAssertNil(config?.diagnosticsEnabledDefault)
         XCTAssertNil(config?.captureApplicationDataDefault)
     }
 
@@ -116,6 +117,46 @@ final class SentryConfigTests: XCTestCase {
         )
         XCTAssertNil(config?.sampleRate)
         XCTAssertNil(config?.rpcArgsBytes)
+    }
+
+    func testDiagnosticsEnabledDefaultParses() {
+        let on = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "qa",
+                SentryConfig.Key.diagnosticsEnabledDefault: "true",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertEqual(on?.diagnosticsEnabledDefault, true)
+
+        let off = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "production",
+                // String "false" mirrors the Android JVM unit-test
+                // fixture and exercises the same `parseStrictBool`
+                // string branch the plugin actually emits at prebuild
+                // — the manifest meta-data is string-typed on Android
+                // and the plugin coerces values to strings here too
+                // (see `app.plugin.js`'s `normalizeSentryProps`).
+                SentryConfig.Key.diagnosticsEnabledDefault: "false",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertEqual(off?.diagnosticsEnabledDefault, false)
+
+        // Strict parse: "yes" → nil; ComapeoPrefs falls back to the
+        // baked-in default (diagnostics on).
+        let stray = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "qa",
+                SentryConfig.Key.diagnosticsEnabledDefault: "yes",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertNil(stray?.diagnosticsEnabledDefault)
     }
 
     func testCaptureApplicationDataDefaultParsesString() {

@@ -16,6 +16,10 @@ struct SentryConfig: Equatable {
     let tracesSampleRate: Double?
     /// Cap on RPC argument bytes captured. Defaults to never capture.
     let rpcArgsBytes: Int?
+    /// Default for the diagnostics-enabled toggle on fresh installs.
+    /// `nil` → treated as `true` (diagnostics on by default). Once the
+    /// user has explicitly written the prefs key, their choice wins.
+    let diagnosticsEnabledDefault: Bool?
     /// Default for the capture-application-data toggle on fresh
     /// installs. `nil` → treated as `false`.
     let captureApplicationDataDefault: Bool?
@@ -50,6 +54,7 @@ struct SentryConfig: Equatable {
         static let sampleRate = "ComapeoCoreSentrySampleRate"
         static let tracesSampleRate = "ComapeoCoreSentryTracesSampleRate"
         static let rpcArgsBytes = "ComapeoCoreSentryRpcArgsBytes"
+        static let diagnosticsEnabledDefault = "ComapeoCoreSentryDiagnosticsEnabledDefault"
         static let captureApplicationDataDefault = "ComapeoCoreSentryCaptureApplicationDataDefault"
         static let enableLogs = "ComapeoCoreSentryEnableLogs"
     }
@@ -93,6 +98,9 @@ struct SentryConfig: Equatable {
             sampleRate: parseDouble(info[Key.sampleRate]),
             tracesSampleRate: parseDouble(info[Key.tracesSampleRate]),
             rpcArgsBytes: parseInt(info[Key.rpcArgsBytes]),
+            diagnosticsEnabledDefault: parseStrictBool(
+                info[Key.diagnosticsEnabledDefault]
+            ),
             captureApplicationDataDefault: parseStrictBool(
                 info[Key.captureApplicationDataDefault]
             ),

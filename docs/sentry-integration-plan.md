@@ -1639,6 +1639,297 @@ omitted, native treats it as `false` everywhere — safer
 fallback for the example app and any consumer that doesn't
 actively configure it.
 
+### 9.8 Three-tier privacy model
+
+CoMapeo's host-app privacy contract has three states, not two. The
+`captureApplicationData` toggle from §9.1–§9.7 covers two of them;
+the third — **off** — needs a separate toggle and its own
+plumbing path. This section documents the additional layer.
+
+#### 9.8.1 The three tiers
+
+| Tier | What runs | When |
+|---|---|---|
+| **Off** | Nothing. `Sentry.init` is **not** called on RN, FGS, or Node. The module's adapter stays null; emit paths no-op. | User explicitly opts out of diagnostic data sharing in the host app settings. |
+| **Diagnostic** (default-on) | Errors + lifecycle: `Sentry.init` runs in all three SDKs with `tracesSampleRate=0`, `sendDefaultPii=false`, and a PII scrubber. Boot transactions on; per-RPC spans off. | Default for fresh installs (and recommended for production). |
+| **App-usage** (additional opt-in) | Diagnostic set **plus** per-RPC client/server spans, sync-session transaction, bg/fg breadcrumbs, backend memory snapshot, `privateStorageDir` size, and the full `SentryNativeContext` fingerprinting fields. | User opts in via a settings toggle. |
+
+Diagnostic is the *baseline*; app-usage is *additive*. App-usage
+without diagnostic is impossible by construction — the effective
+gate is `captureApplicationData && diagnosticsEnabled`, enforced
+inside this module so the host UI never has to mirror that logic.
+
+#### 9.8.2 The `diagnosticsEnabled` toggle
+
+Persistence and plumbing are symmetric with §9.1–§9.7. Same prefs
+file (`com.comapeo.core.prefs` on Android, `UserDefaults.standard`
+on iOS), restart-to-activate semantics, plugin-supplied default via
+a new `diagnosticsEnabledDefault` field.
+
+- **Default-default**: `true`. Fresh installs ship with diagnostics
+  on so baseline error visibility works out of the box. The plugin's
+  `diagnosticsEnabledDefault: false` overrides this when a consumer
+  wants opt-in-first behaviour.
+- **JS API** (next to `getCaptureApplicationData` / `setCaptureApplicationData`):
+  ```ts
+  export function getDiagnosticsEnabled(): boolean;
+  export function setDiagnosticsEnabled(value: boolean): Promise<void>;
+  ```
+  `get*` returns the user's saved value (or the default if absent);
+  `set*` resolves once the value has hit disk AND (on `true → false`)
+  the on-disk Sentry envelope cache has been wiped.
+- **Native gating**:
+  - Android `ComapeoCoreService.onCreate` — reads
+    `ComapeoPrefs.open(ctx).readDiagnosticsEnabled()` before
+    `SentryFgsBridge.init` and before passing `sentryConfig` to
+    `NodeJSService`. When off, neither runs, so the FGS bridge stays
+    inert AND the backend loader receives no `--sentry*` argv.
+  - iOS `AppLifecycleDelegate.nodeService` — same shape via
+    `resolveEffectiveSentryConfig()`. iOS is single-process so
+    there's no separate native-init gate; the host's `Sentry.init`
+    (now owned by `initSentry()` — see §9.8.3) is the only init
+    site, and it gates on the same pref.
+- **Cross-toggle interaction**: setters write their raw values
+  independently. The *effective* `captureApplicationData` value is
+  always `stored && diagnosticsEnabled` — internal gate only. The
+  user's stored `captureApplicationData=true` is preserved across
+  diagnostics off→on cycles.
+
+#### 9.8.3 Module ownership of `Sentry.init`
+
+`@comapeo/core-react-native/sentry` now owns the RN-side
+`Sentry.init` call. The host calls a single `initSentry(options?)`
+at app entry; the module reads its prefs and the plugin-supplied
+`sentryConfig` and either:
+
+- skips `Sentry.init` entirely (diagnostics off, or no DSN);
+- throws if the host called `Sentry.init` themselves (clear
+  migration error pointing at `initSentry`); or
+- calls `Sentry.init` with locked options + allowlisted host
+  extensions.
+
+```ts
+// Host's app entry:
+import * as Sentry from "@sentry/react-native";
+import { initSentry } from "@comapeo/core-react-native/sentry";
+
+initSentry({
+  integrations: (defaults) => [...defaults, navIntegration],
+  beforeSend: hostBeforeSend,        // chained AFTER our scrubber
+  beforeBreadcrumb: hostBeforeBreadcrumb,
+  tags: { app: "comapeo-mobile" },
+});
+```
+
+Locked options (the host's `InitSentryOptions` type does **not**
+include them — TypeScript refuses them at the call site):
+
+- `dsn`, `release`, `environment`, `sampleRate`, `enableLogs` — from
+  the plugin's `sentryConfig`.
+- `tracesSampleRate` — `0` when capture-application-data is off, the
+  plugin's value (default `0.1`) when on. Effective gate enforced
+  here.
+- `sendDefaultPii: false` — non-overridable.
+- `user.id` — controlled by the module (see §9.8.5).
+
+The `integrations` option is a function `(defaults) => Integration[]`
+so the host can append to (not replace) our defaults. `beforeSend`
+and `beforeBreadcrumb` chain: our scrubber runs first; if it drops
+the event/crumb, the host's hook never sees it.
+
+#### 9.8.4 Outbox wipe on toggle-off
+
+Setters that transition `true → false` call `ComapeoPrefs.wipeSentryOutbox(context)`
+synchronously after the prefs write commits. The wipe is a
+filesystem `deleteRecursively` against the documented sentry-android
+(`<cacheDir>/sentry/`) / sentry-cocoa
+(`<NSCachesDirectory>/io.sentry/`) cache root. Pending envelopes
+(events queued from the current session but not yet sent),
+session-tracking state, and on-disk scope all go in one shot.
+
+The current process keeps emitting in-memory until the next launch
+(restart-to-activate is unchanged) but those emissions land in an
+outbox we just wiped, so the next-launch SDK won't have anything
+to upload — and the next launch won't init Sentry at all because
+the prefs read returns the new value. This is best-effort: a
+filesystem error never blocks the privacy opt-out, but the worst
+case is the cache survives one more boot, which then doesn't init
+Sentry, which means nothing reads the surviving cache. Net effect:
+events from the off-transition session never ship.
+
+#### 9.8.5 Phase 9 — privacy hardening (subsequent PRs)
+
+The plumbing in §9.8.1–§9.8.4 lands the *gating shape*; the
+captures themselves still need to be hardened to honour the
+distinctions the tiers promise. This is Phase 9, broken into
+smaller deliverables:
+
+##### 9.8.5.1 PII scrubber (`beforeSend`)
+
+The substring-scan promised in §7.4.9 — defensive net for
+`rootKey`, base64-22-char strings (rootkey shapes), `lat=` / `lng=`
+/ `latitude:` / `longitude:`, and any other token CoMapeo treats as
+sensitive. Lives in this module, wired in `initSentry` BEFORE the
+host's `beforeSend` chain so a malicious or buggy host can never
+see an unscrubbed payload. The `beforeSend` chain shape is already
+wired in the prior PR (identity placeholder); this lands the
+function body.
+
+Symmetric implementation in `backend/loader.mjs`'s
+`Sentry.addEventProcessor` so the same scrub runs on Node-side
+events. Same regex list, same drop behaviour. A shared list keeps
+it in sync; copy via build step or duplicate by hand with a comment
+pointing both ways.
+
+The scrubber walks `event.message`, `event.exception[*].value`,
+`event.extra`, `event.contexts`, every breadcrumb's `message` +
+`data`, and every span's `description` + `attributes`. Trade-off
+between false-positive aggressiveness and signal preservation is
+documented inline with example matches.
+
+##### 9.8.5.2 `user.id` — installation UUID + monthly rotation
+
+A stable per-install UUID owned by native (because the FGS process
+needs it before RN starts):
+
+- **Storage**: `ComapeoPrefs` adds a `sentry.installationId` key.
+  Generated lazily on first read as `UUID.randomUUID().toString()`
+  on Android / `UUID().uuidString` on iOS. Persisted in
+  `SharedPreferences` (cleared on uninstall) — explicitly **not**
+  Keychain; we want uninstall to genuinely reset identity.
+- **Computation**:
+  - Diagnostic tier: `user.id = sha256(installationId + utc_year_month).slice(0, 16)`
+    where `utc_year_month` is `YYYY-MM` (current UTC). Hash rotates
+    monthly so cross-month traces don't link.
+  - App-usage tier: `user.id = installationId` (raw stable ID).
+  - When a user shares their `installationId` (e.g. for a bug
+    report), we can recover the diagnostic hashes back to them.
+- **Distribution**: native computes once at process start, exposes
+  on the existing `sentryConfig` Expo constant as `userId`.
+  Backend loader receives it via `--sentryUserId=...` argv. All
+  three SDKs use the same value via `Sentry.setUser({ id })`
+  (locked — host can't override).
+- **On toggle-flip**: the `installationId` itself doesn't rotate
+  on `diagnosticsEnabled` toggle (that would defeat bug-report
+  recoverability). When the user goes `app-usage on → off`, the
+  next launch's `user.id` changes (raw → monthly hash); that's
+  the intended boundary.
+
+##### 9.8.5.3 Context field reclassification
+
+Today `SentryNativeContext.{kt,swift}` builds one full blob and
+forwards it on every event. Split into two layers:
+
+- **Diagnostic tier emits**:
+  - `device`: `manufacturer`, `brand`, `model`, `model_id`,
+    `family`, `arch`, `simulator`, `processor_count`, `memory_size`,
+    `storage_size` (bucketed to standard sizes: 32/64/128/256/512/1024 GB).
+  - `os`: `name`, `version` only. **Drop** `kernel_version` (both),
+    `build` (Android `Build.DISPLAY`). iOS `kern.osversion`
+    redundant with `version`, drop too.
+  - `app`: `app_identifier`, `app_version`, `app_build`. **Drop**
+    `app_name` (zero marginal value over DSN+release).
+  - `culture`: **drop entirely** at diagnostic tier (locale +
+    timezone are high-entropy fingerprint surfaces).
+  - `device.screen_resolution`, `device.screen_density`,
+    `device.screen_dpi`: **drop**.
+
+- **App-usage tier adds**: kernel_version, Android `Build.DISPLAY`,
+  `app_name`, full `culture` block, screen metrics. The
+  fingerprinting tradeoff is acceptable when the user has explicitly
+  opted in to usage telemetry.
+
+Privacy rationale for each field is in the dropped/kept decision
+table from the conversation that produced this section — record it
+here on implementation.
+
+##### 9.8.5.4 Boot transactions: keep on diagnostic, minimise
+
+Boot transactions stay always-on (option (b) from the design
+discussion), but the timing-shape data they carry is minimised
+under the diagnostic tier:
+
+- Strip user-shape fields from boot-transaction attributes — no
+  background-duration anchors, no foreground-state tags, no
+  per-event culture data riding alongside.
+- Keep phase-span shape (`fgs-launch`, `node-spawn`, `rootkey-load`,
+  `init-frame`, `boot.listen-control`, `boot.manager-init`,
+  `boot.import-index`) — that's the actionable perf signal.
+- Span `description` strings are reviewed for incidental data
+  (e.g. file paths under private dir) and either stripped or
+  redacted.
+
+##### 9.8.5.5 Network breadcrumb URL scrubbing
+
+`@sentry/react-native`'s default `httpIntegration` records every
+`fetch` / `XMLHttpRequest` URL + status code as a breadcrumb. URLs
+can leak which CoMapeo Cloud account / project / map tile server a
+user talks to. Two options:
+
+- Disable `httpIntegration` from our defaults entirely. Cheapest;
+  most aggressive.
+- Keep it but install a `beforeBreadcrumb` that scrubs the URL to
+  host-only (drop path, query string).
+
+Recommend the latter — host-only URLs are still useful for
+diagnosing "all our requests are failing" patterns. Implementation
+chains alongside the PII scrubber.
+
+##### 9.8.5.6 Phase 5 update-frame for backend free memory/disk
+
+`@sentry/node` doesn't synthesise device context the way
+sentry-cocoa / sentry-android do. The cheap fix landed in the
+prior PR (attach `os.freemem` / `os.totalmem` / `fs.statfsSync` to
+`handleFatal` exceptions only). The full path: native sends a
+periodic / event-driven update-frame on the control socket with a
+fresh `sentryContext` blob, which the loader's existing
+`addEventProcessor` merges onto subsequent events. Same code path
+as the static init-frame context, just driven by changes.
+
+Scoped to app-usage tier because periodic memory polling is itself
+usage-shape data (frequency reveals app activity).
+
+##### 9.8.5.7 `consoleIntegration` gating
+
+Move backend `consoleIntegration` from the always-on default to
+app-usage. Today `backend/loader.mjs` adds it unconditionally;
+under the new model, install it only when the loader receives a
+`--captureApplicationData` argv flag (which native only passes
+when the effective toggle is on).
+
+##### 9.8.5.8 Phase 6 / Phase 7 reclassification
+
+Phase 6 (Android exit reasons) — the *records themselves* are
+diagnostic-tier. The derived **`bg_duration_bucket`**,
+**`uptime_bucket`**, and `comapeo.fgs.killed_in_background`
+fields rely on background-duration anchors that themselves are
+app-usage-tier data. Reclassify in the Phase 6 spec: those tags
+only flow when capture-application-data is on. Phase 6 records
+without those tags still ship at diagnostic (with `exit.reason`,
+`exit.process_state`, `oem.killer.suspected`, `exit.intentional`).
+
+Phase 7 (iOS app-exit metrics) — the bucket events themselves are
+diagnostic-tier. The per-event multiplication (`window_count`
+duplication) is app-usage-tier because frequency reveals
+session-shape activity.
+
+##### 9.8.5.9 Phase 6 timestamp anchor reset on toggle cycle
+
+When `diagnosticsEnabled` flips `false → true`, Phase 6's
+`lastSeenAtMs` high-water key resets to `currentTimeMillis()` so
+records generated during the "off" window are NOT surfaced on
+re-enable. Same behaviour for `captureApplicationData` and the
+duration-anchor keys. Simple per-toggle hook on the setter path.
+
+#### 9.8.6 Why this section uses §9.8 numbering instead of a top-level header
+
+The original draft split this into a separate `## 10` section, but
+the §10 (Phasing) cross-references throughout the doc would have
+needed renumbering. Folding into §9 under "user toggles" — both
+existing (`captureApplicationData`) and new (`diagnosticsEnabled`)
+— keeps the topology stable. The new Phase 9 entry in §10's
+phasing table links back here for the full design.
+
 ---
 
 ## 10. Phasing
@@ -1656,8 +1947,8 @@ actively configure it.
 | 10.6 — Phase 6 (Android historical exit reasons) | **pending** | Surface `ApplicationExitInfo` records on next start; isolates OEM-killer FGS deaths, LMK background kills, and "alive-for / backgrounded-for" durations per device. API 30+ only. |
 | 10.7 — Phase 7 (iOS app-exit telemetry) | **pending** | Subscribe to `MXMetricPayload` and forward `MXAppExitMetric` buckets (memory-pressure, background-task-assertion-timeout, watchdog, etc.) as Sentry events. 24h-aggregate resolution. Sentry-cocoa explicitly doesn't subscribe to `MXMetricPayload` — our implementation. iOS 14+. Optional 7b sub-phase adds a `UserDefaults`-anchored "killed-in-background" heuristic for per-event resolution. |
 | 10.8 — Phase 8 (refinements) | **pending** | Sample-rate tuning from real data; optional dual-bundle if size matters. |
-
-What's *not* shipping with the integration even after all phases: `sentry-native` inside `nodejs-mobile` (V8 abort / addon SIGSEGV stays a host-process crash; sentry-android catches those at the JNI layer — see plan §7.5).
+| 10.9 — Phase 9a (diagnosticsEnabled + module ownership of Sentry.init) | **landed** | New `diagnosticsEnabled` pref alongside `captureApplicationData`. Module owns `Sentry.init` via `initSentry()`. Cheap fix: free memory/disk attached to backend `handleFatal`. See §9.8. |
+| 10.9 — Phase 9b (PII scrubber, user.id rotation, context reclassification) | **pending** | Substring scrubber; installation UUID with monthly hash at diagnostic tier; SentryNativeContext field split; consoleIntegration gating; network-URL scrubbing. Full breakdown in §9.8.5. |
 
 ---
 

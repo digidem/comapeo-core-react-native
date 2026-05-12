@@ -12,6 +12,17 @@ import { createMapeoClient, type MapeoClientApi } from "@comapeo/ipc/client.js";
 import { activeAdapter } from "./sentry-internal";
 import type { SentryInitConfig } from "./sentry";
 
+/**
+ * User-persisted sentry preferences (snapshot at module construction).
+ * Diagnostics on by default; capture-app-data off by default. Plugin
+ * `diagnosticsEnabledDefault` / `captureApplicationDataDefault` change
+ * the fresh-install defaults but not the user's saved choice.
+ */
+export type SentryPreferences = {
+  diagnosticsEnabled: boolean;
+  captureApplicationData: boolean;
+};
+
 declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   postMessage(value: string): void;
   getState(): ComapeoState;
@@ -21,6 +32,26 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
    * Empty object when the plugin isn't registered (or DSN absent).
    */
   readonly sentryConfig: SentryInitConfig;
+  /**
+   * User-persisted preferences, read at module construction.
+   * Snapshot-at-boot — `setDiagnosticsEnabled` / `setCaptureApplicationData`
+   * writes only take effect on the next launch.
+   */
+  readonly sentryPreferences: SentryPreferences;
+  /**
+   * Persist `diagnosticsEnabled` and (on a transition to false) wipe
+   * the on-disk Sentry envelope cache so queued events from the
+   * current session never ship. Restart-to-activate: the current
+   * process keeps emitting until the next launch.
+   */
+  setDiagnosticsEnabled(value: boolean): Promise<void>;
+  /**
+   * Same shape as `setDiagnosticsEnabled` but for the
+   * `captureApplicationData` toggle. Outbox wipe on false is full
+   * (not just trace envelopes) — selective wipe would be a lot of
+   * code for the same effect when an outbox is mixed.
+   */
+  setCaptureApplicationData(value: boolean): Promise<void>;
 }
 
 // This call loads the native module object from the JSI.
@@ -35,6 +66,34 @@ const nativeModule = requireNativeModule<ComapeoCoreModule>("ComapeoCore");
  */
 export function readSentryConfig(): SentryInitConfig {
   return nativeModule.sentryConfig ?? {};
+}
+
+/**
+ * User-persisted sentry preferences. Snapshot-at-boot: the values are
+ * read at native module construction, so `setDiagnosticsEnabled` /
+ * `setCaptureApplicationData` writes only take effect on the next
+ * launch. Falls back to safe defaults (diagnostics on, capture-app-
+ * data off) when the native module isn't available (test contexts).
+ */
+export function readSentryPreferences(): SentryPreferences {
+  return (
+    nativeModule.sentryPreferences ?? {
+      diagnosticsEnabled: true,
+      captureApplicationData: false,
+    }
+  );
+}
+
+/** Persist `diagnosticsEnabled`. See `setDiagnosticsEnabled` JSDoc. */
+export function setDiagnosticsEnabledNative(value: boolean): Promise<void> {
+  return nativeModule.setDiagnosticsEnabled(value);
+}
+
+/** Persist `captureApplicationData`. See `setCaptureApplicationData` JSDoc. */
+export function setCaptureApplicationDataNative(
+  value: boolean,
+): Promise<void> {
+  return nativeModule.setCaptureApplicationData(value);
 }
 
 type MessagePortEvents = {

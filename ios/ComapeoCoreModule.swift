@@ -111,5 +111,38 @@ public class ComapeoCoreModule: Module {
         Constant("sentryConfig") { () -> [String: Any] in
             SentryConfig.loadFromMainBundle()?.toSentryInitMap() ?? [:]
         }
+
+        // User's persisted sentry preferences, read at module
+        // construction. Snapshot-at-launch: changes don't take effect
+        // until next launch (see `setDiagnosticsEnabled` /
+        // `setCaptureApplicationData`). The JS `/sentry` sub-export
+        // reads this during `initSentry()` to decide whether to call
+        // `Sentry.init` and at what tier.
+        Constant("sentryPreferences") { () -> [String: Any] in
+            let prefs = ComapeoPrefs.open()
+            return [
+                "diagnosticsEnabled": prefs.readDiagnosticsEnabled(),
+                "captureApplicationData": prefs.readCaptureApplicationData(),
+            ]
+        }
+
+        // Restart-to-activate: writes the new value to UserDefaults
+        // and, on a transition to `false`, wipes the sentry-cocoa
+        // envelope cache so events queued in the current session
+        // never ship. The current process keeps emitting in-memory
+        // until the next launch; that's the documented trade-off.
+        AsyncFunction("setDiagnosticsEnabled") { (value: Bool) in
+            ComapeoPrefs.open().writeDiagnosticsEnabled(value)
+            if !value { ComapeoPrefs.wipeSentryOutbox() }
+        }
+
+        // Same shape as setDiagnosticsEnabled. The outbox wipe on
+        // `false` is full (not just trace envelopes) — selective
+        // wipe would be a lot of code for the same effect when an
+        // outbox is mixed.
+        AsyncFunction("setCaptureApplicationData") { (value: Bool) in
+            ComapeoPrefs.open().writeCaptureApplicationData(value)
+            if !value { ComapeoPrefs.wipeSentryOutbox() }
+        }
     }
 }

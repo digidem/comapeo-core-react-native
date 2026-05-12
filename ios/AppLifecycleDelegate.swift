@@ -57,6 +57,26 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// time, which is always after `application(_:didFinishLaunchingWithOptions:)`.
     private static let rootKeyStore = RootKeyStore()
 
+    /// Effective Sentry config for this launch. Returns the plist-
+    /// supplied config only when the persisted `diagnosticsEnabled`
+    /// pref is true; nil otherwise. With nil, NodeJSService:
+    ///   - sends no `--sentry*` argv to the backend loader (which
+    ///     short-circuits its own Sentry.init on absent DSN);
+    ///   - sends no `sentryContext` blob in the init frame (which
+    ///     would otherwise leak device fingerprint to the backend hub);
+    ///   - still calls `SentryNativeBridge` for spans, but those
+    ///     no-op against an uninitialised sentry-cocoa (the host's
+    ///     `initSentry()` reads the same pref and skips
+    ///     `Sentry.init` when diagnostics is off).
+    ///
+    /// Snapshot-at-launch: re-read on next cold start. Toggle changes
+    /// don't take effect mid-session.
+    private static func resolveEffectiveSentryConfig() -> SentryConfig? {
+        let diagnosticsEnabled = ComapeoPrefs.open().readDiagnosticsEnabled()
+        guard diagnosticsEnabled else { return nil }
+        return SentryConfig.loadFromMainBundle()
+    }
+
     static let nodeService = NodeJSService(
         socketDir: AppLifecycleDelegate.resolveSocketDir(),
         privateStorageDir: AppLifecycleDelegate.resolvePrivateStorageDir(),
@@ -111,7 +131,8 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // service will surface that as `.error` and the next foreground
             // (which fires `applicationDidBecomeActive` again) retries.
             try AppLifecycleDelegate.rootKeyStore.loadOrInitialize()
-        }
+        },
+        sentryConfig: AppLifecycleDelegate.resolveEffectiveSentryConfig()
     )
 
     /// Resolves the directory that holds the Unix-domain socket files

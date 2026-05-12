@@ -1,4 +1,6 @@
 import { fileURLToPath } from "node:url";
+import os from "node:os";
+import fs from "node:fs";
 import Fastify from "fastify";
 
 import { ComapeoRpcServer } from "./lib/comapeo-rpc.js";
@@ -200,12 +202,14 @@ async function handleFatal(phase, error) {
     /** @type {{ source?: unknown }} */ (error).source === "native";
   if (Sentry) {
     try {
+      const deviceCtx = readDeviceMemoryAndStorage();
       Sentry.captureException(err, {
         tags: {
           phase,
           layer: "node",
           ...(isNativeForward ? { source: "native" } : {}),
         },
+        ...(deviceCtx ? { contexts: { device: deviceCtx } } : {}),
       });
     } catch (captureErr) {
       console.error("Failed to capture Sentry event", captureErr);
@@ -242,6 +246,39 @@ process.on("uncaughtException", (error) => {
 process.on("unhandledRejection", (reason) => {
   handleFatal("runtime", reason);
 });
+
+/**
+ * Best-effort system memory + private-storage snapshot for fatal
+ * captures. `@sentry/node` doesn't synthesise device context the way
+ * sentry-cocoa / sentry-android do, so OOM and disk-full crashes have
+ * no `device.free_memory` / `device.free_storage` in the Sentry UI
+ * without this. Field names match Sentry's standard device-context
+ * schema so they render alongside the platform-side values.
+ *
+ * Returns null on any failure — we never let context probing block a
+ * fatal capture.
+ *
+ * @returns {Record<string, number> | null}
+ */
+function readDeviceMemoryAndStorage() {
+  try {
+    /** @type {Record<string, number>} */
+    const ctx = {
+      memory_size: os.totalmem(),
+      free_memory: os.freemem(),
+    };
+    try {
+      const stats = fs.statfsSync(privateStorageDir);
+      ctx.storage_size = stats.bsize * stats.blocks;
+      ctx.free_storage = stats.bsize * stats.bavail;
+    } catch {
+      // statfs unsupported / path missing — omit storage fields only.
+    }
+    return ctx;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Wraps a boot phase in a Sentry span when active. No-op when Sentry

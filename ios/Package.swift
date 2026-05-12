@@ -26,6 +26,7 @@ let package = Package(
                 "NodeJSService.swift",
                 "ControlFrame.swift",
                 "Log.swift",
+                "ComapeoPrefs.swift",
                 "SentryConfig.swift",
                 "SentryNativeBridge.swift",
                 "SentryNativeContext.swift",

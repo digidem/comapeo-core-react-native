@@ -1,25 +1,28 @@
 import * as Sentry from "@sentry/react-native";
+import { initSentry } from "@comapeo/core-react-native/sentry";
 
-Sentry.init({
-  dsn: "https://e2b12d102f24a786ed183bdcea143bf2@o4507148235702272.ingest.us.sentry.io/4511348559708160",
-  environment: "development",
-  enableLogs: true,
-  tracesSampleRate: 1.0,
-  debug: true,
-  // Default `appStartIntegration` attaches the app-start span to the
-  // first transaction the integration sees — typically a navigation
-  // event. The example app has no navigation lib, so no host
-  // transaction ever fires and the app-start data sits unflushed.
-  // `standalone: true` makes the integration emit its own
-  // transaction. Real consumers (comapeo-mobile, etc.) with
-  // react-navigation can drop this override.
+// DSN / release / environment / sampleRate / tracesSampleRate /
+// enableLogs all flow through the Expo plugin in `app.json` (and
+// `app.plugin.js`); the host doesn't pass them here. `initSentry`
+// owns `Sentry.init` so the privacy toggles (`diagnosticsEnabled`,
+// `captureApplicationData`) can gate the call in one place.
+//
+// The `integrations` extension hook receives the SDK defaults and
+// returns the final list. Default `appStartIntegration` attaches the
+// app-start span to the first transaction the integration sees —
+// typically a navigation event. The example app has no navigation
+// lib, so no host transaction ever fires and the app-start data
+// sits unflushed. `standalone: true` makes the integration emit its
+// own transaction. Real consumers (comapeo-mobile, etc.) with
+// react-navigation can drop this override.
+initSentry({
   integrations: (defaults) =>
     defaults.map((i) =>
-      i.name === "AppStart" ? Sentry.appStartIntegration({ standalone: true }) : i,
+      (i as { name?: string }).name === "AppStart"
+        ? Sentry.appStartIntegration({ standalone: true })
+        : i,
     ),
 });
-
-import "@comapeo/core-react-native/sentry";
 
 import { registerRootComponent } from "expo";
 

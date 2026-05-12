@@ -31,6 +31,7 @@
           "sentry": {
             "dsn": "https://e2b12d102f24a786ed183bdcea143bf2@o4507148235702272.ingest.us.sentry.io/4511348559708160",
             "environment": "development",
+            "tracesSampleRate": 1.0,
             "captureApplicationDataDefault": true,
             "enableLogs": true
           }

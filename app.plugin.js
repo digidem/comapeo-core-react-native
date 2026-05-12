@@ -28,6 +28,8 @@ const ANDROID_KEYS = {
   sampleRate: "com.comapeo.core.sentry.sampleRate",
   tracesSampleRate: "com.comapeo.core.sentry.tracesSampleRate",
   rpcArgsBytes: "com.comapeo.core.sentry.rpcArgsBytes",
+  diagnosticsEnabledDefault:
+    "com.comapeo.core.sentry.diagnosticsEnabledDefault",
   captureApplicationDataDefault:
     "com.comapeo.core.sentry.captureApplicationDataDefault",
   enableLogs: "com.comapeo.core.sentry.enableLogs",
@@ -42,6 +44,8 @@ const IOS_KEYS = {
   sampleRate: "ComapeoCoreSentrySampleRate",
   tracesSampleRate: "ComapeoCoreSentryTracesSampleRate",
   rpcArgsBytes: "ComapeoCoreSentryRpcArgsBytes",
+  diagnosticsEnabledDefault:
+    "ComapeoCoreSentryDiagnosticsEnabledDefault",
   captureApplicationDataDefault:
     "ComapeoCoreSentryCaptureApplicationDataDefault",
   enableLogs: "ComapeoCoreSentryEnableLogs",
@@ -92,6 +96,11 @@ function normalizeSentryProps(sentry) {
   }
   if (sentry.rpcArgsBytes !== undefined) {
     normalized.rpcArgsBytes = String(sentry.rpcArgsBytes);
+  }
+  if (sentry.diagnosticsEnabledDefault !== undefined) {
+    normalized.diagnosticsEnabledDefault = sentry.diagnosticsEnabledDefault
+      ? "true"
+      : "false";
   }
   if (sentry.captureApplicationDataDefault !== undefined) {
     normalized.captureApplicationDataDefault = sentry.captureApplicationDataDefault
@@ -148,6 +157,11 @@ function withSentryAndroid(config, sentry) {
     );
     syncAndroidMetaData(
       application,
+      ANDROID_KEYS.diagnosticsEnabledDefault,
+      sentry.diagnosticsEnabledDefault,
+    );
+    syncAndroidMetaData(
+      application,
       ANDROID_KEYS.captureApplicationDataDefault,
       sentry.captureApplicationDataDefault,
     );
@@ -200,6 +214,11 @@ function withSentryIos(config, sentry) {
     setOrDelete(plist, IOS_KEYS.sampleRate, sentry.sampleRate);
     setOrDelete(plist, IOS_KEYS.tracesSampleRate, sentry.tracesSampleRate);
     setOrDelete(plist, IOS_KEYS.rpcArgsBytes, sentry.rpcArgsBytes);
+    setOrDelete(
+      plist,
+      IOS_KEYS.diagnosticsEnabledDefault,
+      sentry.diagnosticsEnabledDefault,
+    );
     setOrDelete(
       plist,
       IOS_KEYS.captureApplicationDataDefault,

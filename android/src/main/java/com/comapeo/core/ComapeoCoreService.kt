@@ -50,8 +50,19 @@ class ComapeoCoreService : Service() {
         // emits. `loadFromManifest` returns null when the consumer
         // didn't register the plugin, leaving the bridge inert.
         // Forwarded to NodeJSService so it can argv-pass to loader.mjs.
+        //
+        // Gated on the persisted `diagnosticsEnabled` toggle: when
+        // the user has opted out, `effectiveConfig` is null, so the
+        // FGS bridge stays inert AND NodeJSService passes no
+        // `--sentry*` argv to the backend loader, which short-
+        // circuits its own Sentry.init on absent DSN. Each process
+        // reads the toggle on its own cold start (snapshot-at-boot)
+        // — restart-to-activate.
         val sentryConfig = SentryConfig.loadFromManifest(applicationContext)
-        sentryConfig?.let { cfg ->
+        val diagnosticsEnabled = ComapeoPrefs.open(applicationContext)
+            .readDiagnosticsEnabled()
+        val effectiveConfig = if (diagnosticsEnabled) sentryConfig else null
+        effectiveConfig?.let { cfg ->
             SentryFgsBridge.init(applicationContext, cfg)
         }
 
@@ -59,7 +70,7 @@ class ComapeoCoreService : Service() {
 
         nodeJSService = NodeJSService(
             applicationContext,
-            sentryConfig = sentryConfig,
+            sentryConfig = effectiveConfig,
         )
     }
 
