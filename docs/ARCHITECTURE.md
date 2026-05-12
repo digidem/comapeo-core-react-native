@@ -644,12 +644,20 @@ return a typed `SentryConfig?` (`null` when DSN is absent =
 the plugin didn't supply one, so successive EAS builds of the
 same marketing version produce distinct release tags.
 
-The `Sentry.init`-shaped subset of those values (dsn, environment,
-release, sampleRate, tracesSampleRate, enableLogs) is also
-re-exported to JS as `sentryConfig` from `@comapeo/core-react-native/
-sentry`, so the host's `Sentry.init({ ...sentryConfig, ...mine })`
-aligns RN-side events with the FGS hub and the Node backend without
-duplicating values in app code. Plugin-internal fields
+The module owns the RN-side `Sentry.init` lifecycle via
+`initSentry()` (exported from `@comapeo/core-react-native/sentry`).
+The host calls it once at app entry and passes allowlisted
+extensions (integrations, `beforeSend`, `beforeBreadcrumb`, tags);
+`initSentry` throws if the host has already called `Sentry.init`
+separately. Locked options (dsn, environment, release, sampleRate,
+tracesSampleRate, sendDefaultPii=false, enableLogs, user.id) come
+from the plugin so all three hubs use the same values without the
+host having to copy them.
+
+The same plugin-baked subset is also exported as `sentryConfig` for
+read-only inspection — empty `{}` when the plugin isn't registered.
+It is NOT meant to be spread into a separate `Sentry.init` call;
+`initSentry` is the supported entrypoint. Plugin-internal fields
 (`rpcArgsBytes`, `captureApplicationDataDefault`) stay on the
 native-side `SentryConfig` only.
 

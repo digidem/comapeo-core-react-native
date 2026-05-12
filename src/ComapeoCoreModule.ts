@@ -59,10 +59,12 @@ const nativeModule = requireNativeModule<ComapeoCoreModule>("ComapeoCore");
 
 /**
  * Sentry options baked into the native config by the Expo plugin.
- * Re-exported as `sentryConfig` from the `/sentry` sub-export.
+ * Re-exported as `sentryConfig` from the `/sentry` sub-export for
+ * read-only inspection (e.g. logging which release is in use).
+ * `initSentry()` is the supported way to wire Sentry up — the host
+ * does NOT spread this into its own `Sentry.init` call.
  *
- * Always-defined: an empty object when the plugin isn't registered,
- * so `Sentry.init({ ...sentryConfig, ...mine })` is always safe.
+ * Always-defined: an empty object when the plugin isn't registered.
  */
 export function readSentryConfig(): SentryInitConfig {
   return nativeModule.sentryConfig ?? {};

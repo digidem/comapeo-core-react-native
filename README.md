@@ -147,34 +147,45 @@ relevant phase (`rootkey`, `starting-timeout`,
 `node-runtime-unexpected`, etc.); state transitions show up as
 breadcrumbs that ride along on the next event.
 
-### 3a. Share the plugin-baked options with your host `Sentry.init`
+### 3a. Initialise Sentry via `initSentry`
 
-The Node-backend hub (`@sentry/node` running inside nodejs-mobile),
-the Android FGS-process hub (`sentry-android`), and the host RN hub
-(`@sentry/react-native`) are independent — for cross-side correlation
-they must use the same `release`, `environment`, etc. Spread the
-plugin-baked options into your host init so everything lines up:
+This module owns the RN-side `Sentry.init` call. Do NOT call
+`Sentry.init` yourself — call `initSentry()` once at app entry
+and pass any allowlisted extensions through it:
 
 ```ts
-import { sentryConfig } from "@comapeo/core-react-native/sentry";
+import { initSentry } from "@comapeo/core-react-native/sentry";
 import * as Sentry from "@sentry/react-native";
 
-Sentry.init({
-  ...sentryConfig,
-  // your own options here override anything the plugin set
+initSentry({
+  // Optional — append your own integrations to the defaults.
+  integrations: (defaults) => [
+    ...defaults,
+    Sentry.reactNavigationIntegration(),
+  ],
+  // Optional — runs AFTER this module's PII scrubber.
+  beforeSend: (event) => event,
+  // Optional — extra scope tags on the persistent global scope.
+  tags: { releaseChannel: "internal" },
 });
 ```
 
-`sentryConfig` is an always-defined object — empty when the plugin
-isn't registered, so the spread is safe in either case. When the
-plugin is registered it carries the subset of `Sentry.init` options
-the plugin owns: `dsn`, `environment`, `release` (default:
-`versionName+versionCode` on Android, `CFBundleShortVersionString+
-CFBundleVersion` on iOS — or whatever you set as `sentry.release`),
-plus `sampleRate`, `tracesSampleRate`, and `enableLogs` when you
-set them in the plugin args. The backend and the FGS hub already
-get the same values via `--sentry*` argv / manifest meta-data, so
-events from all three sides land under one release / environment.
+`initSentry` reads the plugin-baked DSN / environment / release /
+sample rates from the native config and wires the RN, Node, and
+Android-FGS hubs to the same values, so events from all three sides
+land under one release / environment. Locked options (`dsn`,
+`release`, `environment`, `sampleRate`, `tracesSampleRate`,
+`sendDefaultPii: false`, `enableLogs`, `user.id`) come from the
+plugin and can't be overridden by the host — TypeScript refuses them
+at the call site. `initSentry` throws if the host already called
+`Sentry.init` separately.
+
+The same plugin-baked subset is also exported as `sentryConfig`
+(empty `{}` when the plugin isn't registered) for read-only
+inspection — e.g. logging which release the host is reporting under,
+or rendering it in a debug screen — but it is NOT meant to be spread
+into a separate `Sentry.init` call; `initSentry` is the supported
+init entrypoint.
 
 ### What gets captured automatically
 

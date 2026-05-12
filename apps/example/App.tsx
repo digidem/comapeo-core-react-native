@@ -1,7 +1,16 @@
 import { comapeo } from "@comapeo/core-react-native";
+import { initSentry } from "@comapeo/core-react-native/sentry";
+import * as Sentry from "@sentry/react-native";
 import React, { useEffect, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Button, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// `initSentry` owns the Sentry.init lifecycle for this app — the
+// plugin-baked DSN / environment / release / sample rates apply
+// automatically. Called at module top level so it runs once before
+// the first capture site. This is also what the offline-transport
+// smoke test exercises end-to-end.
+initSentry();
 
 let renderCount = 0;
 
@@ -24,6 +33,16 @@ export default function App() {
         </Group>
         <Group name="Render count">
           <Text testID="render-count">{renderCount++}</Text>
+        </Group>
+        <Group name="Sentry smoke">
+          <Button
+            title="Capture RN-side exception"
+            onPress={() => {
+              Sentry.captureException(
+                new Error("smoke-test: RN-side exception"),
+              );
+            }}
+          />
         </Group>
       </ScrollView>
     </SafeAreaView>
