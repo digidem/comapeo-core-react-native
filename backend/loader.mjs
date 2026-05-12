@@ -59,32 +59,16 @@ if (dsn) {
   // surface — import directly from `@sentry/core` (a peer dep of
   // `@sentry/node` and an explicit dep of this package).
   const { serializeEnvelope } = await import("@sentry/core");
+  const { envelopeToFrame } = await import("./lib/sentry-frame.js");
 
-  // Forward every captured payload to the native side via the control
-  // socket instead of HTTP. `sentry-android` / `sentry-cocoa` already
-  // run in the host process with offline-capable transports; piping
-  // our payloads through them means we inherit their connectivity-aware
-  // queueing, retry, and rate-limit handling — `@sentry/node` has no
-  // equivalent and the device is offline for long stretches.
-  //
-  // Two wire shapes:
-  //   - `{type:"sentry-event", payload:<event JSON>}` for a single
-  //     error-event envelope item. Native deserializes via
-  //     `SentryEventDecoder` / `SentryEvent.Deserializer` and captures
-  //     via `SentrySDK.capture(event:)` / `Sentry.captureEvent(...)`,
-  //     so native scope (device, OS, app, user, native breadcrumbs)
-  //     merges at capture time and Node doesn't have to carry it.
-  //   - `{type:"sentry-envelope", data:<base64>}` for everything else
-  //     (transactions, sessions, check-ins, profiles, attachments,
-  //     multi-item envelopes). Native hands the raw bytes to its
-  //     hybrid envelope-capture entrypoint — no scope merge, but
-  //     transactions don't need it (the parent transaction is opened
-  //     natively and Node spans inherit its scope via `continueTrace`).
-  //
-  // `index.js` registers the real sink via `__comapeoSentrySetSink`
-  // after the control socket binds. Frames emitted before then sit in
-  // a bounded ring buffer so events captured during boot — e.g. a
-  // throw inside an addon's top-level `require` — aren't lost.
+  // Replace `@sentry/node`'s HTTP transport with a forwarder that ships
+  // every captured payload to native over the control socket;
+  // `sentry-android` / `sentry-cocoa` already run in the host process
+  // with offline-capable transports. See `lib/sentry-frame.js` for the
+  // event-vs-envelope routing and `docs/sentry-integration-plan.md` §5.7
+  // for the wire protocol. `index.js` registers the real sink via
+  // `__comapeoSentrySetSink` once the control socket binds; frames
+  // emitted before then sit in a bounded ring buffer.
   /** @typedef {{type: "sentry-event", payload: any} | {type: "sentry-envelope", data: string}} SentryFrame */
   /** @type {((frame: SentryFrame) => void) | null} */
   let sink = null;
@@ -92,38 +76,12 @@ if (dsn) {
   /** @type {SentryFrame[]} */
   const preListenQueue = [];
 
-  /** @param {any} envelope */
-  function envelopeToFrame(envelope) {
-    // `Envelope` is `[header, items]`; each item is `[itemHeader, payload]`.
-    // The only shape that benefits from the event path is a single-item
-    // envelope whose item is an error-event payload. Anything else
-    // (transactions, attachments alongside an event, sessions, check-ins)
-    // rides the envelope path so nothing is dropped.
-    const items = envelope[1];
-    if (Array.isArray(items) && items.length === 1) {
-      const [itemHeader, payload] = items[0];
-      if (itemHeader && itemHeader.type === "event") {
-        return /** @type {SentryFrame} */ ({
-          type: "sentry-event",
-          payload,
-        });
-      }
-    }
-    const serialized = serializeEnvelope(envelope);
-    const bytes =
-      typeof serialized === "string"
-        ? Buffer.from(serialized, "utf-8")
-        : Buffer.from(serialized);
-    return /** @type {SentryFrame} */ ({
-      type: "sentry-envelope",
-      data: bytes.toString("base64"),
-    });
-  }
-
   const forwardingTransport = () => ({
     /** @param {any} envelope */
     send: async (envelope) => {
-      const frame = envelopeToFrame(envelope);
+      const frame = /** @type {SentryFrame} */ (
+        envelopeToFrame(envelope, serializeEnvelope)
+      );
       if (sink) {
         sink(frame);
       } else {
