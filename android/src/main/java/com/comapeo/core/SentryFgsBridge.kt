@@ -152,13 +152,20 @@ object SentryFgsBridge {
     /**
      * @param startElapsedRealtime `SystemClock.elapsedRealtime()` value
      *   to backdate the transaction start to. `null` → start now.
+     * @param kind Value for the `boot.kind` tag — `user-foreground`
+     *   when the activity initiated the start, `system-restart` when
+     *   Android brought the FGS back without an intent. `null` skips
+     *   the tag (test convenience).
      */
     @JvmStatic
     @JvmOverloads
-    fun startBootTransaction(startElapsedRealtime: Long? = null): Any? {
+    fun startBootTransaction(
+        startElapsedRealtime: Long? = null,
+        kind: String? = null,
+    ): Any? {
         if (!initialized) return null
         return try {
-            SentryFgsBridgeImpl.startBootTransaction(startElapsedRealtime)
+            SentryFgsBridgeImpl.startBootTransaction(startElapsedRealtime, kind)
         } catch (t: Throwable) {
             Log.w(TAG, "startBootTransaction threw", t)
             null

@@ -82,7 +82,11 @@ object SentryNativeContext {
                 put("app_identifier", context.packageName)
                 pkg.versionName?.let { put("app_version", it) }
                 put("app_build", versionCode.toString())
-                put("app_name", pm.getApplicationLabel(pkg.applicationInfo).toString())
+                // applicationInfo is nullable on API 33+; skip the
+                // label rather than risk an NPE on a malformed pkg.
+                pkg.applicationInfo?.let {
+                    put("app_name", pm.getApplicationLabel(it).toString())
+                }
             }
             putJsonObject("culture") {
                 put("locale", Locale.getDefault().toLanguageTag())

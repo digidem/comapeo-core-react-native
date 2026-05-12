@@ -173,6 +173,16 @@ class SentryFgsBridgeImplTest {
     }
 
     @Test
+    fun startBootTransactionSetsBootKindTag() {
+        val tx = SentryFgsBridgeImpl.startBootTransaction(
+            startElapsedRealtime = null,
+            kind = SentryTags.BOOT_KIND_SYSTEM_RESTART,
+        ) as ITransaction
+        assertEquals(SentryTags.BOOT_KIND_SYSTEM_RESTART, tx.getTag(SentryTags.BOOT_KIND))
+        SentryFgsBridgeImpl.finishSpan(tx, "ok")
+    }
+
+    @Test
     fun unknownLevelStringFallsBackToInfo() {
         // Defensive: a typo in a `level` argument should not
         // crash the bridge. The Impl uses `lowercase()` and

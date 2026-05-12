@@ -39,6 +39,23 @@ data class SentryConfig(
      */
     val enableLogs: Boolean? = null,
 ) {
+    /**
+     * Subset of fields that map cleanly to `Sentry.init` options on
+     * the host's `@sentry/react-native` side. Plugin-internal values
+     * (`rpcArgsBytes`, `captureApplicationDataDefault`) are
+     * deliberately excluded — they're not Sentry options. Sent to
+     * JS as the `sentryConfig` constant; consumers spread it into
+     * `Sentry.init({ ...sentryConfig, ...mine })`.
+     */
+    fun toSentryInitMap(): Map<String, Any> = buildMap {
+        put("dsn", dsn)
+        put("environment", environment)
+        put("release", release)
+        sampleRate?.let { put("sampleRate", it) }
+        tracesSampleRate?.let { put("tracesSampleRate", it) }
+        enableLogs?.let { put("enableLogs", it) }
+    }
+
     companion object {
         // Manifest meta-data keys. Must stay in sync with
         // app.plugin.js's ANDROID_KEYS.

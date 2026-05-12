@@ -644,6 +644,15 @@ return a typed `SentryConfig?` (`null` when DSN is absent =
 the plugin didn't supply one, so successive EAS builds of the
 same marketing version produce distinct release tags.
 
+The `Sentry.init`-shaped subset of those values (dsn, environment,
+release, sampleRate, tracesSampleRate, enableLogs) is also
+re-exported to JS as `sentryConfig` from `@comapeo/core-react-native/
+sentry`, so the host's `Sentry.init({ ...sentryConfig, ...mine })`
+aligns RN-side events with the FGS hub and the Node backend without
+duplicating values in app code. Plugin-internal fields
+(`rpcArgsBytes`, `captureApplicationDataDefault`) stay on the
+native-side `SentryConfig` only.
+
 The FGS process's Sentry SDK is initialised in
 `ComapeoCoreService.onCreate` from the manifest meta-data —
 because Android creates a fresh `Application` instance per
@@ -715,6 +724,7 @@ this table.
 | `comapeo.state` | `STOPPED` · `STARTING` · `STARTED` · `STOPPING` · `ERROR` | ERROR captureExceptions only |
 | `source` | `control-socket` · `rootkey-store` · `startNodeWithArguments` · `comapeo-core` (Phase 3) | Captured exceptions, narrows the origin within a phase |
 | `timeout` | `startup` · `shutdown` · `fgsStop` · `errorNativeForward` · `waitForFile` · `connectRetry` | `captureMessage` events for timeout firings |
+| `boot.kind` | `user-foreground` · `system-restart` | On `comapeo.boot` transactions (Android FGS only). `user-foreground` when the activity lifecycle initiated the start (stamped `serviceStartTimeMs`); `system-restart` when Android brought the FGS back without an intent — no `boot.fgs-launch` span and the timeline starts at `NodeJSService.start()`. |
 
 #### Breadcrumb categories
 
@@ -730,7 +740,8 @@ this table.
 
 | Operation | Description | When it opens / closes |
 |---|---|---|
-| `comapeo.boot` (root tx) | "boot" — forced 100% sampled | Opens in `start()`; closes on first non-`STARTING` transition with status `ok` (STARTED), `internal_error` (ERROR), or `cancelled` (STOPPING/STOPPED) |
+| `comapeo.boot` (root tx) | "boot" — forced 100% sampled, tagged `boot.kind=user-foreground` or `system-restart` | Opens in `start()`; closes on first non-`STARTING` transition with status `ok` (STARTED), `internal_error` (ERROR), or `cancelled` (STOPPING/STOPPED) |
+| `boot.fgs-launch` (Android only) | "From startForegroundService to FGS process ready" — `user-foreground` boots only | Opens backdated to `serviceStartTimeMs` (stamped by the activity lifecycle listener), closes immediately on entry to `NodeJSService.start()` |
 | `boot.rootkey-load` | "Load 16-byte rootkey from RootKeyStore" | Wraps `RootKeyStore.loadOrInitialize()` in `sendInitFrame()` |
 | `boot.init-frame` | "Send init frame, await ready" | Opens after the init frame is sent; closes when the `ready` control frame is received |
 

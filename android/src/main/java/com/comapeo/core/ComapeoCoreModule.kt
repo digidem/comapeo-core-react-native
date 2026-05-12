@@ -232,12 +232,18 @@ class ComapeoCoreModule : Module() {
             synchronized(stateLock) { lastError }
         }
 
-        // Used by the JS sub-export's `getSentryRelease()` to align
-        // `Sentry.init({ release })` on the host side with the value
-        // the backend got via `--sentryRelease`. Returns null when
-        // the plugin wasn't registered or the context is unavailable.
-        Function("getSentryRelease") {
-            appContext.reactContext?.let { SentryConfig.loadFromManifest(it)?.release }
+        // Sentry options that map cleanly to `Sentry.init({...})`,
+        // baked in by `app.plugin.js` at prebuild. The JS sub-export
+        // re-exports this as `sentryConfig`; consumers spread it
+        // alongside their own options so RN-side and Node-side
+        // events share `release`, `environment`, etc.
+        //
+        // Empty map when the plugin isn't registered (or DSN absent)
+        // so spreading is always safe on the JS side.
+        Constant("sentryConfig") {
+            appContext.reactContext?.let {
+                SentryConfig.loadFromManifest(it)?.toSentryInitMap()
+            } ?: emptyMap<String, Any>()
         }
     }
 }

@@ -10,28 +10,31 @@ import {
 } from "./ComapeoCore.types";
 import { createMapeoClient, type MapeoClientApi } from "@comapeo/ipc/client.js";
 import { activeAdapter } from "./sentry-internal";
+import type { SentryInitConfig } from "./sentry";
 
 declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   postMessage(value: string): void;
   getState(): ComapeoState;
   getLastError(): ComapeoErrorInfo | null;
-  /** Returns the release string the plugin baked into the native config, or null. */
-  getSentryRelease(): string | null;
+  /**
+   * Sentry options the Expo plugin baked into the native config.
+   * Empty object when the plugin isn't registered (or DSN absent).
+   */
+  readonly sentryConfig: SentryInitConfig;
 }
 
 // This call loads the native module object from the JSI.
 const nativeModule = requireNativeModule<ComapeoCoreModule>("ComapeoCore");
 
 /**
- * Release string the Expo plugin baked into the native config (the
- * same value forwarded to the backend via `--sentryRelease`). Used
- * by the `/sentry` sub-export's `getSentryRelease()` to align the
- * host-side `Sentry.init({ release })` with the backend.
+ * Sentry options baked into the native config by the Expo plugin.
+ * Re-exported as `sentryConfig` from the `/sentry` sub-export.
  *
- * Returns `null` when the consumer didn't register the plugin.
+ * Always-defined: an empty object when the plugin isn't registered,
+ * so `Sentry.init({ ...sentryConfig, ...mine })` is always safe.
  */
-export function readSentryRelease(): string | null {
-  return nativeModule.getSentryRelease();
+export function readSentryConfig(): SentryInitConfig {
+  return nativeModule.sentryConfig ?? {};
 }
 
 type MessagePortEvents = {

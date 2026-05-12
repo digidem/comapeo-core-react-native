@@ -25,7 +25,7 @@ import {
   registerAdapter,
   setOverrideAdapter,
 } from "./sentry-internal";
-import { state, readSentryRelease } from "./ComapeoCoreModule";
+import { state, readSentryConfig } from "./ComapeoCoreModule";
 import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types";
 import { SentryTags } from "./sentry-tags";
 import {
@@ -151,22 +151,37 @@ export function setSentryAdapterForTests(adapter: SentryAdapter | null): void {
 }
 
 /**
- * Release string the Expo plugin wrote into the native config and
- * passed to the backend via `--sentryRelease`. Pass it to your
- * `Sentry.init({ release })` so RN-side and Node-side events use the
- * same release identifier — required for cross-side correlation in
- * Sentry's UI.
+ * Subset of `Sentry.init` options that map cleanly from values the
+ * Expo plugin (`app.plugin.js`) writes into the native config.
+ * Hand-rolled rather than imported from `@sentry/react-native` so
+ * this file typechecks without forcing the optional peer dep on
+ * consumers.
+ */
+export type SentryInitConfig = {
+  dsn?: string;
+  environment?: string;
+  release?: string;
+  sampleRate?: number;
+  tracesSampleRate?: number;
+  enableLogs?: boolean;
+};
+
+/**
+ * Sentry options the Expo plugin baked into the native config (the
+ * same values forwarded to the backend via `--sentry*` argv). Spread
+ * into your `Sentry.init({...})` so RN-side, Node-side, and FGS-side
+ * events share `release`, `environment`, etc. — required for
+ * cross-side correlation in Sentry's UI.
+ *
+ * Always-defined: empty object when the plugin isn't registered, so
+ * spreading is always safe.
  *
  * ```ts
- * import { getSentryRelease } from "@comapeo/core-react-native/sentry";
- * Sentry.init({ release: getSentryRelease() ?? undefined });
+ * import { sentryConfig } from "@comapeo/core-react-native/sentry";
+ * Sentry.init({ ...sentryConfig, ...mine });
  * ```
- *
- * Returns `null` when the consumer didn't register the plugin.
  */
-export function getSentryRelease(): string | null {
-  return readSentryRelease();
-}
+export const sentryConfig: SentryInitConfig = readSentryConfig();
 
 // Make the SDK visible to ComapeoCoreModule.ts's RPC tracing hook.
 // `getTraceData` is attached separately — see import note above.

@@ -501,10 +501,18 @@ class NodeJSService(
         // fires when bootTx is non-null at transition time.
         // Backdate the transaction to when the activity called
         // startForegroundService so boot.fgs-launch (stage A) can
-        // sit at the start of the timeline.
+        // sit at the start of the timeline. Absence of the stamp
+        // means Android restarted the FGS without an intent (the
+        // lifecycle listener never ran) — tag the transaction so
+        // the two populations stay separable in Sentry.
         val backdatedStart =
             if (serviceStartElapsedMs >= 0) serviceStartElapsedMs else null
-        val tx = SentryFgsBridge.startBootTransaction(backdatedStart)
+        val bootKind = if (backdatedStart != null) {
+            SentryTags.BOOT_KIND_USER_FOREGROUND
+        } else {
+            SentryTags.BOOT_KIND_SYSTEM_RESTART
+        }
+        val tx = SentryFgsBridge.startBootTransaction(backdatedStart, bootKind)
         bootTx.set(tx)
         // boot.fgs-launch: time from `startForegroundService` call to
         // here (NodeJSService.start). Open backdated, finish now.

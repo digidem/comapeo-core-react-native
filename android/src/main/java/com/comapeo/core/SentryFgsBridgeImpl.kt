@@ -126,7 +126,10 @@ internal object SentryFgsBridgeImpl {
      * `tracesSampleRate` so the boot transaction lands on the
      * wire even when consumers run with `tracesSampleRate=0.0`.
      */
-    fun startBootTransaction(startElapsedRealtime: Long?): Any {
+    fun startBootTransaction(
+        startElapsedRealtime: Long? = null,
+        kind: String? = null,
+    ): Any {
         val context = TransactionContext(
             "comapeo.boot",
             "boot",
@@ -138,13 +141,15 @@ internal object SentryFgsBridgeImpl {
                 startTimestamp = elapsedRealtimeToSentryDate(startElapsedRealtime)
             }
         }
-        return Sentry.startTransaction(context, opts)
+        val tx = Sentry.startTransaction(context, opts)
+        if (kind != null) tx.setTag(SentryTags.BOOT_KIND, kind)
+        return tx
     }
 
     fun startBootSpan(
         transaction: Any,
         phase: String,
-        startElapsedRealtime: Long?,
+        startElapsedRealtime: Long? = null,
     ): Any {
         require(transaction is ITransaction) {
             "transaction must be ITransaction, got ${transaction.javaClass.name}"

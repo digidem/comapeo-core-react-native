@@ -147,28 +147,34 @@ relevant phase (`rootkey`, `starting-timeout`,
 `node-runtime-unexpected`, etc.); state transitions show up as
 breadcrumbs that ride along on the next event.
 
-### 3a. Align the release on both sides
+### 3a. Share the plugin-baked options with your host `Sentry.init`
 
-The Node-backend hub (`@sentry/node` running inside nodejs-mobile)
-and the host RN hub (`@sentry/react-native`) are independent — for
-cross-side correlation they must use the same `release`. Pass the
-plugin-baked value to your host init:
+The Node-backend hub (`@sentry/node` running inside nodejs-mobile),
+the Android FGS-process hub (`sentry-android`), and the host RN hub
+(`@sentry/react-native`) are independent — for cross-side correlation
+they must use the same `release`, `environment`, etc. Spread the
+plugin-baked options into your host init so everything lines up:
 
 ```ts
-import { getSentryRelease } from "@comapeo/core-react-native/sentry";
+import { sentryConfig } from "@comapeo/core-react-native/sentry";
 import * as Sentry from "@sentry/react-native";
 
 Sentry.init({
-  release: getSentryRelease() ?? undefined,
-  // ...
+  ...sentryConfig,
+  // your own options here override anything the plugin set
 });
 ```
 
-`getSentryRelease()` returns the `release` value the plugin wrote
-into the manifest / plist (default: `versionName+versionCode` on
-Android, `CFBundleShortVersionString+CFBundleVersion` on iOS, or
-whatever you set with `sentry.release` in your plugin args). The
-backend already gets the same value via `--sentryRelease`.
+`sentryConfig` is an always-defined object — empty when the plugin
+isn't registered, so the spread is safe in either case. When the
+plugin is registered it carries the subset of `Sentry.init` options
+the plugin owns: `dsn`, `environment`, `release` (default:
+`versionName+versionCode` on Android, `CFBundleShortVersionString+
+CFBundleVersion` on iOS — or whatever you set as `sentry.release`),
+plus `sampleRate`, `tracesSampleRate`, and `enableLogs` when you
+set them in the plugin args. The backend and the FGS hub already
+get the same values via `--sentry*` argv / manifest meta-data, so
+events from all three sides land under one release / environment.
 
 ### What gets captured automatically
 

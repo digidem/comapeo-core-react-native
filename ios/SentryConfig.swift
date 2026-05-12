@@ -24,6 +24,24 @@ struct SentryConfig: Equatable {
     /// calls become no-ops.
     let enableLogs: Bool?
 
+    /// Subset of fields that map cleanly to `Sentry.init` options
+    /// on the host's `@sentry/react-native` side. Plugin-internal
+    /// values (`rpcArgsBytes`, `captureApplicationDataDefault`)
+    /// are deliberately excluded — they're not Sentry options.
+    /// Sent to JS as the `sentryConfig` constant; consumers spread
+    /// it into `Sentry.init({ ...sentryConfig, ...mine })`.
+    func toSentryInitMap() -> [String: Any] {
+        var map: [String: Any] = [
+            "dsn": dsn,
+            "environment": environment,
+            "release": release,
+        ]
+        if let sampleRate = sampleRate { map["sampleRate"] = sampleRate }
+        if let tracesSampleRate = tracesSampleRate { map["tracesSampleRate"] = tracesSampleRate }
+        if let enableLogs = enableLogs { map["enableLogs"] = enableLogs }
+        return map
+    }
+
     /// Must stay in sync with `app.plugin.js`'s `IOS_KEYS`.
     enum Key {
         static let dsn = "ComapeoCoreSentryDsn"
