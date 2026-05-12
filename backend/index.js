@@ -112,21 +112,6 @@ const controlIpcServer = new SimpleRpcServer({
       return;
     }
     initConsumed = true;
-    // `sentryContext` is best-effort; never let a malformed blob
-    // crash the boot path.
-    const setNativeCtx =
-      /** @type {any} */ (globalThis).__comapeoSentrySetNativeContext;
-    if (
-      typeof setNativeCtx === "function" &&
-      message.sentryContext &&
-      typeof message.sentryContext === "object"
-    ) {
-      try {
-        setNativeCtx(message.sentryContext);
-      } catch (e) {
-        console.warn("Failed to apply sentry context", e);
-      }
-    }
     resolveInit(rootKey);
   },
   shutdown: async () => {
@@ -315,6 +300,25 @@ async function bootSpan(name, fn) {
       throw Object.assign(e, { phase: "listen-control" });
     }
     console.log(`Control socket listening on ${controlSocketPath}`);
+
+    // Wire the Sentry frame sink now that the socket is bound. The sink
+    // is `null` in loader.mjs until this call lands — pre-listen frames
+    // sit in a 100-element ring buffer in the loader and drain into
+    // this sink on registration. `broadcast` falls back to its own
+    // ring buffer when no clients are connected (see SimpleRpcServer),
+    // so frames queued at startup are forwarded as soon as the FGS
+    // (Android) or the in-process control IPC (iOS) connects.
+    const setSink =
+      /** @type {any} */ (globalThis).__comapeoSentrySetSink;
+    if (typeof setSink === "function") {
+      setSink(
+        /** @param {{type: string} & import("type-fest").JsonObject} frame */
+        (frame) => {
+          controlIpcServer.broadcast(frame);
+        },
+      );
+    }
+
     controlIpcServer.setReadinessPhase("started");
 
     // 2. Wait for native to send the rootKey. `initPromise` resolves on the

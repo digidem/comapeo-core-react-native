@@ -1,7 +1,13 @@
 import Foundation
 
 #if canImport(Sentry)
-import Sentry
+// `@_spi(Private)` opts in to `SentryEventDecoder.decodeEvent(jsonData:)`
+// — the JSON → SentryEvent path sentry-cocoa exposes for hybrid SDKs.
+// The selector is the same one `SentryFileManager.readAppHangEvent`
+// uses internally, so this is exercised on every cocoa release. Symbol
+// stability is gated by the `Sentry/HybridSDK` version pin in
+// `@sentry/react-native`'s podspec — re-validate when bumping.
+@_spi(Private) import Sentry
 #endif
 
 /// Emits breadcrumbs, captures, and spans against the host's
@@ -135,6 +141,36 @@ enum SentryNativeBridge {
         guard let span = handle as? Span else { return }
         span.status = parseStatus(status)
         span.finish()
+        #endif
+    }
+
+    /// Decodes the JSON-serialised Node event via the (SPI-tagged but
+    /// SDK-internally-exercised) `SentryEventDecoder` and captures
+    /// through `SentrySDK.capture(event:)`. That path applies the
+    /// current scope (device, OS, app, user, native breadcrumbs) — so
+    /// Node doesn't have to ferry that context — before the envelope
+    /// lands in sentry-cocoa's offline-capable transport. A malformed
+    /// payload (decoder returns nil) is dropped silently rather than
+    /// taking down the host.
+    static func captureEventJson(_ payloadJson: String) {
+        #if canImport(Sentry)
+        guard let data = payloadJson.data(using: .utf8) else { return }
+        guard let event = SentryEventDecoder.decodeEvent(jsonData: data) else { return }
+        SentrySDK.capture(event: event)
+        #endif
+    }
+
+    /// Hand a base64-encoded Sentry envelope (transactions, sessions,
+    /// check-ins, profiles, or multi-item event payloads) to
+    /// sentry-cocoa's hybrid envelope-capture entrypoint. Same
+    /// offline-transport benefit as `captureEventJson`, without
+    /// native scope merging — see the `.sentryEnvelope` case in
+    /// `ControlFrame` for why that's fine.
+    static func captureEnvelopeBase64(_ data: String) {
+        #if canImport(Sentry)
+        guard let bytes = Data(base64Encoded: data) else { return }
+        guard let envelope = PrivateSentrySDKOnly.envelope(with: bytes) else { return }
+        PrivateSentrySDKOnly.capture(envelope)
         #endif
     }
 

@@ -551,6 +551,10 @@ class NodeJSService {
             applyAndEmit(error: info) {
                 self.backendState = .error(phase: phase, message: message)
             }
+        case .sentryEvent(let payloadJson):
+            SentryNativeBridge.captureEventJson(payloadJson)
+        case .sentryEnvelope(let data):
+            SentryNativeBridge.captureEnvelopeBase64(data)
         case .malformed(let detail):
             // Forwarded via `onMessageError` (the JS bridge wires it
             // to the `messageerror` event). Not raised to `.error`:
@@ -629,18 +633,7 @@ class NodeJSService {
             }
         }
         let b64 = keyBytes.base64EncodedString()
-        // Include `sentryContext` only when the consumer registered the
-        // plugin so non-Sentry installs skip the build cost. Best-effort:
-        // a builder failure shouldn't block boot.
-        let sentryCtxJson: String? = (sentryConfig != nil)
-            ? SentryNativeContext.buildJSON()
-            : nil
-        let frame: String
-        if let ctx = sentryCtxJson {
-            frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\",\"sentryContext\":\(ctx)}"
-        } else {
-            frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
-        }
+        let frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
         // `boot.init-frame` span: from "init sent" to "ready
         // received" (closed in handleControlMessage).
         let txForInitFrame = bootSentryQueue.sync { bootTransaction }

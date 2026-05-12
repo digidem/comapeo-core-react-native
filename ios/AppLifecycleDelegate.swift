@@ -62,8 +62,6 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// pref is true; nil otherwise. With nil, NodeJSService:
     ///   - sends no `--sentry*` argv to the backend loader (which
     ///     short-circuits its own Sentry.init on absent DSN);
-    ///   - sends no `sentryContext` blob in the init frame (which
-    ///     would otherwise leak device fingerprint to the backend hub);
     ///   - still calls `SentryNativeBridge` for spans, but those
     ///     no-op against an uninitialised sentry-cocoa (the host's
     ///     `initSentry()` reads the same pref and skips

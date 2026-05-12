@@ -192,9 +192,15 @@ events from three layers, tagged for filtering in the dashboard:
   rootkey-load `captureException`. On Android adds FGS-lifecycle
   breadcrumbs.
 - **`layer:node`** — RPC method spans, `handleFatal` exceptions,
-  and `error-native` forwards from the embedded nodejs-mobile,
-  with device/os/app/culture context forwarded from native at
-  init time so events look the same as RN-side captures.
+  and `error-native` forwards from the embedded nodejs-mobile.
+  `@sentry/node` has no offline transport, so its envelopes are
+  forwarded over the control socket to the FGS-side
+  `sentry-android` (or sentry-cocoa on iOS) for queueing and send.
+  Error events are deserialised into a `SentryEvent` and captured
+  via `Sentry.captureEvent`, which applies the native SDK's scope
+  (device, OS, app, user, native breadcrumbs) at capture time so
+  Node-emitted events end up with the same context as RN-side
+  captures.
 
 Each event also carries a `proc` tag for the *actual* OS process:
 `proc:main` for everything on iOS (single-process), and

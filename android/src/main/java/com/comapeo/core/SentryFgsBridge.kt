@@ -209,6 +209,49 @@ object SentryFgsBridge {
         }
     }
 
+    /**
+     * Hand a JSON-serialised Sentry error event (captured by
+     * `@sentry/node` in the embedded backend) to `sentry-android`.
+     * Decoded via `SentryEvent.Deserializer` and captured via
+     * `Sentry.captureEvent`, so the FGS-side SDK's scope (device,
+     * OS, app, user, native breadcrumbs) is merged at capture time —
+     * Node doesn't have to carry that context. Riding `captureEvent`
+     * means we also inherit the offline-capable transport.
+     *
+     * Decode + capture are wrapped in a single try/catch: a malformed
+     * payload from a misbehaving backend must not take the FGS down.
+     */
+    @JvmStatic
+    fun captureEventJson(payloadJson: String) {
+        if (!initialized) return
+        try {
+            SentryFgsBridgeImpl.captureEventJson(payloadJson)
+        } catch (t: Throwable) {
+            Log.w(TAG, "captureEventJson threw", t)
+        }
+    }
+
+    /**
+     * Hand a base64-encoded Sentry envelope (captured by `@sentry/node`
+     * for transactions, sessions, check-ins, profiles, or any multi-item
+     * payload) to `sentry-android`'s offline-capable transport. Native
+     * scope is NOT applied — see the `SentryEnvelope` case in
+     * `ControlFrame` for why that's fine here.
+     *
+     * Decoding and capture are wrapped in a single try/catch: a malformed
+     * envelope from a misbehaving backend (truncated bytes, bad base64,
+     * wrong magic header) must not take the FGS down.
+     */
+    @JvmStatic
+    fun captureEnvelopeBase64(data: String) {
+        if (!initialized) return
+        try {
+            SentryFgsBridgeImpl.captureEnvelopeBase64(data)
+        } catch (t: Throwable) {
+            Log.w(TAG, "captureEnvelopeBase64 threw", t)
+        }
+    }
+
     /** `status` is `"ok"`, `"internal_error"`, `"deadline_exceeded"`, or `"cancelled"`. */
     @JvmStatic
     @JvmOverloads

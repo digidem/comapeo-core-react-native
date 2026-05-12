@@ -35,6 +35,31 @@ sealed class ControlFrame {
     data class Error(val phase: String, val message: String) : ControlFrame()
 
     /**
+     * A Sentry error event captured by `@sentry/node` in the embedded
+     * backend. Forwarded as a JSON string so the FGS-side
+     * `sentry-android` SDK can deserialize via `SentryEvent.Deserializer`
+     * and capture via `Sentry.captureEvent(...)` — that path applies
+     * the native scope (device, OS, app, user, native breadcrumbs) so
+     * Node doesn't have to carry it. The string is the re-serialized
+     * event payload; the consumer feeds it straight to the deserializer.
+     */
+    data class SentryEvent(val payloadJson: String) : ControlFrame()
+
+    /**
+     * A Sentry envelope captured by `@sentry/node` in the embedded
+     * backend — used for transactions, sessions, check-ins, profiles,
+     * and any multi-item event payload. Forwarded as base64-encoded
+     * bytes and handed to `sentry-android` / `sentry-cocoa`'s
+     * hybrid-SDK envelope-capture entrypoint, which queues and retries
+     * under the device's connectivity-aware offline transport. Native
+     * scope is NOT applied — irrelevant for transactions (the parent
+     * transaction is opened natively and Node spans inherit its
+     * scope via `continueTrace`), and the other item types don't
+     * carry user-facing fields anyway.
+     */
+    data class SentryEnvelope(val data: String) : ControlFrame()
+
+    /**
      * The frame could not be processed: not JSON, missing `type`, or
      * `type` not in the well-known set. `detail` is a developer-facing
      * description suitable for logs and the JS `messageerror` event.
@@ -61,6 +86,27 @@ sealed class ControlFrame {
                     phase = json.optString("phase", "unknown"),
                     message = json.optString("message", "(no message)"),
                 )
+                "sentry-event" -> {
+                    val payload = json.optJSONObject("payload")
+                    if (payload == null) {
+                        Malformed("sentry-event frame missing object `payload`")
+                    } else {
+                        // Re-serialize to a JSON string for the
+                        // deserializer. The outer parser already
+                        // walked the payload tree; re-stringify so
+                        // `SentryEvent.Deserializer` can re-parse
+                        // against the bytes it expects.
+                        SentryEvent(payload.toString())
+                    }
+                }
+                "sentry-envelope" -> {
+                    val data = json.optString("data", "")
+                    if (data.isEmpty()) {
+                        Malformed("sentry-envelope frame missing string `data`")
+                    } else {
+                        SentryEnvelope(data)
+                    }
+                }
                 else -> Malformed("Unknown control frame type=\"$type\"")
             }
         }

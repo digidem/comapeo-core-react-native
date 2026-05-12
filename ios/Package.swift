@@ -29,7 +29,6 @@ let package = Package(
                 "ComapeoPrefs.swift",
                 "SentryConfig.swift",
                 "SentryNativeBridge.swift",
-                "SentryNativeContext.swift",
                 "SentryTags.swift",
             ]
         ),

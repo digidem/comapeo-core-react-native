@@ -20,7 +20,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 
@@ -709,6 +708,12 @@ class NodeJSService(
                     it.copy(backendState = BackendState.Error(frame.phase, frame.message))
                 }
             }
+            is ControlFrame.SentryEvent -> {
+                SentryFgsBridge.captureEventJson(frame.payloadJson)
+            }
+            is ControlFrame.SentryEnvelope -> {
+                SentryFgsBridge.captureEnvelopeBase64(frame.data)
+            }
             is ControlFrame.Malformed -> {
                 // Logged but not raised to ERROR: a single bad frame
                 // shouldn't take down the lifecycle. The main-app
@@ -775,19 +780,7 @@ class NodeJSService(
         }
         val b64 = Base64.encodeToString(rootKeyBytes, Base64.NO_WRAP)
         rootKeyBytes.fill(0)
-        // `sentryContext` is included only when the consumer registered
-        // the plugin (`sentryConfig != null`) so non-Sentry installs
-        // don't pay the build cost. Best-effort: a builder failure
-        // shouldn't block boot.
-        val sentryCtxJson: String? = if (sentryConfig != null) {
-            runCatching { json.encodeToString(JsonObject.serializer(), SentryNativeContext.build(applicationContext)) }
-                .getOrNull()
-        } else null
-        val frame = if (sentryCtxJson != null) {
-            "{\"type\":\"init\",\"rootKey\":\"$b64\",\"sentryContext\":$sentryCtxJson}"
-        } else {
-            "{\"type\":\"init\",\"rootKey\":\"$b64\"}"
-        }
+        val frame = "{\"type\":\"init\",\"rootKey\":\"$b64\"}"
         // boot.init-frame span: from "init sent" to "ready
         // received" (closed in handleControlMessage).
         SentryFgsBridge.startBootSpan(bootTx.get(), "init-frame")?.let {

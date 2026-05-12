@@ -776,12 +776,13 @@ comapeo-mobile experience):
   environments to make `debug('mapeo:*')` output flow through
   Sentry breadcrumbs. We replicate when `debug` is in our
   bundle (it's a transitive dep of `@comapeo/core`).
-- The default Sentry transport hits the network synchronously
-  on flush. For mobile we likely want
-  `sentry-offline-transport-better-sqlite` (which comapeo-mobile
-  uses) to queue events when offline. Folded into Phase 3
-  if we ship offline transport, otherwise events are lost
-  while offline (acceptable for v1).
+- The default `@sentry/node` HTTP transport has no offline queue
+  and the device is offline for long stretches in the field. We
+  replace it with a custom transport that forwards every
+  envelope to the native side via the control socket; `sentry-android`
+  and `sentry-cocoa` already run in the host process with
+  battle-tested offline transports (connectivity-aware retry,
+  rate-limit handling, on-disk envelope cache). See §5.4.
 - `Sentry.consoleLoggingIntegration({ levels: ["error"] })`
   in production keeps log volume sane; widening to
   `["error", "warn", "log"]` in dev mirrors comapeo-mobile.
@@ -948,6 +949,73 @@ DSN.
 
 If PR #1051 lands before this integration, we should verify the
 parent span linkage in a manual smoke test (see §10).
+
+### 5.7 Offline transport via control-socket forwarding
+
+`@sentry/node` ships an HTTP transport that drops envelopes when
+the network is unreachable. The native SDKs (`sentry-android`,
+`sentry-cocoa`) already run in the host process with offline-aware
+transports — connectivity events, exponential backoff, `retry-after`
+handling, on-disk envelope cache, all there. The Node-side transport
+is replaced with a forwarder that pipes payloads to native, where
+they ride the existing queue.
+
+**Wire format** (two `ControlFrame` variants, both Node → native):
+
+- `{"type":"sentry-event", "payload":<event JSON>}` — single-item
+  error-event envelopes. Native deserialises into a `SentryEvent`
+  via `SentryEvent.Deserializer` (Android) / `SentryEventDecoder.
+  decodeEvent(jsonData:)` (iOS, `@_spi(Private) import Sentry`) and
+  captures via `Sentry.captureEvent` / `SentrySDK.capture(event:)`.
+  Going through the capture-event path means the native SDK applies
+  its scope (device, OS, app, user, native breadcrumbs) at capture
+  time — so Node doesn't have to carry that context. The
+  previously-shipped `sentryContext` blob in the init frame and the
+  loader's `addEventProcessor` that merged it are gone.
+
+- `{"type":"sentry-envelope", "data":<base64>}` — everything else
+  (transactions, sessions, check-ins, profiles, multi-item event
+  payloads). Native hands the bytes to its hybrid envelope-capture
+  entrypoint — `InternalSentrySdk.captureEnvelope(bytes, false)` on
+  Android, `PrivateSentrySDKOnly.envelope(with:)` +
+  `captureEnvelope:` on iOS. Native scope is *not* merged on this
+  path — that's fine because the relevant transactions (RPC, boot)
+  are opened natively and the Node-side spans inherit the parent's
+  context via `continueTrace`.
+
+The custom transport in `loader.mjs` inspects each envelope: a
+single-item envelope whose only item has `type: "event"` rides the
+event path; anything else falls through to the envelope path.
+
+**Buffering.** Two ring buffers (each 100, FIFO-evict) cover the
+gaps in the boot sequence: one in `loader.mjs` for captures that
+happen before `index.js` registers the sink (i.e. before the
+control socket binds); one in `SimpleRpcServer` for the window
+between sink registration and first client connect. The first
+client to connect drains both — subsequent clients (e.g. the
+Android main-app `ComapeoCoreModule` connecting after the FGS) do
+not get a replay, since the FGS is the only consumer of Sentry
+frames in practice.
+
+**Why not `SentryTransaction.Deserializer` for transactions?**
+sentry-android exposes one and `Sentry.getCurrentScopes().
+captureTransaction(...)` is reachable. sentry-cocoa doesn't expose
+a transaction decoder, and writing one ourselves would mean walking
+every span / span-context type by hand. Symmetric envelope-only
+across both platforms is simpler; we revisit if/when sentry-cocoa
+adds the missing decoder. Transactions don't benefit much from
+native scope merging anyway — the parent transaction is opened
+natively and Node-side spans inherit its scope.
+
+**Stability note for iOS.** `SentryEventDecoder` is marked
+`@_spi(Private)` in sentry-cocoa — Sentry's "hybrid-SDK-only, may
+rename in future minors" tag. The same selector is used internally
+by `SentryFileManager.readAppHangEvent` on every cocoa release, so
+it's exercised continuously. The version is pinned by
+`@sentry/react-native`'s podspec (`Sentry/HybridSDK '8.58.0'` for
+RN 7.13.0); re-validate when bumping. Fallback if Sentry yanks the
+symbol: vendor `Sources/Swift/Protocol/Codable/` (~700 LOC, self-
+contained) into the iOS sources.
 
 ---
 
@@ -1817,6 +1885,19 @@ needs it before RN starts):
 
 ##### 9.8.5.3 Context field reclassification
 
+**Superseded by §5.7.** `SentryNativeContext.{kt,swift}` was deleted
+when the offline-transport forwarder landed — Node events are
+deserialised on the native side and captured via `Sentry.captureEvent`,
+so the FGS-side `sentry-android` / `sentry-cocoa` SDK applies its own
+scope (with its own field set) at capture time. The tiering described
+below should be re-specified against the native SDKs' `beforeSend`
+hook (filter scope fields per tier on the wire out), not against a
+Node-side context blob. The privacy goals — what to drop at diagnostic
+tier vs keep at app-usage tier — still apply.
+
+Original notes preserved below for context, but the implementation
+shape has moved.
+
 Today `SentryNativeContext.{kt,swift}` builds one full blob and
 forwards it on every event. Split into two layers:
 
@@ -1877,14 +1958,22 @@ chains alongside the PII scrubber.
 
 ##### 9.8.5.6 Phase 5 update-frame for backend free memory/disk
 
-`@sentry/node` doesn't synthesise device context the way
-sentry-cocoa / sentry-android do. The cheap fix landed in the
-prior PR (attach `os.freemem` / `os.totalmem` / `fs.statfsSync` to
-`handleFatal` exceptions only). The full path: native sends a
-periodic / event-driven update-frame on the control socket with a
-fresh `sentryContext` blob, which the loader's existing
-`addEventProcessor` merges onto subsequent events. Same code path
-as the static init-frame context, just driven by changes.
+**Partially superseded by §5.7.** The static-init-frame `sentryContext`
+flow was removed when forwarding moved to event/envelope frames; the
+native SDK now supplies device/os/app context at capture time for
+events. The cheap fix for `@sentry/node`'s missing device-context
+synthesis (attach `os.freemem` / `os.totalmem` / `fs.statfsSync` to
+`handleFatal` exceptions) still lives in `backend/index.js` and still
+makes sense for Node-only memory snapshots.
+
+The periodic-update direction below is still relevant for keeping
+*Node-process* memory / storage numbers fresh on every event (not
+just `handleFatal`). Re-specify as either: (a) a small "Node device
+context" event-processor in `loader.mjs` that re-reads `os.freemem`
+on each capture, or (b) periodic native → Node updates of a small
+allowlist of *Node-process* metrics. Whichever way, this is no longer
+a vehicle for native device/os/app fields — those come from the
+native SDK's scope.
 
 Scoped to app-usage tier because periodic memory polling is itself
 usage-shape data (frequency reveals app activity).
@@ -1948,7 +2037,8 @@ phasing table links back here for the full design.
 | 10.7 — Phase 7 (iOS app-exit telemetry) | **pending** | Subscribe to `MXMetricPayload` and forward `MXAppExitMetric` buckets (memory-pressure, background-task-assertion-timeout, watchdog, etc.) as Sentry events. 24h-aggregate resolution. Sentry-cocoa explicitly doesn't subscribe to `MXMetricPayload` — our implementation. iOS 14+. Optional 7b sub-phase adds a `UserDefaults`-anchored "killed-in-background" heuristic for per-event resolution. |
 | 10.8 — Phase 8 (refinements) | **pending** | Sample-rate tuning from real data; optional dual-bundle if size matters. |
 | 10.9 — Phase 9a (diagnosticsEnabled + module ownership of Sentry.init) | **landed** | New `diagnosticsEnabled` pref alongside `captureApplicationData`. Module owns `Sentry.init` via `initSentry()`. Cheap fix: free memory/disk attached to backend `handleFatal`. See §9.8. |
-| 10.9 — Phase 9b (PII scrubber, user.id rotation, context reclassification) | **pending** | Substring scrubber; installation UUID with monthly hash at diagnostic tier; SentryNativeContext field split; consoleIntegration gating; network-URL scrubbing. Full breakdown in §9.8.5. |
+| 10.9 — Phase 9b (PII scrubber, user.id rotation, context reclassification) | **pending** | Substring scrubber; installation UUID with monthly hash at diagnostic tier; native-scope field split (was: SentryNativeContext split — superseded by §5.7, scope now applied at capture time on the native SDK); consoleIntegration gating; network-URL scrubbing. Full breakdown in §9.8.5. |
+| 10.10 — Phase 10 (offline transport via control-socket forwarding) | **landed** | Custom `@sentry/node` transport in `loader.mjs` inspects each envelope and routes single-item error events as `{type:"sentry-event",payload}` (decoded via `SentryEventDecoder` / `SentryEvent.Deserializer` and captured via `Sentry.captureEvent`, with native scope merged), and everything else as `{type:"sentry-envelope",data}` (passed via `InternalSentrySdk.captureEnvelope` / `PrivateSentrySDKOnly.captureEnvelope`). Two 100-frame ring buffers (loader + `SimpleRpcServer`) cover the boot-sequence gaps. `SentryNativeContext.{kt,swift}` and the `sentryContext`-in-init-frame flow removed (native applies its own scope at capture). |
 
 ---
 
@@ -2803,13 +2893,10 @@ LOC tests for 7b. No JS/Android/backend changes.
    undici out (see `backend/lib/maps-stub.js`); the Sentry
    chunk is an additional surface for this kind of iOS-only
    quirk.
-3. **Offline transport**: deferred to a later phase. v1 drops
-   Sentry events when the device is offline. CoMapeo is heavily
-   used in the field; this is a known limitation that needs
-   addressing before the integration is genuinely production-ready
-   for fieldwork. Tracked as a follow-up rather than v1 scope.
-   Reference: `sentry-offline-transport-better-sqlite` is
-   what comapeo-mobile uses today.
+3. **Offline transport**: **landed**. Node envelopes are forwarded
+   to the native side via the control socket; `sentry-android` /
+   `sentry-cocoa` queue them under their existing offline-aware
+   transports. See §5.7.
 
 ---
 
@@ -2981,5 +3068,47 @@ is small. Tracked as a soft follow-up only.
   sampling.
 - `backend/before-send.js` (new) — `before_send` privacy
   processor (the §7.4.9 redaction belt-and-suspenders).
+
+**Phase 10 — offline transport via control-socket forwarding — landed**
+
+- `backend/loader.mjs` — custom `transport` for `Sentry.init` that
+  inspects each envelope and routes single-item error events to
+  `{type:"sentry-event"}` and everything else to
+  `{type:"sentry-envelope"}`; 100-frame ring buffer for the
+  pre-sink-registration boot window; `__comapeoSentrySetSink`
+  global wires `index.js`'s broadcast in. `nativeContext` event
+  processor + `__comapeoSentrySetNativeContext` global removed.
+- `backend/index.js` — registers the sink against
+  `controlIpcServer.broadcast`; drops `sentryContext` handling
+  from the init-frame handler.
+- `backend/lib/simple-rpc.js` — 100-frame ring buffer for
+  `sentry-event` / `sentry-envelope` frames broadcast before any
+  client has connected; drained on first client connect.
+- `android/.../ControlFrame.kt`, `ios/ControlFrame.swift` — add
+  `SentryEvent(payloadJson)` and `SentryEnvelope(data)` variants
+  plus `sentry-event` / `sentry-envelope` parsers.
+- `android/.../NodeJSService.kt` — dispatch both variants in
+  `handleControlMessage` to `SentryFgsBridge.captureEventJson` /
+  `captureEnvelopeBase64`; `sendInitFrame` drops the
+  `sentryContext` field.
+- `android/.../ComapeoCoreModule.kt` — adds the two variants as
+  no-op branches (FGS owns capture; main-app ignores).
+- `android/.../SentryFgsBridge.kt`, `SentryFgsBridgeImpl.kt` —
+  `captureEventJson` via `SentryEvent.Deserializer` +
+  `Sentry.captureEvent`; `captureEnvelopeBase64` via
+  `InternalSentrySdk.captureEnvelope(bytes, false)`.
+- `android/.../SentryNativeContext.kt` — deleted.
+- `ios/NodeJSService.swift` — dispatches both variants;
+  `sendInitFrame` drops the `sentryContext` field.
+- `ios/SentryNativeBridge.swift` — `@_spi(Private) import Sentry`;
+  `captureEventJson` via `SentryEventDecoder.decodeEvent(jsonData:)`
+  + `SentrySDK.capture(event:)`; `captureEnvelopeBase64` via
+  `PrivateSentrySDKOnly.envelope(with:)` + `captureEnvelope:`.
+- `ios/SentryNativeContext.swift` — deleted; entry removed from
+  `Package.swift`.
+- `ios/AppLifecycleDelegate.swift` — doc comment trimmed.
+- `android/.../ControlFrameTest.kt`,
+  `ios/Tests/ControlFrameTests.swift` — 4 new cases each covering
+  the two variants + missing-field-malformed paths.
 
 ---

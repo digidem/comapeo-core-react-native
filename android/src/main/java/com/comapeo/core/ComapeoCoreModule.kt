@@ -129,6 +129,15 @@ class ComapeoCoreModule : Module() {
                                 "errorMessage" to frame.message,
                             ),
                         )
+                        // The FGS process owns the Sentry-Android SDK
+                        // initialised with the Node DSN — Sentry frames
+                        // are handled there, in
+                        // `NodeJSService.handleControlMessage`. The
+                        // main-app process receives the same broadcasts
+                        // and ignores them; capturing here would
+                        // double-send to Sentry.
+                        is ControlFrame.SentryEvent -> {}
+                        is ControlFrame.SentryEnvelope -> {}
                         is ControlFrame.Malformed -> emitMessageError(frame.detail)
                     }
                 },

@@ -55,6 +55,88 @@ if (dsn) {
 
   // Dynamic import keeps the rollup chunk unloaded when Sentry is off.
   Sentry = await import("@sentry/node");
+  // `serializeEnvelope` isn't re-exported from `@sentry/node`'s public
+  // surface — import directly from `@sentry/core` (a peer dep of
+  // `@sentry/node` and an explicit dep of this package).
+  const { serializeEnvelope } = await import("@sentry/core");
+
+  // Forward every captured payload to the native side via the control
+  // socket instead of HTTP. `sentry-android` / `sentry-cocoa` already
+  // run in the host process with offline-capable transports; piping
+  // our payloads through them means we inherit their connectivity-aware
+  // queueing, retry, and rate-limit handling — `@sentry/node` has no
+  // equivalent and the device is offline for long stretches.
+  //
+  // Two wire shapes:
+  //   - `{type:"sentry-event", payload:<event JSON>}` for a single
+  //     error-event envelope item. Native deserializes via
+  //     `SentryEventDecoder` / `SentryEvent.Deserializer` and captures
+  //     via `SentrySDK.capture(event:)` / `Sentry.captureEvent(...)`,
+  //     so native scope (device, OS, app, user, native breadcrumbs)
+  //     merges at capture time and Node doesn't have to carry it.
+  //   - `{type:"sentry-envelope", data:<base64>}` for everything else
+  //     (transactions, sessions, check-ins, profiles, attachments,
+  //     multi-item envelopes). Native hands the raw bytes to its
+  //     hybrid envelope-capture entrypoint — no scope merge, but
+  //     transactions don't need it (the parent transaction is opened
+  //     natively and Node spans inherit its scope via `continueTrace`).
+  //
+  // `index.js` registers the real sink via `__comapeoSentrySetSink`
+  // after the control socket binds. Frames emitted before then sit in
+  // a bounded ring buffer so events captured during boot — e.g. a
+  // throw inside an addon's top-level `require` — aren't lost.
+  /** @typedef {{type: "sentry-event", payload: any} | {type: "sentry-envelope", data: string}} SentryFrame */
+  /** @type {((frame: SentryFrame) => void) | null} */
+  let sink = null;
+  const PRE_LISTEN_QUEUE_MAX = 100;
+  /** @type {SentryFrame[]} */
+  const preListenQueue = [];
+
+  /** @param {any} envelope */
+  function envelopeToFrame(envelope) {
+    // `Envelope` is `[header, items]`; each item is `[itemHeader, payload]`.
+    // The only shape that benefits from the event path is a single-item
+    // envelope whose item is an error-event payload. Anything else
+    // (transactions, attachments alongside an event, sessions, check-ins)
+    // rides the envelope path so nothing is dropped.
+    const items = envelope[1];
+    if (Array.isArray(items) && items.length === 1) {
+      const [itemHeader, payload] = items[0];
+      if (itemHeader && itemHeader.type === "event") {
+        return /** @type {SentryFrame} */ ({
+          type: "sentry-event",
+          payload,
+        });
+      }
+    }
+    const serialized = serializeEnvelope(envelope);
+    const bytes =
+      typeof serialized === "string"
+        ? Buffer.from(serialized, "utf-8")
+        : Buffer.from(serialized);
+    return /** @type {SentryFrame} */ ({
+      type: "sentry-envelope",
+      data: bytes.toString("base64"),
+    });
+  }
+
+  const forwardingTransport = () => ({
+    /** @param {any} envelope */
+    send: async (envelope) => {
+      const frame = envelopeToFrame(envelope);
+      if (sink) {
+        sink(frame);
+      } else {
+        if (preListenQueue.length >= PRE_LISTEN_QUEUE_MAX) {
+          preListenQueue.shift();
+        }
+        preListenQueue.push(frame);
+      }
+      return {};
+    },
+    flush: async () => true,
+  });
+
   const tracesSampleRateRaw = asString(values.sentryTracesSampleRate);
   const sampleRateRaw = asString(values.sentrySampleRate);
   Sentry.init({
@@ -69,6 +151,7 @@ if (dsn) {
       : 0,
     _experiments:
       values.sentryEnableLogs === true ? { enableLogs: true } : undefined,
+    transport: forwardingTransport,
     // Function form preserves SDK defaults (inboundFilters, linkedErrors,
     // nodeContext, etc.) — the array form would replace them.
     integrations: (/** @type {any[]} */ defaults) => [
@@ -78,30 +161,6 @@ if (dsn) {
     initialScope: {
       tags: { proc: "fgs", layer: "node" },
     },
-  });
-
-  // Merges the native-supplied `sentryContext` (set later from the
-  // init control frame) onto every event. Field-level merge so
-  // `nodeContextIntegration`'s `runtime.version` / `app_start_time`
-  // survive while native overrides the Linux/Darwin-libnode view of
-  // device/os/culture.
-  /** @type {Record<string, any> | null} */
-  let nativeContext = null;
-  Sentry.addEventProcessor((/** @type {any} */ event) => {
-    if (!nativeContext) return event;
-    event.contexts ??= {};
-    for (const k of ["device", "os", "app", "culture"]) {
-      if (nativeContext[k]) {
-        event.contexts[k] = { ...event.contexts[k], ...nativeContext[k] };
-      }
-    }
-    if (nativeContext.tags) {
-      event.tags = { ...nativeContext.tags, ...event.tags };
-    }
-    if (nativeContext.user) {
-      event.user = { ...event.user, ...nativeContext.user };
-    }
-    return event;
   });
 
   // boot.loader-init (stage C, part 1): retroactive span covering
@@ -122,10 +181,21 @@ if (dsn) {
     rpcArgsBytes: rpcArgsBytesRaw ? Number(rpcArgsBytesRaw) : 0,
     captureApplicationData,
   };
-  /** @type {any} */ (globalThis).__comapeoSentrySetNativeContext = (
-    /** @type {Record<string, any> | null} */ ctx,
+  // Wired by `index.js` once the control socket is bound. Drains any
+  // frames the transport buffered during boot.
+  /** @type {any} */ (globalThis).__comapeoSentrySetSink = (
+    /** @type {(frame: SentryFrame) => void} */ realSink,
   ) => {
-    nativeContext = ctx;
+    sink = realSink;
+    while (preListenQueue.length > 0) {
+      const frame = /** @type {SentryFrame} */ (preListenQueue.shift());
+      try {
+        realSink(frame);
+      } catch {
+        // Sink threw — drop the rest rather than retrying forever.
+        break;
+      }
+    }
   };
 }
 

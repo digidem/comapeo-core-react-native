@@ -43,6 +43,17 @@ export class SimpleRpcServer extends ServerHelper {
   #readinessPhase = "pre-listening";
   /** @type {TerminalFrame | null} */
   #terminalFrame = null;
+  /**
+   * Sentry frames (`sentry-event` and `sentry-envelope`) broadcast
+   * before any client has connected. Drained to (and only to) the
+   * first client on connect, so events captured during Node boot —
+   * before the FGS / iOS module has had time to connect — aren't
+   * lost. Bounded at 100; oldest is evicted on overflow.
+   *
+   * @type {import("type-fest").JsonObject[]}
+   */
+  #pendingSentryFrames = [];
+  static #MAX_PENDING_SENTRY_FRAMES = 100;
 
   /**
    * @param {TMethods} methods
@@ -73,6 +84,19 @@ export class SimpleRpcServer extends ServerHelper {
     }
     if (this.#terminalFrame !== null) {
       messagePort.postMessage(this.#terminalFrame);
+    }
+    // Drain Sentry frames captured during boot. Only the first
+    // client to connect receives them — subsequent clients are
+    // assumed to be peers of the same backend (e.g. on Android the
+    // FGS and main-app processes both connect; the FGS handles
+    // events/envelopes, the main-app ignores them) and would
+    // double-capture if we replayed. The fact that the FGS connects
+    // before the main-app in practice is what makes this safe.
+    if (this.#pendingSentryFrames.length > 0) {
+      for (const frame of this.#pendingSentryFrames) {
+        messagePort.postMessage(frame);
+      }
+      this.#pendingSentryFrames.length = 0;
     }
   }
 
@@ -126,6 +150,27 @@ export class SimpleRpcServer extends ServerHelper {
   broadcast(message) {
     if (message.type === "stopping" || message.type === "error") {
       this.#terminalFrame = /** @type {TerminalFrame} */ (message);
+    }
+    // Hold Sentry frames when nobody is listening yet. The forwarding
+    // transport in `loader.mjs` calls broadcast as soon as `index.js`
+    // registers it — which is right after the control socket binds
+    // but before any client has had time to connect. The first
+    // client to connect drains this buffer. See `#pendingSentryFrames`
+    // for the bound + eviction policy.
+    if (
+      (message.type === "sentry-event" || message.type === "sentry-envelope") &&
+      this.#clients.size === 0
+    ) {
+      if (
+        this.#pendingSentryFrames.length >=
+        SimpleRpcServer.#MAX_PENDING_SENTRY_FRAMES
+      ) {
+        this.#pendingSentryFrames.shift();
+      }
+      this.#pendingSentryFrames.push(
+        /** @type {import("type-fest").JsonObject} */ (message),
+      );
+      return;
     }
     for (const client of this.#clients) {
       try {

@@ -2,14 +2,18 @@ package com.comapeo.core
 
 import android.content.Context
 import android.os.SystemClock
+import android.util.Base64
 import io.sentry.Breadcrumb
 import io.sentry.ISpan
 import io.sentry.ITransaction
+import io.sentry.JsonObjectReader
+import io.sentry.NoOpLogger
 import io.sentry.Sentry
 import io.sentry.IScope
 import io.sentry.SentryAttribute
 import io.sentry.SentryAttributes
 import io.sentry.SentryDate
+import io.sentry.SentryEvent
 import io.sentry.SentryLevel
 import io.sentry.SentryLogLevel
 import io.sentry.SentryNanotimeDate
@@ -18,8 +22,10 @@ import io.sentry.SpanStatus
 import io.sentry.TracesSamplingDecision
 import io.sentry.TransactionContext
 import io.sentry.TransactionOptions
+import io.sentry.android.core.InternalSentrySdk
 import io.sentry.android.core.SentryAndroid
 import io.sentry.logger.SentryLogParameters
+import java.io.StringReader
 import java.util.Date
 
 /**
@@ -209,6 +215,33 @@ internal object SentryFgsBridgeImpl {
 
     fun flush(timeoutMillis: Long) {
         Sentry.flush(timeoutMillis)
+    }
+
+    /**
+     * Decodes the JSON-serialised Node event via the public
+     * `SentryEvent.Deserializer` and captures through
+     * `Sentry.captureEvent`. That path applies the current scope
+     * (device, OS, app, user, native breadcrumbs) before the envelope
+     * lands in the same on-disk transport the envelope path uses.
+     */
+    fun captureEventJson(payloadJson: String) {
+        val reader = JsonObjectReader(StringReader(payloadJson))
+        val event = SentryEvent.Deserializer().deserialize(reader, NoOpLogger.getInstance())
+        Sentry.captureEvent(event)
+    }
+
+    /**
+     * `InternalSentrySdk.captureEnvelope(bytes, maybeStartNewSession)`
+     * is the documented hybrid-SDK entrypoint: it parses the envelope,
+     * applies rate-limit + offline-queue handling, and writes to the
+     * same on-disk envelope cache native crashes use. `false` for the
+     * second argument matches `@sentry/react-native`'s non-hardCrash
+     * path — we're forwarding a normal capture, not a process-fatal
+     * crash, so we don't want a fresh session.
+     */
+    fun captureEnvelopeBase64(data: String) {
+        val bytes = Base64.decode(data, Base64.DEFAULT)
+        InternalSentrySdk.captureEnvelope(bytes, false)
     }
 
     private fun parseLevel(level: String): SentryLevel = when (level.lowercase()) {
