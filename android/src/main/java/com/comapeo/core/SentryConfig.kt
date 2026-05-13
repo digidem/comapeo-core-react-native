@@ -45,6 +45,24 @@ data class SentryConfig(
      * `null` (or `false`) leaves logs off.
      */
     val enableLogs: Boolean? = null,
+    /**
+     * `@comapeo/core-react-native`'s build version label —
+     * `<version>[+git<sha>[-dirty<hash>]]` — baked by the Expo plugin
+     * from `build/version.js` (falls back to package.json version
+     * when the module isn't built). Applied to the FGS-side
+     * `sentry-android` scope as the `comapeo.rn` tag so FGS-emitted
+     * events and Node-forwarded events both carry the same module
+     * identification as RN-side events. `null` on stale prebuilds
+     * from before this field landed.
+     */
+    val moduleVersion: String? = null,
+    /**
+     * JSON-encoded map of bundled-backend dependency versions
+     * (`{"@comapeo/core":"7.1.0", ...}`), filtered to comapeo-owned
+     * deps. Applied to the FGS-side scope as the `comapeoBackend`
+     * context. `null` on stale prebuilds.
+     */
+    val backendModulesJson: String? = null,
 ) {
     /**
      * Subset of fields that map cleanly to `Sentry.init` options on
@@ -77,6 +95,8 @@ data class SentryConfig(
         const val META_CAPTURE_APPLICATION_DATA_DEFAULT =
             "com.comapeo.core.sentry.captureApplicationDataDefault"
         const val META_ENABLE_LOGS = "com.comapeo.core.sentry.enableLogs"
+        const val META_MODULE_VERSION = "com.comapeo.core.module.version"
+        const val META_BACKEND_MODULES = "com.comapeo.core.backend.modules"
 
         /** Returns null when no DSN is present (Sentry off). */
         @JvmStatic
@@ -134,6 +154,8 @@ data class SentryConfig(
                     META_CAPTURE_APPLICATION_DATA_DEFAULT,
                 )?.toBooleanStrictOrNull(),
                 enableLogs = metaString(META_ENABLE_LOGS)?.toBooleanStrictOrNull(),
+                moduleVersion = metaString(META_MODULE_VERSION),
+                backendModulesJson = metaString(META_BACKEND_MODULES),
             )
         }
 

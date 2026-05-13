@@ -25,6 +25,8 @@ import io.sentry.TransactionOptions
 import io.sentry.android.core.InternalSentrySdk
 import io.sentry.android.core.SentryAndroid
 import io.sentry.logger.SentryLogParameters
+import org.json.JSONException
+import org.json.JSONObject
 import java.io.StringReader
 import java.util.Date
 
@@ -39,6 +41,20 @@ import java.util.Date
 internal object SentryFgsBridgeImpl {
 
     fun init(context: Context, config: SentryConfig) {
+        // Parse the backend-modules JSON once, here, rather than in
+        // the event processor on every capture.
+        val backendModules: Map<String, String>? =
+            config.backendModulesJson?.let { json ->
+                try {
+                    val obj = JSONObject(json)
+                    buildMap {
+                        obj.keys().forEach { k -> put(k, obj.optString(k)) }
+                    }
+                } catch (_: JSONException) {
+                    null
+                }
+            }
+
         SentryAndroid.init(context.applicationContext) { options ->
             options.dsn = config.dsn
             options.environment = config.environment
@@ -51,6 +67,28 @@ internal object SentryFgsBridgeImpl {
             options.logs.isEnabled = config.enableLogs == true
             options.setTag(SentryTags.PROC, SentryTags.PROC_FGS)
             options.setTag(SentryTags.LAYER, SentryTags.LAYER_NATIVE)
+            // `comapeo.rn` tag mirrors the RN-side `initSentry`'s
+            // global-scope tag (see `src/sentry.ts`). Applied here on
+            // the FGS-side SDK so FGS-emitted captures + Node-forwarded
+            // events both carry it; the host's main-process
+            // `@sentry/react-native` covers the RN side. The RN-side
+            // also adds `@comapeo/core-react-native` to `event.modules`,
+            // which we skip here: `SentryEvent.getModules()` is
+            // package-private in sentry-java so we can't read +
+            // merge, and overwriting would clobber sentry-android's
+            // `ModulesLoader` output.
+            config.moduleVersion?.let { options.setTag("comapeo.rn", it) }
+        }
+
+        // `comapeoBackend` context — sentry-java's `SentryOptions`
+        // doesn't expose a "set context on global scope at init"
+        // hook, so it has to ride a `configureScope` call after init.
+        // `IScope.setContexts(key, value)` — plural method name — is
+        // the actual API. The `Object` overload accepts our Map.
+        if (backendModules != null) {
+            Sentry.configureScope { scope ->
+                scope.setContexts("comapeoBackend", backendModules)
+            }
         }
     }
 
