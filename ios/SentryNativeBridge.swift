@@ -149,13 +149,8 @@ enum SentryNativeBridge {
         #endif
     }
 
-    /// Attach span-level data — Sentry's term for arbitrary key/value
-    /// attributes on a span. Use for one-shot per-boot facts that help
-    /// partition a span's timing distribution — e.g.
-    /// `rootkey-load { generated: true }` flags first-install boots so
-    /// the keychain-write tail is separable from steady-state loads.
-    /// Span data is queryable in Discover via `span.data["<key>"]`.
-    /// No-op on missing handle, pre-init, or when Sentry isn't linked.
+    /// Span-data (key/value) for one-shot facts; queryable as
+    /// `span.data["<key>"]`. No-op when Sentry isn't linked.
     static func setSpanData(_ handle: Any?, key: String, value: Any) {
         #if canImport(Sentry)
         guard let span = handle as? Span else { return }

@@ -42,14 +42,8 @@ const sentryBaggage = asString(values.sentryBaggage);
 /** @type {any} */
 let Sentry = null;
 
-// Checkpoints bracketing `import("@sentry/node")` — emitted as a single
-// `boot.loader-import-sentry-node` child of `boot.loader-init` once
-// continueTrace runs below. That import is the dominant chunk of
-// loader-init; the other sub-steps (parseArgs, iitm register, smaller
-// imports, Sentry.init) collectively stay <200ms on the reference
-// device and aren't worth their own spans. The gap between
-// loader-init's duration and the child's duration captures them
-// implicitly if they ever regress.
+// Bracket the dominant sub-import for a child span; other loader
+// sub-steps stay implicit in the parent/child gap.
 /** @type {Date | undefined} */ let importSentryNodeStartDate;
 /** @type {Date | undefined} */ let importSentryNodeEndDate;
 
@@ -189,23 +183,14 @@ if (Sentry && sentryTrace) {
   await Sentry.continueTrace(
     { sentryTrace, baggage: sentryBaggage ?? "" },
     async () => {
-      // boot.loader-init: retroactive span covering loader.mjs first
-      // line through here (Sentry.init done + continueTrace entered).
-      // Inside continueTrace so it inherits the FGS-side trace_id —
-      // otherwise it'd land on a fresh trace, hidden from the boot
-      // trace view. The gap between `boot.node-spawn` start and
-      // `boot.loader-init` start IS the C/C++ V8-bootstrap phase —
-      // visible in the trace view as an uninstrumented region with
-      // clear boundaries.
+      // Retroactive span (startTime = loader.mjs first line). The gap
+      // before it on the trace is the C/C++ V8-bootstrap phase.
       //
-      // `startSpan` (not `startInactiveSpan`) so the sync callback runs
-      // with loader-init as the active span — the import-sentry-node
-      // child parents to it via AsyncLocalStorage. Callback is
-      // synchronous, so the active-span context is restored before the
-      // `await import("./index.js")` below — that has to happen with
-      // node-spawn (continueTrace's parent) as the active span so
-      // index.js's IIFE captures node-spawn as the parent for its
-      // `boot.manager-init` span, not loader-init.
+      // startSpan + sync callback so the import-sentry-node child
+      // auto-parents via ALS, then active span unwinds back to
+      // node-spawn before the `await import("./index.js")` below — so
+      // index.js's IIFE captures node-spawn (not loader-init) for
+      // `boot.manager-init`.
       const loaderInitSpan = Sentry.startSpan(
         {
           name: "boot.loader-init",
@@ -224,16 +209,9 @@ if (Sentry && sentryTrace) {
         },
       );
 
-      // `boot.import-index` is a logical sub-step of loader-init (the
-      // loader's other job is to dynamic-import index.js), so it
-      // parents to loader-init via the explicit `parentSpan` option
-      // rather than via AsyncLocalStorage. Using `startInactiveSpan`
-      // + explicit parent leaves the active-span context untouched —
-      // index.js's IIFE then captures node-spawn for its
-      // `boot.manager-init` span. The order matters: loader-init's
-      // duration ends before this span starts (sync callback already
-      // returned), so import-index appears as a child whose timing is
-      // outside its parent's timing — Sentry renders this fine.
+      // Inactive + explicit parent so the active scope stays at
+      // node-spawn for index.js's IIFE. Span starts after loader-init
+      // has ended; Sentry renders this child-outside-parent fine.
       const importSpan = Sentry.startInactiveSpan({
         name: "boot.import-index",
         op: "boot.import-index",

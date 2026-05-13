@@ -789,9 +789,6 @@ class NodeJSService(
         val rootKeyBytes: ByteArray = try {
             val result = RootKeyStore(applicationContext).loadOrInitialize()
             bootSpans.remove("rootkey-load")?.let { sp ->
-                // `generated=true` marks first-install boots, where
-                // AndroidKeyStore wrapper-key creation can dominate; lets
-                // Sentry separate the keygen tail from steady-state.
                 SentryFgsBridge.setSpanData(sp, "generated", result.generated)
                 SentryFgsBridge.finishSpan(sp, "ok")
             }

@@ -19,19 +19,13 @@ const config =
 export const enabled = Sentry !== null;
 
 /**
- * Wrap a boot phase: opens a Sentry span and stamps any thrown error
- * with `.phase = name` so `handleFatal` can attribute the failure
- * without each call site re-tagging.
- *
- * `name` is the wire phase identifier (see the phase taxonomy in
- * `NodeJSService.kt:117` / `NodeJSService.swift:49-52` and the
- * `ControlFrameTests` literals). Span `op`/`name` defaults to
- * `boot.<name>` — pass `options.op` to override when the dashboard
- * wants a more descriptive label than the wire phase string (e.g.
- * phase "construct" → op "boot.manager-init"). Pass `options.span =
- * false` to skip span creation entirely while keeping the phase-tag
- * error attribution — used for phases that are reliably fast across
- * devices and would only add trace noise (e.g. `listen-control`).
+ * Wrap a boot phase: span + throw-error tagging with `.phase = name`
+ * for `handleFatal` attribution. `name` is the wire phase
+ * (`NodeJSService.kt` / `NodeJSService.swift` taxonomy). Span `op`/`name`
+ * defaults to `boot.<name>`; override via `options.op` when the
+ * dashboard label diverges from the wire phase. `options.span = false`
+ * skips span creation but keeps the phase tag — for reliably-fast
+ * phases that would only add trace noise.
  *
  * @template T
  * @param {string} name

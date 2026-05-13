@@ -96,12 +96,10 @@ class NodeJSService {
     /// Returns the exit code.
     typealias NodeEntryPoint = (_ arguments: [String]) -> Int32
 
-    /// Throws-or-returns the 16-byte rootkey plus a `generated` flag.
-    /// Native code reads from a keychain-backed `RootKeyStore` in
-    /// production; tests inject a fixed vector. Called once per `start()`,
-    /// off the main thread, after the control IPC has connected and Node
-    /// has broadcast `started`. The `generated` flag becomes span data on
-    /// `boot.rootkey-load` so first-install boots are distinguishable.
+    /// Returns the 16-byte rootkey + `generated` flag (true on first
+    /// install — surfaced as span data on `boot.rootkey-load`). Called
+    /// once per `start()`, off the main thread, after control IPC
+    /// connect and Node `started`.
     typealias RootKeyProvider = () throws -> RootKeyResult
 
     static let comapeoSocketFilename = "comapeo.sock"
@@ -599,9 +597,6 @@ class NodeJSService {
             let result = try rootKeyProvider()
             keyBytes = result.key
             if let span = rootkeySpan {
-                // `generated=true` marks first-install boots, where
-                // `SecRandomCopyBytes` + keychain write add latency; lets
-                // Sentry separate that tail from steady-state.
                 SentryNativeBridge.setSpanData(span, key: "generated", value: result.generated)
                 SentryNativeBridge.finishSpan(span, status: "ok")
             }

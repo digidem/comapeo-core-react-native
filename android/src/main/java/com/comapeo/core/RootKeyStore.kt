@@ -14,15 +14,8 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/**
- * Result of [RootKeyStore.loadOrInitialize]. `generated = true` means this
- * call performed first-install key generation (AndroidKeyStore wrapper key
- * creation + envelope write); `false` means the rootkey was decrypted from
- * an existing envelope. NodeJSService surfaces this as span data on
- * `boot.rootkey-load` so first-install boots (where hardware-keystore
- * keygen can dominate boot time on some devices) are distinguishable in
- * Sentry from steady-state boots.
- */
+/** `generated=true` → first-install path (keygen + envelope write).
+ *  NodeJSService stamps this on the `boot.rootkey-load` span. */
 data class RootKeyResult(val key: ByteArray, val generated: Boolean)
 
 /**

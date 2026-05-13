@@ -208,13 +208,8 @@ process.on("unhandledRejection", (reason) => {
     );
     console.log(`Control socket listening on ${controlSocketPath}`);
 
-    // Wire the Sentry envelope sink now that the socket is bound. Frames
-    // captured before this call sit in a 100-item ring buffer in
-    // loader.mjs and drain on registration. `broadcast` falls back to
-    // its own ring buffer when no clients are connected (see
-    // SimpleRpcServer), so frames queued at startup are forwarded as
-    // soon as the FGS (Android) or the in-process control IPC (iOS)
-    // connects.
+    // Drain loader.mjs's pre-listen queue; broadcast's own ring buffer
+    // (see SimpleRpcServer) covers the gap until clients connect.
     sentry.setSink((frame) => controlIpcServer.broadcast(frame));
 
     controlIpcServer.setReadinessPhase("started");
@@ -228,12 +223,9 @@ process.on("unhandledRejection", (reason) => {
       span: false,
     });
 
-    // 3. Construct the manager and bind the comapeo RPC socket. The
-    // span op overrides the default `boot.construct` because Sentry
-    // dashboards reference `boot.manager-init` (covers drizzle
-    // migrations + SQLite open + hypercore/fastify init + RPC socket
-    // bind); the wire phase stays `construct` to match the value
-    // native expects in error frames.
+    // 3. Construct the manager and bind the comapeo RPC socket. op
+    // override decouples the dashboard name (`boot.manager-init`) from
+    // the wire phase (`construct`) that native error frames use.
     await sentry.bootPhase(
       "construct",
       async () => {
