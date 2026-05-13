@@ -208,10 +208,21 @@ internal object SentryFgsBridgeImpl {
             else -> phase
         }
         if (startElapsedRealtime != null) {
-            val opts = SpanOptions().apply {
-                startTimestamp = elapsedRealtimeToSentryDate(startElapsedRealtime)
-            }
-            return transaction.startChild("boot.$phase", description, opts)
+            // Use the `(operation, description, SentryDate)` overload
+            // rather than the `(operation, description, SpanOptions)`
+            // one. In sentry-java 8.32.0, the SpanOptions path routes
+            // through `SentryTracer.startChild(..., timestamp, ...,
+            // spanOptions)` which calls `spanOptions.setStartTimestamp(timestamp)`
+            // with `timestamp = null`, *overwriting* our backdated
+            // `SpanOptions.startTimestamp` before the `Span` constructor
+            // reads it. The 3-arg `SentryDate` overload threads the
+            // value through `timestamp` so the setStartTimestamp call
+            // installs the right value.
+            return transaction.startChild(
+                "boot.$phase",
+                description,
+                elapsedRealtimeToSentryDate(startElapsedRealtime),
+            )
         }
         return transaction.startChild("boot.$phase", description)
     }
