@@ -1,3 +1,10 @@
+// MUST be the first import. Forces RN's `setUpXHR` to register the
+// `FormData` global before `expo/winter/runtime.native.ts` reads it
+// at module load (Expo SDK 55 races on iOS + new arch + Hermes —
+// https://github.com/expo/expo/issues/45313, fix landing upstream
+// per https://github.com/expo/expo/commit/64597482).
+import "react-native/Libraries/Core/InitializeCore";
+
 import * as Sentry from "@sentry/react-native";
 import { initSentry } from "@comapeo/core-react-native/sentry";
 

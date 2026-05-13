@@ -38,22 +38,4 @@ config.transformer.getTransformOptions = async () => ({
   },
 });
 
-// Force lazy=false on every dev-server request. RN's iOS
-// `RCTBundleURLProvider.mm` hardcodes `lazy=true` in dev (line 318);
-// there is no native opt-out. With lazy bundling on, Expo SDK 55's
-// `expo/src/winter/runtime.native.ts:25` races with RN's `setUpXHR`
-// `FormData` polyfill registration — `installFormDataPatch(FormData)`
-// throws "Property 'FormData' doesn't exist" before the entry runs.
-// Rewriting the URL server-side flips the flag before Metro parses
-// it into `graphOptions.lazy`.
-const originalRewriteRequestUrl =
-  config.server?.rewriteRequestUrl ?? ((url) => url);
-config.server = {
-  ...config.server,
-  rewriteRequestUrl(url) {
-    const rewritten = originalRewriteRequestUrl(url);
-    return rewritten.replace(/([?&])lazy=true(&|$)/, "$1lazy=false$2");
-  },
-};
-
 module.exports = config;
