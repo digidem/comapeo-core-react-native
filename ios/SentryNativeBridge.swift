@@ -120,15 +120,12 @@ enum SentryNativeBridge {
         #endif
     }
 
-    /// Span name conventions match the Node-side (`loader.mjs`,
-    /// `index.js`) which uses
-    /// `Sentry.startInactiveSpan({name: "boot.<phase>", op: "boot"})`:
-    ///
-    ///   - `op` is the short category ("boot") so `op:boot` in
-    ///     Sentry Discover catches every boot span across all three
-    ///     layers (RN, native, Node).
-    ///   - `description` carries the specific phase (`boot.<phase>`)
-    ///     so the dashboard shows what each span represents.
+    /// Span op uses the full `boot.<phase>` form rather than just
+    /// `"boot"` — sentry-cocoa's child-span wire format has no
+    /// separate "name" field, so Discover renders `span.name = op`.
+    /// Filter via the wildcard `op:boot.*` in Discover to catch them
+    /// all (Node-side spans match too: they use `name: "boot.<phase>"`,
+    /// `op: "boot.<phase>"`).
     ///
     /// Phase identifiers — kept here for maintainers, not on the wire:
     ///   - `node-spawn`   — nodeEntryPoint → control "started"
@@ -137,7 +134,8 @@ enum SentryNativeBridge {
     static func startBootSpan(_ transaction: Any?, phase: String) -> Any? {
         #if canImport(Sentry)
         guard let tx = transaction as? Span else { return nil }
-        return tx.startChild(operation: "boot", description: "boot.\(phase)")
+        let op = "boot.\(phase)"
+        return tx.startChild(operation: op, description: op)
         #else
         return nil
         #endif

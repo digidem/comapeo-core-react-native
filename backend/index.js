@@ -12,8 +12,7 @@ import { SimpleRpcServer } from "./lib/simple-rpc.js";
 // of statically importing `@sentry/node`) keeps the rollup chunk
 // unloaded for consumers without Sentry.
 /** @type {any} */
-const Sentry =
-  /** @type {any} */ (globalThis).__comapeoSentry ?? null;
+const Sentry = /** @type {any} */ (globalThis).__comapeoSentry ?? null;
 /** @type {{ rpcArgsBytes: number, captureApplicationData: boolean } | null} */
 const sentryConfig =
   /** @type {any} */ (globalThis).__comapeoSentryConfig ?? null;
@@ -276,16 +275,23 @@ function readDeviceMemoryAndStorage() {
  */
 async function bootSpan(name, fn) {
   if (!Sentry) return fn();
-  return Sentry.startSpan({ name, op: "boot" }, async (/** @type {any} */ span) => {
-    try {
-      const r = await fn();
-      span?.setStatus?.({ code: 1, message: "ok" });
-      return r;
-    } catch (e) {
-      span?.setStatus?.({ code: 2, message: "internal_error" });
-      throw e;
-    }
-  });
+  // `op` matches `name` so Discover renders the phase identifier as
+  // `span.name` (sentry-java/cocoa derive name from op for child
+  // spans; @sentry/node's transactions take name from this field
+  // directly). Filter all boot spans with `op:boot.*`.
+  return Sentry.startSpan(
+    { name, op: name },
+    async (/** @type {any} */ span) => {
+      try {
+        const r = await fn();
+        span?.setStatus?.({ code: 1, message: "ok" });
+        return r;
+      } catch (e) {
+        span?.setStatus?.({ code: 2, message: "internal_error" });
+        throw e;
+      }
+    },
+  );
 }
 
 (async () => {
@@ -308,8 +314,7 @@ async function bootSpan(name, fn) {
     // ring buffer when no clients are connected (see SimpleRpcServer),
     // so frames queued at startup are forwarded as soon as the FGS
     // (Android) or the in-process control IPC (iOS) connects.
-    const setSink =
-      /** @type {any} */ (globalThis).__comapeoSentrySetSink;
+    const setSink = /** @type {any} */ (globalThis).__comapeoSentrySetSink;
     if (typeof setSink === "function") {
       setSink(
         /** @param {{type: string} & import("type-fest").JsonObject} frame */
@@ -355,6 +360,15 @@ async function bootSpan(name, fn) {
     // 4. Announce ready. The settle-window-then-ready dance is gone now
     // that `ready` carries actual meaning (manager exists, RPC is safe).
     controlIpcServer.setReadinessPhase("ready");
+
+    // TEMPORARY — remove before commit. Smoke-test hook: capture
+    // a single Node-side event so we can verify the sentry-event
+    // forwarding path works end-to-end.
+    if (Sentry) {
+      setTimeout(() => {
+        Sentry.captureException(new Error("smoke: node-side forwarding test"));
+      }, 2000);
+    }
   } catch (error) {
     const phase =
       (error && typeof error === "object" && "phase" in error

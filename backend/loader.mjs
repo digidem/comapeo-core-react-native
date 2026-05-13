@@ -186,7 +186,7 @@ if (Sentry && sentryTrace) {
       // clear boundaries.
       Sentry.startInactiveSpan({
         name: "boot.loader-init",
-        op: "boot",
+        op: "boot.loader-init",
         startTime: loaderStartDate,
       })?.end();
 
@@ -197,7 +197,7 @@ if (Sentry && sentryTrace) {
       // to a finished `import-index` rather than `node-spawn`.
       const importSpan = Sentry.startInactiveSpan({
         name: "boot.import-index",
-        op: "boot",
+        op: "boot.import-index",
       });
       try {
         await import("./index.js");
