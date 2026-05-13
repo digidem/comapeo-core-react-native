@@ -121,6 +121,28 @@ if (dsn) {
     },
   });
 
+  // Strip the platform-context fields that `nodeContextIntegration`
+  // pre-populates from `os.platform()` / `os.release()` / `os.arch()`
+  // / `os.totalmem()`. On mobile those expose the kernel version and
+  // a sparse device view that would otherwise *block* sentry-android's
+  // `DefaultAndroidEventProcessor` / sentry-cocoa's `DefaultEventProcessor`
+  // from filling in the proper user-facing values at capture time —
+  // those processors respect existing data and skip on a non-null
+  // object. `culture` is also dropped (Node ships an empty object).
+  //
+  // `contexts.app` is left alone — its fields are merged key-by-key
+  // by the native processor, so Node's `app_start_time` survives
+  // alongside the native-supplied identifier/version/permissions.
+  // `contexts.runtime` is also kept (Node-specific; native has no
+  // equivalent).
+  Sentry.addEventProcessor((/** @type {any} */ event) => {
+    if (!event.contexts) return event;
+    delete event.contexts.os;
+    delete event.contexts.device;
+    delete event.contexts.culture;
+    return event;
+  });
+
   // boot.loader-init (stage C, part 1): retroactive span covering
   // everything from `loader.mjs` first line through `Sentry.init`.
   // Recorded after init because we don't have a tracer until then.

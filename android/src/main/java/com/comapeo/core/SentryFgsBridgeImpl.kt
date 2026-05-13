@@ -177,17 +177,21 @@ internal object SentryFgsBridgeImpl {
     }
 
     /**
-     * Returns `(sentryTrace, baggage)` for the given transaction —
-     * the W3C-compatible headers Node passes through `continueTrace`
-     * to make Node-side spans children of the FGS-side transaction.
-     * `baggage` may be `null` when the trace has no DSC info.
+     * Returns `(sentryTrace, baggage)` for the given span or transaction
+     * — the W3C-compatible headers Node passes through `continueTrace`
+     * to make Node-side spans children of the FGS-side parent. Accepts
+     * `ISpan` (which both `ITransaction` and `Span` implement) because
+     * `NodeJSService` forwards the `node-spawn` span's trace header
+     * rather than the transaction's, so Node-side boot spans nest
+     * under `boot.node-spawn` (see commit e3b233d9). `baggage` may be
+     * `null` when the trace has no DSC info.
      */
-    fun getTraceData(transaction: Any): Pair<String, String?> {
-        require(transaction is ITransaction) {
-            "transaction must be ITransaction, got ${transaction.javaClass.name}"
+    fun getTraceData(handle: Any): Pair<String, String?> {
+        require(handle is ISpan) {
+            "handle must be ISpan, got ${handle.javaClass.name}"
         }
-        val trace = transaction.toSentryTrace().value
-        val baggage = transaction.toBaggageHeader(emptyList())?.value
+        val trace = handle.toSentryTrace().value
+        val baggage = handle.toBaggageHeader(emptyList())?.value
         return trace to baggage
     }
 
