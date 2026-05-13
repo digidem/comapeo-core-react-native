@@ -17,9 +17,13 @@ import Foundation
 /// `proc:main` and `layer:native` tag per-call (we don't own the
 /// SDK scope).
 ///
-/// `#if canImport(Sentry)` gates every Sentry reference: when the
-/// `Sentry` pod isn't in the consumer's Podfile (no
-/// `@sentry/react-native`), the `#else` branches compile to no-ops.
+/// `Sentry/HybridSDK` is a hard pod dep (see `ComapeoCore.podspec`)
+/// so `#if canImport(Sentry)` is always true in production builds.
+/// Opt-in is preserved at runtime: `SentrySDK` no-ops every call
+/// until the host calls `Sentry.init(...)` (which happens via the
+/// JS-side `initSentry()`). The `#else` branches stay for the SPM
+/// macOS test target, which excludes this file's iOS Keychain /
+/// Sentry deps from its build.
 enum SentryNativeBridge {
 
     static func addBreadcrumb(
