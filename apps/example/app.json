@@ -25,7 +25,6 @@
     "plugins": [
       "./plugins/with-android-tests",
       "./plugins/with-ios-tests",
-      "./plugins/with-fgs-process-guard",
       [
         "../../app.plugin.js",
         {
