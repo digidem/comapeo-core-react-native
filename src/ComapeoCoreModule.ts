@@ -156,7 +156,16 @@ const noop = () => {};
 // ran still get traced; the `!parentSpan` short-circuit is the no-op
 // path. The trace headers it injects on `request.metadata` are
 // consumed by `backend/lib/comapeo-rpc.js`.
+// 30s aligns with NodeJSService's `startupTimeout` — covers cold-boot
+// RPC calls issued before the backend reaches STARTED (the message port
+// buffers, but rpc-reflector's per-call timer starts on invocation, so
+// the default 5s is shorter than a cold boot). After the watchdog fires,
+// the backend transitions to ERROR and in-flight calls fail via the
+// transport closing, not via this timeout.
+const RPC_TIMEOUT_MS = 30_000;
+
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
+  timeout: RPC_TIMEOUT_MS,
   onRequestHook: (request, next) => {
     const adapter = activeAdapter();
     const parentSpan = adapter?.getActiveSpan();
