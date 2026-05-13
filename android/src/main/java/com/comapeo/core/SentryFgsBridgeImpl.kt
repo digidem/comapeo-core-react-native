@@ -192,6 +192,23 @@ internal object SentryFgsBridgeImpl {
         return tx
     }
 
+    /**
+     * Span name conventions match the Node-side (`loader.mjs`,
+     * `index.js`) which uses `Sentry.startInactiveSpan({name: "boot.<phase>",
+     * op: "boot"})`:
+     *
+     *   - `op` is the short category ("boot") so `op:boot` in Sentry
+     *     Discover catches every boot span across all three layers
+     *     (RN, native, Node).
+     *   - `description` carries the specific phase (`"boot.<phase>"`)
+     *     so the dashboard shows what each span represents.
+     *
+     * Phase identifiers — kept here for maintainers, not on the wire:
+     *   - `fgs-launch`   — startForegroundService → NodeJSService.start
+     *   - `node-spawn`   — startNodeWithArguments → control "started"
+     *   - `rootkey-load` — RootKeyStore.loadOrInitialize
+     *   - `init-frame`   — init frame sent → control "ready"
+     */
     fun startBootSpan(
         transaction: Any,
         phase: String,
@@ -200,13 +217,7 @@ internal object SentryFgsBridgeImpl {
         require(transaction is ITransaction) {
             "transaction must be ITransaction, got ${transaction.javaClass.name}"
         }
-        val description = when (phase) {
-            "rootkey-load" -> "Load 16-byte rootkey from RootKeyStore"
-            "init-frame" -> "Send init frame, await ready"
-            "fgs-launch" -> "From startForegroundService to FGS process ready"
-            "node-spawn" -> "From startNodeWithArguments to control 'started'"
-            else -> phase
-        }
+        val description = "boot.$phase"
         if (startElapsedRealtime != null) {
             // Use the `(operation, description, SentryDate)` overload
             // rather than the `(operation, description, SpanOptions)`
@@ -219,12 +230,12 @@ internal object SentryFgsBridgeImpl {
             // value through `timestamp` so the setStartTimestamp call
             // installs the right value.
             return transaction.startChild(
-                "boot.$phase",
+                "boot",
                 description,
                 elapsedRealtimeToSentryDate(startElapsedRealtime),
             )
         }
-        return transaction.startChild("boot.$phase", description)
+        return transaction.startChild("boot", description)
     }
 
     /**

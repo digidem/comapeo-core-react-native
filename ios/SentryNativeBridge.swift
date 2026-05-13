@@ -120,17 +120,24 @@ enum SentryNativeBridge {
         #endif
     }
 
+    /// Span name conventions match the Node-side (`loader.mjs`,
+    /// `index.js`) which uses
+    /// `Sentry.startInactiveSpan({name: "boot.<phase>", op: "boot"})`:
+    ///
+    ///   - `op` is the short category ("boot") so `op:boot` in
+    ///     Sentry Discover catches every boot span across all three
+    ///     layers (RN, native, Node).
+    ///   - `description` carries the specific phase (`boot.<phase>`)
+    ///     so the dashboard shows what each span represents.
+    ///
+    /// Phase identifiers — kept here for maintainers, not on the wire:
+    ///   - `node-spawn`   — nodeEntryPoint → control "started"
+    ///   - `rootkey-load` — RootKeyStore.loadKey
+    ///   - `init-frame`   — init frame sent → control "ready"
     static func startBootSpan(_ transaction: Any?, phase: String) -> Any? {
         #if canImport(Sentry)
         guard let tx = transaction as? Span else { return nil }
-        let description: String
-        switch phase {
-        case "rootkey-load": description = "Load 16-byte rootkey from RootKeyStore"
-        case "init-frame": description = "Send init frame, await ready"
-        case "node-spawn": description = "From nodeEntryPoint to control 'started'"
-        default: description = phase
-        }
-        return tx.startChild(operation: "boot.\(phase)", description: description)
+        return tx.startChild(operation: "boot", description: "boot.\(phase)")
         #else
         return nil
         #endif

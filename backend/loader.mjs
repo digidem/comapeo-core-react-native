@@ -143,16 +143,6 @@ if (dsn) {
     return event;
   });
 
-  // boot.loader-init (stage C, part 1): retroactive span covering
-  // everything from `loader.mjs` first line through `Sentry.init`.
-  // Recorded after init because we don't have a tracer until then.
-  const loaderInitSpan = Sentry.startInactiveSpan({
-    name: "boot.loader-init",
-    op: "boot",
-    startTime: loaderStartDate,
-  });
-  loaderInitSpan?.end();
-
   // Stash on globalThis so index.js never names `@sentry/node`
   // statically — keeps the rollup chunk gated by this argv check.
   const rpcArgsBytesRaw = asString(values.sentryRpcArgsBytes);
@@ -181,11 +171,25 @@ if (dsn) {
 
 if (Sentry && sentryTrace) {
   // Continue the FGS-side `boot.node-spawn` span so Node-side boot
-  // spans (loader-init, import-index, listen-control) land as
-  // children of node-spawn — they happen during it.
+  // spans (loader-init, import-index, listen-control, manager-init)
+  // land as children of node-spawn — they happen during it.
   await Sentry.continueTrace(
     { sentryTrace, baggage: sentryBaggage ?? "" },
     async () => {
+      // boot.loader-init: retroactive span covering loader.mjs first
+      // line through here (Sentry.init done + continueTrace entered).
+      // Inside continueTrace so it inherits the FGS-side trace_id
+      // (otherwise it'd land on a fresh trace, hidden from the boot
+      // trace view). The gap between `boot.node-spawn` start and
+      // `boot.loader-init` start IS the C/C++ V8-bootstrap phase —
+      // visible in the trace view as an uninstrumented region with
+      // clear boundaries.
+      Sentry.startInactiveSpan({
+        name: "boot.loader-init",
+        op: "boot",
+        startTime: loaderStartDate,
+      })?.end();
+
       // `startInactiveSpan` records `boot.import-index` without
       // making it the active span. If we used `startSpan` instead,
       // index.js's IIFE would inherit it via AsyncLocalStorage and
