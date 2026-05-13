@@ -120,17 +120,9 @@ enum SentryNativeBridge {
         #endif
     }
 
-    /// Span op uses the full `boot.<phase>` form rather than just
-    /// `"boot"` — sentry-cocoa's child-span wire format has no
-    /// separate "name" field, so Discover renders `span.name = op`.
-    /// Filter via the wildcard `op:boot.*` in Discover to catch them
-    /// all (Node-side spans match too: they use `name: "boot.<phase>"`,
-    /// `op: "boot.<phase>"`).
-    ///
-    /// Phase identifiers — kept here for maintainers, not on the wire:
-    ///   - `node-spawn`   — nodeEntryPoint → control "started"
-    ///   - `rootkey-load` — RootKeyStore.loadKey
-    ///   - `init-frame`   — init frame sent → control "ready"
+    /// op = "boot.<phase>" because sentry-cocoa has no separate
+    /// `span.name`; Discover renders `span.name = op`. Filter
+    /// `op:boot.*`. Phase taxonomy: see docs/ARCHITECTURE.md.
     static func startBootSpan(_ transaction: Any?, phase: String) -> Any? {
         #if canImport(Sentry)
         guard let tx = transaction as? Span else { return nil }
@@ -158,14 +150,10 @@ enum SentryNativeBridge {
         #endif
     }
 
-    /// Decodes the JSON-serialised Node event via the (SPI-tagged but
-    /// SDK-internally-exercised) `SentryEventDecoder` and captures
-    /// through `SentrySDK.capture(event:)`. That path applies the
-    /// current scope (device, OS, app, user, native breadcrumbs) — so
-    /// Node doesn't have to ferry that context — before the envelope
-    /// lands in sentry-cocoa's offline-capable transport. A malformed
-    /// payload (decoder returns nil) is dropped silently rather than
-    /// taking down the host.
+    /// Decode Node event JSON via `SentryEventDecoder` (SPI but
+    /// internally exercised by sentry-cocoa) and capture via
+    /// `SentrySDK.capture(event:)` so native scope (device/OS/app/user)
+    /// merges. Malformed payload dropped silently.
     static func captureEventJson(_ payloadJson: String) {
         #if canImport(Sentry)
         guard let data = payloadJson.data(using: .utf8) else { return }
@@ -174,12 +162,10 @@ enum SentryNativeBridge {
         #endif
     }
 
-    /// Hand a base64-encoded Sentry envelope (transactions, sessions,
-    /// check-ins, profiles, or multi-item event payloads) to
-    /// sentry-cocoa's hybrid envelope-capture entrypoint. Same
-    /// offline-transport benefit as `captureEventJson`, without
-    /// native scope merging — see the `.sentryEnvelope` case in
-    /// `ControlFrame` for why that's fine.
+    /// Hand a base64-encoded Sentry envelope to sentry-cocoa's hybrid
+    /// envelope-capture entrypoint. Same offline-transport as
+    /// `captureEventJson` but without native scope merging (envelopes
+    /// carry their own).
     static func captureEnvelopeBase64(_ data: String) {
         #if canImport(Sentry)
         guard let bytes = Data(base64Encoded: data) else { return }
@@ -189,12 +175,14 @@ enum SentryNativeBridge {
     }
 
     /// Trace header for cross-process propagation to the Node hub.
-    /// Node passes it into `Sentry.continueTrace` so its boot spans
-    /// land as children of `comapeo.boot`. Baggage isn't exposed by
-    /// sentry-cocoa@8's public Span API — trace alone is enough for
-    /// parent-child stitching; we lose Dynamic Sampling Context but
-    /// boot transactions are forced-sampled anyway. Returns `nil`
-    /// when Sentry isn't linked or the handle is unrecognised.
+    /// Node's `Sentry.continueTrace` uses it to nest boot spans under
+    /// `comapeo.boot`. Returns `(trace, nil)` — baggage is omitted
+    /// (Android forwards it; cocoa@8 has no equivalent on its public
+    /// Span API and the SPI shape isn't stable across versions). The
+    /// DSC drop is benign: trace_id alone stitches parent/child, and
+    /// boot transactions are forced-sampled so the sample-rate field
+    /// the DSC would carry doesn't gate ingestion. Re-evaluate if
+    /// non-boot tracing on iOS adopts the same path.
     static func getTraceData(_ transaction: Any?) -> (trace: String, baggage: String?)? {
         #if canImport(Sentry)
         guard let tx = transaction as? Span else { return nil }

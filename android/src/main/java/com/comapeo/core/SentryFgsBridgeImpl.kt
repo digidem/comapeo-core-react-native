@@ -69,24 +69,15 @@ internal object SentryFgsBridgeImpl {
             options.logs.isEnabled = config.enableLogs == true
             options.setTag(SentryTags.PROC, SentryTags.PROC_FGS)
             options.setTag(SentryTags.LAYER, SentryTags.LAYER_NATIVE)
-            // `comapeo.rn` tag mirrors the RN-side `initSentry`'s
-            // global-scope tag (see `src/sentry.ts`). Applied here on
-            // the FGS-side SDK so FGS-emitted captures + Node-forwarded
-            // events both carry it; the host's main-process
-            // `@sentry/react-native` covers the RN side. The RN-side
-            // also adds `@comapeo/core-react-native` to `event.modules`,
-            // which we skip here: `SentryEvent.getModules()` is
-            // package-private in sentry-java so we can't read +
-            // merge, and overwriting would clobber sentry-android's
-            // `ModulesLoader` output.
+            // Mirrors initSentry's RN-side `comapeo.rn` global tag so
+            // FGS captures + Node-forwarded events filter the same way.
+            // event.modules is skipped (sentry-java's setter is
+            // package-private).
             config.moduleVersion?.let { options.setTag("comapeo.rn", it) }
         }
 
-        // `comapeoBackend` context — sentry-java's `SentryOptions`
-        // doesn't expose a "set context on global scope at init"
-        // hook, so it has to ride a `configureScope` call after init.
-        // `IScope.setContexts(key, value)` — plural method name — is
-        // the actual API. The `Object` overload accepts our Map.
+        // SentryOptions has no "set context at init" hook; ride a
+        // configureScope call after init.
         if (backendModules != null) {
             Sentry.configureScope { scope ->
                 scope.setContexts("comapeoBackend", backendModules)
@@ -192,20 +183,9 @@ internal object SentryFgsBridgeImpl {
         return tx
     }
 
-    /**
-     * Span op uses the full `"boot.<phase>"` form rather than just
-     * `"boot"` — sentry-java's child-span wire format has no separate
-     * "name" field, so Discover renders `span.name = op`. Filter via
-     * the wildcard `op:boot.*` in Discover to catch them all (Node-
-     * side spans match too: they use `name: "boot.<phase>"`, `op:
-     * "boot.<phase>"`).
-     *
-     * Phase identifiers — kept here for maintainers, not on the wire:
-     *   - `fgs-launch`   — startForegroundService → NodeJSService.start
-     *   - `node-spawn`   — startNodeWithArguments → control "started"
-     *   - `rootkey-load` — RootKeyStore.loadOrInitialize
-     *   - `init-frame`   — init frame sent → control "ready"
-     */
+    /** op = "boot.<phase>" because sentry-java has no separate
+     *  `span.name`; Discover renders `span.name = op`. Filter
+     *  `op:boot.*`. Phase taxonomy: see docs/ARCHITECTURE.md. */
     fun startBootSpan(
         transaction: Any,
         phase: String,
@@ -216,16 +196,9 @@ internal object SentryFgsBridgeImpl {
         }
         val op = "boot.$phase"
         if (startElapsedRealtime != null) {
-            // Use the `(operation, description, SentryDate)` overload
-            // rather than the `(operation, description, SpanOptions)`
-            // one. In sentry-java 8.32.0, the SpanOptions path routes
-            // through `SentryTracer.startChild(..., timestamp, ...,
-            // spanOptions)` which calls `spanOptions.setStartTimestamp(timestamp)`
-            // with `timestamp = null`, *overwriting* our backdated
-            // `SpanOptions.startTimestamp` before the `Span` constructor
-            // reads it. The 3-arg `SentryDate` overload threads the
-            // value through `timestamp` so the setStartTimestamp call
-            // installs the right value.
+            // 3-arg overload (op, desc, SentryDate). The SpanOptions
+            // overload in sentry-java 8.32 overwrites startTimestamp
+            // with null before the Span constructor reads it.
             return transaction.startChild(
                 op,
                 op,
@@ -235,16 +208,11 @@ internal object SentryFgsBridgeImpl {
         return transaction.startChild(op, op)
     }
 
-    /**
-     * Returns `(sentryTrace, baggage)` for the given span or transaction
-     * — the W3C-compatible headers Node passes through `continueTrace`
-     * to make Node-side spans children of the FGS-side parent. Accepts
-     * `ISpan` (which both `ITransaction` and `Span` implement) because
-     * `NodeJSService` forwards the `node-spawn` span's trace header
-     * rather than the transaction's, so Node-side boot spans nest
-     * under `boot.node-spawn` (see commit e3b233d9). `baggage` may be
-     * `null` when the trace has no DSC info.
-     */
+    /** `(sentryTrace, baggage)` for cross-process propagation via
+     *  Node's `continueTrace`. Accepts `ISpan` so callers can pass
+     *  either the transaction or the `node-spawn` span (we forward
+     *  the span's header so Node spans nest under it). `baggage`
+     *  null when no DSC. */
     fun getTraceData(handle: Any): Pair<String, String?> {
         require(handle is ISpan) {
             "handle must be ISpan, got ${handle.javaClass.name}"
@@ -255,21 +223,13 @@ internal object SentryFgsBridgeImpl {
     }
 
     /**
-     * Converts a `SystemClock.elapsedRealtime()` reading to a wall-clock
-     * `SentryDate`. We use elapsedRealtime (monotonic) as the timestamp
-     * source across the boot pipeline — system clock can jump from NTP
-     * sync mid-boot — and translate to wall-clock here for Sentry.
+     * elapsedRealtime (monotonic) → wall-clock SentryDate.
      *
-     * The `nanos` field is critical: sentry-java computes a span's end
-     * timestamp via `start.nanoTimestamp() + (end.nanos - start.nanos)`
-     * (see `SentryNanotimeDate.nanotimeDiff`). When `transaction.finish()`
-     * runs, the SDK fills `end.nanos = System.nanoTime()` — which on
-     * Android counts from boot, so it's huge (5×10¹⁴ for a 5-day uptime).
-     * Passing `0` here would make the SDK compute a "duration" of the
-     * entire system uptime and produce an end timestamp days in the
-     * future, which Sentry's ingestion rejects. Anchor `nanos` at
-     * "what `System.nanoTime()` would have read at the back-dated
-     * moment" so the diff math stays bounded by real elapsed time.
+     * `nanos` must be anchored to what `System.nanoTime()` would have
+     * read at the backdated moment — sentry-java computes end via
+     * `(end.nanos - start.nanos)` on top of start's wall-clock.
+     * Passing `0` yields an end timestamp days in the future on
+     * long-uptime devices, which Sentry rejects.
      */
     private fun elapsedRealtimeToSentryDate(startElapsedRealtime: Long): SentryDate {
         val nowWallMs = System.currentTimeMillis()
@@ -289,7 +249,7 @@ internal object SentryFgsBridgeImpl {
         handle.finish()
     }
 
-    fun setSpanData(handle: Any, key: String, value: Any?) {
+    fun setSpanData(handle: Any, key: String, value: Any) {
         require(handle is ISpan) {
             "handle must be ISpan, got ${handle.javaClass.name}"
         }
@@ -300,28 +260,17 @@ internal object SentryFgsBridgeImpl {
         Sentry.flush(timeoutMillis)
     }
 
-    /**
-     * Decodes the JSON-serialised Node event via the public
-     * `SentryEvent.Deserializer` and captures through
-     * `Sentry.captureEvent`. That path applies the current scope
-     * (device, OS, app, user, native breadcrumbs) before the envelope
-     * lands in the same on-disk transport the envelope path uses.
-     */
+    /** See [SentryFgsBridge.captureEventJson]. */
     fun captureEventJson(payloadJson: String) {
         val reader = JsonObjectReader(StringReader(payloadJson))
         val event = SentryEvent.Deserializer().deserialize(reader, NoOpLogger.getInstance())
         Sentry.captureEvent(event)
     }
 
-    /**
-     * `InternalSentrySdk.captureEnvelope(bytes, maybeStartNewSession)`
-     * is the documented hybrid-SDK entrypoint: it parses the envelope,
-     * applies rate-limit + offline-queue handling, and writes to the
-     * same on-disk envelope cache native crashes use. `false` for the
-     * second argument matches `@sentry/react-native`'s non-hardCrash
-     * path — we're forwarding a normal capture, not a process-fatal
-     * crash, so we don't want a fresh session.
-     */
+    /** `InternalSentrySdk.captureEnvelope(bytes, maybeStartNewSession)`
+     *  is the hybrid-SDK entrypoint (rate-limit + offline-queue + same
+     *  on-disk cache as native crashes). `false` matches
+     *  @sentry/react-native's non-hardCrash path (no fresh session). */
     fun captureEnvelopeBase64(data: String) {
         val bytes = Base64.decode(data, Base64.DEFAULT)
         InternalSentrySdk.captureEnvelope(bytes, false)

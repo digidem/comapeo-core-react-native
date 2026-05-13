@@ -68,14 +68,9 @@ if (dsn) {
   const { serializeEnvelope } = await import("@sentry/core");
   const { envelopeToFrame } = await import("./lib/sentry-frame.js");
 
-  // Replace `@sentry/node`'s HTTP transport with a forwarder that ships
-  // every captured payload to native over the control socket;
-  // `sentry-android` / `sentry-cocoa` already run in the host process
-  // with offline-capable transports. See `lib/sentry-frame.js` for the
-  // event-vs-envelope routing and `docs/sentry-integration-plan.md` §5.7
-  // for the wire protocol. `index.js` registers the real sink via
-  // `__comapeoSentrySetSink` once the control socket binds; frames
-  // emitted before then sit in a bounded ring buffer.
+  // Custom transport: forward to native over the control socket so
+  // sentry-android / sentry-cocoa's offline transport queues. See
+  // `lib/sentry-frame.js` for routing.
   /** @typedef {{type: "sentry-event", payload: any} | {type: "sentry-envelope", data: string}} SentryFrame */
   /** @type {((frame: SentryFrame) => void) | null} */
   let sink = null;
@@ -104,15 +99,16 @@ if (dsn) {
 
   const tracesSampleRateRaw = asString(values.sentryTracesSampleRate);
   const sampleRateRaw = asString(values.sentrySampleRate);
+  // Keep in sync with `src/sentry.ts`'s DEFAULT_TRACES_SAMPLE_RATE.
+  const DEFAULT_TRACES_SAMPLE_RATE = 0.1;
   Sentry.init({
     dsn,
     environment: asString(values.sentryEnvironment) ?? "production",
     release: asString(values.sentryRelease),
     sampleRate: sampleRateRaw ? Number(sampleRateRaw) : 1.0,
-    // Phase 5 gates tracing on the capture-application-data toggle;
-    // until then this is always 0.
+    // 0 unless captureApplicationData is on.
     tracesSampleRate: captureApplicationData
-      ? Number(tracesSampleRateRaw ?? "0.1")
+      ? Number(tracesSampleRateRaw ?? DEFAULT_TRACES_SAMPLE_RATE)
       : 0,
     _experiments:
       values.sentryEnableLogs === true ? { enableLogs: true } : undefined,
@@ -128,20 +124,9 @@ if (dsn) {
     },
   });
 
-  // Strip the platform-context fields that `nodeContextIntegration`
-  // pre-populates from `os.platform()` / `os.release()` / `os.arch()`
-  // / `os.totalmem()`. On mobile those expose the kernel version and
-  // a sparse device view that would otherwise *block* sentry-android's
-  // `DefaultAndroidEventProcessor` / sentry-cocoa's `DefaultEventProcessor`
-  // from filling in the proper user-facing values at capture time —
-  // those processors respect existing data and skip on a non-null
-  // object. `culture` is also dropped (Node ships an empty object).
-  //
-  // `contexts.app` is left alone — its fields are merged key-by-key
-  // by the native processor, so Node's `app_start_time` survives
-  // alongside the native-supplied identifier/version/permissions.
-  // `contexts.runtime` is also kept (Node-specific; native has no
-  // equivalent).
+  // Strip os/device/culture so native processors fill them at capture
+  // (they skip on non-null). app/runtime stay — app merges key-by-key,
+  // runtime is Node-specific.
   Sentry.addEventProcessor((/** @type {any} */ event) => {
     if (!event.contexts) return event;
     delete event.contexts.os;
@@ -186,32 +171,26 @@ if (Sentry && sentryTrace) {
       // Retroactive span (startTime = loader.mjs first line). The gap
       // before it on the trace is the C/C++ V8-bootstrap phase.
       //
-      // startSpan + sync callback so the import-sentry-node child
-      // auto-parents via ALS, then active span unwinds back to
-      // node-spawn before the `await import("./index.js")` below — so
-      // index.js's IIFE captures node-spawn (not loader-init) for
-      // `boot.manager-init`.
-      const loaderInitSpan = Sentry.startSpan(
-        {
-          name: "boot.loader-init",
-          op: "boot.loader-init",
-          startTime: loaderStartDate,
-        },
-        (/** @type {any} */ span) => {
-          Sentry.startInactiveSpan({
-            name: "boot.loader-import-sentry-node",
-            op: "boot.loader-import-sentry-node",
-            startTime: importSentryNodeStartDate,
-          })?.end(importSentryNodeEndDate);
-          // Return the handle so we can attach `import-index` as a
-          // child of loader-init without re-entering its active scope.
-          return span;
-        },
-      );
+      // Inactive + explicit `parentSpan` for both children — keeps
+      // ALS at node-spawn (continueTrace's parent) during the
+      // `await import("./index.js")` below, so index.js's IIFE
+      // captures node-spawn (not loader-init) for `boot.manager-init`.
+      // loader-init has to stay LIVE while children attach — passing
+      // an already-ended span as `parentSpan` doesn't reliably parent
+      // under @sentry/node's OTel backend.
+      const loaderInitSpan = Sentry.startInactiveSpan({
+        name: "boot.loader-init",
+        op: "boot.loader-init",
+        startTime: loaderStartDate,
+      });
 
-      // Inactive + explicit parent so the active scope stays at
-      // node-spawn for index.js's IIFE. Span starts after loader-init
-      // has ended; Sentry renders this child-outside-parent fine.
+      Sentry.startInactiveSpan({
+        name: "boot.loader-import-sentry-node",
+        op: "boot.loader-import-sentry-node",
+        startTime: importSentryNodeStartDate,
+        parentSpan: loaderInitSpan,
+      })?.end(importSentryNodeEndDate);
+
       const importSpan = Sentry.startInactiveSpan({
         name: "boot.import-index",
         op: "boot.import-index",
@@ -221,6 +200,9 @@ if (Sentry && sentryTrace) {
         await import("./index.js");
       } finally {
         importSpan?.end();
+        // End loader-init AFTER import-index so the parent is still
+        // live at attach time (see comment above).
+        loaderInitSpan?.end();
       }
     },
   );

@@ -204,6 +204,11 @@ class NodeJSService {
     /// `nil` → loader skips Sentry.
     private let sentryConfig: SentryConfig?
 
+    /// Current value of the user's `captureApplicationData` toggle.
+    /// Forwarded as `--captureApplicationData` when true; ignored when
+    /// `sentryConfig` is nil.
+    private let captureApplicationData: Bool
+
     /// Creates a NodeJSService with a custom directory.
     /// - Parameters:
     ///   - socketDir: Directory holding the Unix-domain socket files
@@ -231,11 +236,13 @@ class NodeJSService {
         resolveJSEntryPoint: @escaping () -> String?,
         rootKeyProvider: @escaping RootKeyProvider,
         sentryConfig: SentryConfig? = SentryConfig.loadFromMainBundle(),
+        captureApplicationData: Bool = false,
         startupTimeout: TimeInterval = 30
     ) {
         self.socketDir = socketDir
         self.privateStorageDir = privateStorageDir
         self.sentryConfig = sentryConfig
+        self.captureApplicationData = captureApplicationData
         self.comapeoSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
         self.controlSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.controlSocketFilename)
 
@@ -793,16 +800,8 @@ class NodeJSService {
         completionSem?.signal()
     }
 
-    /// Releases IPC and socket-file resources.
-    ///
-    /// - Parameter threadExited: Whether the node runtime thread has actually
-    ///   exited. When `false` (e.g. a timed-out graceful shutdown or a
-    ///   background-task expiration that cut the wait short), the node
-    ///   thread is still alive; the service transitions to `.error` so
-    ///   `start()` cannot be called again and violate the once-per-process
-    ///   constraint of `NodeMobileStartNode`. When `true`, the service is
-    ///   fully stopped and transitions to `.stopped`.
-    /// Flags consumed by `backend/loader.mjs`.
+    /// `--sentry*` argv flags consumed by `backend/loader.mjs`. Empty
+    /// when `sentryConfig` is nil (Sentry off).
     private func buildSentryArgs() -> [String] {
         guard let cfg = sentryConfig else { return [] }
         var out: [String] = [
@@ -822,7 +821,9 @@ class NodeJSService {
         if cfg.enableLogs == true {
             out.append("--sentryEnableLogs")
         }
-        // captureApplicationData (Phase 5) wires up via SentryPrefsStore.
+        if captureApplicationData {
+            out.append("--captureApplicationData")
+        }
 
         // Prefer the node-spawn span over the transaction so Node-side
         // boot spans nest under it. Falls back to the transaction when
@@ -836,6 +837,14 @@ class NodeJSService {
         return out
     }
 
+    /// Releases IPC and socket-file resources.
+    ///
+    /// - Parameter threadExited: Whether the node runtime thread has actually
+    ///   exited. When `false` (timed-out graceful shutdown or background-task
+    ///   expiration that cut the wait short), the thread is still alive and
+    ///   the service transitions to `.error` so `start()` cannot violate
+    ///   `NodeMobileStartNode`'s once-per-process constraint. `true` ends
+    ///   in `.stopped`.
     func cleanup(threadExited: Bool = true) {
         controlIPC?.disconnect()
         controlIPC = nil

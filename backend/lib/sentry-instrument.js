@@ -39,11 +39,10 @@ export async function bootPhase(name, fn, options) {
     try {
       return await fn();
     } catch (e) {
-      throw Object.assign(/** @type {any} */ (e), { phase: name });
+      throw tagPhase(e, name);
     }
   }
-  // `op` matches `name` so Discover renders the phase identifier as
-  // `span.name`. Filter all boot spans with `op:boot.*`.
+  // op:boot.* is the Discover filter; name=op so span.name renders.
   return Sentry.startSpan(
     { name: op, op },
     async (/** @type {any} */ span) => {
@@ -53,22 +52,35 @@ export async function bootPhase(name, fn, options) {
         return r;
       } catch (e) {
         span?.setStatus?.({ code: 2, message: "internal_error" });
-        throw Object.assign(/** @type {any} */ (e), { phase: name });
+        throw tagPhase(e, name);
       }
     },
   );
 }
 
 /**
- * Capture a fatal error with the boot phase + a best-effort
- * device-context snapshot. `@sentry/node` doesn't synthesise device
- * context the way sentry-cocoa / sentry-android do, so OOM and
- * disk-full crashes have no `device.free_memory` / `device.free_storage`
- * in the Sentry UI without this. Field names match Sentry's standard
- * device-context schema so they render alongside the platform-side
- * values.
- *
- * Never throws. No-op when Sentry is off.
+ * Best-effort `.phase = name` on a thrown error. Frozen / sealed
+ * Errors (rare on Node but possible from user-land throws) would
+ * make `Object.assign` raise a TypeError that'd mask the original.
+ * @param {unknown} e
+ * @param {string} name
+ * @returns {unknown}
+ */
+function tagPhase(e, name) {
+  try {
+    return Object.assign(/** @type {any} */ (e), { phase: name });
+  } catch {
+    return Object.assign(new Error(String(e), { cause: e }), {
+      phase: name,
+    });
+  }
+}
+
+/**
+ * Capture a fatal with phase tag + best-effort device context
+ * (`@sentry/node` doesn't synthesise free_memory/free_storage). Field
+ * names match Sentry's device schema so they render alongside the
+ * platform-side values. No-op when Sentry off; never throws.
  *
  * @param {string} phase
  * @param {Error} err
@@ -119,16 +131,10 @@ export function setSink(sink) {
 }
 
 /**
- * Build the `onRequestHook` that `ComapeoRpcServer` installs. Returns
- * `undefined` when Sentry is off so the server stays unaware of the
- * integration.
- *
- * RPC args carry potential PII (observation fields, attachment paths)
- * so capture is opt-in via the `--sentryRpcArgsBytes` flag (read here
- * from `__comapeoSentryConfig`). Errors are NOT rethrown —
- * rpc-reflector already sends the error response from inside `next`,
- * and an unhandled rejection would funnel into `handleFatal` and kill
- * the process for a routine RPC error.
+ * `onRequestHook` for ComapeoRpcServer; `undefined` when Sentry is off.
+ * RPC args capture is opt-in (PII) via `--sentryRpcArgsBytes`. Errors
+ * are not rethrown — rpc-reflector already sends the error response,
+ * and rethrowing would funnel into `handleFatal` for routine errors.
  *
  * @returns {((request: any, next: any) => void) | undefined}
  */
@@ -177,9 +183,8 @@ export function makeRpcHook() {
 }
 
 /**
- * Capture an arbitrary exception (escape hatch — prefer `bootPhase` /
- * `captureFatal` / `makeRpcHook`). Currently used only by the temporary
- * smoke-test hook in `index.js`.
+ * Escape-hatch capture. Prefer `bootPhase` / `captureFatal` /
+ * `makeRpcHook` so phase/tag attribution is consistent.
  *
  * @param {Error} err
  */

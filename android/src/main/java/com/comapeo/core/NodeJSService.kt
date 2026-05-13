@@ -65,6 +65,13 @@ class NodeJSService(
      */
     private val sentryConfig: SentryConfig? = null,
     /**
+     * Current value of the user's `captureApplicationData` toggle. When
+     * `true`, the backend forwards span/event data with potential
+     * application content; when `false` (default), only structural
+     * metadata. Ignored when [sentryConfig] is null.
+     */
+    private val captureApplicationData: Boolean = false,
+    /**
      * Maximum milliseconds the service may stay in STARTING before the
      * watchdog forces ERROR. Configurable so tests (and slow CI) can
      * tighten or relax it. Default 30 s covers cold device boot plus
@@ -458,15 +465,11 @@ class NodeJSService(
             }
             cfg.rpcArgsBytes?.let { args += "--sentryRpcArgsBytes=$it" }
             if (cfg.enableLogs == true) args += "--sentryEnableLogs"
-            // captureApplicationData (Phase 5) wires up via
-            // SentryPrefsStore once it lands.
+            if (captureApplicationData) args += "--captureApplicationData"
 
-            // Forward boot transaction's trace context so Node-side
-            // boot spans (loader-init, import-index, listen-control)
-            // land as children of node-spawn (the FGS-side phase
-            // they overlap with). Falls back to the transaction
-            // trace when node-spawn isn't open yet (defensive — in
-            // practice the span is opened just before this).
+            // Forward node-spawn's trace so Node spans nest under it.
+            // Defensive fallback to the transaction if node-spawn
+            // hasn't opened yet — in practice it has.
             val traceParent = bootSpans["node-spawn"] ?: bootTx.get()
             SentryFgsBridge.getTraceData(traceParent)?.let { (trace, baggage) ->
                 args += "--sentryTrace=$trace"

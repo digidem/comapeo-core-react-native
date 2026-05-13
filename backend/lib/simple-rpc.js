@@ -44,26 +44,12 @@ export class SimpleRpcServer extends ServerHelper {
   /** @type {TerminalFrame | null} */
   #terminalFrame = null;
   /**
-   * Rolling buffer of recent Sentry frames (`sentry-event` and
-   * `sentry-envelope`), replayed to every new client on connect.
-   *
-   * Why replay to every connect (not just the first): on Android,
-   * both the FGS process and the main-app process connect, and only
-   * the FGS owns the `sentry-android` SDK that handles the frame.
-   * The main-app's IPC starts polling before the FGS process exists
-   * (it's created in `ComapeoCoreModule.OnCreate`, well ahead of
-   * `startForegroundService` in the activity's `onResume`), so
-   * draining to the first connect risks delivering only to the
-   * main-app — which ignores Sentry frames — leaving the FGS empty
-   * for boot-time captures. Replaying on every connect closes that
-   * gap; the main-app gets a few extra ignored messages, the FGS
-   * gets the boot frames whichever order they connect in.
-   *
-   * Duplicates on transient reconnect (FGS drops and reconnects mid-
-   * session) are accepted because Sentry's backend dedups by event_id.
-   *
-   * Bounded at 100; oldest is evicted on overflow. Memory cost is
-   * capped at ~100 × frame size.
+   * Rolling buffer (100 frames) of recent `sentry-event` /
+   * `sentry-envelope` frames, replayed on every connect. On Android,
+   * both FGS and main-app processes connect — only FGS owns
+   * sentry-android, and connect order isn't guaranteed, so
+   * replay-once would lose frames to main-app on bad orderings.
+   * Duplicates on FGS reconnect are deduped by Sentry's event_id.
    *
    * @type {import("type-fest").JsonObject[]}
    */

@@ -130,7 +130,8 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // (which fires `applicationDidBecomeActive` again) retries.
             try AppLifecycleDelegate.rootKeyStore.loadOrInitialize()
         },
-        sentryConfig: AppLifecycleDelegate.resolveEffectiveSentryConfig()
+        sentryConfig: AppLifecycleDelegate.resolveEffectiveSentryConfig(),
+        captureApplicationData: ComapeoPrefs.open().readCaptureApplicationData()
     )
 
     /// Resolves the directory that holds the Unix-domain socket files

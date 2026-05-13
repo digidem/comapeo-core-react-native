@@ -59,8 +59,8 @@ class ComapeoCoreService : Service() {
         // reads the toggle on its own cold start (snapshot-at-boot)
         // — restart-to-activate.
         val sentryConfig = SentryConfig.loadFromManifest(applicationContext)
-        val diagnosticsEnabled = ComapeoPrefs.open(applicationContext)
-            .readDiagnosticsEnabled()
+        val prefs = ComapeoPrefs.open(applicationContext)
+        val diagnosticsEnabled = prefs.readDiagnosticsEnabled()
         val effectiveConfig = if (diagnosticsEnabled) sentryConfig else null
         effectiveConfig?.let { cfg ->
             SentryFgsBridge.init(applicationContext, cfg)
@@ -71,6 +71,7 @@ class ComapeoCoreService : Service() {
         nodeJSService = NodeJSService(
             applicationContext,
             sentryConfig = effectiveConfig,
+            captureApplicationData = prefs.readCaptureApplicationData(),
         )
     }
 

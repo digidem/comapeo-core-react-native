@@ -156,6 +156,13 @@ export type SentryInitConfig = {
  */
 export const sentryConfig: SentryInitConfig = readSentryConfig();
 
+/**
+ * Fallback `tracesSampleRate` when the plugin doesn't configure one
+ * and `captureApplicationData` is on. Keep in sync with
+ * `backend/loader.mjs`'s `DEFAULT_TRACES_SAMPLE_RATE`.
+ */
+const DEFAULT_TRACES_SAMPLE_RATE = 0.1;
+
 // ── Host extension API ──────────────────────────────────────────
 
 /**
@@ -308,16 +315,15 @@ export function initSentry(options: InitSentryOptions = {}): void {
     return;
   }
 
-  // 0 when off; plugin's value (default 0.1) when on. Locked — the
-  // host extension API can't override this.
+  // 0 when off; plugin value (or DEFAULT_TRACES_SAMPLE_RATE) when on.
+  // Locked — the host extension API can't override this.
   const effectiveTracesSampleRate = preferences.captureApplicationData
-    ? sentryConfig.tracesSampleRate ?? 0.1
+    ? sentryConfig.tracesSampleRate ?? DEFAULT_TRACES_SAMPLE_RATE
     : 0;
 
-  // PII scrubber — identity in this PR. The full substring scan
-  // (rootKey, base64-22-char, lat/lng, etc.) lands in a subsequent
-  // phase. The chain shape is wired here so future-us doesn't have
-  // to change the host contract.
+  // PII scrubber — currently identity. Substring scan (rootKey,
+  // base64-22-char, lat/lng) TBD; chain shape is wired now so the
+  // host contract doesn't have to change later.
   const ourBeforeSend: BeforeSendHook = (event) => event;
   const ourBeforeBreadcrumb: BeforeBreadcrumbHook = (crumb) => crumb;
 
@@ -333,8 +339,7 @@ export function initSentry(options: InitSentryOptions = {}): void {
     release: sentryConfig.release,
     sampleRate: sentryConfig.sampleRate,
     tracesSampleRate: effectiveTracesSampleRate,
-    // Locked. The host's own `Sentry.init` could have set this true;
-    // since we now own init, it can't.
+    // Locked.
     sendDefaultPii: false,
     // Plugin-controlled. Off by default; opt in via plugin config.
     enableLogs: sentryConfig.enableLogs ?? false,
@@ -344,17 +349,13 @@ export function initSentry(options: InitSentryOptions = {}): void {
     beforeBreadcrumb: chainedBeforeBreadcrumb as never,
   } as never);
 
-  // Register the SDK as the adapter — only after init, so callers
-  // through the adapter hit a live SDK rather than the pre-init
-  // buffered shim.
+  // Register only after init so callers don't hit a pre-init SDK.
   registerAdapter({
     ...(Sentry as unknown as Omit<SentryAdapter, "getTraceData">),
     getTraceData: coreGetTraceData as unknown as SentryAdapter["getTraceData"],
   });
 
-  // Scope-default tags / context written via the persistent global
-  // scope so they survive any later scope forks. Previously a
-  // top-level IIFE; now scoped to post-init.
+  // Scope-default tags via global scope (survives later forks).
   const adapter = activeAdapter();
   if (adapter) {
     const globalScope = adapter.getGlobalScope();

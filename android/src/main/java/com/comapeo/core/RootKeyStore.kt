@@ -16,6 +16,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 /** `generated=true` → first-install path (keygen + envelope write).
  *  NodeJSService stamps this on the `boot.rootkey-load` span. */
+@Suppress("ArrayInDataClass")
 data class RootKeyResult(val key: ByteArray, val generated: Boolean)
 
 /**

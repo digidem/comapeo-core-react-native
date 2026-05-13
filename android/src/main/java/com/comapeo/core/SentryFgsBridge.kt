@@ -146,10 +146,9 @@ object SentryFgsBridge {
 
     /**
      * Returns an opaque handle (`null` when disabled). Pass back to
-     * [startBootSpan] / [finishSpan]. The opaque type keeps `io.sentry.*`
-     * out of the Guard's bytecode.
-     */
-    /**
+     * [startBootSpan] / [finishSpan]. Opaque type keeps `io.sentry.*`
+     * out of the consumer's bytecode.
+     *
      * @param startElapsedRealtime `SystemClock.elapsedRealtime()` value
      *   to backdate the transaction start to. `null` → start now.
      * @param kind Value for the `boot.kind` tag — `user-foreground`
@@ -267,7 +266,7 @@ object SentryFgsBridge {
     /** Span-data (key/value) for one-shot facts; queryable as
      *  `span.data["<key>"]`. No-op on missing handle / pre-init. */
     @JvmStatic
-    fun setSpanData(handle: Any?, key: String, value: Any?) {
+    fun setSpanData(handle: Any?, key: String, value: Any) {
         if (!initialized || handle == null) return
         try {
             SentryFgsBridgeImpl.setSpanData(handle, key, value)
