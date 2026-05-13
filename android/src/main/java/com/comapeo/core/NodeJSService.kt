@@ -229,11 +229,9 @@ class NodeJSService(
     private val bootTx = AtomicReference<Any?>(null)
 
     /**
-     * In-flight boot-phase spans keyed by phase. The FGS process
-     * observes `rootkey-load` and `init-frame` directly; the
-     * remaining phases (`listen-control`, `construct`,
-     * `ipc-connect`) live in the Node-side boot once Phase 3
-     * wires them up via distributed tracing.
+     * In-flight FGS-side boot-phase spans keyed by phase
+     * (`fgs-launch`, `extract-assets`, `node-spawn`, `rootkey-load`).
+     * Node-side phases ride distributed tracing via continueTrace.
      */
     private val bootSpans = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
@@ -723,11 +721,6 @@ class NodeJSService(
             }
             ControlFrame.Ready -> {
                 logCrumb(SentryCategories.CONTROL, "received: ready")
-                // `ready` is the natural close point for the
-                // boot.init-frame span opened in sendInitFrame().
-                bootSpans.remove("init-frame")?.let {
-                    SentryFgsBridge.finishSpan(it, "ok")
-                }
                 applyAndEmit { it.copy(backendState = BackendState.Ready) }
             }
             ControlFrame.Stopping -> {
@@ -824,13 +817,12 @@ class NodeJSService(
         val b64 = Base64.encodeToString(rootKeyBytes, Base64.NO_WRAP)
         rootKeyBytes.fill(0)
         val frame = "{\"type\":\"init\",\"rootKey\":\"$b64\"}"
-        // boot.init-frame span: from "init sent" to "ready
-        // received" (closed in handleControlMessage).
-        SentryFgsBridge.startBootSpan(bootTx.get(), "init-frame")?.let {
-            bootSpans["init-frame"] = it
-        }
         serviceScope.launch {
             ipcDeferred.await().sendMessage(frame)
+            // Breadcrumb pair with control "received: ready" stands in
+            // for the dropped boot.init-frame span; Node-side
+            // boot.manager-init covers the same window with finer
+            // error attribution.
             logCrumb(SentryCategories.BOOT, "init frame sent")
         }
     }

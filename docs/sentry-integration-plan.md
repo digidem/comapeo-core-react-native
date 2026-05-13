@@ -1243,7 +1243,7 @@ We design the captures around them rather than dumping logs:
 |---|---|---|
 | **Breadcrumb** | Lightweight ordered context — what led up to an event. Cheap, capped at ~100 by default, attached to the next event. | "state STARTING→STARTED at t+312ms", "ipc connected", "FGS notification posted" |
 | **Transaction** (root span) | A timed unit of work with a clear start/end and a name. Indexed; dashboards can chart durations and counts. | `comapeo.boot` (start→started), `comapeo.shutdown` (stop→stopped) |
-| **Span** (child) | A nested timed sub-step inside a transaction. | `boot.fgs-launch`, `boot.extract-assets`, `boot.node-spawn`, `boot.rootkey-load`, `boot.init-frame` |
+| **Span** (child) | A nested timed sub-step inside a transaction. | `boot.fgs-launch`, `boot.extract-assets`, `boot.node-spawn`, `boot.rootkey-load` |
 | **Event** (`captureMessage` / `captureException`) | A discrete error or notable occurrence; full stacktrace + context. | rootkey load failure, watchdog timeout fired, FGS killed by OS |
 | **Tag** | Indexed key/value pair on events — used for dashboard filtering. | `phase:rootkey`, `proc:fgs`, `comapeo.state:ERROR`, `platform:android` |
 | **Context** (custom) | Structured but non-indexed — appears on event detail pages. | `{"comapeo": {"abi": "arm64-v8a", "nodejs_mobile_version": "...", "ipc_socket_age_ms": 1234}}` |
@@ -1300,9 +1300,14 @@ Transaction: comapeo.boot                     [layer:native]
 │  │  ├─ boot.loader-import-sentry-node         [layer:node]
 │  │  └─ boot.import-index                      [layer:node]
 │  └─ boot.manager-init                         [layer:node]
-├─ boot.rootkey-load                           [layer:native]
-└─ boot.init-frame                             [layer:native]
+└─ boot.rootkey-load                           [layer:native]
 ```
+
+The init-frame round-trip (`sendInitFrame()` → `ready` control frame)
+no longer has its own span — duration is dominated by Node-side
+`boot.manager-init`, which carries finer error attribution. The
+`"init frame sent"` + control `"received: ready"` breadcrumb pair
+remains.
 
 Span op + name conventions: every boot span uses `op = name =
 "boot.<phase>"`. sentry-java's child-span wire format has no separate
@@ -1959,7 +1964,7 @@ under the diagnostic tier:
 - Keep phase-span shape (`boot.fgs-launch`, `boot.extract-assets`,
   `boot.node-spawn`, `boot.loader-init` + its
   `boot.loader-import-sentry-node` and `boot.import-index` children,
-  `boot.manager-init`, `boot.rootkey-load`, `boot.init-frame`) —
+  `boot.manager-init`, `boot.rootkey-load`) —
   that's the actionable perf signal.
 - Span `description` strings stay minimal — the phase identifier
   (`"boot.<phase>"`) is in `op` and serves as the description too;
@@ -2145,13 +2150,11 @@ Shipped:
 - `comapeo.boot` transaction (§7.4.2) opened in `start()`,
   closed on first STARTED (`ok`) / ERROR (`internal_error`).
   In-flight phase spans are closed on the same terminal.
-- `boot.rootkey-load` span around `RootKeyStore.loadOrInitialize()`,
-  `boot.init-frame` span from "init frame sent" to "ready
-  control frame received". Span names match the bench
-  backend's `boot.<phase>` taxonomy
-  (`apps/benchmark/backend/lib/boot-spans.js` on
-  `claude/benchmark-uds-rpc-bridge-1Zahz`) so a single Sentry
-  dashboard query charts both sides.
+- `boot.rootkey-load` span around `RootKeyStore.loadOrInitialize()`.
+  The init-frame round-trip is marked by a breadcrumb pair
+  (`"init frame sent"` + control `"received: ready"`); the
+  duration is dominated by Node-side `boot.manager-init`, which
+  already carries finer error attribution.
 - Timeout events (§7.4.4):
   `comapeo: startup timeout fired` (level=error,
   `timeout:startup`),
@@ -2999,8 +3002,9 @@ Concrete touch list, by phase, for code review.
   breadcrumbs in `applyAndEmit`; close transaction +
   in-flight phase spans on STARTED / ERROR; wrap
   `RootKeyStore.loadOrInitialize` in a `boot.rootkey-load`
-  span; open `boot.init-frame` after init send and close on
-  `ready` frame; control-frame breadcrumbs on
+  span; init-frame round-trip is marked by an "init frame sent"
+  breadcrumb (paired with control "received: ready");
+  control-frame breadcrumbs on
   `started`/`ready`/`stopping`/`error`/malformed; capture
   `timeout:startup` on watchdog fire; FGS-side
   `captureException` on rootkey failure tagged

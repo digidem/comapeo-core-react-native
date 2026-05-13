@@ -605,8 +605,11 @@ What each emit site captures:
   bridge. `comapeo.boot` transaction with child spans
   `boot.fgs-launch` (Android only), `boot.extract-assets`
   (Android only, first boot after install/update),
-  `boot.node-spawn`, `boot.rootkey-load`, and `boot.init-frame`. Plus
-  state-transition breadcrumbs, control-frame breadcrumbs,
+  `boot.node-spawn`, and `boot.rootkey-load`. The
+  "init frame sent" → "received: ready" breadcrumb pair marks the
+  init-frame round-trip (no span — duration is dominated by the
+  Node-side `boot.manager-init`). Plus state-transition
+  breadcrumbs, control-frame breadcrumbs,
   FGS-lifecycle breadcrumbs (Android only), timeout events,
   rootkey-load `captureException`.
 - **`layer:node`** — `@sentry/node` via `loader.mjs`. Per-RPC
@@ -769,8 +772,7 @@ whole boot timeline with `op:boot.*` in Discover.
 | `boot.node-spawn` | `proc:fgs` Android / `proc:main` iOS | JNI call to `startNodeWithArguments` (Android) / `nodeEntryPoint` (iOS) → backend's `started` frame on the control socket. Spans the C/C++ V8-bootstrap phase plus the Node-side loader/import/manager-init phases (visible as nested child transactions on the same trace). |
 | `boot.loader-init` | `layer:node` | Backdated to `loader.mjs` first line; closed just after `Sentry.init`. Covers the C/C++ → JS handover including V8 bootstrap and the iitm hook install. Has two child spans: `boot.loader-import-sentry-node` (brackets `import("@sentry/node")` — the dominant chunk on the reference device) and `boot.import-index` (brackets the dynamic `import("./index.js")`). The gap between loader-init's duration and the import-sentry-node child is parseArgs + iitm `register()` + smaller imports + `Sentry.init` (collectively <200ms on the reference device; no spans of their own). `boot.import-index` parents to loader-init via an explicit `parentSpan` reference (not via AsyncLocalStorage) so the IIFE inside `index.js` still captures `boot.node-spawn` as the parent for `boot.manager-init` — keeping it a top-level Node phase rather than nesting it further. Sentry renders import-index as a child whose duration extends past its parent's. |
 | `boot.manager-init` | `layer:node` | Wraps `createComapeo(...)` + `comapeoRpcServer.listen(...)` — drizzle migrations + SQLite open + hypercore init + fastify + RPC socket bind. |
-| `boot.rootkey-load` | `proc:fgs` Android / `proc:main` iOS | Wraps `RootKeyStore.loadOrInitialize()` (Android) / `RootKeyStore.loadKey()` (iOS) in `sendInitFrame()`. |
-| `boot.init-frame` | `proc:fgs` Android / `proc:main` iOS | Opens after the init frame is sent on the control socket; closes when the `ready` control frame is received. |
+| `boot.rootkey-load` | `proc:fgs` Android / `proc:main` iOS | Wraps `RootKeyStore.loadOrInitialize()` (Android) / `RootKeyStore.loadKey()` (iOS) in `sendInitFrame()`. Span data: `generated=true` on first install, `false` on steady-state. |
 
 Cross-layer trace propagation: native opens `comapeo.boot`, then
 forwards the `boot.node-spawn` span's `sentry-trace` header to the

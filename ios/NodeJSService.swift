@@ -531,14 +531,6 @@ class NodeJSService {
             sendInitFrame()
         case .ready:
             logCrumb(category: SentryCategories.control, message: "received: ready")
-            // `ready` is the natural close point for the
-            // `boot.init-frame` span opened in sendInitFrame().
-            let initFrameSpan = bootSentryQueue.sync {
-                bootSpans.removeValue(forKey: "init-frame")
-            }
-            if let span = initFrameSpan {
-                SentryNativeBridge.finishSpan(span, status: "ok")
-            }
             applyAndEmit { self.backendState = .ready }
         case .stopping:
             logCrumb(category: SentryCategories.control, message: "received: stopping")
@@ -643,13 +635,11 @@ class NodeJSService {
         }
         let b64 = keyBytes.base64EncodedString()
         let frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
-        // `boot.init-frame` span: from "init sent" to "ready
-        // received" (closed in handleControlMessage).
-        let txForInitFrame = bootSentryQueue.sync { bootTransaction }
-        if let span = SentryNativeBridge.startBootSpan(txForInitFrame, phase: "init-frame") {
-            bootSentryQueue.sync { bootSpans["init-frame"] = span }
-        }
         ipc.sendMessage(frame)
+        // Breadcrumb pair with control "received: ready" stands in for
+        // the dropped `boot.init-frame` span; Node-side
+        // `boot.manager-init` covers the same window with finer
+        // error attribution.
         logCrumb(category: SentryCategories.boot, message: "init frame sent")
     }
 
