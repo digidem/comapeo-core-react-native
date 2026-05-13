@@ -28,6 +28,20 @@ export function envelopeToFrame(envelope, serializeEnvelope) {
       return { type: "sentry-event", payload };
     }
   }
+  // `@sentry/core`'s `serializeEnvelope` doesn't set `length` on item
+  // headers (the field is optional per the Sentry envelope spec).
+  // But sentry-android's `EnvelopeReader.read` REQUIRES `length > 0` —
+  // without it the receive side throws "Item header at index 'N' is
+  // null or empty" and discards the envelope. Stamp the byte length
+  // explicitly so the receiver can parse.
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      const [itemHeader, payload] = item;
+      if (itemHeader && itemHeader.length == null) {
+        itemHeader.length = byteLengthOfPayload(payload);
+      }
+    }
+  }
   const serialized = serializeEnvelope(envelope);
   const bytes =
     typeof serialized === "string"
@@ -37,4 +51,20 @@ export function envelopeToFrame(envelope, serializeEnvelope) {
     type: "sentry-envelope",
     data: bytes.toString("base64"),
   };
+}
+
+/**
+ * @param {any} payload
+ * @returns {number}
+ */
+function byteLengthOfPayload(payload) {
+  if (typeof payload === "string") {
+    return Buffer.byteLength(payload, "utf-8");
+  }
+  if (payload instanceof Uint8Array) {
+    return payload.byteLength;
+  }
+  // `serializeEnvelope` JSON-stringifies object payloads with the
+  // same default options, so this matches the bytes it'll emit.
+  return Buffer.byteLength(JSON.stringify(payload), "utf-8");
 }

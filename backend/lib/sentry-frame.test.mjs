@@ -12,7 +12,12 @@ import { envelopeToFrame } from "./sentry-frame.js";
  * @param {Array<[Record<string, any>, any]>} items
  */
 function envelope(items) {
-  return [{ sent_at: new Date().toISOString() }, items];
+  // Typed as `any[]` so tests can index `env[1][N][0]` (item header)
+  // without TS narrowing the tuple to a union of header-vs-items.
+  return /** @type {any[]} */ ([
+    { sent_at: new Date().toISOString() },
+    items,
+  ]);
 }
 
 /**
@@ -95,4 +100,37 @@ test("empty envelope (no items) routes as sentry-envelope", () => {
   const env = envelope([]);
   const frame = envelopeToFrame(env, fakeSerializeEnvelope);
   assert.equal(frame.type, "sentry-envelope");
+});
+
+test("envelope path stamps byte length on each item header", () => {
+  // sentry-android's `EnvelopeReader.read` requires `length > 0` on
+  // every item header. `@sentry/core`'s `serializeEnvelope` doesn't
+  // set it by default (the field is optional in the Sentry spec).
+  // Without this stamp, sentry-android throws "Item header at index
+  // 'N' is null or empty" and rejects the envelope.
+  const txn = { event_id: "t1", type: "transaction" };
+  const attachment = "hello"; // string payload
+  const binary = new Uint8Array([1, 2, 3, 4, 5]); // binary payload
+  const env = envelope([
+    [{ type: "transaction" }, txn],
+    [{ type: "attachment", filename: "x.txt" }, attachment],
+    [{ type: "profile" }, binary],
+  ]);
+
+  envelopeToFrame(env, fakeSerializeEnvelope);
+
+  // Object payload → JSON.stringify length
+  assert.equal(env[1][0][0].length, Buffer.byteLength(JSON.stringify(txn)));
+  // String payload → utf-8 byte length
+  assert.equal(env[1][1][0].length, Buffer.byteLength("hello"));
+  // Uint8Array payload → byteLength
+  assert.equal(env[1][2][0].length, 5);
+});
+
+test("envelope path leaves an existing length untouched", () => {
+  const env = envelope([
+    [{ type: "transaction", length: 999 }, { event_id: "t1" }],
+  ]);
+  envelopeToFrame(env, fakeSerializeEnvelope);
+  assert.equal(env[1][0][0].length, 999);
 });
