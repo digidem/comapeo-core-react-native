@@ -289,6 +289,13 @@ internal object SentryFgsBridgeImpl {
         handle.finish()
     }
 
+    fun setSpanData(handle: Any, key: String, value: Any?) {
+        require(handle is ISpan) {
+            "handle must be ISpan, got ${handle.javaClass.name}"
+        }
+        handle.setData(key, value)
+    }
+
     fun flush(timeoutMillis: Long) {
         Sentry.flush(timeoutMillis)
     }

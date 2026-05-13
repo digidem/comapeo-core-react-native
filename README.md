@@ -199,6 +199,9 @@ events from three layers, tagged for filtering in the dashboard:
 - **`layer:native`** (Kotlin / Swift) — `comapeo.boot` transaction
   (root, force-sampled) with child spans `boot.fgs-launch`
   (Android only — `startForegroundService` → FGS process ready),
+  `boot.extract-assets` (Android only, first boot after install/
+  update — recursive copy of `nodejs-project/` from APK assets to
+  internal storage; iOS reads the bundle in place so no equivalent),
   `boot.node-spawn` (nodejs-mobile JNI call → control `started`),
   `boot.rootkey-load`, and `boot.init-frame`. Plus
   state-transition breadcrumbs, control-frame breadcrumbs,

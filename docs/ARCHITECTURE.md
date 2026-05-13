@@ -603,16 +603,21 @@ What each emit site captures:
 - **`layer:native, proc:fgs` (Android FGS) / `proc:main`
   (iOS)** — `SentryFgsBridge` (Android) / equivalent Swift
   bridge. `comapeo.boot` transaction with child spans
-  `boot.fgs-launch` (Android only), `boot.node-spawn`,
-  `boot.rootkey-load`, and `boot.init-frame`. Plus
+  `boot.fgs-launch` (Android only), `boot.extract-assets`
+  (Android only, first boot after install/update),
+  `boot.node-spawn`, `boot.rootkey-load`, and `boot.init-frame`. Plus
   state-transition breadcrumbs, control-frame breadcrumbs,
   FGS-lifecycle breadcrumbs (Android only), timeout events,
   rootkey-load `captureException`.
 - **`layer:node`** — `@sentry/node` via `loader.mjs`. Per-RPC
-  method spans, `handleFatal` `captureException`, and four
+  method spans, `handleFatal` `captureException`, and two top-level
   boot-phase root spans that share the FGS-side trace via
-  `Sentry.continueTrace`: `boot.loader-init`, `boot.import-index`,
-  `boot.listen-control`, `boot.manager-init`.
+  `Sentry.continueTrace`: `boot.loader-init` (with two children,
+  `boot.loader-import-sentry-node` and `boot.import-index`) and
+  `boot.manager-init`. `listen-control` and `init` keep their phase
+  tags for error attribution but no longer emit spans — they are
+  reliably fast and (for `init`) duplicated by native
+  `boot.rootkey-load`.
 
 The same FGS-local error (rootkey load failure, watchdog
 timeout) reaches multiple scopes via the cross-process
@@ -760,10 +765,9 @@ whole boot timeline with `op:boot.*` in Discover.
 |---|---|---|
 | `comapeo.boot` (root tx) | `proc:fgs` Android / `proc:main` iOS | Opens in `NodeJSService.start()`; closes on first non-`STARTING` transition with status `ok` (STARTED), `internal_error` (ERROR), or `cancelled` (STOPPING/STOPPED). Forced 100% sampled; tagged `boot.kind=user-foreground` or `system-restart`. |
 | `boot.fgs-launch` (Android only) | `proc:fgs` | Backdated to `serviceStartTimeMs` (stamped by the activity lifecycle listener); closes immediately on entry to `NodeJSService.start()`. `user-foreground` boots only — absent on `system-restart`. |
-| `boot.node-spawn` | `proc:fgs` Android / `proc:main` iOS | JNI call to `startNodeWithArguments` (Android) / `nodeEntryPoint` (iOS) → backend's `started` frame on the control socket. Spans the C/C++ V8-bootstrap phase plus the Node-side loader/import/listen-control phases (visible as nested child transactions on the same trace). |
-| `boot.loader-init` | `layer:node` | Backdated to `loader.mjs` first line; closed just after `Sentry.init`. Covers the C/C++ → JS handover including V8 bootstrap and the iitm hook install. |
-| `boot.import-index` | `layer:node` | Wraps `import("./index.js")`. The JS-side module-graph load. |
-| `boot.listen-control` | `layer:node` | Wraps `controlIpcServer.listen(controlSocketPath)`. |
+| `boot.extract-assets` (Android only) | `proc:fgs` | Recursive copy of `nodejs-project/` from APK assets into internal storage. Opened only when `shouldCopyAssets()` returns true — i.e. first boot after install or app update. Presence in a trace is itself diagnostic ("this was a cold start after update"); absent on every subsequent boot. iOS reads the bundle in place (no extraction). |
+| `boot.node-spawn` | `proc:fgs` Android / `proc:main` iOS | JNI call to `startNodeWithArguments` (Android) / `nodeEntryPoint` (iOS) → backend's `started` frame on the control socket. Spans the C/C++ V8-bootstrap phase plus the Node-side loader/import/manager-init phases (visible as nested child transactions on the same trace). |
+| `boot.loader-init` | `layer:node` | Backdated to `loader.mjs` first line; closed just after `Sentry.init`. Covers the C/C++ → JS handover including V8 bootstrap and the iitm hook install. Has two child spans: `boot.loader-import-sentry-node` (brackets `import("@sentry/node")` — the dominant chunk on the reference device) and `boot.import-index` (brackets the dynamic `import("./index.js")`). The gap between loader-init's duration and the import-sentry-node child is parseArgs + iitm `register()` + smaller imports + `Sentry.init` (collectively <200ms on the reference device; no spans of their own). `boot.import-index` parents to loader-init via an explicit `parentSpan` reference (not via AsyncLocalStorage) so the IIFE inside `index.js` still captures `boot.node-spawn` as the parent for `boot.manager-init` — keeping it a top-level Node phase rather than nesting it further. Sentry renders import-index as a child whose duration extends past its parent's. |
 | `boot.manager-init` | `layer:node` | Wraps `createComapeo(...)` + `comapeoRpcServer.listen(...)` — drizzle migrations + SQLite open + hypercore init + fastify + RPC socket bind. |
 | `boot.rootkey-load` | `proc:fgs` Android / `proc:main` iOS | Wraps `RootKeyStore.loadOrInitialize()` (Android) / `RootKeyStore.loadKey()` (iOS) in `sendInitFrame()`. |
 | `boot.init-frame` | `proc:fgs` Android / `proc:main` iOS | Opens after the init frame is sent on the control socket; closes when the `ready` control frame is received. |
@@ -771,7 +775,7 @@ whole boot timeline with `op:boot.*` in Discover.
 Cross-layer trace propagation: native opens `comapeo.boot`, then
 forwards the `boot.node-spawn` span's `sentry-trace` header to the
 Node process as the `--sentryTrace` argv flag. The Node side's
-`Sentry.continueTrace` wraps all four Node-side boot spans so they
+`Sentry.continueTrace` wraps all three Node-side boot spans so they
 inherit the FGS-side trace_id and parent_span_id. Result: every boot
 span across all three layers shares a single trace, viewable on a
 single timeline in Sentry's Trace view. Cross-layer with the RN-side

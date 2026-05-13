@@ -28,17 +28,20 @@ export const enabled = Sentry !== null;
  * `ControlFrameTests` literals). Span `op`/`name` defaults to
  * `boot.<name>` — pass `options.op` to override when the dashboard
  * wants a more descriptive label than the wire phase string (e.g.
- * phase "construct" → op "boot.manager-init").
+ * phase "construct" → op "boot.manager-init"). Pass `options.span =
+ * false` to skip span creation entirely while keeping the phase-tag
+ * error attribution — used for phases that are reliably fast across
+ * devices and would only add trace noise (e.g. `listen-control`).
  *
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ op?: string }} [options]
+ * @param {{ op?: string, span?: boolean }} [options]
  * @returns {Promise<T>}
  */
 export async function bootPhase(name, fn, options) {
   const op = options?.op ?? `boot.${name}`;
-  if (!Sentry) {
+  if (!Sentry || options?.span === false) {
     try {
       return await fn();
     } catch (e) {

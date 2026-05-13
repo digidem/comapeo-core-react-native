@@ -178,7 +178,7 @@ JS through the control-socket `init` frame. That has a real cost:
 2. **Boot latency on every launch.** Even when RN is alive, the
    JS round-trip for `setSentryConfig(...)` adds a serial step
    to the boot sequence. The backend can't sample
-   `boot.listen-control` or `boot.manager-init` spans until after
+   `boot.loader-init` or `boot.manager-init` spans until after
    RN is ready and has called `configureSentry`.
 3. **State observability gap.** `state.getState()` reflects only
    transitions captured *after* the JS listener is attached.
@@ -1243,7 +1243,7 @@ We design the captures around them rather than dumping logs:
 |---|---|---|
 | **Breadcrumb** | Lightweight ordered context — what led up to an event. Cheap, capped at ~100 by default, attached to the next event. | "state STARTING→STARTED at t+312ms", "ipc connected", "FGS notification posted" |
 | **Transaction** (root span) | A timed unit of work with a clear start/end and a name. Indexed; dashboards can chart durations and counts. | `comapeo.boot` (start→started), `comapeo.shutdown` (stop→stopped) |
-| **Span** (child) | A nested timed sub-step inside a transaction. | `boot.fgs-launch`, `boot.node-spawn`, `boot.rootkey-load`, `boot.init-frame` |
+| **Span** (child) | A nested timed sub-step inside a transaction. | `boot.fgs-launch`, `boot.extract-assets`, `boot.node-spawn`, `boot.rootkey-load`, `boot.init-frame` |
 | **Event** (`captureMessage` / `captureException`) | A discrete error or notable occurrence; full stacktrace + context. | rootkey load failure, watchdog timeout fired, FGS killed by OS |
 | **Tag** | Indexed key/value pair on events — used for dashboard filtering. | `phase:rootkey`, `proc:fgs`, `comapeo.state:ERROR`, `platform:android` |
 | **Context** (custom) | Structured but non-indexed — appears on event detail pages. | `{"comapeo": {"abi": "arm64-v8a", "nodejs_mobile_version": "...", "ipc_socket_age_ms": 1234}}` |
@@ -1293,11 +1293,12 @@ it as a Sentry transaction that spans from `start()` to either
 ```
 Transaction: comapeo.boot                     [layer:native]
 ├─ boot.fgs-launch              (Android only) [layer:native]
+├─ boot.extract-assets          (Android only, first boot after install/update) [layer:native]
 ├─ boot.node-spawn                             [layer:native]
 │  ├─ <C/C++ V8 bootstrap — uninstrumented gap>
 │  ├─ boot.loader-init                          [layer:node]
-│  ├─ boot.import-index                         [layer:node]
-│  ├─ boot.listen-control                       [layer:node]
+│  │  ├─ boot.loader-import-sentry-node         [layer:node]
+│  │  └─ boot.import-index                      [layer:node]
 │  └─ boot.manager-init                         [layer:node]
 ├─ boot.rootkey-load                           [layer:native]
 └─ boot.init-frame                             [layer:native]
@@ -1955,8 +1956,9 @@ under the diagnostic tier:
 - Strip user-shape fields from boot-transaction attributes — no
   background-duration anchors, no foreground-state tags, no
   per-event culture data riding alongside.
-- Keep phase-span shape (`boot.fgs-launch`, `boot.node-spawn`,
-  `boot.loader-init`, `boot.import-index`, `boot.listen-control`,
+- Keep phase-span shape (`boot.fgs-launch`, `boot.extract-assets`,
+  `boot.node-spawn`, `boot.loader-init` + its
+  `boot.loader-import-sentry-node` and `boot.import-index` children,
   `boot.manager-init`, `boot.rootkey-load`, `boot.init-frame`) —
   that's the actionable perf signal.
 - Span `description` strings stay minimal — the phase identifier

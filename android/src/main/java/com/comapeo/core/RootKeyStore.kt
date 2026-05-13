@@ -15,6 +15,17 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
+ * Result of [RootKeyStore.loadOrInitialize]. `generated = true` means this
+ * call performed first-install key generation (AndroidKeyStore wrapper key
+ * creation + envelope write); `false` means the rootkey was decrypted from
+ * an existing envelope. NodeJSService surfaces this as span data on
+ * `boot.rootkey-load` so first-install boots (where hardware-keystore
+ * keygen can dominate boot time on some devices) are distinguishable in
+ * Sentry from steady-state boots.
+ */
+data class RootKeyResult(val key: ByteArray, val generated: Boolean)
+
+/**
  * Persistent store for the 16-byte CoMapeo rootkey on Android.
  *
  * The rootkey is the device's identity in every CoMapeo project it
@@ -84,19 +95,19 @@ class RootKeyStore(private val context: Context) {
     }
 
     /**
-     * Returns the 16-byte rootkey, generating and persisting it on first
-     * launch. Synchronous; safe to call from the FGS startup path. Throws
-     * on any failure path that would otherwise risk silently fabricating
-     * a new identity.
+     * Returns the 16-byte rootkey + whether this call generated it.
+     * Generates and persists on first launch. Synchronous; safe to call
+     * from the FGS startup path. Throws on any failure path that would
+     * otherwise risk silently fabricating a new identity.
      */
     @Throws(RootKeyException::class)
-    fun loadOrInitialize(): ByteArray {
+    fun loadOrInitialize(): RootKeyResult {
         loadExisting()?.let {
             log("RootKeyStore: native hit")
-            return it
+            return RootKeyResult(it, generated = false)
         }
         log("RootKeyStore: generated for first install")
-        return generateAndPersist()
+        return RootKeyResult(generateAndPersist(), generated = true)
     }
 
     private fun loadExisting(): ByteArray? {

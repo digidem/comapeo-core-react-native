@@ -52,15 +52,17 @@ final class RootKeyStore {
             ?? "com.comapeo.core"
     }
 
-    /// Returns the 16-byte rootkey, generating and persisting it on first
-    /// launch. Throws if the keychain is unavailable (device locked since
-    /// reboot) or if a stored entry has the wrong length — never silently
-    /// regenerates on read failure.
-    func loadOrInitialize() throws -> Data {
-        if let existing = try load() { return existing }
+    /// Returns the 16-byte rootkey + whether this call generated it.
+    /// Generates and persists on first launch. Throws if the keychain is
+    /// unavailable (device locked since reboot) or if a stored entry has
+    /// the wrong length — never silently regenerates on read failure.
+    func loadOrInitialize() throws -> RootKeyResult {
+        if let existing = try load() {
+            return RootKeyResult(key: existing, generated: false)
+        }
         let fresh = try generate()
         try store(fresh)
-        return fresh
+        return RootKeyResult(key: fresh, generated: true)
     }
 
     private func load() throws -> Data? {

@@ -115,7 +115,8 @@ class NodeJSService(
      * synthesized when the node thread exits unexpectedly without a
      * frame. `phase` mirrors the boot phase strings the backend tags
      * errors with (`listen-control`, `init`, `construct`, `runtime`)
-     * plus the local `rootkey`, `starting-timeout`, `node-runtime`,
+     * plus the local `extract-assets` (Android only, first boot after
+     * install/update), `rootkey`, `starting-timeout`, `node-runtime`,
      * `node-runtime-unexpected`.
      */
     data class ErrorInfo(val phase: String, val message: String)
@@ -571,8 +572,20 @@ class NodeJSService(
             }
         })
         nodeJob = serviceScope.launch {
+            // In-flight phase for the catch below. Set before each
+            // phase so an exception thrown by `shouldCopyAssets()` /
+            // `copyAssetFolder()` attributes to `extract-assets`
+            // rather than `node-runtime`.
+            var phase = "extract-assets"
             try {
                 if (shouldCopyAssets()) {
+                    // boot.extract-assets: APK→internal-storage copy
+                    // of `nodejs-project/`. Only opened on the first
+                    // boot after install/update — its presence in a
+                    // trace identifies cold-start-after-update.
+                    SentryFgsBridge.startBootSpan(bootTx.get(), "extract-assets")?.let {
+                        bootSpans["extract-assets"] = it
+                    }
                     withContext(Dispatchers.IO) {
                         nodeProjectDir.deleteRecursively()
                         copyAssetFolder(NODEJS_PROJECT_DIRNAME, nodeProjectDir)
@@ -582,8 +595,12 @@ class NodeJSService(
                             data = mapOf("dir" to NODEJS_PROJECT_DIRNAME),
                         )
                     }
+                    bootSpans.remove("extract-assets")?.let {
+                        SentryFgsBridge.finishSpan(it, "ok")
+                    }
                 }
 
+                phase = "node-spawn"
                 // boot.node-spawn (stage B): time from the JNI call
                 // through V8 init / loader.mjs parse / Sentry.init to
                 // the `started` frame. Closed in handleControlMessage.
@@ -621,6 +638,28 @@ class NodeJSService(
 
                 callback.onComplete(exitCode)
             } catch (e: Exception) {
+                // Close any in-flight phase span before the parent
+                // transaction closes (drains via applyAndEmit's
+                // terminal-state logic, but doing it here keeps the
+                // span status = internal_error specifically).
+                bootSpans.remove(phase)?.let {
+                    SentryFgsBridge.finishSpan(it, "internal_error")
+                }
+                // `node-spawn` failures use the legacy `node-runtime`
+                // error phase (JNI/V8 boot) so the JS-adapter mapping
+                // and Sentry dashboards keep working.
+                val (errPhase, errMessage, errSource) = when (phase) {
+                    "extract-assets" -> Triple(
+                        "extract-assets",
+                        "Failed to extract Node.js assets",
+                        "copy-asset-folder",
+                    )
+                    else -> Triple(
+                        "node-runtime",
+                        "Error starting node",
+                        "startNodeWithArguments",
+                    )
+                }
                 // captureException so the runtime-launch failure is
                 // a first-class Sentry event with the full stack;
                 // applyAndEmit below drives ERROR but the JS adapter
@@ -628,14 +667,14 @@ class NodeJSService(
                 logException(
                     SentryCategories.BOOT,
                     e,
-                    message = "Error starting node",
+                    message = errMessage,
                     tags = mapOf(
-                        SentryTags.PHASE to "node-runtime",
+                        SentryTags.PHASE to errPhase,
                         SentryTags.STATE to "ERROR",
-                        SentryTags.SOURCE to "startNodeWithArguments",
+                        SentryTags.SOURCE to errSource,
                     ),
                 )
-                val info = ErrorInfo("node-runtime", e.message ?: e.javaClass.simpleName)
+                val info = ErrorInfo(errPhase, e.message ?: e.javaClass.simpleName)
                 // The thread has unwound, so mark the runtime as exited
                 // alongside the backend-error transition. Without this,
                 // the component triple is left inconsistent (runtime
@@ -748,11 +787,15 @@ class NodeJSService(
             bootSpans["rootkey-load"] = rootkeyLoadSpan
         }
         val rootKeyBytes: ByteArray = try {
-            RootKeyStore(applicationContext).loadOrInitialize().also {
-                bootSpans.remove("rootkey-load")?.let { sp ->
-                    SentryFgsBridge.finishSpan(sp, "ok")
-                }
+            val result = RootKeyStore(applicationContext).loadOrInitialize()
+            bootSpans.remove("rootkey-load")?.let { sp ->
+                // `generated=true` marks first-install boots, where
+                // AndroidKeyStore wrapper-key creation can dominate; lets
+                // Sentry separate the keygen tail from steady-state.
+                SentryFgsBridge.setSpanData(sp, "generated", result.generated)
+                SentryFgsBridge.finishSpan(sp, "ok")
             }
+            result.key
         } catch (e: Exception) {
             // FGS-scope capture. The same exception is forwarded to
             // Node via sendErrorNativeFrame and re-broadcast, then

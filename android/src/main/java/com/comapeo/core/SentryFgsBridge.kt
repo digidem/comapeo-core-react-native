@@ -265,6 +265,25 @@ object SentryFgsBridge {
     }
 
     /**
+     * Attach span-level data (Sentry's term for arbitrary key/value
+     * attributes on a span). Use for one-shot per-boot facts that help
+     * partition a span's timing distribution — e.g.
+     * `rootkey-load { generated: true }` flags first-install boots so
+     * the hardware-keystore-keygen tail is separable from steady-state
+     * loads. Span data is queryable in Discover via
+     * `span.data["<key>"]`. No-op on missing handle or pre-init.
+     */
+    @JvmStatic
+    fun setSpanData(handle: Any?, key: String, value: Any?) {
+        if (!initialized || handle == null) return
+        try {
+            SentryFgsBridgeImpl.setSpanData(handle, key, value)
+        } catch (t: Throwable) {
+            Log.w(TAG, "setSpanData($key) threw", t)
+        }
+    }
+
+    /**
      * Synchronously flush queued events. Call before
      * `Process.killProcess` (FGS shutdown timeout) so a "stop
      * timeout" capture isn't dropped along with the process. No-op

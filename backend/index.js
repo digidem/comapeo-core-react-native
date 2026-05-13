@@ -199,8 +199,12 @@ process.on("unhandledRejection", (reason) => {
   try {
     // 1. Bind the control socket. Native is already polling for it; once
     // bound, the `started` broadcast tells native it can send the init frame.
-    await sentry.bootPhase("listen-control", () =>
-      controlIpcServer.listen(controlSocketPath),
+    // `span: false` — bind is reliably <30ms across devices; the phase tag
+    // is still set so a stale-socket / EACCES throw routes correctly.
+    await sentry.bootPhase(
+      "listen-control",
+      () => controlIpcServer.listen(controlSocketPath),
+      { span: false },
     );
     console.log(`Control socket listening on ${controlSocketPath}`);
 
@@ -216,8 +220,13 @@ process.on("unhandledRejection", (reason) => {
     controlIpcServer.setReadinessPhase("started");
 
     // 2. Wait for native to send the rootKey. `initPromise` resolves on the
-    // first valid init frame; rejects on a malformed one.
-    const rootKey = await sentry.bootPhase("init", () => initPromise);
+    // first valid init frame; rejects on a malformed one. `span: false` —
+    // this wait mirrors native `boot.rootkey-load`, which is already
+    // measured on the same trace; a Node-side duplicate would only add
+    // noise. Phase tag stays for error attribution.
+    const rootKey = await sentry.bootPhase("init", () => initPromise, {
+      span: false,
+    });
 
     // 3. Construct the manager and bind the comapeo RPC socket. The
     // span op overrides the default `boot.construct` because Sentry
