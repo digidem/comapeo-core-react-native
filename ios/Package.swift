@@ -27,7 +27,6 @@ let package = Package(
                 "ControlFrame.swift",
                 "Log.swift",
                 "ComapeoPrefs.swift",
-                "RootKeyTypes.swift",
                 "SentryConfig.swift",
                 "SentryNativeBridge.swift",
                 "SentryTags.swift",

@@ -23,6 +23,16 @@ import Foundation
 /// `nodeRuntime` becomes `.exited(_, .unexpected)` and the derivation
 /// produces ERROR deterministically. Each ERROR transition carries
 /// which component caused it via `_lastError`.
+/// Result returned by ``NodeJSService/RootKeyProvider``. Declared at
+/// file scope (rather than alongside ``RootKeyStore``) so it's visible
+/// from both the SPM target — which excludes `RootKeyStore.swift`
+/// because its Keychain APIs aren't available on macOS — and the
+/// production CocoaPods build (which globs all top-level `*.swift`).
+struct RootKeyResult {
+    let key: Data
+    let generated: Bool
+}
+
 class NodeJSService {
     /// Lifecycle states. Mirrors Android's `NodeJSService.State` 1:1.
     /// This is a *derived* state — see `deriveState` for the inputs.
