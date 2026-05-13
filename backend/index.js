@@ -1,21 +1,10 @@
 import { fileURLToPath } from "node:url";
-import os from "node:os";
-import fs from "node:fs";
 import Fastify from "fastify";
 
 import { ComapeoRpcServer } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
-
-// loader.mjs stashes the live `@sentry/node` namespace + config on
-// globalThis when a DSN is present. Reading from globalThis (instead
-// of statically importing `@sentry/node`) keeps the rollup chunk
-// unloaded for consumers without Sentry.
-/** @type {any} */
-const Sentry = /** @type {any} */ (globalThis).__comapeoSentry ?? null;
-/** @type {{ rpcArgsBytes: number, captureApplicationData: boolean } | null} */
-const sentryConfig =
-  /** @type {any} */ (globalThis).__comapeoSentryConfig ?? null;
+import * as sentry from "./lib/sentry-instrument.js";
 
 // Resolved relative to this file at evaluation time. The drizzle
 // migrations directory is kept alongside the bundle by
@@ -132,20 +121,13 @@ const controlIpcServer = new SimpleRpcServer({
    * Cross-process error attribution channel (Android FGS → Node →
    * main-app process). When the FGS-side `NodeJSService` enters ERROR
    * from a *local* cause (rootkey load failure, startup watchdog
-   * timeout) while Node is still alive, it sends this frame. The
-   * backend re-broadcasts via `handleFatal` (which broadcasts the
-   * `error` frame and exits 1 after a 100ms flush) so the main-app
-   * process sees a real `error` frame with the correct phase and
-   * message — not a generic "unexpected disconnect" inferred from a
-   * sudden socket close.
-   *
-   * Without this channel, an FGS-side rootkey failure leaves Node
-   * hanging on `await initPromise` (no backend timeout on init) while
-   * the main-app process stays at STARTING forever. iOS doesn't use
-   * this — in-process, the module reads service state directly.
-   *
-   * Validates the input: a misbehaving native side sending a
-   * malformed payload is logged and ignored, not crashed on.
+   * timeout) while Node is still alive, it sends this frame so the
+   * main-app process sees a real `error` frame with the correct phase
+   * and message — not a generic "unexpected disconnect" inferred from
+   * a sudden socket close. Without this, an FGS-side rootkey failure
+   * leaves Node hanging on `await initPromise` while the main-app stays
+   * at STARTING forever. iOS doesn't use this — in-process, the module
+   * reads service state directly.
    *
    * @param {Record<string, unknown>} message
    */
@@ -180,25 +162,10 @@ const controlIpcServer = new SimpleRpcServer({
 async function handleFatal(phase, error) {
   const err = error instanceof Error ? error : new Error(String(error));
   console.error(`Fatal during ${phase}:`, err);
-  const isNativeForward =
-    error != null &&
-    typeof error === "object" &&
-    /** @type {{ source?: unknown }} */ (error).source === "native";
-  if (Sentry) {
-    try {
-      const deviceCtx = readDeviceMemoryAndStorage();
-      Sentry.captureException(err, {
-        tags: {
-          phase,
-          layer: "node",
-          ...(isNativeForward ? { source: "native" } : {}),
-        },
-        ...(deviceCtx ? { contexts: { device: deviceCtx } } : {}),
-      });
-    } catch (captureErr) {
-      console.error("Failed to capture Sentry event", captureErr);
-    }
-  }
+  const source = /** @type {{ source?: string } | null} */ (
+    error && typeof error === "object" ? error : null
+  )?.source;
+  sentry.captureFatal(phase, err, { storageDir: privateStorageDir, source });
   try {
     controlIpcServer.broadcast({
       type: "error",
@@ -211,12 +178,9 @@ async function handleFatal(phase, error) {
   }
   // 100ms covers the AF_UNIX kernel buffer flush; Sentry flushes in
   // parallel under the same cap.
-  const flushPromise = Sentry
-    ? Sentry.flush(100).catch(() => {})
-    : Promise.resolve();
   await Promise.all([
+    sentry.flush(100),
     new Promise((resolve) => setTimeout(resolve, 100)),
-    flushPromise,
   ]);
   process.exit(1);
 }
@@ -231,115 +195,39 @@ process.on("unhandledRejection", (reason) => {
   handleFatal("runtime", reason);
 });
 
-/**
- * Best-effort system memory + private-storage snapshot for fatal
- * captures. `@sentry/node` doesn't synthesise device context the way
- * sentry-cocoa / sentry-android do, so OOM and disk-full crashes have
- * no `device.free_memory` / `device.free_storage` in the Sentry UI
- * without this. Field names match Sentry's standard device-context
- * schema so they render alongside the platform-side values.
- *
- * Returns null on any failure — we never let context probing block a
- * fatal capture.
- *
- * @returns {Record<string, number> | null}
- */
-function readDeviceMemoryAndStorage() {
-  try {
-    /** @type {Record<string, number>} */
-    const ctx = {
-      memory_size: os.totalmem(),
-      free_memory: os.freemem(),
-    };
-    try {
-      const stats = fs.statfsSync(privateStorageDir);
-      ctx.storage_size = stats.bsize * stats.blocks;
-      ctx.free_storage = stats.bsize * stats.bavail;
-    } catch {
-      // statfs unsupported / path missing — omit storage fields only.
-    }
-    return ctx;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Wraps a boot phase in a Sentry span when active. No-op when Sentry
- * isn't configured. Span ends with `internal_error` if the body throws.
- *
- * @template T
- * @param {string} name
- * @param {() => Promise<T>} fn
- * @returns {Promise<T>}
- */
-async function bootSpan(name, fn) {
-  if (!Sentry) return fn();
-  // `op` matches `name` so Discover renders the phase identifier as
-  // `span.name` (sentry-java/cocoa derive name from op for child
-  // spans; @sentry/node's transactions take name from this field
-  // directly). Filter all boot spans with `op:boot.*`.
-  return Sentry.startSpan(
-    { name, op: name },
-    async (/** @type {any} */ span) => {
-      try {
-        const r = await fn();
-        span?.setStatus?.({ code: 1, message: "ok" });
-        return r;
-      } catch (e) {
-        span?.setStatus?.({ code: 2, message: "internal_error" });
-        throw e;
-      }
-    },
-  );
-}
-
 (async () => {
   try {
     // 1. Bind the control socket. Native is already polling for it; once
     // bound, the `started` broadcast tells native it can send the init frame.
-    try {
-      await bootSpan("boot.listen-control", () =>
-        controlIpcServer.listen(controlSocketPath),
-      );
-    } catch (e) {
-      throw Object.assign(e, { phase: "listen-control" });
-    }
+    await sentry.bootPhase("listen-control", () =>
+      controlIpcServer.listen(controlSocketPath),
+    );
     console.log(`Control socket listening on ${controlSocketPath}`);
 
-    // Wire the Sentry frame sink now that the socket is bound. The sink
-    // is `null` in loader.mjs until this call lands — pre-listen frames
-    // sit in a 100-element ring buffer in the loader and drain into
-    // this sink on registration. `broadcast` falls back to its own
-    // ring buffer when no clients are connected (see SimpleRpcServer),
-    // so frames queued at startup are forwarded as soon as the FGS
-    // (Android) or the in-process control IPC (iOS) connects.
-    const setSink = /** @type {any} */ (globalThis).__comapeoSentrySetSink;
-    if (typeof setSink === "function") {
-      setSink(
-        /** @param {{type: string} & import("type-fest").JsonObject} frame */
-        (frame) => {
-          controlIpcServer.broadcast(frame);
-        },
-      );
-    }
+    // Wire the Sentry envelope sink now that the socket is bound. Frames
+    // captured before this call sit in a 100-item ring buffer in
+    // loader.mjs and drain on registration. `broadcast` falls back to
+    // its own ring buffer when no clients are connected (see
+    // SimpleRpcServer), so frames queued at startup are forwarded as
+    // soon as the FGS (Android) or the in-process control IPC (iOS)
+    // connects.
+    sentry.setSink((frame) => controlIpcServer.broadcast(frame));
 
     controlIpcServer.setReadinessPhase("started");
 
     // 2. Wait for native to send the rootKey. `initPromise` resolves on the
     // first valid init frame; rejects on a malformed one.
-    let rootKey;
-    try {
-      rootKey = await initPromise;
-    } catch (e) {
-      throw Object.assign(e, { phase: "init" });
-    }
+    const rootKey = await sentry.bootPhase("init", () => initPromise);
 
-    // 3. Construct the manager and bind the comapeo RPC socket.
-    // boot.manager-init (stage D) wraps drizzle migrations + SQLite open
-    // + hypercore/fastify init + RPC socket bind.
-    try {
-      await bootSpan("boot.manager-init", async () => {
+    // 3. Construct the manager and bind the comapeo RPC socket. The
+    // span op overrides the default `boot.construct` because Sentry
+    // dashboards reference `boot.manager-init` (covers drizzle
+    // migrations + SQLite open + hypercore/fastify init + RPC socket
+    // bind); the wire phase stays `construct` to match the value
+    // native expects in error frames.
+    await sentry.bootPhase(
+      "construct",
+      async () => {
         comapeo = createComapeo({
           privateStorageDir,
           fastify,
@@ -347,14 +235,12 @@ async function bootSpan(name, fn) {
           rootKey,
         });
         comapeoRpcServer = new ComapeoRpcServer(comapeo, {
-          sentry: Sentry,
-          rpcArgsBytes: sentryConfig?.rpcArgsBytes ?? 0,
+          onRequestHook: sentry.makeRpcHook(),
         });
         await comapeoRpcServer.listen(comapeoSocketPath);
-      });
-    } catch (e) {
-      throw Object.assign(e, { phase: "construct" });
-    }
+      },
+      { op: "boot.manager-init" },
+    );
     console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
 
     // 4. Announce ready. The settle-window-then-ready dance is gone now
@@ -364,9 +250,11 @@ async function bootSpan(name, fn) {
     // TEMPORARY — remove before commit. Smoke-test hook: capture
     // a single Node-side event so we can verify the sentry-event
     // forwarding path works end-to-end.
-    if (Sentry) {
+    if (sentry.enabled) {
       setTimeout(() => {
-        Sentry.captureException(new Error("smoke: node-side forwarding test"));
+        sentry.captureException(
+          new Error("smoke: node-side forwarding test"),
+        );
       }, 2000);
     }
   } catch (error) {
