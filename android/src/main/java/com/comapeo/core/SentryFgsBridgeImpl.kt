@@ -56,6 +56,8 @@ internal object SentryFgsBridgeImpl {
             }
 
         SentryAndroid.init(context.applicationContext) { options ->
+            options.isDebug = true
+            options.setDiagnosticLevel(io.sentry.SentryLevel.DEBUG)
             options.dsn = config.dsn
             options.environment = config.environment
             options.release = config.release
@@ -238,12 +240,25 @@ internal object SentryFgsBridgeImpl {
      * `SentryDate`. We use elapsedRealtime (monotonic) as the timestamp
      * source across the boot pipeline — system clock can jump from NTP
      * sync mid-boot — and translate to wall-clock here for Sentry.
+     *
+     * The `nanos` field is critical: sentry-java computes a span's end
+     * timestamp via `start.nanoTimestamp() + (end.nanos - start.nanos)`
+     * (see `SentryNanotimeDate.nanotimeDiff`). When `transaction.finish()`
+     * runs, the SDK fills `end.nanos = System.nanoTime()` — which on
+     * Android counts from boot, so it's huge (5×10¹⁴ for a 5-day uptime).
+     * Passing `0` here would make the SDK compute a "duration" of the
+     * entire system uptime and produce an end timestamp days in the
+     * future, which Sentry's ingestion rejects. Anchor `nanos` at
+     * "what `System.nanoTime()` would have read at the back-dated
+     * moment" so the diff math stays bounded by real elapsed time.
      */
     private fun elapsedRealtimeToSentryDate(startElapsedRealtime: Long): SentryDate {
         val nowWallMs = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
+        val nowNano = System.nanoTime()
         val startWallMs = nowWallMs - (nowElapsed - startElapsedRealtime)
-        return SentryNanotimeDate(Date(startWallMs), 0)
+        val startNanos = nowNano - (nowWallMs - startWallMs) * 1_000_000L
+        return SentryNanotimeDate(Date(startWallMs), startNanos)
     }
 
     fun finishSpan(handle: Any, status: String) {
