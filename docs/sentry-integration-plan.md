@@ -177,9 +177,9 @@ JS through the control-socket `init` frame. That has a real cost:
    FGS-survives-RN architecture).
 2. **Boot latency on every launch.** Even when RN is alive, the
    JS round-trip for `setSentryConfig(...)` adds a serial step
-   to the boot sequence. The backend can't sample `boot.listen`
-   or `boot.construct` spans until after RN is ready and has
-   called `configureSentry`.
+   to the boot sequence. The backend can't sample
+   `boot.listen-control` or `boot.manager-init` spans until after
+   RN is ready and has called `configureSentry`.
 3. **State observability gap.** `state.getState()` reflects only
    transitions captured *after* the JS listener is attached.
    Errors that fire before the consumer imports the JS adapter
@@ -1243,7 +1243,7 @@ We design the captures around them rather than dumping logs:
 |---|---|---|
 | **Breadcrumb** | Lightweight ordered context — what led up to an event. Cheap, capped at ~100 by default, attached to the next event. | "state STARTING→STARTED at t+312ms", "ipc connected", "FGS notification posted" |
 | **Transaction** (root span) | A timed unit of work with a clear start/end and a name. Indexed; dashboards can chart durations and counts. | `comapeo.boot` (start→started), `comapeo.shutdown` (stop→stopped) |
-| **Span** (child) | A nested timed sub-step inside a transaction. | `boot.listen-control`, `boot.init`, `boot.construct`, `boot.ipc-connect` |
+| **Span** (child) | A nested timed sub-step inside a transaction. | `boot.fgs-launch`, `boot.node-spawn`, `boot.rootkey-load`, `boot.init-frame` |
 | **Event** (`captureMessage` / `captureException`) | A discrete error or notable occurrence; full stacktrace + context. | rootkey load failure, watchdog timeout fired, FGS killed by OS |
 | **Tag** | Indexed key/value pair on events — used for dashboard filtering. | `phase:rootkey`, `proc:fgs`, `comapeo.state:ERROR`, `platform:android` |
 | **Context** (custom) | Structured but non-indexed — appears on event detail pages. | `{"comapeo": {"abi": "arm64-v8a", "nodejs_mobile_version": "...", "ipc_socket_age_ms": 1234}}` |
@@ -1291,14 +1291,36 @@ it as a Sentry transaction that spans from `start()` to either
 `STARTED` or `ERROR`:
 
 ```
-Transaction: comapeo.boot (op = "boot")
-├─ Span: boot.listen-control
-├─ Span: boot.ipc-connect (control)
-├─ Span: boot.rootkey-load                   (FGS only)
-├─ Span: boot.init (rootkey handshake)
-├─ Span: boot.construct (MapeoManager + RPC bind)
-└─ Span: boot.ipc-connect (comapeo)
+Transaction: comapeo.boot                     [layer:native]
+├─ boot.fgs-launch              (Android only) [layer:native]
+├─ boot.node-spawn                             [layer:native]
+│  ├─ <C/C++ V8 bootstrap — uninstrumented gap>
+│  ├─ boot.loader-init                          [layer:node]
+│  ├─ boot.import-index                         [layer:node]
+│  ├─ boot.listen-control                       [layer:node]
+│  └─ boot.manager-init                         [layer:node]
+├─ boot.rootkey-load                           [layer:native]
+└─ boot.init-frame                             [layer:native]
 ```
+
+Span op + name conventions: every boot span uses `op = name =
+"boot.<phase>"`. sentry-java's child-span wire format has no separate
+`name` field — Discover renders `span.name = op` for child spans, so
+keeping the phase identifier in `op` is what makes the trace view
+readable. Node-side spans (`startInactiveSpan({name, op})`) set
+`name === op` for the same display reason. Filter the whole boot
+timeline in Discover with `op:boot.*`.
+
+Cross-layer trace propagation: the native side opens `comapeo.boot`
+on a fresh trace, then forwards the `boot.node-spawn` span's
+`sentry-trace` header to the Node process as the `--sentryTrace`
+argv flag. The Node side's `Sentry.continueTrace` wraps all four
+Node-side phase spans, so they inherit the FGS-side trace_id and
+parent_span_id. Every boot span across both layers shares one trace,
+viewable on a single timeline in the Sentry Trace view. Extending
+this to the RN-side `App Start` transaction (so cold-start spans
+across all three layers share one trace) is tracked as a follow-up
+in [#68](https://github.com/digidem/comapeo-core-react-native/issues/68).
 
 Each phase corresponds to a stage already named in
 `backend/index.js` (the catch tags `phase` on errors with these
@@ -1933,12 +1955,15 @@ under the diagnostic tier:
 - Strip user-shape fields from boot-transaction attributes — no
   background-duration anchors, no foreground-state tags, no
   per-event culture data riding alongside.
-- Keep phase-span shape (`fgs-launch`, `node-spawn`, `rootkey-load`,
-  `init-frame`, `boot.listen-control`, `boot.manager-init`,
-  `boot.import-index`) — that's the actionable perf signal.
-- Span `description` strings are reviewed for incidental data
-  (e.g. file paths under private dir) and either stripped or
-  redacted.
+- Keep phase-span shape (`boot.fgs-launch`, `boot.node-spawn`,
+  `boot.loader-init`, `boot.import-index`, `boot.listen-control`,
+  `boot.manager-init`, `boot.rootkey-load`, `boot.init-frame`) —
+  that's the actionable perf signal.
+- Span `description` strings stay minimal — the phase identifier
+  (`"boot.<phase>"`) is in `op` and serves as the description too;
+  any longer prose lives in source-code comments. No file paths,
+  user-shape data, or other potentially-sensitive strings ride on
+  the wire.
 
 ##### 9.8.5.5 Network breadcrumb URL scrubbing
 

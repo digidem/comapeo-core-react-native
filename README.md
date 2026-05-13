@@ -196,14 +196,22 @@ events from three layers, tagged for filtering in the dashboard:
   is imported) — state-machine ERROR transitions and
   `messageerror` parse failures; every state transition rides
   along as a breadcrumb.
-- **`layer:native`** (Kotlin / Swift) — `comapeo.boot`
-  transaction with phase spans (`boot.rootkey-load`,
-  `boot.init-frame`), state-transition breadcrumbs,
-  control-frame breadcrumbs, watchdog/shutdown timeout events,
-  rootkey-load `captureException`. On Android adds FGS-lifecycle
-  breadcrumbs.
-- **`layer:node`** — RPC method spans, `handleFatal` exceptions,
-  and `error-native` forwards from the embedded nodejs-mobile.
+- **`layer:native`** (Kotlin / Swift) — `comapeo.boot` transaction
+  (root, force-sampled) with child spans `boot.fgs-launch`
+  (Android only — `startForegroundService` → FGS process ready),
+  `boot.node-spawn` (nodejs-mobile JNI call → control `started`),
+  `boot.rootkey-load`, and `boot.init-frame`. Plus
+  state-transition breadcrumbs, control-frame breadcrumbs,
+  watchdog/shutdown timeout events, rootkey-load
+  `captureException`. On Android adds FGS-lifecycle breadcrumbs.
+- **`layer:node`** — `boot.loader-init` (process spawn → Sentry.init
+  done), `boot.import-index` (around `import("./index.js")`),
+  `boot.listen-control` (control-socket bind), `boot.manager-init`
+  (drizzle + SQLite + RPC bind), plus per-RPC method spans,
+  `handleFatal` exceptions, and `error-native` forwards from the
+  embedded nodejs-mobile. Node-side spans inherit the FGS-side
+  trace via `Sentry.continueTrace` on the `boot.node-spawn` span
+  ID forwarded as the `--sentryTrace` argv flag.
   `@sentry/node` has no offline transport, so its envelopes are
   forwarded over the control socket to the FGS-side
   `sentry-android` (or sentry-cocoa on iOS) for queueing and send.

@@ -602,14 +602,17 @@ What each emit site captures:
   emits from this process; reserved for future use.
 - **`layer:native, proc:fgs` (Android FGS) / `proc:main`
   (iOS)** — `SentryFgsBridge` (Android) / equivalent Swift
-  bridge. `comapeo.boot` transaction with phase spans
-  (`boot.rootkey-load`, `boot.init-frame`), state-transition
-  breadcrumbs, control-frame breadcrumbs, FGS-lifecycle
-  breadcrumbs (Android only), timeout events, rootkey-load
-  `captureException`.
-- **`layer:node`** (Phase 3 — pending) — `@sentry/node` via
-  `loader.mjs`. Per-RPC method spans, `handleFatal`
-  `captureException`, `@comapeo/core` OTel spans (Phase 4).
+  bridge. `comapeo.boot` transaction with child spans
+  `boot.fgs-launch` (Android only), `boot.node-spawn`,
+  `boot.rootkey-load`, and `boot.init-frame`. Plus
+  state-transition breadcrumbs, control-frame breadcrumbs,
+  FGS-lifecycle breadcrumbs (Android only), timeout events,
+  rootkey-load `captureException`.
+- **`layer:node`** — `@sentry/node` via `loader.mjs`. Per-RPC
+  method spans, `handleFatal` `captureException`, and four
+  boot-phase root spans that share the FGS-side trace via
+  `Sentry.continueTrace`: `boot.loader-init`, `boot.import-index`,
+  `boot.listen-control`, `boot.manager-init`.
 
 The same FGS-local error (rootkey load failure, watchdog
 timeout) reaches multiple scopes via the cross-process
@@ -746,12 +749,34 @@ this table.
 
 #### Spans
 
-| Operation | Description | When it opens / closes |
+All boot phases use `op = name = "boot.<phase>"`. sentry-java's child-
+span wire format has no separate `name` field — Discover renders
+`span.name = op` for child spans, so the op carries the phase
+identifier directly. The Node-side `name`/`op` fields are set to the
+same value so all three layers (RN, native, Node) match. Filter the
+whole boot timeline with `op:boot.*` in Discover.
+
+| Operation | Layer | When it opens / closes |
 |---|---|---|
-| `comapeo.boot` (root tx) | "boot" — forced 100% sampled, tagged `boot.kind=user-foreground` or `system-restart` | Opens in `start()`; closes on first non-`STARTING` transition with status `ok` (STARTED), `internal_error` (ERROR), or `cancelled` (STOPPING/STOPPED) |
-| `boot.fgs-launch` (Android only) | "From startForegroundService to FGS process ready" — `user-foreground` boots only | Opens backdated to `serviceStartTimeMs` (stamped by the activity lifecycle listener), closes immediately on entry to `NodeJSService.start()` |
-| `boot.rootkey-load` | "Load 16-byte rootkey from RootKeyStore" | Wraps `RootKeyStore.loadOrInitialize()` in `sendInitFrame()` |
-| `boot.init-frame` | "Send init frame, await ready" | Opens after the init frame is sent; closes when the `ready` control frame is received |
+| `comapeo.boot` (root tx) | `proc:fgs` Android / `proc:main` iOS | Opens in `NodeJSService.start()`; closes on first non-`STARTING` transition with status `ok` (STARTED), `internal_error` (ERROR), or `cancelled` (STOPPING/STOPPED). Forced 100% sampled; tagged `boot.kind=user-foreground` or `system-restart`. |
+| `boot.fgs-launch` (Android only) | `proc:fgs` | Backdated to `serviceStartTimeMs` (stamped by the activity lifecycle listener); closes immediately on entry to `NodeJSService.start()`. `user-foreground` boots only — absent on `system-restart`. |
+| `boot.node-spawn` | `proc:fgs` Android / `proc:main` iOS | JNI call to `startNodeWithArguments` (Android) / `nodeEntryPoint` (iOS) → backend's `started` frame on the control socket. Spans the C/C++ V8-bootstrap phase plus the Node-side loader/import/listen-control phases (visible as nested child transactions on the same trace). |
+| `boot.loader-init` | `layer:node` | Backdated to `loader.mjs` first line; closed just after `Sentry.init`. Covers the C/C++ → JS handover including V8 bootstrap and the iitm hook install. |
+| `boot.import-index` | `layer:node` | Wraps `import("./index.js")`. The JS-side module-graph load. |
+| `boot.listen-control` | `layer:node` | Wraps `controlIpcServer.listen(controlSocketPath)`. |
+| `boot.manager-init` | `layer:node` | Wraps `createComapeo(...)` + `comapeoRpcServer.listen(...)` — drizzle migrations + SQLite open + hypercore init + fastify + RPC socket bind. |
+| `boot.rootkey-load` | `proc:fgs` Android / `proc:main` iOS | Wraps `RootKeyStore.loadOrInitialize()` (Android) / `RootKeyStore.loadKey()` (iOS) in `sendInitFrame()`. |
+| `boot.init-frame` | `proc:fgs` Android / `proc:main` iOS | Opens after the init frame is sent on the control socket; closes when the `ready` control frame is received. |
+
+Cross-layer trace propagation: native opens `comapeo.boot`, then
+forwards the `boot.node-spawn` span's `sentry-trace` header to the
+Node process as the `--sentryTrace` argv flag. The Node side's
+`Sentry.continueTrace` wraps all four Node-side boot spans so they
+inherit the FGS-side trace_id and parent_span_id. Result: every boot
+span across all three layers shares a single trace, viewable on a
+single timeline in Sentry's Trace view. Cross-layer with the RN-side
+`App Start` transaction is tracked in
+[#68](https://github.com/digidem/comapeo-core-react-native/issues/68).
 
 #### Standard captureMessage events
 
