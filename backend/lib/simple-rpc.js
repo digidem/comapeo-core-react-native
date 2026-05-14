@@ -6,32 +6,15 @@ import { SocketMessagePort } from "./message-port.js";
  */
 
 /**
- * Control-socket server: routes inbound requests by message `type` and
- * broadcasts lifecycle transitions to all connected clients.
+ * Control-socket server. Routes inbound requests by `type`, broadcasts
+ * lifecycle transitions, and replays them so late-connecting clients
+ * converge on the same state.
  *
- * The readiness state machine has three phases. They reflect the two-stage
- * boot the host now drives — control socket first, then `MapeoManager`
- * construction (which needs a rootKey from native), then the comapeo RPC
- * socket:
+ * Readiness phases: `pre-listening` → `started` (socket bound, awaiting
+ * `init` from native) → `ready` (manager built, RPC socket bound).
  *
- *   - `pre-listening` — control socket has not yet bound. Clients connecting
- *     in this window receive nothing; they'll get the broadcast as soon as
- *     the host calls `setReadinessPhase("started")`.
- *   - `started`       — control socket is accepting connections. The host
- *     is waiting for an `{type:"init", rootKey:"<base64>"}` frame so it can
- *     construct `MapeoManager`. Emitted as `{type:"started"}`. Native sends
- *     the init frame in response.
- *   - `ready`         — `MapeoManager` exists and the comapeo RPC socket is
- *     bound. Emitted as `{type:"ready"}`. RPC clients (the React Native
- *     module) can safely connect and call methods.
- *
- * Late-connecting clients receive replays in order: readiness frames
- * (`started` then `ready`) followed by the latest terminal frame
- * (`stopping` or `error`) if one has been emitted, so they converge on
- * the same state an early joiner would have seen.
- *
- * Methods registered on the constructor are invoked with the full inbound
- * message — handlers can read fields beyond `type` (e.g. `init.rootKey`).
+ * Method handlers receive the full message so they can read fields
+ * beyond `type` (e.g. `init.rootKey`).
  *
  * @template {Record<string, (message: any) => any>} TMethods
  */
@@ -43,16 +26,11 @@ export class SimpleRpcServer extends ServerHelper {
   #readinessPhase = "pre-listening";
   /** @type {TerminalFrame | null} */
   #terminalFrame = null;
-  /**
-   * Rolling buffer (100 frames) of recent `sentry-event` /
-   * `sentry-envelope` frames, replayed on every connect. On Android,
-   * both FGS and main-app processes connect — only FGS owns
-   * sentry-android, and connect order isn't guaranteed, so
-   * replay-once would lose frames to main-app on bad orderings.
-   * Duplicates on FGS reconnect are deduped by Sentry's event_id.
-   *
-   * @type {import("type-fest").JsonObject[]}
-   */
+  // Replayed on every connect: on Android both FGS and main-app
+  // connect, only FGS owns sentry-android, and connect order isn't
+  // guaranteed — replay-once would lose frames on a bad ordering.
+  // Sentry dedupes FGS reconnect duplicates by event_id.
+  /** @type {import("type-fest").JsonObject[]} */
   #recentSentryFrames = [];
   static #MAX_RECENT_SENTRY_FRAMES = 100;
 
@@ -86,9 +64,6 @@ export class SimpleRpcServer extends ServerHelper {
     if (this.#terminalFrame !== null) {
       messagePort.postMessage(this.#terminalFrame);
     }
-    // Replay the rolling Sentry-frame buffer to the new client.
-    // See `#recentSentryFrames` for why this fires on every connect
-    // rather than only the first.
     for (const frame of this.#recentSentryFrames) {
       messagePort.postMessage(frame);
     }
@@ -112,20 +87,14 @@ export class SimpleRpcServer extends ServerHelper {
   }
 
   /**
-   * Advance the readiness state machine and broadcast the matching message.
-   * Idempotent — re-entering the same phase is a no-op (no second broadcast).
+   * Idempotent. Throws on out-of-order `ready` so late clients don't
+   * see `ready` without a prior `started`.
    *
    * @param {"started" | "ready"} phase
    */
   setReadinessPhase(phase) {
     if (this.#readinessPhase === phase) return;
-    if (
-      phase === "ready" &&
-      this.#readinessPhase !== "started"
-    ) {
-      // Forbid `ready` before `started`. The host starts in `pre-listening`
-      // and must transition through `started` first; skipping desyncs late
-      // clients (who'd see `ready` without `started`).
+    if (phase === "ready" && this.#readinessPhase !== "started") {
       throw new Error(
         `Cannot transition to "ready" from "${this.#readinessPhase}"`,
       );
@@ -145,9 +114,6 @@ export class SimpleRpcServer extends ServerHelper {
     if (message.type === "stopping" || message.type === "error") {
       this.#terminalFrame = /** @type {TerminalFrame} */ (message);
     }
-    // Sentry frames also land in a rolling buffer so the right
-    // client (the FGS on Android) catches them whatever order
-    // clients connect in. See `#recentSentryFrames`.
     if (
       message.type === "sentry-event" ||
       message.type === "sentry-envelope"

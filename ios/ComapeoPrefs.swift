@@ -1,18 +1,12 @@
 import Foundation
 
 /// Persistent storage for sentry-related user preferences. Snapshot-
-/// at-launch semantics: read at app delegate init / module construction
-/// so toggle changes only take effect after the next launch. Toggle-
-/// flip to `false` also wipes the on-disk sentry-cocoa cache so any
-/// events the current session queued never reach the wire.
+/// at-launch: toggle changes take effect on next launch; flipping to
+/// `false` also wipes the sentry-cocoa cache so queued events don't
+/// ship. Mirrors `ComapeoPrefs.kt`.
 ///
-/// Mirrors `ComapeoPrefs.kt` — same key names, same defaults, same
-/// privacy semantics. iOS is single-process so there's no cross-process
-/// snapshot concern; the file exists in the same shape as Android purely
-/// for symmetry.
-///
-/// Constructor takes pure read/write closures so the unit test stays
-/// independent of a real `UserDefaults` instance.
+/// Constructor takes read/write closures so unit tests don't need a
+/// real `UserDefaults`.
 final class ComapeoPrefs {
     struct Defaults {
         let diagnosticsEnabled: Bool
@@ -33,14 +27,12 @@ final class ComapeoPrefs {
         self.defaults = defaults
     }
 
-    /// User's saved value, or the plugin/baked default if absent.
     func readDiagnosticsEnabled() -> Bool {
-        return readBool(Key.diagnosticsEnabled) ?? defaults.diagnosticsEnabled
+        readBool(Key.diagnosticsEnabled) ?? defaults.diagnosticsEnabled
     }
 
-    /// User's saved value, or the plugin/baked default if absent.
     func readCaptureApplicationData() -> Bool {
-        return readBool(Key.captureApplicationData) ?? defaults.captureApplicationData
+        readBool(Key.captureApplicationData) ?? defaults.captureApplicationData
     }
 
     func writeDiagnosticsEnabled(_ value: Bool) {
@@ -56,16 +48,11 @@ final class ComapeoPrefs {
         static let captureApplicationData = "sentry.captureApplicationData"
     }
 
-    /// Diagnostics default-default — privacy model treats baseline
-    /// error visibility as on.
+    /// Privacy model treats baseline error visibility as on.
     static let defaultDiagnosticsEnabled: Bool = true
-    /// Capture-application-data default-default — off until user opts in.
+    /// Off until user opts in.
     static let defaultCaptureApplicationData: Bool = false
 
-    /// Construct using `UserDefaults.standard` and the plist-supplied
-    /// defaults (from `SentryConfig.loadFromMainBundle`). When the
-    /// plugin didn't ship a default, falls back to the baked-in
-    /// `defaultDiagnosticsEnabled` / `defaultCaptureApplicationData`.
     static func open() -> ComapeoPrefs {
         let sentryConfig = SentryConfig.loadFromMainBundle()
         let defaults = Defaults(
@@ -77,12 +64,10 @@ final class ComapeoPrefs {
         let store = UserDefaults.standard
         return ComapeoPrefs(
             readBool: { key in
-                // `object(forKey:)` distinguishes "absent" (nil) from
-                // "explicit false" (NSNumber 0); `bool(forKey:)` collapses
-                // them, which would silently re-enable diagnostics every
-                // time a user wrote `false`.
-                guard let value = store.object(forKey: key) as? Bool else { return nil }
-                return value
+                // `object(forKey:)` distinguishes absent from explicit
+                // `false`; `bool(forKey:)` collapses them, which would
+                // silently re-enable diagnostics on every user `false`.
+                store.object(forKey: key) as? Bool
             },
             writeBool: { key, value in
                 store.set(value, forKey: key)
@@ -91,17 +76,15 @@ final class ComapeoPrefs {
         )
     }
 
-    /// Recursively delete sentry-cocoa's on-disk cache root.
-    /// Path: `<NSCachesDirectory>/io.sentry/` — sentry-cocoa's
-    /// documented default (`SentryFileManager.m`'s `basePath`). Wipes
-    /// pending envelopes, sessions, and scope state in one shot so a
+    /// Recursively delete sentry-cocoa's on-disk cache root at
+    /// `<NSCachesDirectory>/io.sentry/` (sentry-cocoa's documented
+    /// default). Wipes envelopes, sessions, and scope state so a
     /// `diagnosticsEnabled=false` flip can't ship anything from the
-    /// current session on next launch.
+    /// current session.
     ///
-    /// Best-effort: a filesystem error never blocks the privacy
-    /// opt-out. The worst case is the cache survives one more launch,
-    /// but that launch won't init Sentry (diagnostics is off), so
-    /// nothing will read it.
+    /// Best-effort: filesystem errors don't block the opt-out. Worst
+    /// case the cache survives one more launch, where diagnostics is
+    /// off so nothing reads it.
     static func wipeSentryOutbox() {
         guard let caches = FileManager.default
             .urls(for: .cachesDirectory, in: .userDomainMask)
@@ -109,11 +92,7 @@ final class ComapeoPrefs {
         wipeSentryOutbox(at: caches.appendingPathComponent("io.sentry", isDirectory: true))
     }
 
-    /// Path-taking variant exposed for unit testing — production
-    /// callers use the no-arg overload above. The
-    /// `io.sentry` subdir choice lives in the caller; this method
-    /// just deletes whatever URL it's handed, recursively. A
-    /// missing directory is success, not an error.
+    /// Path-taking variant for unit tests. Missing directory is success.
     static func wipeSentryOutbox(at url: URL) {
         try? FileManager.default.removeItem(at: url)
     }

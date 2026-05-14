@@ -5,14 +5,9 @@ import android.util.Log
 const val TAG = "ComapeoCore"
 
 /**
- * Single entry point for diagnostic output. Always writes a
- * logcat line at the matching priority; also forwards to
- * Sentry's structured-log pipeline (no-op when the consumer
- * hasn't opted in via `enableLogs: true` on the plugin).
- *
- * The semantic helpers (`logCrumb`, `logException`,
- * `logCapture`) compose on top of this — they each do this
- * `log` call plus their own Sentry breadcrumb / event.
+ * Single diagnostic entry point. Writes a logcat line at the matching priority
+ * and forwards to Sentry's structured-log pipeline (no-op without
+ * `enableLogs: true`). The semantic helpers below compose on top of this.
  */
 fun log(
     message: String,
@@ -30,11 +25,7 @@ fun log(
     SentryFgsBridge.log(level, message, attributes)
 }
 
-/**
- * Log + Sentry breadcrumb. Use for app-lifecycle progress
- * events that ride on the next captured Sentry event but
- * don't fire one themselves.
- */
+/** Log + Sentry breadcrumb. For lifecycle progress that rides the next event. */
 fun logCrumb(
     category: String,
     message: String,
@@ -45,11 +36,7 @@ fun logCrumb(
     SentryFgsBridge.addBreadcrumb(category, message, level, data)
 }
 
-/**
- * Log + Sentry captureException. Use when you have a
- * `Throwable` in hand: the stack lands in logcat (3-arg
- * `Log.e`) and on the Sentry event.
- */
+/** Log + Sentry captureException. Stack lands in logcat (3-arg Log.e) and on the event. */
 fun logException(
     category: String,
     throwable: Throwable,
@@ -69,11 +56,7 @@ fun logException(
     SentryFgsBridge.captureException(throwable, tags)
 }
 
-/**
- * Log + Sentry captureMessage. Use for notable events that
- * aren't exceptions (timeouts, dropped frames, protocol
- * violations).
- */
+/** Log + Sentry captureMessage. For notable non-exception events (timeouts, drops, …). */
 fun logCapture(
     category: String,
     message: String,

@@ -2,40 +2,38 @@ import os
 
 private let logger = Logger(subsystem: "com.comapeo.core", category: "ComapeoCore")
 
-/// Single entry point for diagnostic output. Always writes an
-/// `os_log` line at the matching priority; also forwards to
-/// Sentry's structured-log pipeline (no-op when the host
-/// hasn't enabled logs at init time).
-///
-/// The semantic helpers (`logCrumb`, `logException`,
-/// `logCapture`) compose on top of this — they each do this
-/// `log` call plus their own Sentry breadcrumb / event.
+enum LogLevel: String {
+    case trace, debug, info, warning, error, fatal
+}
+
+/// Single entry point for diagnostic output. Writes an `os_log` line and
+/// forwards to Sentry's structured-log pipeline (no-op when the host
+/// hasn't enabled logs at SDK init).
 func log(
     _ message: String,
-    level: String = "debug",
+    level: LogLevel = .debug,
     attributes: [String: Any] = [:]
 ) {
     let line = attributes.isEmpty ? message : "\(message) \(attributes)"
     switch level {
-    case "fatal", "error":
+    case .fatal, .error:
         logger.error("\(line, privacy: .public)")
-    case "warn", "warning":
+    case .warning:
         logger.warning("\(line, privacy: .public)")
-    case "info":
+    case .info:
         logger.info("\(line, privacy: .public)")
-    default:
+    case .trace, .debug:
         logger.debug("\(line, privacy: .public)")
     }
     SentryNativeBridge.log(level: level, message: message, attributes: attributes)
 }
 
-/// Log + Sentry breadcrumb. Use for app-lifecycle progress
-/// events that ride on the next captured Sentry event but
-/// don't fire one themselves.
+/// Log + Sentry breadcrumb. For app-lifecycle progress events that ride
+/// on the next captured Sentry event but don't fire one themselves.
 func logCrumb(
     category: String,
     message: String,
-    level: String = "info",
+    level: LogLevel = .info,
     data: [String: Any] = [:]
 ) {
     var attrs = data
@@ -44,8 +42,8 @@ func logCrumb(
     SentryNativeBridge.addBreadcrumb(category: category, message: message, level: level, data: data)
 }
 
-/// Log + Sentry captureException. Use when you have an
-/// `Error` in hand — the Sentry event carries the full stack.
+/// Log + Sentry captureException. Use when you have an `Error` in hand —
+/// the Sentry event carries the full stack.
 func logException(
     category: String,
     error: Error,
@@ -56,17 +54,16 @@ func logException(
     var attrs: [String: Any] = tags
     attrs["category"] = category
     attrs["exception.type"] = String(describing: type(of: error))
-    log("[\(category)] \(msg)", level: "error", attributes: attrs)
+    log("[\(category)] \(msg)", level: .error, attributes: attrs)
     SentryNativeBridge.captureException(error, tags: tags)
 }
 
-/// Log + Sentry captureMessage. Use for notable events that
-/// aren't exceptions (timeouts, dropped frames, protocol
-/// violations).
+/// Log + Sentry captureMessage. For notable non-exception events
+/// (timeouts, dropped frames, protocol violations).
 func logCapture(
     category: String,
     message: String,
-    level: String = "info",
+    level: LogLevel = .info,
     tags: [String: String] = [:]
 ) {
     var attrs: [String: Any] = tags

@@ -1,38 +1,34 @@
 import Foundation
-// `@_spi(Private)` opts in to `SentryEventDecoder.decodeEvent(jsonData:)`
-// — the JSON → SentryEvent path sentry-cocoa exposes for hybrid SDKs.
-// The selector is the same one `SentryFileManager.readAppHangEvent`
-// uses internally, so this is exercised on every cocoa release. Symbol
-// stability is gated by the `Sentry/HybridSDK` version pin in
-// `ComapeoCore.podspec` and the matching SPM pin in `Package.swift`;
-// re-validate when bumping.
+// `@_spi(Private)` opts in to `SentryEventDecoder.decodeEvent(jsonData:)` —
+// the JSON → SentryEvent path sentry-cocoa exposes for hybrid SDKs. Stability
+// is gated by the `Sentry/HybridSDK` pin in `ComapeoCore.podspec` and the
+// matching SPM pin in `Package.swift`; re-validate when bumping.
 @_spi(Private) import Sentry
 
+enum SpanStatus: String {
+    case ok
+    case internalError = "internal_error"
+    case deadlineExceeded = "deadline_exceeded"
+    case cancelled
+    case undefined
+}
+
 /// Emits breadcrumbs, captures, and spans against the host's
-/// already-initialised sentry-cocoa hub. Single-process on iOS so
-/// no separate init like Android's FGS — the host's
-/// `@sentry/react-native` ran `SentrySDK.startWith(...)` already.
-/// `proc:main` and `layer:native` tag per-call (we don't own the
-/// SDK scope).
-///
-/// `Sentry/HybridSDK` is a hard pod dep (`ComapeoCore.podspec`) and
-/// Sentry-Cocoa is a hard SPM dep (`Package.swift`), so the `Sentry`
-/// module is on the import path under both build modes. Opt-in is
-/// preserved at runtime: `SentrySDK` no-ops every call until the host
-/// calls `Sentry.init(...)` (which happens via the JS-side
-/// `initSentry()`).
+/// already-initialised sentry-cocoa hub. iOS is single-process so the
+/// host's `@sentry/react-native` runs `SentrySDK.startWith(...)` first;
+/// every call here no-ops until then.
 enum SentryNativeBridge {
 
     static func addBreadcrumb(
         category: String,
         message: String,
-        level: String = "info",
+        level: LogLevel = .info,
         data: [String: Any] = [:]
     ) {
         let crumb = Breadcrumb()
         crumb.category = category
         crumb.message = message
-        crumb.level = parseLevel(level)
+        crumb.level = level.sentryLevel
         if !data.isEmpty {
             crumb.data = data
         }
@@ -48,54 +44,39 @@ enum SentryNativeBridge {
 
     static func captureMessage(
         _ message: String,
-        level: String = "info",
+        level: LogLevel = .info,
         tags: [String: String] = [:]
     ) {
         SentrySDK.capture(message: message) { scope in
-            scope.setLevel(parseLevel(level))
+            scope.setLevel(level.sentryLevel)
             applyDefaultTags(scope)
             for (k, v) in tags { scope.setTag(value: v, key: k) }
         }
     }
 
-    /// Forward to Sentry's structured-log pipeline. The Cocoa SDK
-    /// silently drops the call when the host hasn't enabled logs
-    /// at init time (the host's `@sentry/react-native` config
-    /// owns the SDK options on iOS — there's no separate process
-    /// like Android's FGS).
+    /// Forward to Sentry's structured-log pipeline. The Cocoa SDK drops
+    /// the call silently when the host hasn't enabled logs at init.
     static func log(
-        level: String,
+        level: LogLevel,
         message: String,
         attributes: [String: Any] = [:]
     ) {
         let attrs = attributes.compactMapValues { $0 }
-        switch level.lowercased() {
-        case "trace":
-            attrs.isEmpty ? SentrySDK.logger.trace(message)
-                          : SentrySDK.logger.trace(message, attributes: attrs)
-        case "info":
-            attrs.isEmpty ? SentrySDK.logger.info(message)
-                          : SentrySDK.logger.info(message, attributes: attrs)
-        case "warn", "warning":
-            attrs.isEmpty ? SentrySDK.logger.warn(message)
-                          : SentrySDK.logger.warn(message, attributes: attrs)
-        case "error":
-            attrs.isEmpty ? SentrySDK.logger.error(message)
-                          : SentrySDK.logger.error(message, attributes: attrs)
-        case "fatal":
-            attrs.isEmpty ? SentrySDK.logger.fatal(message)
-                          : SentrySDK.logger.fatal(message, attributes: attrs)
-        default:
-            attrs.isEmpty ? SentrySDK.logger.debug(message)
-                          : SentrySDK.logger.debug(message, attributes: attrs)
+        let logger = SentrySDK.logger
+        switch level {
+        case .trace: logger.trace(message, attributes: attrs)
+        case .info: logger.info(message, attributes: attrs)
+        case .warning: logger.warn(message, attributes: attrs)
+        case .error: logger.error(message, attributes: attrs)
+        case .fatal: logger.fatal(message, attributes: attrs)
+        case .debug: logger.debug(message, attributes: attrs)
         }
     }
 
-    /// Returns an opaque transaction handle. `Any?` keeps the rest
-    /// of the iOS module free of Sentry references.
+    /// `Any?` keeps Sentry types out of caller signatures.
     static func startBootTransaction() -> Any? {
-        // `sampled: .yes` overrides global `tracesSampleRate` so
-        // the boot transaction always reaches the wire.
+        // `sampled: .yes` overrides global `tracesSampleRate` so the boot
+        // transaction always reaches the wire.
         let context = TransactionContext(
             name: "comapeo.boot",
             operation: "boot",
@@ -109,18 +90,17 @@ enum SentryNativeBridge {
         return tx
     }
 
-    /// op = "boot.<phase>" because sentry-cocoa has no separate
-    /// `span.name`; Discover renders `span.name = op`. Filter
-    /// `op:boot.*`. Phase taxonomy: see docs/ARCHITECTURE.md.
+    /// `op = "boot.<phase>"`: cocoa has no separate `span.name`, Discover
+    /// renders `span.name = op`. Filter `op:boot.*`.
     static func startBootSpan(_ transaction: Any?, phase: String) -> Any? {
         guard let tx = transaction as? Span else { return nil }
         let op = "boot.\(phase)"
         return tx.startChild(operation: op, description: op)
     }
 
-    static func finishSpan(_ handle: Any?, status: String = "ok") {
+    static func finishSpan(_ handle: Any?, status: SpanStatus = .ok) {
         guard let span = handle as? Span else { return }
-        span.status = parseStatus(status)
+        span.status = status.sentrySpanStatus
         span.finish()
     }
 
@@ -131,10 +111,9 @@ enum SentryNativeBridge {
         span.setData(value: value, key: key)
     }
 
-    /// Decode Node event JSON via `SentryEventDecoder` (SPI but
-    /// internally exercised by sentry-cocoa) and capture via
-    /// `SentrySDK.capture(event:)` so native scope (device/OS/app/user)
-    /// merges. Malformed payload dropped silently.
+    /// Decode Node event JSON via `SentryEventDecoder` (SPI but exercised
+    /// internally by sentry-cocoa) and capture so native scope
+    /// (device/OS/app/user) merges. Malformed payload dropped silently.
     static func captureEventJson(_ payloadJson: String) {
         guard let data = payloadJson.data(using: .utf8) else { return }
         guard let event = SentryEventDecoder.decodeEvent(jsonData: data) else { return }
@@ -142,19 +121,13 @@ enum SentryNativeBridge {
     }
 
     /// Hand a base64-encoded Sentry envelope to sentry-cocoa's hybrid
-    /// envelope-capture entrypoint. Same offline-transport as
-    /// `captureEventJson` but without native scope merging (envelopes
-    /// carry their own).
+    /// envelope-capture entrypoint. Native scope is NOT applied;
+    /// envelopes carry their own.
     ///
-    /// `#if !SWIFT_PACKAGE` because `PrivateSentrySDKOnly.envelope(with:)`
-    /// and `PrivateSentrySDKOnly.capture(_:)` live in sentry-cocoa's
-    /// `PrivateHeaders/` and are reachable only through the
-    /// `Sentry/HybridSDK` CocoaPods subspec — sentry-cocoa's SPM
-    /// binary xcframework ships the umbrella headers, not the private
-    /// ones. SPM consumers of `Sentry` can't see these symbols, so we
-    /// stub the method out for the `swift test` build path. No SPM
-    /// test exercises envelope-capture; the on-device CocoaPods build
-    /// retains the full implementation.
+    /// `#if !SWIFT_PACKAGE` because `PrivateSentrySDKOnly` lives in
+    /// sentry-cocoa's CocoaPods-only `PrivateHeaders/`. SPM consumers
+    /// can't see these symbols; we stub it out for `swift test`. The
+    /// on-device CocoaPods build retains the full implementation.
     static func captureEnvelopeBase64(_ data: String) {
         #if !SWIFT_PACKAGE
         guard let bytes = Data(base64Encoded: data) else { return }
@@ -163,15 +136,11 @@ enum SentryNativeBridge {
         #endif
     }
 
-    /// Trace header for cross-process propagation to the Node hub.
-    /// Node's `Sentry.continueTrace` uses it to nest boot spans under
-    /// `comapeo.boot`. Returns `(trace, nil)` — baggage is omitted
-    /// (Android forwards it; cocoa@8 has no equivalent on its public
-    /// Span API and the SPI shape isn't stable across versions). The
-    /// DSC drop is benign: trace_id alone stitches parent/child, and
-    /// boot transactions are forced-sampled so the sample-rate field
-    /// the DSC would carry doesn't gate ingestion. Re-evaluate if
-    /// non-boot tracing on iOS adopts the same path.
+    /// Trace header for cross-process propagation to the Node hub. Node's
+    /// `Sentry.continueTrace` uses it to nest boot spans under
+    /// `comapeo.boot`. Baggage is omitted — cocoa@8 has no public Span
+    /// API for it and the SPI shape isn't stable across versions; the DSC
+    /// drop is benign because boot transactions are forced-sampled.
     static func getTraceData(_ transaction: Any?) -> (trace: String, baggage: String?)? {
         guard let tx = transaction as? Span else { return nil }
         return (tx.toTraceHeader().value(), nil)
@@ -186,24 +155,28 @@ enum SentryNativeBridge {
         span.setTag(value: SentryTags.procMain, key: SentryTags.proc)
         span.setTag(value: SentryTags.layerNative, key: SentryTags.layer)
     }
+}
 
-    private static func parseLevel(_ level: String) -> SentryLevel {
-        switch level.lowercased() {
-        case "fatal": return .fatal
-        case "error": return .error
-        case "warning", "warn": return .warning
-        case "debug": return .debug
-        default: return .info
+private extension LogLevel {
+    var sentryLevel: SentryLevel {
+        switch self {
+        case .fatal: return .fatal
+        case .error: return .error
+        case .warning: return .warning
+        case .debug, .trace: return .debug
+        case .info: return .info
         }
     }
+}
 
-    private static func parseStatus(_ status: String) -> SentrySpanStatus {
-        switch status.lowercased() {
-        case "ok": return .ok
-        case "internal_error", "error": return .internalError
-        case "deadline_exceeded", "timeout": return .deadlineExceeded
-        case "cancelled": return .cancelled
-        default: return .undefined
+private extension SpanStatus {
+    var sentrySpanStatus: SentrySpanStatus {
+        switch self {
+        case .ok: return .ok
+        case .internalError: return .internalError
+        case .deadlineExceeded: return .deadlineExceeded
+        case .cancelled: return .cancelled
+        case .undefined: return .undefined
         }
     }
 }

@@ -22,7 +22,7 @@
     "@mapeo/crypto": "1.0.0-alpha.10",
     "@sentry/core": "^8.55.0",
     "@sentry/node": "^8.55.0",
-    "ensure-error": "4.0.0",
+    "ensure-error": "^5.0.0",
     "fastify": "4.29.1",
     "framed-stream": "1.0.1",
     "import-in-the-middle": "^1.13.0",

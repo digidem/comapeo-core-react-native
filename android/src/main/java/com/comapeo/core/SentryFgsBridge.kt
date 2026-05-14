@@ -31,39 +31,29 @@ import java.io.StringReader
 import java.util.Date
 
 /**
- * Entry point to the Sentry-Android SDK from the `:ComapeoCore`
- * FGS process.
+ * Sentry-Android SDK entry point in the `:ComapeoCore` FGS process.
  *
  * Android creates a fresh `Application` per process, so the host's
- * `SentryAndroid.init` (run from `MainApplication.onCreate`) never
- * reaches `:ComapeoCore` — this object re-runs init in the FGS
- * process from `ComapeoCoreService.onCreate`.
+ * `SentryAndroid.init` never reaches the FGS — this object re-runs init from
+ * `ComapeoCoreService.onCreate`.
  *
- * Pre-init behaviour: every public method short-circuits to a clean
- * no-op until [init] runs. The FGS process is created before
- * `onCreate` fires, so any JNI-side or early-listener call can land
- * before init; gating here prevents an SDK API surface from being
- * touched before `SentryAndroid.init` has wired the hub.
+ * Pre-init guard: every public method no-ops until [init] runs. The FGS process
+ * starts before `onCreate`, so early callers can land before init.
  *
- * Per-call try/catch: a thrown Sentry call must not take the FGS
- * down — the FGS's job is to keep nodejs-mobile alive, and
- * observability is decorative relative to that.
+ * Per-call try/catch: a thrown Sentry call must never take the FGS down —
+ * keeping nodejs-mobile alive is the FGS's job; observability is decorative.
  */
 object SentryFgsBridge {
     @Volatile
     private var initialized: Boolean = false
 
-    /**
-     * Idempotent. Caller must pass a non-null `SentryConfig` —
-     * `SentryConfig.loadFromManifest` returns null when no DSN is
-     * present, in which case don't call this method at all.
-     */
+    /** Idempotent. Caller must pass a non-null `SentryConfig`; skip the call
+     *  entirely when `loadFromManifest` returns null. */
     @JvmStatic
     fun init(context: Context, config: SentryConfig) {
         if (initialized) return
         try {
-            // Parse the backend-modules JSON once, here, rather than in
-            // the event processor on every capture.
+            // Parse once here rather than in the event processor on every capture.
             val backendModules: Map<String, String>? =
                 config.backendModulesJson?.let { json ->
                     try {
@@ -84,21 +74,16 @@ object SentryFgsBridge {
                 options.release = config.release
                 options.sampleRate = config.sampleRate ?: 1.0
                 options.tracesSampleRate = config.tracesSampleRate ?: 0.0
-                // Structured logs default off; opt in via the plugin's
-                // `enableLogs: true`. SDK no-ops `Sentry.logger().*` when
-                // false so the helpers can route unconditionally.
+                // SDK no-ops Sentry.logger().* when isEnabled=false so helpers can route unconditionally.
                 options.logs.isEnabled = config.enableLogs == true
                 options.setTag(SentryTags.PROC, SentryTags.PROC_FGS)
                 options.setTag(SentryTags.LAYER, SentryTags.LAYER_NATIVE)
-                // Mirrors initSentry's RN-side `comapeo.rn` global tag so
-                // FGS captures + Node-forwarded events filter the same way.
-                // event.modules is skipped (sentry-java's setter is
-                // package-private).
+                // Mirrors the RN-side `comapeo.rn` global tag. event.modules is
+                // skipped (sentry-java's setter is package-private).
                 config.moduleVersion?.let { options.setTag("comapeo.rn", it) }
             }
 
-            // SentryOptions has no "set context at init" hook; ride a
-            // configureScope call after init.
+            // SentryOptions has no "set context at init" hook; ride a configureScope after init.
             if (backendModules != null) {
                 Sentry.configureScope { scope ->
                     scope.setContexts("comapeoBackend", backendModules)
@@ -111,10 +96,7 @@ object SentryFgsBridge {
         }
     }
 
-    /**
-     * Severity strings are loose: `info` / `warning` / `error` /
-     * `fatal` / `debug`. Unknown values fall back to `info`.
-     */
+    /** Level values: `info` / `warning` / `error` / `fatal` / `debug`. Unknown → `info`. */
     @JvmStatic
     @JvmOverloads
     fun addBreadcrumb(
@@ -168,11 +150,8 @@ object SentryFgsBridge {
         }
     }
 
-    /**
-     * Forward to Sentry's structured-log pipeline. SDK silently
-     * drops the call when `options.logs.isEnabled = false`, so
-     * callers don't need their own gate.
-     */
+    /** Forward to Sentry's structured-log pipeline. SDK silently drops when
+     *  `options.logs.isEnabled = false`, so callers don't need their own gate. */
     @JvmStatic
     @JvmOverloads
     fun log(
@@ -193,20 +172,14 @@ object SentryFgsBridge {
     }
 
     /**
-     * Returns an opaque handle (`null` when pre-init). Pass back to
-     * [startBootSpan] / [finishSpan]. Opaque `Any?` keeps `io.sentry.*`
-     * out of the caller's bytecode.
+     * Returns an opaque handle (`null` pre-init). Pass to [startBootSpan] / [finishSpan].
+     * Opaque `Any?` keeps io.sentry.* out of the caller's bytecode.
      *
-     * @param startElapsedRealtime `SystemClock.elapsedRealtime()` value
-     *   to backdate the transaction start to. `null` → start now.
-     * @param kind Value for the `boot.kind` tag — `user-foreground`
-     *   when the activity initiated the start, `system-restart` when
-     *   Android brought the FGS back without an intent. `null` skips
-     *   the tag (test convenience).
+     * `TracesSamplingDecision(true, 1.0)` overrides `tracesSampleRate` so the boot
+     * transaction lands on the wire even at `tracesSampleRate=0.0`.
      *
-     * `TracesSamplingDecision(true, 1.0)` overrides
-     * `tracesSampleRate` so the boot transaction lands on the
-     * wire even when consumers run with `tracesSampleRate=0.0`.
+     * @param startElapsedRealtime SystemClock.elapsedRealtime to backdate to; `null` → now.
+     * @param kind `boot.kind` tag value (`user-foreground` / `system-restart`); `null` skips it.
      */
     @JvmStatic
     @JvmOverloads
@@ -237,12 +210,10 @@ object SentryFgsBridge {
     }
 
     /**
-     * op = "boot.<phase>" because sentry-java has no separate
-     * `span.name`; Discover renders `span.name = op`. Filter
-     * `op:boot.*`. Phase taxonomy: see docs/ARCHITECTURE.md.
+     * `op = "boot.<phase>"` — sentry-java has no separate span.name; Discover
+     * renders span.name = op. Filter `op:boot.*`. Phase taxonomy: docs/ARCHITECTURE.md.
      *
-     * @param startElapsedRealtime `SystemClock.elapsedRealtime()` value
-     *   to backdate the span start to. `null` → start now.
+     * @param startElapsedRealtime backdate to this SystemClock.elapsedRealtime; `null` → now.
      */
     @JvmStatic
     @JvmOverloads
@@ -258,9 +229,8 @@ object SentryFgsBridge {
             }
             val op = "boot.$phase"
             if (startElapsedRealtime != null) {
-                // 3-arg overload (op, desc, SentryDate). The SpanOptions
-                // overload in sentry-java 8.32 overwrites startTimestamp
-                // with null before the Span constructor reads it.
+                // 3-arg overload (op, desc, SentryDate) — the SpanOptions overload in
+                // sentry-java 8.32 overwrites startTimestamp before Span reads it.
                 transaction.startChild(
                     op,
                     op,
@@ -276,12 +246,9 @@ object SentryFgsBridge {
     }
 
     /**
-     * Distributed-trace headers for the supplied transaction. Used by
-     * `NodeJSService` to forward the FGS-side `comapeo.boot` context
-     * to Node via `--sentryTrace`/`--sentryBaggage` argv so Node-side
-     * spans land as children of the same transaction. Accepts `ISpan`
-     * so callers can pass either the transaction or the `node-spawn`
-     * span; baggage is null when no DSC.
+     * Distributed-trace headers — forwarded to Node via `--sentryTrace`/`--sentryBaggage`
+     * so Node-side spans nest under the FGS `comapeo.boot` transaction. Accepts the
+     * transaction or any child span. `baggage` is null when no DSC.
      */
     @JvmStatic
     fun getTraceData(handle: Any?): Pair<String, String?>? {
@@ -300,13 +267,9 @@ object SentryFgsBridge {
     }
 
     /**
-     * Hand a JSON-serialised Sentry error event (captured by
-     * `@sentry/node` in the embedded backend) to `sentry-android`.
-     * Decoded via `SentryEvent.Deserializer` and captured via
-     * `Sentry.captureEvent`, so the FGS-side SDK's scope (device,
-     * OS, app, user, native breadcrumbs) is merged at capture time —
-     * Node doesn't have to carry that context. Riding `captureEvent`
-     * means we also inherit the offline-capable transport.
+     * Pass a `@sentry/node` JSON event to sentry-android via `SentryEvent.Deserializer`
+     * + `Sentry.captureEvent`. Native scope (device/OS/app/user/native breadcrumbs) is
+     * merged at capture; offline transport is inherited.
      */
     @JvmStatic
     fun captureEventJson(payloadJson: String) {
@@ -321,16 +284,10 @@ object SentryFgsBridge {
     }
 
     /**
-     * Hand a base64-encoded Sentry envelope (captured by `@sentry/node`
-     * for transactions, sessions, check-ins, profiles, or any multi-item
-     * payload) to `sentry-android`'s offline-capable transport. Native
-     * scope is NOT applied — see the `SentryEnvelope` case in
-     * `ControlFrame` for why that's fine here.
-     *
-     * `InternalSentrySdk.captureEnvelope(bytes, maybeStartNewSession)`
-     * is the hybrid-SDK entrypoint (rate-limit + offline-queue + same
-     * on-disk cache as native crashes). `false` matches
-     * @sentry/react-native's non-hardCrash path (no fresh session).
+     * Pass a base64-encoded `@sentry/node` envelope (transactions, sessions, …) through
+     * sentry-android's hybrid-SDK entrypoint (rate-limit + offline-queue + native-crash
+     * cache). Native scope is NOT applied — see ControlFrame.SentryEnvelope. `false` =
+     * non-hardCrash path (no fresh session), matching @sentry/react-native.
      */
     @JvmStatic
     fun captureEnvelopeBase64(data: String) {
@@ -375,11 +332,8 @@ object SentryFgsBridge {
         }
     }
 
-    /**
-     * Synchronously flush queued events. Call before
-     * `Process.killProcess` (FGS shutdown timeout) so a "stop
-     * timeout" capture isn't dropped along with the process.
-     */
+    /** Synchronously flush queued events. Call before `Process.killProcess` so a
+     *  shutdown-timeout capture isn't dropped along with the process. */
     @JvmStatic
     fun flush(timeoutMillis: Long) {
         if (!initialized) return
@@ -397,12 +351,9 @@ object SentryFgsBridge {
     }
 
     /**
-     * Test-only — mark the bridge initialised so per-call methods
-     * route into the SDK. JVM unit tests use the cross-platform
-     * `Sentry.init(SentryOptions)` (no Android Context) to set up
-     * the hub and then call this to flip the local gate without
-     * invoking `SentryAndroid.init` (which needs `SystemClock`,
-     * unmocked on the JVM classpath).
+     * Test-only — flip the local gate without calling `SentryAndroid.init` (it needs
+     * `SystemClock`, unmocked on the JVM unit-test classpath). Tests set up the hub via
+     * the cross-platform `Sentry.init(SentryOptions)` instead.
      */
     @JvmStatic
     internal fun markInitializedForTests() {
@@ -417,8 +368,7 @@ object SentryFgsBridge {
         is String -> SentryAttribute.stringAttribute(key, value)
         is Boolean -> SentryAttribute.booleanAttribute(key, value)
         is Int -> SentryAttribute.integerAttribute(key, value)
-        // No `longAttribute` factory; `named` lets the SDK pick the
-        // wire type and avoids the precision loss of `toInt()`.
+        // No longAttribute factory; `named` avoids the precision loss of toInt().
         is Long -> SentryAttribute.named(key, value)
         is Double -> SentryAttribute.doubleAttribute(key, value)
         is Float -> SentryAttribute.doubleAttribute(key, value.toDouble())
@@ -435,13 +385,10 @@ object SentryFgsBridge {
     }
 
     /**
-     * elapsedRealtime (monotonic) → wall-clock SentryDate.
-     *
-     * `nanos` must be anchored to what `System.nanoTime()` would have
-     * read at the backdated moment — sentry-java computes end via
-     * `(end.nanos - start.nanos)` on top of start's wall-clock.
-     * Passing `0` yields an end timestamp days in the future on
-     * long-uptime devices, which Sentry rejects.
+     * elapsedRealtime (monotonic) → wall-clock SentryDate. `nanos` must match what
+     * `System.nanoTime()` would have read at the backdated moment — sentry-java
+     * computes end via `(end.nanos - start.nanos)` on top of start's wall-clock.
+     * Passing `0` yields a far-future end on long-uptime devices, which Sentry rejects.
      */
     private fun elapsedRealtimeToSentryDate(startElapsedRealtime: Long): SentryDate {
         val nowWallMs = System.currentTimeMillis()

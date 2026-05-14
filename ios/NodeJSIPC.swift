@@ -1,17 +1,13 @@
 import Foundation
 
-/// Unix domain socket IPC client for communicating with Node.js process.
+/// Unix-domain-socket IPC client for the Node.js process. Length-prefixed
+/// JSON framing (4-byte LE length + UTF-8 payload), matching Android's
+/// `NodeJSIPC.kt`.
 ///
-/// Uses a length-prefixed JSON framing protocol (4-byte little-endian length prefix
-/// followed by UTF-8 JSON payload) over Unix domain sockets — matching the Android
-/// `NodeJSIPC.kt` implementation.
-///
-/// Lifecycle ordering (mirrors Android's `cancelAndJoin`-then-close model):
-/// `disconnect()` shuts down the socket to wake any blocked read, joins the
-/// receive worker, drains the send queue with a sync barrier, and only then
-/// closes the fd. This guarantees no `read(2)`/`write(2)` is in flight against
-/// the fd at the moment `close(2)` runs, so the kernel can't reassign the fd
-/// number under an active operation.
+/// `disconnect()` mirrors Android's `cancelAndJoin`-then-close: shutdown
+/// to wake any blocked read, join the receive worker, drain the send
+/// queue, then close — guaranteeing no syscall is in flight when the
+/// kernel could reassign the fd number.
 class NodeJSIPC {
     enum State: Equatable {
         case disconnected
@@ -24,28 +20,24 @@ class NodeJSIPC {
     private let socketPath: String
     private let onMessage: (String) -> Void
     private let lock = NSLock()
-    /// Unix socket file descriptor. Tests using `@testable import` read this
-    /// to tune kernel buffer options (e.g. `SO_SNDBUF`, `O_NONBLOCK`) — they
-    /// don't need to mutate it, so the setter stays private.
+    /// Read-only outside the class. Tests use `@testable import` to tune
+    /// kernel buffer options (e.g. `SO_SNDBUF`); they don't mutate it.
     private(set) var socket: Int32 = -1
 
     private let sendQueue = DispatchQueue(label: "com.comapeo.core.ipc.send")
     private let receiveQueue = DispatchQueue(label: "com.comapeo.core.ipc.receive")
     private let connectQueue = DispatchQueue(label: "com.comapeo.core.ipc.connect")
 
-    /// Marker so `disconnect()` can detect re-entrance from the receive loop
-    /// (where waiting on `receiveWorkItem` would deadlock).
-    ///
-    /// This must be per-instance (not `static`) so that `disconnect()` called
-    /// on instance B while running inside instance A's receive callback correctly
-    /// checks B's own queue, not A's. A `static` key would cause any IPC instance's
-    /// receive queue to satisfy the check, skipping the join on the wrong instance
-    /// and potentially closing B's fd while B's receive loop is still in flight.
+    /// Per-instance marker so `disconnect()` can detect re-entrance from
+    /// the receive loop (where waiting on `receiveWorkItem` would
+    /// deadlock). MUST be per-instance: a `static` key would let
+    /// instance A's receive queue satisfy instance B's check and skip
+    /// the join on the wrong instance.
     private let receiveQueueKey = DispatchSpecificKey<Void>()
 
     private var receiveWorkItem: DispatchWorkItem?
-    /// Messages enqueued by `sendMessage` before the socket is connected.
-    /// Flushed in connect order when the connection completes. Guarded by `lock`.
+    /// Messages enqueued before the socket connects. Flushed in order
+    /// on success. Guarded by `lock`.
     private var pendingMessages: [String] = []
 
     private(set) var state: State = .disconnected {
@@ -64,9 +56,8 @@ class NodeJSIPC {
 
     func connect() {
         lock.lock()
-        // Reject .disconnecting so a sendMessage racing with disconnect()
-        // can't flip state back to .connecting while close is in progress.
-        // .error is recoverable: callers can retry by calling connect() again.
+        // Reject .disconnecting so a racing sendMessage can't flip back to
+        // .connecting mid-close. .error is recoverable via retry.
         switch state {
         case .connected, .connecting, .disconnecting:
             lock.unlock()
@@ -85,17 +76,14 @@ class NodeJSIPC {
     }
 
     private func performConnect() {
-        // Wait for the socket file to appear
         waitForFile(atPath: socketPath, timeoutSeconds: 30)
 
-        // Connect with retry
         do {
             let fd = try connectWithRetry(socketPath: socketPath)
             let messagesToFlush: [String]
             lock.lock()
-            // disconnect() may have run while we were waiting/connecting.
-            // If state is no longer .connecting, the new fd is orphaned —
-            // close it and bail without touching state.
+            // disconnect() may have run while we connected. If state isn't
+            // .connecting any more, the new fd is orphaned — close + bail.
             guard state == .connecting else {
                 lock.unlock()
                 close(fd)
@@ -108,7 +96,6 @@ class NodeJSIPC {
             lock.unlock()
             startReceiving()
 
-            // Flush any messages enqueued while connecting.
             for message in messagesToFlush {
                 sendQueue.async { [weak self] in
                     self?.sendMessageInternal(message)
@@ -116,8 +103,7 @@ class NodeJSIPC {
             }
         } catch {
             lock.lock()
-            // Same race as the success path: only transition to .error if
-            // we're still the connect attempt that's expected to.
+            // Only transition to .error if we're still the active attempt.
             if state == .connecting {
                 state = .error(error.localizedDescription)
             }
@@ -126,18 +112,13 @@ class NodeJSIPC {
         }
     }
 
-    /// Tears down the connection. Safe to call from any thread, including
-    /// the receive loop (which calls back here on read errors) — the
-    /// `receiveQueueKey` check below skips the join in that case.
+    /// Tears down the connection. Safe from any thread, including the
+    /// receive loop itself (where the `receiveQueueKey` check below
+    /// skips the join to avoid deadlock).
     ///
-    /// Sequence:
-    ///   1. Snapshot fd; transition to .disconnecting.
-    ///   2. `shutdown(2)` to wake any blocked `read(2)` in the receive loop.
-    ///      Using shutdown rather than close means the fd number can't be
-    ///      reassigned while a syscall still holds it.
-    ///   3. Join the receive worker (skipped if we ARE the receive worker).
-    ///   4. Drain the send queue with a sync barrier so no write is in flight.
-    ///   5. `close(2)` the fd. Steps 3+4 guarantee it's no longer in use.
+    /// Order: shutdown the fd (wakes a blocked read), join the receive
+    /// worker, drain the send queue, then close. Shutdown-before-close
+    /// keeps the fd number alive while syscalls drain.
     func disconnect() {
         lock.lock()
         guard state != .disconnecting && state != .disconnected else {
@@ -150,22 +131,18 @@ class NodeJSIPC {
         receiveWorkItem = nil
         lock.unlock()
 
-        // 2. Wake a blocked receive loop.
         if fd >= 0 {
             _ = Darwin.shutdown(fd, SHUT_RDWR)
         }
 
-        // 3. Wait for the receive loop to exit, unless we are it.
         let onReceiveQueue = DispatchQueue.getSpecific(key: receiveQueueKey) != nil
         if !onReceiveQueue {
             workItem?.wait()
         }
 
-        // 4. Drain the send queue. Any in-flight sendMessageInternal finishes
-        // here (its write will have failed via shutdown, which is fine).
+        // Any in-flight write finishes here (its syscall fails via shutdown).
         sendQueue.sync {}
 
-        // 5. Now safe to close — no read/write can still be using the fd.
         if fd >= 0 {
             close(fd)
         }
@@ -183,8 +160,8 @@ class NodeJSIPC {
         }
     }
 
-    /// Sends a message synchronously on the current thread.
-    /// Used during shutdown to ensure the message is sent before the process exits.
+    /// Synchronous send on the current thread. Used at shutdown so the
+    /// frame is on the wire before the process exits.
     func sendMessageSync(_ message: String) {
         sendMessageInternal(message)
     }
@@ -198,13 +175,9 @@ class NodeJSIPC {
         if fd < 0 {
             switch currentState {
             case .connecting, .disconnected:
-                // Defer until connection completes. performConnect() will
-                // flush the pending list in order on success.
-                // TODO: bound `pendingMessages` growth. A hot-loop sender
-                // pre-connect can grow this without limit. Today the only
-                // producer is the bundled JS bridge, which makes the risk
-                // theoretical, but matching Android's `Channel.UNLIMITED`
-                // is parity-by-coincidence rather than a deliberate choice.
+                // TODO: bound `pendingMessages` growth. A pre-connect hot
+                // sender can grow it without limit. Today the only producer
+                // is the bundled JS bridge so the risk is theoretical.
                 lock.lock()
                 pendingMessages.append(message)
                 lock.unlock()
@@ -233,11 +206,9 @@ class NodeJSIPC {
         }
     }
 
-    /// Writes exactly `count` bytes from `buffer`, looping over partial
-    /// writes. Handles `EINTR` and `EAGAIN`/`EWOULDBLOCK` (the latter via
-    /// `poll`). POSIX `write(2)` on a stream socket is permitted to return
-    /// fewer bytes than requested; treating that as fatal desyncs the framed
-    /// protocol because the length prefix has already been sent.
+    /// Writes exactly `count` bytes, looping over partial writes. POSIX
+    /// stream sockets may return short; treating that as fatal desyncs
+    /// the framed protocol (the length prefix has already shipped).
     private func writeFully(fd: Int32, buffer: UnsafeRawPointer, count: Int) throws {
         var written = 0
         while written < count {
@@ -293,7 +264,6 @@ class NodeJSIPC {
     }
 
     private func receiveMessage(fd: Int32) throws -> String {
-        // Read 4-byte length prefix
         var lengthBuffer = [UInt8](repeating: 0, count: 4)
         try readFully(fd: fd, buffer: &lengthBuffer, count: 4)
 
@@ -304,11 +274,9 @@ class NodeJSIPC {
             UInt32(lengthBuffer[3]) << 24
         )
 
-        // TODO: cap `messageLength` to a sanity bound. A corrupt/hostile
-        // length prefix (up to 4 GiB) becomes an immediate allocation here.
-        // The peer is the bundled Node.js process so this is a robustness
-        // concern, not a security one — Android also runs uncapped today.
-        // Read message body
+        // TODO: cap `messageLength`. Corrupt prefix up to 4 GiB becomes an
+        // immediate allocation. Robustness concern only — the peer is the
+        // bundled Node.js process; Android also runs uncapped today.
         var messageBuffer = [UInt8](repeating: 0, count: messageLength)
         try readFully(fd: fd, buffer: &messageBuffer, count: messageLength)
 
@@ -399,13 +367,9 @@ func connectSocket(path: String) throws -> Int32 {
         throw NodeJSIPC.IPCError.connectionFailed("socket() failed: \(errno)")
     }
 
-    // Suppress SIGPIPE for writes to this fd. Without this, a write
-    // to a closed peer — a routine failure mode during shutdown
-    // races (e.g. `service.stop()` sending the shutdown frame after
-    // the backend already closed) — would deliver SIGPIPE to the
-    // process and kill it. `writeFully` already handles `EPIPE` in
-    // its error path; SO_NOSIGPIPE turns the kernel signal into a
-    // normal `errno` so the existing path runs.
+    // SO_NOSIGPIPE turns the SIGPIPE-from-closed-peer write into a
+    // normal `errno` (EPIPE), which `writeFully` already handles. Without
+    // it, a routine shutdown race would kill the process.
     var noSigPipe: Int32 = 1
     _ = setsockopt(
         fd, SOL_SOCKET, SO_NOSIGPIPE,
@@ -429,13 +393,9 @@ func connectSocket(path: String) throws -> Int32 {
         }
     }
 
-    // addrLen covers the fixed header (sa_family_t = 1 byte on Darwin, where
-    // sun_len is a separate byte making offsetof(sun_path) = 2) plus the
-    // null-terminated path. This is technically 1 byte short of the textbook
-    // `offsetof(sun_path) + strlen + 1` formula, but Darwin's connect(2) is
-    // lenient about the supplied length as long as it covers the actual path.
-    // MockNodeServer uses the same formula for bind(2), so client and server
-    // are consistently matched.
+    // 1 byte short of the textbook `offsetof(sun_path) + strlen + 1`,
+    // but Darwin's connect(2) is lenient as long as the length covers
+    // the path. MockNodeServer's bind(2) uses the same formula.
     let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
     let result = withUnsafePointer(to: &addr) { addrPtr in
         addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
@@ -454,7 +414,7 @@ func connectSocket(path: String) throws -> Int32 {
 
 // MARK: - File watching
 
-/// Waits for a file to appear at the given path, polling at 50ms intervals.
+/// Polls for `path` to exist at 50ms intervals up to `timeoutSeconds`.
 func waitForFile(atPath path: String, timeoutSeconds: TimeInterval = 30) {
     let fileManager = FileManager.default
     if fileManager.fileExists(atPath: path) {
@@ -462,11 +422,10 @@ func waitForFile(atPath path: String, timeoutSeconds: TimeInterval = 30) {
     }
 
     let parentDir = (path as NSString).deletingLastPathComponent
-    // Ensure parent directory exists
     try? fileManager.createDirectory(atPath: parentDir, withIntermediateDirectories: true)
 
     let deadline = Date().addingTimeInterval(timeoutSeconds)
-    let pollInterval: useconds_t = 50_000 // 50ms
+    let pollInterval: useconds_t = 50_000
 
     while !fileManager.fileExists(atPath: path) {
         if Date() > deadline {

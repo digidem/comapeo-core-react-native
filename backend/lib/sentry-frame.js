@@ -1,6 +1,10 @@
 import { serializeEnvelope } from "@sentry/core";
 
 /**
+ * @typedef {{ type: "sentry-event", payload: any } | { type: "sentry-envelope", data: string }} SentryFrame
+ */
+
+/**
  * Routes a Sentry envelope into one of two control-socket frame
  * shapes that the native side knows how to consume:
  *
@@ -16,7 +20,7 @@ import { serializeEnvelope } from "@sentry/core";
  *     No scope merge here — irrelevant for these item types.
  *
  * @param {any} envelope
- * @returns {{type: "sentry-event", payload: any} | {type: "sentry-envelope", data: string}}
+ * @returns {SentryFrame}
  */
 export function envelopeToFrame(envelope) {
   const items = envelope[1];

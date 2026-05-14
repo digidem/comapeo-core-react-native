@@ -1,16 +1,13 @@
 package com.comapeo.core
 
 /**
- * Tag keys we set on Sentry events. Centralised so a typo can't
- * silently route an event to the wrong dashboard column. Values
- * are documented in `docs/sentry-integration-plan.md` and
- * `docs/ARCHITECTURE.md` §7.
+ * Tag keys for Sentry events. Centralised so a typo can't silently route an
+ * event to the wrong dashboard column. Values are documented in
+ * `docs/sentry-integration-plan.md` and `docs/ARCHITECTURE.md` §7.
  *
- * `proc` reflects the actual OS process, not a logical layer:
- * iOS is always `main`; Android is `main` for RN/native code in
- * the host UI process and `fgs` for code in the `:ComapeoCore`
- * foreground-service process (Kotlin FGS code AND the embedded
- * nodejs-mobile that runs there).
+ * `proc` reflects the OS process, not a logical layer: iOS is always `main`;
+ * Android is `main` for RN/native in the host UI process and `fgs` for code
+ * in the `:ComapeoCore` foreground-service process (Kotlin + embedded Node).
  */
 object SentryTags {
     const val PROC = "proc"
@@ -21,12 +18,10 @@ object SentryTags {
     const val TIMEOUT = "timeout"
 
     /**
-     * On `comapeo.boot` transactions: distinguishes activity-initiated
-     * starts (we have a `serviceStartElapsedMs` stamp from the
-     * lifecycle listener) from system-driven restarts after the FGS
-     * was killed (intent is null on `onStartCommand`, no stamp, no
-     * `boot.fgs-launch` span). The two populations have structurally
-     * different timelines and want to be filtered separately.
+     * On `comapeo.boot` transactions: distinguishes activity-initiated starts
+     * (has `serviceStartElapsedMs` + `boot.fgs-launch` span) from system-driven
+     * FGS restarts (no intent, no stamp, no span). Filter the two populations
+     * separately — their timelines are structurally different.
      */
     const val BOOT_KIND = "boot.kind"
 

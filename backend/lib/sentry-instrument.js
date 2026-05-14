@@ -1,31 +1,71 @@
-// Single point of contact for Sentry instrumentation in the Node backend.
-//
-// loader.mjs stashes the live `@sentry/node` namespace + config on
-// globalThis when `--sentryDsn` is present. This module reads from
-// globalThis (instead of statically importing `@sentry/node`) so the
-// rollup chunk stays unloaded when no DSN is configured. When no DSN
-// is set, every export here is a no-op — call sites can stay
-// unconditional and read like the boot story they describe.
+// Sentry instrumentation singletons, populated by `setupSentry` from
+// loader.mjs when `--sentryDsn` is set. No static dep on `@sentry/node`
+// — the SDK is injected so the rollup chunk stays unloaded otherwise.
+// Every export here no-ops if `setupSentry` never runs.
 
-import os from "node:os";
-import fs from "node:fs";
+import ensureError from "ensure-error";
 
-/** @type {any} */
-const Sentry = /** @type {any} */ (globalThis).__comapeoSentry ?? null;
+/** @typedef {import("./sentry-frame.js").SentryFrame} SentryFrame */
+
+/** @type {typeof import("@sentry/node") | null} */
+let Sentry = null;
 /** @type {{ rpcArgsBytes: number, captureApplicationData: boolean } | null} */
-const config =
-  /** @type {any} */ (globalThis).__comapeoSentryConfig ?? null;
+let config = null;
+/** @type {((envelope: any) => SentryFrame) | null} */
+let envelopeToFrame = null;
+/** @type {((frame: SentryFrame) => void) | null} */
+let sink = null;
 
-export const enabled = Sentry !== null;
+// Frames captured before `setSink` runs sit in this ring buffer and
+// drain on registration.
+const PRE_LISTEN_QUEUE_MAX = 100;
+/** @type {SentryFrame[]} */
+const preListenQueue = [];
 
 /**
- * Wrap a boot phase: span + throw-error tagging with `.phase = name`
- * for `handleFatal` attribution. `name` is the wire phase
- * (`NodeJSService.kt` / `NodeJSService.swift` taxonomy). Span `op`/`name`
- * defaults to `boot.<name>`; override via `options.op` when the
- * dashboard label diverges from the wire phase. `options.span = false`
- * skips span creation but keeps the phase tag — for reliably-fast
- * phases that would only add trace noise.
+ * Must run before `forwardingTransport` actually fires (first envelope);
+ * the transport closure reads these lazily, so passing it to
+ * `Sentry.init` before this call is fine.
+ *
+ * @param {{
+ *   Sentry: typeof import("@sentry/node"),
+ *   config: { rpcArgsBytes: number, captureApplicationData: boolean },
+ *   envelopeToFrame: (envelope: any) => SentryFrame,
+ * }} args
+ */
+export function setupSentry(args) {
+  Sentry = args.Sentry;
+  config = args.config;
+  envelopeToFrame = args.envelopeToFrame;
+}
+
+/**
+ * Routes envelopes to the registered sink or buffers them in the
+ * pre-listen queue.
+ */
+export const forwardingTransport = () => ({
+  /** @param {any} envelope */
+  send: async (envelope) => {
+    if (!envelopeToFrame) return {};
+    const frame = envelopeToFrame(envelope);
+    if (sink) {
+      sink(frame);
+    } else {
+      if (preListenQueue.length >= PRE_LISTEN_QUEUE_MAX) {
+        preListenQueue.shift();
+      }
+      preListenQueue.push(frame);
+    }
+    return {};
+  },
+  flush: async () => true,
+});
+
+/**
+ * Wrap a boot phase: span + `.phase` tag for `handleFatal` attribution.
+ * `name` matches the wire phase in `NodeJSService.{kt,swift}`. Pass
+ * `op` when the dashboard label diverges; `span: false` keeps the phase
+ * tag but skips span creation (for sub-30ms phases).
  *
  * @template T
  * @param {string} name
@@ -33,79 +73,61 @@ export const enabled = Sentry !== null;
  * @param {{ op?: string, span?: boolean }} [options]
  * @returns {Promise<T>}
  */
-export async function bootPhase(name, fn, options) {
-  const op = options?.op ?? `boot.${name}`;
-  if (!Sentry || options?.span === false) {
+export async function bootPhase(name, fn, options = {}) {
+  const op = options.op ?? `boot.${name}`;
+  if (!Sentry || options.span === false) {
     try {
       return await fn();
     } catch (e) {
-      throw tagPhase(e, name);
+      throw ensureErrorWithPhase(e, name);
     }
   }
   // op:boot.* is the Discover filter; name=op so span.name renders.
-  return Sentry.startSpan(
-    { name: op, op },
-    async (/** @type {any} */ span) => {
-      try {
-        const r = await fn();
-        span?.setStatus?.({ code: 1, message: "ok" });
-        return r;
-      } catch (e) {
-        span?.setStatus?.({ code: 2, message: "internal_error" });
-        throw tagPhase(e, name);
-      }
-    },
-  );
+  return Sentry.startSpan({ name: op, op }, async (span) => {
+    try {
+      const r = await fn();
+      span.setStatus({ code: 1, message: "ok" });
+      return r;
+    } catch (e) {
+      span.setStatus({ code: 2, message: "internal_error" });
+      throw ensureErrorWithPhase(e, name);
+    }
+  });
 }
 
 /**
- * Best-effort `.phase = name` on a thrown error. Frozen / sealed
- * Errors (rare on Node but possible from user-land throws) would
- * make `Object.assign` raise a TypeError that'd mask the original.
  * @param {unknown} e
- * @param {string} name
- * @returns {unknown}
+ * @param {string} phase
  */
-function tagPhase(e, name) {
-  try {
-    return Object.assign(/** @type {any} */ (e), { phase: name });
-  } catch {
-    return Object.assign(new Error(String(e), { cause: e }), {
-      phase: name,
-    });
-  }
+function ensureErrorWithPhase(e, phase) {
+  const error = ensureError(e);
+  Object.defineProperty(error, "phase", {
+    value: phase,
+    enumerable: false,
+    configurable: true,
+  });
+  return /** @type {Error & { phase: string }} */ (error);
 }
 
 /**
- * Capture a fatal with phase tag + best-effort device context
- * (`@sentry/node` doesn't synthesise free_memory/free_storage). Field
- * names match Sentry's device schema so they render alongside the
- * platform-side values. No-op when Sentry off; never throws.
+ * Capture a fatal with phase + source tags. try/catch because
+ * `handleFatal` must still broadcast + exit even if Sentry throws.
  *
  * @param {string} phase
  * @param {Error} err
- * @param {{ storageDir?: string, source?: string }} [opts]
+ * @param {string} source
  */
-export function captureFatal(phase, err, opts = {}) {
+export function captureFatal(phase, err, source) {
   if (!Sentry) return;
   try {
-    const deviceCtx = readDeviceMemoryAndStorage(opts.storageDir);
-    Sentry.captureException(err, {
-      tags: {
-        phase,
-        layer: "node",
-        ...(opts.source ? { source: opts.source } : {}),
-      },
-      ...(deviceCtx ? { contexts: { device: deviceCtx } } : {}),
-    });
+    Sentry.captureException(err, { tags: { phase, source } });
   } catch (captureErr) {
     console.error("Failed to capture Sentry event", captureErr);
   }
 }
 
 /**
- * Flush pending Sentry events. Resolves to `true` when off so callers
- * can `await` unconditionally.
+ * Resolves to `true` when off so callers can `await` unconditionally.
  *
  * @param {number} maxMs
  * @returns {Promise<boolean>}
@@ -116,25 +138,29 @@ export function flush(maxMs) {
 }
 
 /**
- * Install the sink that loader.mjs's forwarding transport pushes
- * envelopes into. Frames captured before this call sit in a 100-item
- * ring buffer in loader.mjs and drain into the sink on registration.
+ * Drains anything buffered during boot.
  *
- * No-op when Sentry is off.
- *
- * @param {(frame: { type: string } & import("type-fest").JsonObject) => void} sink
+ * @param {(frame: SentryFrame) => void} realSink
  */
-export function setSink(sink) {
+export function setSink(realSink) {
   if (!Sentry) return;
-  const installer = /** @type {any} */ (globalThis).__comapeoSentrySetSink;
-  if (typeof installer === "function") installer(sink);
+  sink = realSink;
+  while (preListenQueue.length > 0) {
+    const frame = preListenQueue.shift();
+    try {
+      realSink(frame);
+    } catch {
+      // Sink threw — drop the rest rather than retrying forever.
+      break;
+    }
+  }
 }
 
 /**
- * `onRequestHook` for ComapeoRpcServer; `undefined` when Sentry is off.
- * RPC args capture is opt-in (PII) via `--sentryRpcArgsBytes`. Errors
- * are not rethrown — rpc-reflector already sends the error response,
- * and rethrowing would funnel into `handleFatal` for routine errors.
+ * `onRequestHook` for ComapeoRpcServer. RPC args capture is opt-in
+ * (PII) via `--sentryRpcArgsBytes`. Errors are not rethrown:
+ * rpc-reflector already responds, and rethrowing would route routine
+ * RPC errors into `handleFatal`.
  *
  * @returns {((request: any, next: any) => void) | undefined}
  */
@@ -144,7 +170,7 @@ export function makeRpcHook() {
   return (request, next) => {
     const sentryTrace = request.metadata?.["sentry-trace"];
     const baggage = request.metadata?.baggage;
-    /** @type {Record<string, unknown>} */
+    /** @type {Record<string, string>} */
     const attributes = { "rpc.method": request.method.join(".") };
     if (rpcArgsBytes > 0) {
       try {
@@ -165,7 +191,6 @@ export function makeRpcHook() {
           forceTransaction: true,
           attributes,
         },
-        /** @param {{ setStatus(s: { code: number, message?: string }): void }} span */
         async (span) => {
           try {
             await next(request);
@@ -183,38 +208,12 @@ export function makeRpcHook() {
 }
 
 /**
- * Escape-hatch capture. Prefer `bootPhase` / `captureFatal` /
- * `makeRpcHook` so phase/tag attribution is consistent.
+ * Escape hatch. Prefer `bootPhase` / `captureFatal` / `makeRpcHook`
+ * for consistent phase/tag attribution.
  *
  * @param {Error} err
  */
 export function captureException(err) {
   if (!Sentry) return;
   Sentry.captureException(err);
-}
-
-/**
- * @param {string} [storageDir]
- * @returns {Record<string, number> | null}
- */
-function readDeviceMemoryAndStorage(storageDir) {
-  try {
-    /** @type {Record<string, number>} */
-    const ctx = {
-      memory_size: os.totalmem(),
-      free_memory: os.freemem(),
-    };
-    if (storageDir) {
-      try {
-        const stats = fs.statfsSync(storageDir);
-        ctx.storage_size = stats.bsize * stats.blocks;
-        ctx.free_storage = stats.bsize * stats.bavail;
-      } catch {
-        // statfs unsupported / path missing — omit storage fields only.
-      }
-    }
-    return ctx;
-  } catch {
-    return null;
-  }
 }
