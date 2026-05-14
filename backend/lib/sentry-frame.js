@@ -1,3 +1,5 @@
+import { serializeEnvelope } from "@sentry/core";
+
 /**
  * Routes a Sentry envelope into one of two control-socket frame
  * shapes that the native side knows how to consume:
@@ -13,14 +15,10 @@
  *     hands the bytes to its hybrid envelope-capture entrypoint.
  *     No scope merge here — irrelevant for these item types.
  *
- * `serializeEnvelope` is injected so callers control whether
- * `@sentry/core` gets loaded; this module has no static dep on it.
- *
  * @param {any} envelope
- * @param {(env: any) => string | Uint8Array} serializeEnvelope
  * @returns {{type: "sentry-event", payload: any} | {type: "sentry-envelope", data: string}}
  */
-export function envelopeToFrame(envelope, serializeEnvelope) {
+export function envelopeToFrame(envelope) {
   const items = envelope[1];
   if (Array.isArray(items) && items.length === 1) {
     const [itemHeader, payload] = items[0];

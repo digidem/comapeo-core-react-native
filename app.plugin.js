@@ -3,7 +3,14 @@
 // Writes the consumer's Sentry configuration into AndroidManifest
 // meta-data and Info.plist keys at `expo prebuild`. Native readers
 // (SentryConfig.{kt,swift}) pick up the values; the embedded
-// backend (Phase 3) will pick them up via Node argv.
+// backend picks them up via Node argv.
+//
+// `@sentry/react-native` is a non-optional peer dep of this module,
+// so the SDK is always present in the consumer's app. Whether
+// Sentry actually emits is gated at runtime: absence of the `sentry`
+// argument here means "Sentry installed but inert" — `initSentry()`
+// returns early because no DSN was baked into the manifest /
+// Info.plist.
 //
 // When invoked without a `sentry` argument the plugin actively
 // REMOVES every key it owns (handles `--no-clean` re-prebuilds

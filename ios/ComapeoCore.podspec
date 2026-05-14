@@ -21,16 +21,19 @@ Pod::Spec.new do |s|
 
   s.dependency 'ExpoModulesCore'
 
-  # `Sentry/HybridSDK` so `SentryNativeBridge`'s `#if canImport(Sentry)`
-  # gates resolve to the active branch at compile time — without this
-  # dep, the Sentry module isn't on ComapeoCore's import path and every
-  # bridge method compiles to a no-op (even when the consumer has
-  # `@sentry/react-native` installed and Sentry is in the workspace).
-  # Matches the subspec `@sentry/react-native` pins so CocoaPods
-  # deduplicates. "Opt-in" is preserved at runtime: `SentrySDK` no-ops
-  # all calls until `SentrySDK.start(...)` runs, which only happens
-  # when the host calls `initSentry()` with a DSN.
-  s.dependency 'Sentry/HybridSDK'
+  # `Sentry/HybridSDK` so `SentryNativeBridge` can import `Sentry`
+  # (including the `@_spi(Private)` `SentryEventDecoder` and
+  # `PrivateSentrySDKOnly` entrypoints we rely on for Node-event
+  # forwarding). The exact pin tracks what
+  # `@sentry/react-native@7.x`'s `RNSentry.podspec` pins, so
+  # CocoaPods deduplicates to a single Sentry pod build in the
+  # workspace. A version mismatch surfaces at install time via the
+  # invariant check in `scripts/check-sentry-cocoa-pin.mjs` so a
+  # downstream `pod install` doesn't hit two-versions-of-Sentry first.
+  # "Opt-in" is preserved at runtime: `SentrySDK` no-ops all calls
+  # until `SentrySDK.start(...)` runs, which only happens when the
+  # host calls `initSentry()` with a DSN.
+  s.dependency 'Sentry/HybridSDK', '8.58.0'
 
   # `NodeMobile.xcframework` provides the embedded Node.js runtime.
   # Per-addon xcframeworks under `Frameworks/<name>__<version>.xcframework`

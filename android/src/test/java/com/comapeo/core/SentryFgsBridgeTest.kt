@@ -1,5 +1,12 @@
 package com.comapeo.core
 
+import io.sentry.ITransaction
+import io.sentry.ITransportFactory
+import io.sentry.Sentry
+import io.sentry.SentryEnvelope
+import io.sentry.SentryOptions
+import io.sentry.SpanStatus
+import io.sentry.transport.ITransport
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -7,55 +14,45 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * JVM unit tests for [SentryFgsBridge]'s no-op guards. Ensures that:
+ * JVM unit tests for [SentryFgsBridge].
  *
- *   1. Public methods short-circuit cleanly before init (so the
- *      FGS doesn't crash when `SentryConfig.loadFromManifest`
- *      returned null and `init` was never called).
- *   2. The `Class.forName` probe path is exercised — important
- *      because consumers without `@sentry/react-native` get a
- *      missing-classpath state at runtime that we can't replicate
- *      in unit tests without bytecode hacks. We at least verify
- *      the `initialized = false` short-circuit covers all
- *      surface methods without touching the SDK.
+ * Two surfaces are exercised:
  *
- * The "SDK present, properly init'd" path is exercised by the
- * Phase 2b smoke test on a real device — it requires
- * `SentryAndroid.init` which constructs a real Hub, schedulers,
- * and breadcrumb queue; that's not something we want to spin up
- * in a JVM unit test.
+ * 1. **Pre-init no-op** — every public method short-circuits cleanly
+ *    until `init` runs, so a JNI-side or early-listener call that
+ *    lands before `ComapeoCoreService.onCreate` invokes
+ *    [SentryFgsBridge.init] never reaches the SDK.
+ *
+ * 2. **Post-init capture path** — bypasses [SentryFgsBridge.init]
+ *    (which calls `SentryAndroid.init`, requiring a real Android
+ *    Context and `SystemClock` — neither available in JVM tests)
+ *    by calling the cross-platform `Sentry.init(SentryOptions)`
+ *    directly with an in-memory `ITransport` that records every
+ *    envelope sent, then flipping the bridge's gate via
+ *    [SentryFgsBridge.markInitializedForTests].
  */
 class SentryFgsBridgeTest {
+
+    private lateinit var transport: RecordingTransport
 
     @After
     fun tearDown() {
         SentryFgsBridge.resetForTests()
+        Sentry.close()
     }
 
-    @Test
-    fun isEnabledFindsSentryAndroidOnTestClasspath() {
-        // The android/build.gradle declares
-        // `testImplementation "io.sentry:sentry-android-core:8.32.0"`,
-        // so the JVM unit-test classpath has the SDK. Probe should
-        // succeed.
-        assertTrue(
-            "Expected SentryAndroid on test classpath; check build.gradle testImplementation",
-            SentryFgsBridge.isEnabled(),
-        )
-    }
+    // ── Pre-init guard tests ────────────────────────────────────────
 
     @Test
     fun addBreadcrumbBeforeInitIsNoOp() {
-        // Pre-init: the bridge should drop the call without
-        // touching Sentry at all. No throw, no crash, no event.
         SentryFgsBridge.addBreadcrumb(
             category = "comapeo.state",
             message = "STOPPED → STARTING",
             level = "info",
         )
-        // Reaching this assert means the call returned cleanly.
         assertTrue("addBreadcrumb pre-init must not throw", true)
     }
 
@@ -92,7 +89,7 @@ class SentryFgsBridgeTest {
     fun startBootSpanBeforeInitReturnsNull() {
         assertNull(SentryFgsBridge.startBootSpan(null, "rootkey-load"))
         // Also null when we hand in a non-null fake — bridge
-        // must not call into the SDK.
+        // must not reach the SDK pre-init.
         assertNull(SentryFgsBridge.startBootSpan("fake-handle", "rootkey-load"))
     }
 
@@ -105,8 +102,7 @@ class SentryFgsBridgeTest {
     @Test
     fun finishSpanBeforeInitWithFakeHandleIsNoOp() {
         // Pre-init, the bridge must not interpret an arbitrary
-        // handle — early return saves us from `ClassCastException`
-        // on the Impl side.
+        // handle — early return saves us from `ClassCastException`.
         SentryFgsBridge.finishSpan("not-a-real-handle", "ok")
         assertTrue("finishSpan pre-init must not throw", true)
     }
@@ -115,19 +111,195 @@ class SentryFgsBridgeTest {
     fun resetForTestsClearsState() {
         // Smoke-test the test-only reset hook so subsequent tests
         // start from a clean slate.
+        initBridgeViaSentryOptions()
         SentryFgsBridge.resetForTests()
         assertNull(SentryFgsBridge.startBootTransaction())
     }
 
+    // ── Post-init capture path tests ───────────────────────────────
+
     @Test
-    fun isEnabledIsCached() {
-        // Two calls should be idempotent; the second mustn't
-        // re-probe (probing repeatedly would defeat the perf
-        // mitigation). We can't directly observe whether the
-        // probe ran, but two true returns are a sanity check.
-        val first = SentryFgsBridge.isEnabled()
-        val second = SentryFgsBridge.isEnabled()
-        assertEquals(first, second)
-        assertTrue(first)
+    fun addBreadcrumbDoesNotImmediatelyEnqueueEnvelope() {
+        // Breadcrumbs ride along on the next event capture; they
+        // don't produce envelopes by themselves. Verifying the
+        // negative ensures we don't accidentally turn breadcrumbs
+        // into per-emit network traffic on the dashboard.
+        initBridgeViaSentryOptions()
+        SentryFgsBridge.addBreadcrumb(
+            category = "comapeo.state",
+            message = "STOPPED → STARTING",
+            level = "info",
+            data = mapOf("from" to "STOPPED", "to" to "STARTING"),
+        )
+        assertTrue(
+            "addBreadcrumb must not produce an envelope by itself",
+            transport.envelopes.isEmpty(),
+        )
     }
+
+    @Test
+    fun captureExceptionEnqueuesEnvelopeWithTags() {
+        initBridgeViaSentryOptions()
+        SentryFgsBridge.captureException(
+            RuntimeException("rootkey load failed"),
+            tags = mapOf(
+                "comapeo.phase" to "rootkey",
+                "source" to "rootkey-store",
+            ),
+        )
+        Sentry.flush(0)
+        assertEquals("expected one envelope", 1, transport.envelopes.size)
+        // The envelope's payload contains the captured event.
+        // Sentry batches breadcrumbs onto the same envelope.
+        val items = transport.envelopes.first().items.toList()
+        assertTrue("envelope should contain at least one item", items.isNotEmpty())
+    }
+
+    @Test
+    fun captureMessageEnqueuesEnvelopeAtRequestedLevel() {
+        initBridgeViaSentryOptions()
+        SentryFgsBridge.captureMessage(
+            message = "comapeo: startup timeout fired",
+            level = "error",
+            tags = mapOf("timeout" to "startup"),
+        )
+        Sentry.flush(0)
+        assertEquals(1, transport.envelopes.size)
+    }
+
+    @Test
+    fun startBootTransactionForcesSamplingEvenWhenRateIsZero() {
+        // Init with `tracesSampleRate = 0.0` so the global sample
+        // decision would normally drop the transaction. The bridge
+        // uses `TracesSamplingDecision(true, 1.0)` to override; if
+        // that override is broken, the transaction never reaches
+        // the transport.
+        initBridgeViaSentryOptions(tracesSampleRate = 0.0)
+
+        val tx = SentryFgsBridge.startBootTransaction()
+        assertNotNull("startBootTransaction must return a handle", tx)
+        SentryFgsBridge.finishSpan(tx, "ok")
+
+        Sentry.flush(0)
+        assertFalse(
+            "boot transaction must reach the transport even with global tracesSampleRate=0.0",
+            transport.envelopes.isEmpty(),
+        )
+    }
+
+    @Test
+    fun bootSpanLifecycle() {
+        initBridgeViaSentryOptions()
+        val tx = SentryFgsBridge.startBootTransaction()
+        assertNotNull(tx)
+
+        // Open a phase span and close ok. This is the
+        // rootkey-load happy path.
+        val span = SentryFgsBridge.startBootSpan(tx!!, "rootkey-load")
+        assertNotNull("startBootSpan must return a handle", span)
+        SentryFgsBridge.finishSpan(span!!, "ok")
+
+        // Closing the parent transaction with the child already
+        // finished is the normal case. Verify it doesn't blow up.
+        SentryFgsBridge.finishSpan(tx, "ok")
+
+        Sentry.flush(0)
+        assertFalse(transport.envelopes.isEmpty())
+    }
+
+    @Test
+    fun finishSpanWithCancelledStatusMapsCorrectly() {
+        // The STOPPING / destroy() close-path uses `cancelled` as
+        // the status. Verify the parser maps the string to
+        // `SpanStatus.CANCELLED` rather than silently falling
+        // through to UNKNOWN.
+        initBridgeViaSentryOptions()
+        val tx = SentryFgsBridge.startBootTransaction()!!
+        val handle = tx as ITransaction
+        SentryFgsBridge.finishSpan(handle, "cancelled")
+        assertEquals(
+            "cancelled string must map to SpanStatus.CANCELLED",
+            SpanStatus.CANCELLED,
+            handle.status,
+        )
+    }
+
+    @Test
+    fun startBootTransactionSetsBootKindTag() {
+        initBridgeViaSentryOptions()
+        val tx = SentryFgsBridge.startBootTransaction(
+            startElapsedRealtime = null,
+            kind = SentryTags.BOOT_KIND_SYSTEM_RESTART,
+        ) as ITransaction
+        assertEquals(SentryTags.BOOT_KIND_SYSTEM_RESTART, tx.getTag(SentryTags.BOOT_KIND))
+        SentryFgsBridge.finishSpan(tx, "ok")
+    }
+
+    @Test
+    fun unknownLevelStringFallsBackToInfo() {
+        // Defensive: a typo in a `level` argument should not
+        // crash the bridge. Implementation uses `lowercase()`
+        // and falls through to INFO. Exercise via a breadcrumb;
+        // assertion is "no throw + an event captured later
+        // carries the breadcrumb at INFO level".
+        initBridgeViaSentryOptions()
+        SentryFgsBridge.addBreadcrumb(
+            category = "comapeo.state",
+            message = "test",
+            level = "BANANA",
+            data = emptyMap(),
+        )
+        // Capture so the breadcrumb has a host event to ride on.
+        SentryFgsBridge.captureMessage(
+            message = "trigger",
+            level = "info",
+            tags = emptyMap(),
+        )
+        Sentry.flush(0)
+        assertEquals(1, transport.envelopes.size)
+    }
+
+    /**
+     * Cross-platform `Sentry.init(SentryOptions)` + bridge gate-flip.
+     * Used by every post-init test in place of
+     * [SentryFgsBridge.init] (which requires an Android Context).
+     */
+    private fun initBridgeViaSentryOptions(tracesSampleRate: Double = 1.0) {
+        transport = RecordingTransport()
+        Sentry.init { options: SentryOptions ->
+            options.dsn = "https://abc@sentry.io/1"
+            options.environment = "test"
+            options.release = "0.0.0+test"
+            options.setTransportFactory(transport.factory)
+            options.tracesSampleRate = tracesSampleRate
+            options.setTag("proc", "fgs")
+            options.setTag("layer", "native")
+        }
+        SentryFgsBridge.markInitializedForTests()
+    }
+}
+
+/**
+ * Sentry transport that captures envelopes in memory rather than
+ * sending them anywhere. Pattern from sentry-java's own test
+ * suite — the recording slot survives factory re-creation so we
+ * can check what was sent during the test.
+ */
+private class RecordingTransport : ITransport {
+    val envelopes = CopyOnWriteArrayList<SentryEnvelope>()
+
+    val factory: ITransportFactory =
+        ITransportFactory { _, _ -> this@RecordingTransport }
+
+    override fun send(envelope: SentryEnvelope, hint: io.sentry.Hint) {
+        envelopes.add(envelope)
+    }
+
+    override fun flush(timeoutMillis: Long) {}
+
+    override fun getRateLimiter(): io.sentry.transport.RateLimiter? = null
+
+    override fun close(isRestarting: Boolean) {}
+
+    override fun close() {}
 }

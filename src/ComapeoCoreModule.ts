@@ -9,7 +9,10 @@ import {
   type StateChangeEventPayload,
 } from "./ComapeoCore.types";
 import { createMapeoClient, type MapeoClientApi } from "@comapeo/ipc/client.js";
-import { activeAdapter } from "./sentry-internal";
+import * as Sentry from "@sentry/react-native";
+// `getTraceData` isn't re-exported from `@sentry/react-native@7`;
+// `@sentry/core` is a direct dep of RN so the import is safe.
+import { getTraceData } from "@sentry/core";
 import type { SentryInitConfig } from "./sentry";
 
 /**
@@ -167,16 +170,15 @@ const RPC_TIMEOUT_MS = 30_000;
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
   timeout: RPC_TIMEOUT_MS,
   onRequestHook: (request, next) => {
-    const adapter = activeAdapter();
-    const parentSpan = adapter?.getActiveSpan();
-    if (!adapter || !parentSpan) {
+    const parentSpan = Sentry.getActiveSpan();
+    if (!parentSpan) {
       next(request).catch(noop);
       return;
     }
-    adapter.startSpan(
+    Sentry.startSpan(
       { name: request.method.join("."), op: "ipc" },
       async (span) => {
-        const traceData = adapter.getTraceData({ span });
+        const traceData = getTraceData({ span });
         if (traceData["sentry-trace"]) {
           // `metadata` isn't in @comapeo/ipc's request type yet.
           (request as unknown as { metadata?: Record<string, string> }).metadata = {
@@ -189,7 +191,7 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
           span.setStatus?.({ code: 1, message: "ok" });
         } catch (error) {
           span.setStatus?.({ code: 2, message: "internal_error" });
-          adapter.captureException(error);
+          Sentry.captureException(error);
         }
       },
     );

@@ -1,5 +1,22 @@
 # Sentry Integration Plan
 
+> **Note (mandatory peer dep).** `@sentry/react-native` is now a
+> **non-optional peer dependency** of this module. The build-time
+> gating discussed in §1–§4.3 below (Android `Class.forName`
+> classpath probe, JS adapter shim, hand-rolled `SentryAdapter`
+> interface) has been removed in favour of a single static
+> dependency on the SDK. On iOS, the `Sentry/HybridSDK` pod is now
+> a hard CocoaPods dep of this module's podspec; the
+> `#if canImport(Sentry)` guards remain only so the Swift Package
+> Manager macOS test target (which excludes Sentry from its build
+> tree) still compiles. The **runtime** gating still applies as
+> described: when the Expo plugin is registered without a `sentry`
+> argument, no DSN is baked into the native config and
+> `initSentry()` returns early — Sentry is installed but inert.
+> The user-facing `getDiagnosticsEnabled` / `setDiagnosticsEnabled`
+> toggle and the DSN-gated dynamic `@sentry/node` load in
+> `backend/loader.mjs` are unchanged.
+
 How we propose to wire Sentry error reporting and RPC tracing into
 `@comapeo/core-react-native` without forcing every consumer of this
 module to ship Sentry. The integration is **opt-in and host-app

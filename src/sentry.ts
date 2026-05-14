@@ -10,20 +10,10 @@
  *
  * Importing this file as a side effect (`import "@comapeo/core-react-native/sentry"`)
  * attaches the state listeners so they're ready to fire — they no-op
- * until [initSentry] runs and registers the adapter.
- *
- * Tests can inject a fake adapter via [setSentryAdapterForTests].
+ * until [initSentry] runs and flips `sentryReady`.
  */
 import * as Sentry from "@sentry/react-native";
-// `getTraceData` is not re-exported from `@sentry/react-native@7`;
-// `@sentry/core` is a direct dep of RN so this is safe.
-import { getTraceData as coreGetTraceData } from "@sentry/core";
 
-import {
-  activeAdapter,
-  registerAdapter,
-  setOverrideAdapter,
-} from "./sentry-internal";
 import {
   state,
   readSentryConfig,
@@ -37,101 +27,6 @@ import {
   BACKEND_MODULES,
   COMAPEO_MODULE_VERSION_LABEL,
 } from "./version";
-
-type SentrySeverityLevel = "fatal" | "error" | "warning" | "info" | "debug";
-
-interface SentryBreadcrumb {
-  category?: string;
-  type?: string;
-  level?: SentrySeverityLevel;
-  message?: string;
-  data?: Record<string, unknown>;
-  timestamp?: number;
-}
-
-interface SentryCaptureContext {
-  level?: SentrySeverityLevel;
-  tags?: Record<string, string | number | boolean>;
-  extra?: Record<string, unknown>;
-  fingerprint?: string[];
-}
-
-interface SentrySpan {
-  setStatus?(status: { code: number; message?: string }): void;
-}
-
-interface SentryEvent {
-  modules?: Record<string, string>;
-  [key: string]: unknown;
-}
-
-type EventProcessor = (event: SentryEvent) => SentryEvent | null;
-
-/**
- * Subset of `Scope` we need on the persistent global scope. The
- * sub-export's writes go through here — *not* the top-level
- * `Sentry.setTag` / `Sentry.setContext` helpers, which target
- * the current/isolation scope.
- */
-interface SentryGlobalScope {
-  setTag(key: string, value: string | number | boolean): void;
-  setContext(name: string, context: Record<string, unknown> | null): void;
-  addEventProcessor(processor: EventProcessor): void;
-}
-
-/**
- * Methods this module calls on Sentry. Hand-rolled rather than
- * `Pick<typeof import("@sentry/react-native"), …>` so importing
- * this file doesn't fail typecheck for consumers without the
- * peer dep.
- */
-type LogMethod = (
-  message: string,
-  attributes?: Record<string, unknown>,
-) => void;
-
-export interface SentryAdapter {
-  captureException(
-    exception: unknown,
-    captureContext?: SentryCaptureContext,
-  ): string;
-  captureMessage(
-    message: string,
-    captureContext?: SentryCaptureContext | SentrySeverityLevel,
-  ): string;
-  addBreadcrumb(breadcrumb: SentryBreadcrumb): void;
-  setTag(key: string, value: string | number | boolean): void;
-  getGlobalScope(): SentryGlobalScope;
-  startSpan<T>(
-    options: { name: string; op?: string; forceTransaction?: boolean },
-    callback: (span: SentrySpan) => T,
-  ): T;
-  getActiveSpan(): SentrySpan | undefined;
-  continueTrace<T>(
-    headers: { sentryTrace?: string; baggage?: string },
-    callback: () => T,
-  ): T;
-  getTraceData(options?: { span?: SentrySpan }): {
-    "sentry-trace"?: string;
-    baggage?: string;
-  };
-  logger: {
-    trace: LogMethod;
-    debug: LogMethod;
-    info: LogMethod;
-    warn: LogMethod;
-    error: LogMethod;
-    fatal: LogMethod;
-  };
-}
-
-/**
- * Test-only — inject a fake adapter (or `null` to fall back to
- * the auto-detected `@sentry/react-native`).
- */
-export function setSentryAdapterForTests(adapter: SentryAdapter | null): void {
-  setOverrideAdapter(adapter);
-}
 
 /**
  * Subset of `Sentry.init` options that map cleanly from values the
@@ -248,6 +143,12 @@ export function setCaptureApplicationData(value: boolean): Promise<void> {
 // ── initSentry ──────────────────────────────────────────────────
 
 let initialized = false;
+// Flipped only after `Sentry.init` succeeds. State listeners gate on
+// this so a process where `initSentry` early-returned (toggle off,
+// no DSN) doesn't emit breadcrumbs / captures against an un-init'd
+// SDK. The SDK no-ops these calls itself, but skipping the work
+// keeps logs and tests clean.
+let sentryReady = false;
 
 /**
  * Initialise Sentry for the host app. Must be called exactly once at
@@ -255,7 +156,7 @@ let initialized = false;
  * persisted preferences and either:
  *
  *   - skips `Sentry.init` entirely (diagnosticsEnabled is false) —
- *     adapter stays null and every emit path in this module no-ops;
+ *     every emit path in this module no-ops;
  *   - throws if the host called `Sentry.init` separately before us
  *     (we own the init lifecycle now); or
  *   - calls `Sentry.init` with locked options merged with the host's
@@ -285,6 +186,11 @@ export function initSentry(options: InitSentryOptions = {}): void {
   // The wrapper exists precisely so the host can't independently
   // configure DSN / user.id / sample rates — having two competing
   // SentryClients would defeat the gating.
+  //
+  // `isInitialized` isn't on `@sentry/react-native`'s public type
+  // surface (it lives in `@sentry/core`'s utilities and is exposed
+  // through the namespace at runtime). Defensive accessor handles
+  // older SDK releases where the helper isn't wired through.
   const maybeIsInitialized = (Sentry as unknown as {
     isInitialized?: () => boolean;
   }).isInitialized;
@@ -302,8 +208,8 @@ export function initSentry(options: InitSentryOptions = {}): void {
 
   const preferences = readSentryPreferences();
   if (!preferences.diagnosticsEnabled) {
-    // User opted out. Skip Sentry.init; adapter stays null; state
-    // listeners (attached at module load below) no-op.
+    // User opted out. Skip Sentry.init; state listeners (attached at
+    // module load below) stay no-op via `sentryReady`.
     return;
   }
 
@@ -349,31 +255,24 @@ export function initSentry(options: InitSentryOptions = {}): void {
     beforeBreadcrumb: chainedBeforeBreadcrumb as never,
   } as never);
 
-  // Register only after init so callers don't hit a pre-init SDK.
-  registerAdapter({
-    ...(Sentry as unknown as Omit<SentryAdapter, "getTraceData">),
-    getTraceData: coreGetTraceData as unknown as SentryAdapter["getTraceData"],
-  });
+  sentryReady = true;
 
   // Scope-default tags via global scope (survives later forks).
-  const adapter = activeAdapter();
-  if (adapter) {
-    const globalScope = adapter.getGlobalScope();
-    globalScope.setTag(SentryTags.proc, SentryTags.procMain);
-    globalScope.setTag(SentryTags.layer, SentryTags.layerRn);
-    globalScope.setTag("comapeo.rn", COMAPEO_MODULE_VERSION_LABEL);
-    globalScope.setContext("comapeoBackend", BACKEND_MODULES);
-    globalScope.addEventProcessor((event) => {
-      event.modules = {
-        ...event.modules,
-        "@comapeo/core-react-native": COMAPEO_MODULE_VERSION_LABEL,
-      };
-      return event;
-    });
-    if (options.tags) {
-      for (const [k, v] of Object.entries(options.tags)) {
-        globalScope.setTag(k, v);
-      }
+  const globalScope = Sentry.getGlobalScope();
+  globalScope.setTag(SentryTags.proc, SentryTags.procMain);
+  globalScope.setTag(SentryTags.layer, SentryTags.layerRn);
+  globalScope.setTag("comapeo.rn", COMAPEO_MODULE_VERSION_LABEL);
+  globalScope.setContext("comapeoBackend", BACKEND_MODULES);
+  globalScope.addEventProcessor((event) => {
+    event.modules = {
+      ...event.modules,
+      "@comapeo/core-react-native": COMAPEO_MODULE_VERSION_LABEL,
+    };
+    return event;
+  });
+  if (options.tags) {
+    for (const [k, v] of Object.entries(options.tags)) {
+      globalScope.setTag(k, v);
     }
   }
 }
@@ -392,18 +291,17 @@ function chainHook<T extends AnyEvent>(
 
 // ── State listeners ─────────────────────────────────────────────
 //
-// Attached at module load (no-op until initSentry registers the
-// adapter). Keeping them at module level rather than inside
+// Attached at module load (no-op until initSentry flips
+// `sentryReady`). Keeping them at module level rather than inside
 // `initSentry` means a host that imports the sub-export but never
-// calls `initSentry()` (e.g. test contexts using
-// `setSentryAdapterForTests`) still gets the listener wiring.
+// calls `initSentry()` still gets the listener wiring; gating on
+// `sentryReady` keeps the listeners quiet in that case.
 
 state.addListener("stateChange", handleStateChange);
 state.addListener("messageerror", handleMessageError);
 
 function handleStateChange(s: ComapeoState, info: ComapeoErrorInfo | null) {
-  const adapter = activeAdapter();
-  if (!adapter) return;
+  if (!sentryReady) return;
 
   const data = info
     ? {
@@ -412,14 +310,14 @@ function handleStateChange(s: ComapeoState, info: ComapeoErrorInfo | null) {
         errorMessage: info.errorMessage,
       }
     : { state: s };
-  adapter.addBreadcrumb({
+  Sentry.addBreadcrumb({
     category: "comapeo.state",
     type: "state",
     level: s === "ERROR" ? "error" : "info",
     message: `comapeo state → ${s}`,
     data,
   });
-  const logFn = s === "ERROR" ? adapter.logger.error : adapter.logger.info;
+  const logFn = s === "ERROR" ? Sentry.logger.error : Sentry.logger.info;
   logFn(`comapeo state → ${s}`, data);
 
   // Synthesised Error name encodes the phase so Sentry's grouping
@@ -428,7 +326,7 @@ function handleStateChange(s: ComapeoState, info: ComapeoErrorInfo | null) {
   if (s === "ERROR" && info) {
     const e = new Error(info.errorMessage);
     e.name = `ComapeoError:${info.errorPhase}`;
-    adapter.captureException(e, {
+    Sentry.captureException(e, {
       tags: {
         [SentryTags.layer]: SentryTags.layerRn,
         [SentryTags.proc]: SentryTags.procMain,
@@ -440,8 +338,7 @@ function handleStateChange(s: ComapeoState, info: ComapeoErrorInfo | null) {
 }
 
 function handleMessageError(err: Error) {
-  const adapter = activeAdapter();
-  if (!adapter) return;
+  if (!sentryReady) return;
 
   // Truncate before forwarding — the wrapped message echoes the
   // raw control frame, which can include arbitrary bytes from a
@@ -449,7 +346,7 @@ function handleMessageError(err: Error) {
   const truncated = truncateForSentry(err.message);
   const wrapped = new Error(truncated);
   wrapped.name = err.name;
-  adapter.captureException(wrapped, {
+  Sentry.captureException(wrapped, {
     tags: {
       [SentryTags.layer]: SentryTags.layerRn,
       [SentryTags.proc]: SentryTags.procMain,
@@ -457,7 +354,7 @@ function handleMessageError(err: Error) {
     },
     level: "warning",
   });
-  adapter.logger.warn(truncated, {
+  Sentry.logger.warn(truncated, {
     [SentryTags.source]: "control-socket",
     "exception.name": err.name,
   });
@@ -469,3 +366,4 @@ function truncateForSentry(input: string): string {
   if (input.length <= MESSAGE_ERROR_MAX_LEN) return input;
   return `${input.slice(0, MESSAGE_ERROR_MAX_LEN)}… [truncated ${input.length - MESSAGE_ERROR_MAX_LEN} chars]`;
 }
+

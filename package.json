@@ -51,7 +51,7 @@
     "clean": "expo-module clean",
     "lint": "expo-module lint --cache .",
     "test": "expo-module test",
-    "prepare": "node scripts/write-version.mjs && expo-module prepare",
+    "prepare": "node scripts/write-version.mjs && node scripts/check-sentry-cocoa-pin.mjs && expo-module prepare",
     "prepublishOnly": "expo-module prepublishOnly",
     "prepack": "node scripts/write-version.mjs && npm run backend:build",
     "postinstall": "patch-package",
@@ -98,11 +98,6 @@
     "expo": "*",
     "react": "*",
     "react-native": "*"
-  },
-  "peerDependenciesMeta": {
-    "@sentry/react-native": {
-      "optional": true
-    }
   },
   "dependencies": {
     "@comapeo/ipc": "^8.0.0"

@@ -58,14 +58,11 @@ if (dsn) {
   // `rollup-plugin-import-hook.mjs` so it lands on the bundled hook.
   register("import-in-the-middle/hook.mjs", import.meta.url);
 
-  // Dynamic import keeps the rollup chunk unloaded when Sentry is off.
+  // Dynamic import keeps the rollup chunk unloaded when no DSN is
+  // configured.
   importSentryNodeStartDate = new Date();
   Sentry = await import("@sentry/node");
   importSentryNodeEndDate = new Date();
-  // `serializeEnvelope` isn't re-exported from `@sentry/node`'s public
-  // surface — import directly from `@sentry/core` (a peer dep of
-  // `@sentry/node` and an explicit dep of this package).
-  const { serializeEnvelope } = await import("@sentry/core");
   const { envelopeToFrame } = await import("./lib/sentry-frame.js");
 
   // Custom transport: forward to native over the control socket so
@@ -81,9 +78,7 @@ if (dsn) {
   const forwardingTransport = () => ({
     /** @param {any} envelope */
     send: async (envelope) => {
-      const frame = /** @type {SentryFrame} */ (
-        envelopeToFrame(envelope, serializeEnvelope)
-      );
+      const frame = /** @type {SentryFrame} */ (envelopeToFrame(envelope));
       if (sink) {
         sink(frame);
       } else {
@@ -136,7 +131,8 @@ if (dsn) {
   });
 
   // Stash on globalThis so index.js never names `@sentry/node`
-  // statically — keeps the rollup chunk gated by this argv check.
+  // statically — keeps the rollup chunk gated on the `--sentryDsn`
+  // argv check above.
   const rpcArgsBytesRaw = asString(values.sentryRpcArgsBytes);
   /** @type {any} */ (globalThis).__comapeoSentry = Sentry;
   /** @type {any} */ (globalThis).__comapeoSentryConfig = {

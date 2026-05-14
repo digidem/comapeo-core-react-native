@@ -3,8 +3,8 @@
 // loader.mjs stashes the live `@sentry/node` namespace + config on
 // globalThis when `--sentryDsn` is present. This module reads from
 // globalThis (instead of statically importing `@sentry/node`) so the
-// rollup chunk stays unloaded for consumers without Sentry. When Sentry
-// is off, every export here is a no-op — call sites can stay
+// rollup chunk stays unloaded when no DSN is configured. When no DSN
+// is set, every export here is a no-op — call sites can stay
 // unconditional and read like the boot story they describe.
 
 import os from "node:os";
