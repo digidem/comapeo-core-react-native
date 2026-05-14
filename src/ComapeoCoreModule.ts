@@ -180,14 +180,22 @@ const RPC_TIMEOUT_MS = 30_000;
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
   timeout: RPC_TIMEOUT_MS,
   onRequestHook: (request, next) => {
-    // `getActiveSpan()` returns undefined when Sentry isn't init'd —
-    // doubles as the not-initialised short-circuit, no extra gate.
-    if (!Sentry.getActiveSpan()) {
+    // Sentry-not-initialised guard. `isInitialized` lives in `@sentry/core`
+    // and is reachable through the namespace at runtime but isn't on the
+    // public type surface — defensive accessor in case the helper isn't
+    // wired through in older SDK releases. Don't gate on `getActiveSpan`:
+    // it's undefined whenever no transaction is in progress (e.g. after
+    // App Start ends), which is exactly when we still want to create the
+    // span and propagate the trace to the backend.
+    const isInitialized = (Sentry as unknown as {
+      isInitialized?: () => boolean;
+    }).isInitialized;
+    if (typeof isInitialized === "function" && !isInitialized()) {
       next(request).catch(noop);
       return;
     }
     Sentry.startSpan(
-      { name: request.method.join("."), op: "ipc" },
+      { name: request.method.join("."), op: "ipc", forceTransaction: true },
       async (span) => {
         const { "sentry-trace": sentryTrace, baggage } = getTraceData({ span });
         const tracedRequest: IpcRequestWithMetadata = sentryTrace
