@@ -19,6 +19,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const SENTRY_HYBRID_DEP_RE =
   /s\.dependency\s+['"]Sentry\/HybridSDK['"]\s*,\s*['"]([^'"]+)['"]/;
 
+/** @param {string} podspecPath */
 function extractPin(podspecPath) {
   if (!existsSync(podspecPath)) return null;
   const src = readFileSync(podspecPath, "utf8");
@@ -34,6 +35,7 @@ function extractPin(podspecPath) {
 const SENTRY_SPM_DEP_RE =
   /\.package\s*\(\s*url:\s*"[^"]*\/sentry-cocoa[^"]*"\s*,\s*exact:\s*"([^"]+)"/;
 
+/** @param {string} manifestPath */
 function extractSpmPin(manifestPath) {
   if (!existsSync(manifestPath)) return null;
   const src = readFileSync(manifestPath, "utf8");
@@ -45,6 +47,7 @@ function extractSpmPin(manifestPath) {
 // predicate `(version: string) => boolean`. We support the operators
 // CocoaPods actually emits for transitive deps: `~> X.Y.Z` (pessimistic),
 // `>= X.Y.Z`, `= X.Y.Z`, and an unadorned version (treated as exact).
+/** @param {string} spec */
 function compileRequirement(spec) {
   const trimmed = spec.trim();
   const m = trimmed.match(/^(~>|>=|=)\s*(.+)$/);
@@ -52,7 +55,7 @@ function compileRequirement(spec) {
   const target = m ? m[2].trim() : trimmed;
   const targetParts = target.split(".").map(Number);
 
-  return (candidate) => {
+  return (/** @type {string} */ candidate) => {
     const parts = candidate.trim().split(".").map(Number);
     if (parts.some(Number.isNaN)) return false;
     const cmp = compareVersionParts(parts, targetParts);
@@ -77,6 +80,7 @@ function compileRequirement(spec) {
   };
 }
 
+/** @param {number[]} a @param {number[]} b */
 function compareVersionParts(a, b) {
   const len = Math.max(a.length, b.length);
   for (let i = 0; i < len; i++) {

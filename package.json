@@ -83,7 +83,7 @@
     "@types/react": "19.2.14",
     "eslint": "9.39.4",
     "execa": "9.6.1",
-    "expo": "55.0.17",
+    "expo": "^55.0.24",
     "expo-module-scripts": "55.0.2",
     "globals": "17.5.0",
     "patch-package": "8.0.1",
