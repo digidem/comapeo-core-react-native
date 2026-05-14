@@ -108,6 +108,19 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     static let shared = AppLifecycleDelegate()
     #endif
 
+    public func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        // Init sentry-cocoa before `applicationDidBecomeActive` fires
+        // so `nodeService.start()` finds a live hub. JS-side `Sentry.init`
+        // runs later with `autoInitializeNativeSdk: false`.
+        if let cfg = Self.resolveEffectiveSentryConfig() {
+            SentryNativeBridge.initFromConfig(cfg)
+        }
+        return true
+    }
+
     public func applicationDidBecomeActive(_ application: UIApplication) {
         log("applicationDidBecomeActive")
         Self.nodeService.start()

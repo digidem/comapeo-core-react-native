@@ -13,11 +13,34 @@ enum SpanStatus: String {
     case undefined
 }
 
-/// Emits breadcrumbs, captures, and spans against the host's
-/// already-initialised sentry-cocoa hub. iOS is single-process so the
-/// host's `@sentry/react-native` runs `SentrySDK.startWith(...)` first;
-/// every call here no-ops until then.
+/// Emits breadcrumbs, captures, and spans against sentry-cocoa.
+/// Init is owned natively (see `initFromConfig`) so the bridge is live
+/// before `NodeJSService.start()` runs — mirrors Android's
+/// `SentryFgsBridge.init` from `ComapeoCoreService.onCreate`. JS-side
+/// `Sentry.init` runs with `autoInitializeNativeSdk: false`.
 enum SentryNativeBridge {
+    /// Idempotent. Caller must pass non-nil config; skip the call when
+    /// `loadFromMainBundle()` returns nil. Mirror of Android
+    /// `SentryFgsBridge.init` — the iOS process IS the "FGS" since iOS
+    /// is single-process.
+    static func initFromConfig(_ config: SentryConfig) {
+        if SentrySDK.isEnabled { return }
+        let opts = Options()
+        opts.dsn = config.dsn
+        opts.environment = config.environment
+        opts.releaseName = config.release
+        opts.sampleRate = NSNumber(value: config.sampleRate ?? 1.0)
+        opts.tracesSampleRate = NSNumber(value: config.tracesSampleRate ?? 0.0)
+        opts.sendDefaultPii = false
+        // initialScope runs once on init; same shape Android achieves
+        // via `options.setTag(...)` in its `SentryAndroid.init` block.
+        opts.initialScope = { scope in
+            scope.setTag(value: SentryTags.procMain, key: SentryTags.proc)
+            scope.setTag(value: SentryTags.layerNative, key: SentryTags.layer)
+            return scope
+        }
+        SentrySDK.start(options: opts)
+    }
 
     static func addBreadcrumb(
         category: String,
@@ -36,10 +59,13 @@ enum SentryNativeBridge {
     }
 
     static func captureException(_ error: Error, tags: [String: String] = [:]) {
-        SentrySDK.capture(error: error) { scope in
-            applyDefaultTags(scope)
-            for (k, v) in tags { scope.setTag(value: v, key: k) }
-        }
+        // `Sentry/HybridSDK` only exposes single-arg `SentrySDK.capture(...)`
+        // to Swift consumers — the scope/block overloads aren't reachable.
+        // Build an Event explicitly so per-call tags ride on the event,
+        // not on the (leaky) global scope.
+        let event = Event(error: error as NSError)
+        event.tags = mergedTags(tags)
+        SentrySDK.capture(event: event)
     }
 
     static func captureMessage(
@@ -47,11 +73,10 @@ enum SentryNativeBridge {
         level: LogLevel = .info,
         tags: [String: String] = [:]
     ) {
-        SentrySDK.capture(message: message) { scope in
-            scope.setLevel(level.sentryLevel)
-            applyDefaultTags(scope)
-            for (k, v) in tags { scope.setTag(value: v, key: k) }
-        }
+        let event = Event(level: level.sentryLevel)
+        event.message = SentryMessage(formatted: message)
+        event.tags = mergedTags(tags)
+        SentrySDK.capture(event: event)
     }
 
     /// Forward to Sentry's structured-log pipeline. The Cocoa SDK drops
@@ -146,9 +171,11 @@ enum SentryNativeBridge {
         return (tx.toTraceHeader().value(), nil)
     }
 
-    private static func applyDefaultTags(_ scope: Scope) {
-        scope.setTag(value: SentryTags.procMain, key: SentryTags.proc)
-        scope.setTag(value: SentryTags.layerNative, key: SentryTags.layer)
+    private static func mergedTags(_ tags: [String: String]) -> [String: String] {
+        var out = tags
+        out[SentryTags.proc] = SentryTags.procMain
+        out[SentryTags.layer] = SentryTags.layerNative
+        return out
     }
 
     private static func applyDefaultTags(toSpan span: Span) {

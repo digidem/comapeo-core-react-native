@@ -245,6 +245,11 @@ export function initSentry(options: InitSentryOptions = {}): void {
     release: sentryConfig.release,
     sampleRate: sentryConfig.sampleRate,
     tracesSampleRate: effectiveTracesSampleRate,
+    // Native SDK is initialized in `AppLifecycleDelegate.didFinishLaunching`
+    // (iOS) / `ComapeoCoreService.onCreate` (Android FGS) so the native
+    // bridge is live before any `nodeService.start()` work. JS init only
+    // attaches JS instrumentation against the existing native hub.
+    autoInitializeNativeSdk: false,
     // Locked.
     sendDefaultPii: false,
     // Plugin-controlled. Off by default; opt in via plugin config.

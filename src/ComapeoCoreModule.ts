@@ -15,6 +15,16 @@ import * as Sentry from "@sentry/react-native";
 import { getTraceData } from "@sentry/core";
 import type { SentryInitConfig } from "./sentry";
 
+// `onRequestHook` request type derived from `createMapeoClient` so
+// any hook-signature change up-stream is a compile error here. The
+// hook input omits `metadata`; we re-add it to write into `next(...)`.
+type IpcHookRequest = Parameters<
+  NonNullable<NonNullable<Parameters<typeof createMapeoClient>[1]>["onRequestHook"]>
+>[0];
+type IpcRequestWithMetadata = IpcHookRequest & {
+  metadata?: Record<string, string>;
+};
+
 /**
  * User-persisted sentry preferences (snapshot at module construction).
  * Diagnostics on by default; capture-app-data off by default. Plugin
@@ -170,24 +180,24 @@ const RPC_TIMEOUT_MS = 30_000;
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
   timeout: RPC_TIMEOUT_MS,
   onRequestHook: (request, next) => {
-    const parentSpan = Sentry.getActiveSpan();
-    if (!parentSpan) {
+    // `getActiveSpan()` returns undefined when Sentry isn't init'd —
+    // doubles as the not-initialised short-circuit, no extra gate.
+    if (!Sentry.getActiveSpan()) {
       next(request).catch(noop);
       return;
     }
     Sentry.startSpan(
       { name: request.method.join("."), op: "ipc" },
       async (span) => {
-        const traceData = getTraceData({ span });
-        if (traceData["sentry-trace"]) {
-          // `metadata` isn't in @comapeo/ipc's request type yet.
-          (request as unknown as { metadata?: Record<string, string> }).metadata = {
-            "sentry-trace": traceData["sentry-trace"],
-            baggage: traceData["baggage"] ?? "",
-          };
-        }
+        const { "sentry-trace": sentryTrace, baggage } = getTraceData({ span });
+        const tracedRequest: IpcRequestWithMetadata = sentryTrace
+          ? {
+              ...request,
+              metadata: { "sentry-trace": sentryTrace, baggage: baggage ?? "" },
+            }
+          : request;
         try {
-          await next(request);
+          await next(tracedRequest);
           span.setStatus?.({ code: 1, message: "ok" });
         } catch (error) {
           span.setStatus?.({ code: 2, message: "internal_error" });
