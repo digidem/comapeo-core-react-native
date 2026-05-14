@@ -145,10 +145,22 @@ enum SentryNativeBridge {
     /// envelope-capture entrypoint. Same offline-transport as
     /// `captureEventJson` but without native scope merging (envelopes
     /// carry their own).
+    ///
+    /// `#if !SWIFT_PACKAGE` because `PrivateSentrySDKOnly.envelope(with:)`
+    /// and `PrivateSentrySDKOnly.capture(_:)` live in sentry-cocoa's
+    /// `PrivateHeaders/` and are reachable only through the
+    /// `Sentry/HybridSDK` CocoaPods subspec — sentry-cocoa's SPM
+    /// binary xcframework ships the umbrella headers, not the private
+    /// ones. SPM consumers of `Sentry` can't see these symbols, so we
+    /// stub the method out for the `swift test` build path. No SPM
+    /// test exercises envelope-capture; the on-device CocoaPods build
+    /// retains the full implementation.
     static func captureEnvelopeBase64(_ data: String) {
+        #if !SWIFT_PACKAGE
         guard let bytes = Data(base64Encoded: data) else { return }
         guard let envelope = PrivateSentrySDKOnly.envelope(with: bytes) else { return }
         PrivateSentrySDKOnly.capture(envelope)
+        #endif
     }
 
     /// Trace header for cross-process propagation to the Node hub.
