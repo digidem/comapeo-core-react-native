@@ -26,6 +26,21 @@ function extractPin(podspecPath) {
   return match ? match[1] : null;
 }
 
+// Match the `.package(url: "...sentry-cocoa...", exact: "X.Y.Z")` line
+// in a `Package.swift` manifest. We require `exact:` because the
+// bridge uses `@_spi(Private)` symbols whose stability isn't covered
+// by semver — a `from:` or `.upToNextMajor` would let SPM resolve to
+// a version we haven't validated.
+const SENTRY_SPM_DEP_RE =
+  /\.package\s*\(\s*url:\s*"[^"]*\/sentry-cocoa[^"]*"\s*,\s*exact:\s*"([^"]+)"/;
+
+function extractSpmPin(manifestPath) {
+  if (!existsSync(manifestPath)) return null;
+  const src = readFileSync(manifestPath, "utf8");
+  const match = src.match(SENTRY_SPM_DEP_RE);
+  return match ? match[1] : null;
+}
+
 // Parses a CocoaPods version requirement (e.g. `~> 8.49.0`) into a
 // predicate `(version: string) => boolean`. We support the operators
 // CocoaPods actually emits for transitive deps: `~> X.Y.Z` (pessimistic),
@@ -73,8 +88,8 @@ function compareVersionParts(a, b) {
   return 0;
 }
 
-// Our pin: parse from the source of truth so we don't have to keep
-// it in sync in two places.
+// Our podspec pin: parse from the source of truth so we don't have
+// to keep it in sync in two places.
 const ourPodspec = join(root, "ios", "ComapeoCore.podspec");
 const ourPin = extractPin(ourPodspec);
 if (!ourPin) {
@@ -83,6 +98,33 @@ if (!ourPin) {
   console.error(
     "check-sentry-cocoa-pin: no 'Sentry/HybridSDK' dependency in " +
       `${ourPodspec}. Sentry-Cocoa is required.`,
+  );
+  process.exit(1);
+}
+
+// Our SPM pin: `ios/Package.swift` must pin the same Sentry-Cocoa
+// version so `swift test` (which links sentry-cocoa directly) and
+// `pod install` (which links it via CocoaPods) end up with the same
+// build of the SPI surface our bridge uses. Drift between the two
+// produces hard-to-debug behaviour differences between the SPM test
+// target and on-device pod builds.
+const ourSpmManifest = join(root, "ios", "Package.swift");
+const ourSpmPin = extractSpmPin(ourSpmManifest);
+if (!ourSpmPin) {
+  console.error(
+    "check-sentry-cocoa-pin: no 'sentry-cocoa' SPM dependency in " +
+      `${ourSpmManifest}. The SPM target needs Sentry-Cocoa so the ` +
+      "macOS test build resolves `import Sentry` cleanly.",
+  );
+  process.exit(1);
+}
+if (ourSpmPin !== ourPin.replace(/^(~>|>=|=)\s*/, "").trim()) {
+  console.error(
+    `check-sentry-cocoa-pin: pod and SPM pins disagree.\n` +
+      `  ios/ComapeoCore.podspec:  ${ourPin}\n` +
+      `  ios/Package.swift:        exact ${ourSpmPin}\n` +
+      `\n` +
+      `Pin both to the same Sentry-Cocoa version.`,
   );
   process.exit(1);
 }
