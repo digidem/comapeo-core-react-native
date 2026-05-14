@@ -4,7 +4,7 @@ import Fastify from "fastify";
 import { ComapeoRpcServer } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
-import * as sentry from "./lib/sentry-instrument.js";
+import * as sentry from "./lib/sentry.js";
 import ensureError from "ensure-error";
 
 // `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` mirrors this
@@ -156,13 +156,33 @@ process.on("unhandledRejection", (reason) => {
   handleFatal("runtime", reason);
 });
 
+/**
+ * Tag a thrown error with `.phase` (non-enumerable) for `handleFatal`
+ * attribution. Sentry-agnostic — works in the no-DSN path.
+ *
+ * @template T
+ * @param {string} phase
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+async function withPhase(phase, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    const err = ensureError(e);
+    Object.defineProperty(err, "phase", {
+      value: phase,
+      enumerable: false,
+      configurable: true,
+    });
+    throw err;
+  }
+}
+
 (async () => {
   try {
-    // `span: false` — bind is <30ms; phase tag still set for errors.
-    await sentry.bootPhase(
-      "listen-control",
-      () => controlIpcServer.listen(controlSocketPath),
-      { span: false },
+    await withPhase("listen-control", () =>
+      controlIpcServer.listen(controlSocketPath),
     );
     console.log(`Control socket listening on ${controlSocketPath}`);
 
@@ -172,17 +192,14 @@ process.on("unhandledRejection", (reason) => {
 
     controlIpcServer.setReadinessPhase("started");
 
-    // `span: false` — native already measures `boot.rootkey-load` on
-    // the same trace; a duplicate would only add noise.
-    const rootKey = await sentry.bootPhase("init", () => initPromise, {
-      span: false,
-    });
+    // No span: native already measures `boot.rootkey-load` on the
+    // same trace; a duplicate would only add noise.
+    const rootKey = await withPhase("init", () => initPromise);
 
-    // `op` override: dashboard name (`boot.manager-init`) vs. wire
-    // phase (`construct`) used by native error frames.
-    await sentry.bootPhase(
-      "construct",
-      async () => {
+    // Dashboard label (`boot.manager-init`) vs. wire phase (`construct`)
+    // used by native error frames.
+    await withPhase("construct", () =>
+      sentry.withSpan("boot.manager-init", async () => {
         comapeo = createComapeo({
           privateStorageDir,
           fastify,
@@ -190,11 +207,10 @@ process.on("unhandledRejection", (reason) => {
           rootKey,
         });
         comapeoRpcServer = new ComapeoRpcServer(comapeo, {
-          onRequestHook: sentry.makeRpcHook(),
+          onRequestHook: sentry.rpcHook(),
         });
         await comapeoRpcServer.listen(comapeoSocketPath);
-      },
-      { op: "boot.manager-init" },
+      }),
     );
     console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
 
