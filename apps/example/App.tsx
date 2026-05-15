@@ -39,6 +39,12 @@ export default function App() {
               );
             }}
           />
+          <Button
+            title="Reload projects (warm listProjects)"
+            onPress={() => {
+              comapeo.listProjects().then(setProjects);
+            }}
+          />
         </Group>
       </ScrollView>
     </SafeAreaView>
