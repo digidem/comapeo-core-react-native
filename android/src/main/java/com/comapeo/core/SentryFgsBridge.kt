@@ -67,8 +67,6 @@ object SentryFgsBridge {
                 }
 
             SentryAndroid.init(context.applicationContext) { options ->
-                options.isDebug = true
-                options.setDiagnosticLevel(io.sentry.SentryLevel.DEBUG)
                 options.dsn = config.dsn
                 options.environment = config.environment
                 options.release = config.release

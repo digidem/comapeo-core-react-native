@@ -679,28 +679,27 @@ process, the host's `@sentry/react-native` (which inits in the
 main `MainApplication`) doesn't reach the FGS. The bridge fills
 that gap.
 
-### 7.3 The Guard / Impl split (Android)
+### 7.3 The FGS-side SDK init (Android)
 
-`SentryFgsBridge.kt` — the public entry point that the rest of
-the native code calls — has **zero `io.sentry.*` imports**. It
-delegates to `SentryFgsBridgeImpl.kt` only after a `Class.forName`
-probe (with `initialize=false`) confirms the SDK is on the
-runtime classpath. The Gradle dep is `compileOnly` — the
-runtime classes come transitively from the consumer's
-`@sentry/react-native@^7` peer dep (which ships
-`sentry-android@8.32.x` — first line that has the structured-
-log API the bridge calls in `SentryFgsBridgeImpl.log`). When
-that peer dep is absent, the bridge stays inert and the
-module continues to function.
+`SentryFgsBridge.kt` owns `SentryAndroid.init(...)` inside the FGS
+process. Android creates a fresh `Application` per process, so the
+host's main-process `SentryAndroid.init` (from `@sentry/react-native`)
+never reaches the FGS — the bridge re-runs init from
+`ComapeoCoreService.onCreate` before `NodeJSService` is constructed.
+This is the same pattern used on iOS, see §7.4.
 
-This split matters because the JVM/Dalvik verifier inspects
-bytecode references at class-load time of the *containing*
-class. Putting any `io.sentry.*` reference in `SentryFgsBridge`
-itself would force the bridge class to fail loading on a
-Sentry-less classpath — even if the offending method is never
-called. The Impl class is only loaded when a method on it is
-actually invoked, which happens only after `isEnabled()`
-returned `true`.
+A `@Volatile initialized` flag guards every public method so callers
+that fire before init no-op silently. Each method also wraps its
+Sentry call in a try/catch — a thrown Sentry path must never take
+the FGS down.
+
+`sentry-android` is now a regular `implementation` dep (not
+`compileOnly`) because `@sentry/react-native` is a **mandatory peer
+dep** of this module. Earlier design split the bridge into a guard
++ impl pair behind a `Class.forName` classpath probe; that
+indirection became unnecessary once the SDK was guaranteed on the
+classpath, and the two halves were merged back into a single
+`SentryFgsBridge.kt`.
 
 ### 7.4 What this design *doesn't* attempt
 
@@ -709,12 +708,16 @@ returned `true`.
   process crashes that `sentry-android` / `sentry-cocoa`
   catches at the JNI/Cocoa layer. We do not bundle
   `sentry-native` into the embedded runtime.
-- **iOS multi-process Sentry**. iOS runs everything in one
-  process, so there's no equivalent of Android's separate
-  FGS-process SDK init: native iOS code (boot transaction,
-  spans, breadcrumbs, captures from `SentryNativeBridge`)
-  emits against the host's already-initialised
-  `@sentry/react-native` hub directly.
+- **iOS single-process equivalent of FGS init**. iOS is
+  single-process, so the FGS-style separate-process init isn't
+  needed — but we still own sentry-cocoa init natively, from
+  `AppLifecycleDelegate.application(_:didFinishLaunchingWithOptions:)`
+  via `SentryNativeBridge.initFromConfig`. The JS layer's
+  `Sentry.init` runs with `autoInitializeNativeSdk: false`, so the
+  native hub is the single owner of the SDK lifecycle. This keeps
+  the boot transaction and pre-JS-bundle native spans on a live
+  hub — the same invariant Android gets from
+  `ComapeoCoreService.onCreate`.
 - **DSN secrecy**. Sentry DSNs are not high-secret values —
   they identify a project rather than authenticate writes,
   and they appear in stripped binaries of every Sentry-using

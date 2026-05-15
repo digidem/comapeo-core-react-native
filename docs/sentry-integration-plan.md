@@ -14,6 +14,29 @@
 > is installed but inert. The user-facing `getDiagnosticsEnabled` /
 > `setDiagnosticsEnabled` toggle and the DSN-gated dynamic `@sentry/node` load
 > in `backend/loader.mjs` are unchanged.
+>
+> **Note (later updates, divergences from plan).** Implementation evolved past
+> this plan in several places:
+>
+> - The `SentryFgsBridge` / `SentryFgsBridgeImpl` guard / impl split (§7.5,
+>   §10.4, §11) was reverted — both halves live in a single
+>   `SentryFgsBridge.kt` since the classpath probe is no longer needed.
+> - RPC span ops follow OpenTelemetry's RPC semantic conventions:
+>   `op: rpc.client` on the RN side and `op: rpc.server` on the backend (not
+>   `op: "ipc"` as in the §6.2 snippet). Both carry `rpc.system: "comapeo-ipc"`
+>   and `rpc.method: <name>` attributes.
+> - The RN-side `onRequestHook` no longer short-circuits when no parent span is
+>   active: it gates on `Sentry.isInitialized()` and uses
+>   `startNewTrace` to mint a fresh `trace_id` per call when no caller
+>   transaction exists.
+> - iOS sentry-cocoa is initialised natively in
+>   `AppLifecycleDelegate.application(_:didFinishLaunchingWithOptions:)` —
+>   parallel to Android's `ComapeoCoreService.onCreate`. JS-side `Sentry.init`
+>   runs with `autoInitializeNativeSdk: false` so the native hub is the single
+>   owner of the SDK lifecycle.
+> - `backend/lib/sentry-instrument.js` was renamed to `backend/lib/sentry.js`
+>   and `bootPhase` was split into `withPhase` (Sentry-agnostic phase tag) +
+>   `withSpan` (Sentry-only).
 
 How we propose to wire Sentry error reporting and RPC tracing into
 `@comapeo/core-react-native` without forcing every consumer of this module to
