@@ -286,8 +286,16 @@ export function rpcHook() {
   return (request, next) => {
     const sentryTrace = request.metadata?.["sentry-trace"];
     const baggage = request.metadata?.baggage;
+    const method = request.method.join(".");
+    // `rpc.system` / `rpc.method` follow OpenTelemetry's RPC semantic
+    // conventions (https://opentelemetry.io/docs/specs/semconv/rpc/),
+    // which Sentry defers to for RPC ops. Pair with `op: "rpc.server"`
+    // here and `op: "rpc.client"` on the RN side.
     /** @type {Record<string, string>} */
-    const attributes = { "rpc.method": request.method.join(".") };
+    const attributes = {
+      "rpc.system": "comapeo-ipc",
+      "rpc.method": method,
+    };
     if (rpcArgsBytes > 0) {
       try {
         const stringified = JSON.stringify(request.args);
@@ -302,8 +310,8 @@ export function rpcHook() {
     sentryRef.continueTrace({ sentryTrace, baggage }, () => {
       sentryRef.startSpan(
         {
-          op: "rpc",
-          name: request.method.join("."),
+          op: "rpc.server",
+          name: method,
           forceTransaction: true,
           attributes,
         },
@@ -314,7 +322,7 @@ export function rpcHook() {
           } catch (error) {
             span.setStatus({ code: 2, message: "internal_error" });
             sentryRef.captureException(error, {
-              tags: { layer: "node", op: "rpc" },
+              tags: { layer: "node", op: "rpc.server" },
             });
           }
         },

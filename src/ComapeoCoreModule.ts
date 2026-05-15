@@ -194,8 +194,17 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
       next(request).catch(noop);
       return;
     }
+    const method = request.method.join(".");
     Sentry.startSpan(
-      { name: request.method.join("."), op: "ipc", forceTransaction: true },
+      {
+        name: method,
+        op: "rpc.client",
+        forceTransaction: true,
+        attributes: {
+          "rpc.system": "comapeo-ipc",
+          "rpc.method": method,
+        },
+      },
       async (span) => {
         const { "sentry-trace": sentryTrace, baggage } = getTraceData({ span });
         const tracedRequest: IpcRequestWithMetadata = sentryTrace
@@ -205,7 +214,15 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
             }
           : request;
         try {
-          await next(tracedRequest);
+          // Split the span duration into "sync send" (JSI hop + UDS write
+          // to Node) and "await" (entire round-trip incl. response delivery
+          // back to the JS thread). If the gap between this span and the
+          // Node-side rpc span is dominated by JS-thread contention on
+          // cold boot, `rn.send.syncMs` stays small while total stays high.
+          const sendStart = performance.now();
+          const responsePromise = next(tracedRequest);
+          span.setAttribute?.("rn.send.syncMs", performance.now() - sendStart);
+          await responsePromise;
           span.setStatus?.({ code: 1, message: "ok" });
         } catch (error) {
           span.setStatus?.({ code: 2, message: "internal_error" });
