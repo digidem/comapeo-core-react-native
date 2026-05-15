@@ -158,27 +158,10 @@ jobs:
           cd apps/example/android
           ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest :app:assembleDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
 
-      - name: Cache AVD snapshot
-        uses: actions/cache@v4
-        id: avd-cache
-        with:
-          path: |
-            ~/.android/avd/*
-            ~/.android/adb*
-          key: avd-api${{ matrix.api-level }}-google_atd-x86_64
-
-      - name: Create AVD and generate snapshot
-        if: steps.avd-cache.outputs.cache-hit != 'true'
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ matrix.api-level }}
-          target: google_atd
-          arch: x86_64
-          force-avd-creation: false
-          ram-size: 4096M
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
-          disable-animations: false
-          script: echo "Generated AVD snapshot for caching"
+      # Snapshot caching was tried but is not portable across GitHub
+      # runner machines on this google_atd image: restored snapshots
+      # boot but system_server is dead-on-arrival (DeadSystemException
+      # on the first adb input call). Cold boot every run instead.
 
       - name: Run instrumented tests
         timeout-minutes: 15
@@ -194,13 +177,6 @@ jobs:
             -noaudio -no-boot-anim
           disable-animations: false
           script: |
-            # Wait for system services after snapshot restore —
-            # sys.boot_completed can flip before the `input` service publishes,
-            # which makes emulator-runner's own `input keyevent 82` crash the
-            # emulator. We run this loop ourselves and skip the keyevent
-            # (disable-animations: false).
-            adb wait-for-device shell 'while [[ -z $(getprop sys.boot_completed) ]]; do sleep 1; done'
-            # Disable animations via settings (more reliable than input keyevent)
             adb shell settings put global window_animation_scale 0.0
             adb shell settings put global transition_animation_scale 0.0
             adb shell settings put global animator_duration_scale 0.0

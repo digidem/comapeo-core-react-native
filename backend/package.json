@@ -26,6 +26,7 @@
     "fastify": "4.29.1",
     "framed-stream": "1.0.1",
     "import-in-the-middle": "^1.13.0",
+    "polywasm": "0.2.0",
     "tiny-typed-emitter": "2.1.0"
   },
   "devDependencies": {
