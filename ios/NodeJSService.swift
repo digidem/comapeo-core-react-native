@@ -366,6 +366,7 @@ class NodeJSService {
                         SentryTags.phase: "starting-timeout",
                     ]
                 )
+                self.sendErrorNativeFrame(phase: info.phase, message: info.message)
                 self.applyAndEmit(error: info) {
                     self.backendState = .error(phase: info.phase, message: info.message)
                 }
@@ -447,9 +448,12 @@ class NodeJSService {
     /// Loads the rootkey and ships the init frame on the control socket.
     /// Called once per start cycle, on the backend's `started` broadcast.
     ///
-    /// Failures transition to `.error` without tearing down the node
-    /// thread — `.error` is observable via `stateChange`, and recovery
-    /// (`stop()`+`cleanup()` + fresh service) is the application's call.
+    /// Failures transition to `.error` and forward `error-native` to
+    /// Node so the backend's `handleFatal` exits the runtime — without
+    /// it, the Node thread would stay parked on `await initPromise`
+    /// indefinitely (parallel of the Android FGS pattern, in-process
+    /// here). `.error` is observable via `stateChange`; recovery
+    /// (`stop()` + `cleanup()` + fresh service) is the application's call.
     /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` means a device
     /// not unlocked since reboot throws here; retry once unlocked.
     private func sendInitFrame() {
@@ -482,6 +486,7 @@ class NodeJSService {
                 ]
             )
             let info = ErrorInfo(phase: "rootkey", message: error.localizedDescription)
+            sendErrorNativeFrame(phase: info.phase, message: info.message)
             applyAndEmit(error: info) {
                 self.backendState = .error(phase: info.phase, message: info.message)
             }
@@ -500,6 +505,38 @@ class NodeJSService {
         let frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
         ipc.sendMessage(frame)
         logCrumb(category: SentryCategories.boot, message: "init frame sent")
+    }
+
+    /// Sends `{type:"error-native",phase,message}` to Node on the
+    /// control socket. The backend's `error-native` handler routes
+    /// through `handleFatal`, which broadcasts an `error` frame to all
+    /// clients and exits 1 — cleanly tearing down the Node thread that
+    /// would otherwise stay parked on `await initPromise` after a
+    /// native-side rootkey or watchdog failure. Mirror of the Android
+    /// FGS-side back-channel (single-process here, so the value is
+    /// reclaiming the leaked Node thread + control-socket binding
+    /// rather than cross-process attribution).
+    ///
+    /// Best-effort: `NodeJSIPC.sendMessage` queues into `pendingMessages`
+    /// if the socket isn't connected yet, so a watchdog firing before
+    /// the backend has bound just no-ops on the frame (Node will exit
+    /// when the thread is reaped at app termination anyway).
+    private func sendErrorNativeFrame(phase: String, message: String) {
+        guard let ipc = controlIPC else { return }
+        let payload: [String: Any] = [
+            "type": "error-native",
+            "phase": phase,
+            "message": message,
+        ]
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: payload),
+            let json = String(data: data, encoding: .utf8)
+        else {
+            log("Failed to serialize error-native frame (phase=\(phase))")
+            return
+        }
+        ipc.sendMessage(json)
+        log("Sent error-native frame to backend (phase=\(phase))")
     }
 
     /// Gracefully stops Node.js. `timeout` bounds the wait for the
