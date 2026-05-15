@@ -10,9 +10,10 @@ import {
 } from "./ComapeoCore.types";
 import { createMapeoClient, type MapeoClientApi } from "@comapeo/ipc/client.js";
 import * as Sentry from "@sentry/react-native";
-// `getTraceData` isn't re-exported from `@sentry/react-native@7`;
-// `@sentry/core` is a direct dep of RN so the import is safe.
-import { getTraceData } from "@sentry/core";
+// `getTraceData` / `startNewTrace` aren't re-exported from
+// `@sentry/react-native@7`; `@sentry/core` is a direct dep of RN so
+// the import is safe.
+import { getTraceData, startNewTrace } from "@sentry/core";
 import type { SentryInitConfig } from "./sentry";
 
 // `onRequestHook` request type derived from `createMapeoClient` so
@@ -195,41 +196,55 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
       return;
     }
     const method = request.method.join(".");
-    Sentry.startSpan(
-      {
-        name: method,
-        op: "rpc.client",
-        forceTransaction: true,
-        attributes: {
-          "rpc.system": "comapeo-ipc",
-          "rpc.method": method,
+    const runSpan = () =>
+      Sentry.startSpan(
+        {
+          name: method,
+          op: "rpc.client",
+          forceTransaction: true,
+          attributes: {
+            "rpc.system": "comapeo-ipc",
+            "rpc.method": method,
+          },
         },
-      },
-      async (span) => {
-        const { "sentry-trace": sentryTrace, baggage } = getTraceData({ span });
-        const tracedRequest: IpcRequestWithMetadata = sentryTrace
-          ? {
-              ...request,
-              metadata: { "sentry-trace": sentryTrace, baggage: baggage ?? "" },
-            }
-          : request;
-        try {
-          // Split the span duration into "sync send" (JSI hop + UDS write
-          // to Node) and "await" (entire round-trip incl. response delivery
-          // back to the JS thread). If the gap between this span and the
-          // Node-side rpc span is dominated by JS-thread contention on
-          // cold boot, `rn.send.syncMs` stays small while total stays high.
-          const sendStart = performance.now();
-          const responsePromise = next(tracedRequest);
-          span.setAttribute?.("rn.send.syncMs", performance.now() - sendStart);
-          await responsePromise;
-          span.setStatus?.({ code: 1, message: "ok" });
-        } catch (error) {
-          span.setStatus?.({ code: 2, message: "internal_error" });
-          Sentry.captureException(error);
-        }
-      },
-    );
+        async (span) => {
+          const { "sentry-trace": sentryTrace, baggage } = getTraceData({ span });
+          const tracedRequest: IpcRequestWithMetadata = sentryTrace
+            ? {
+                ...request,
+                metadata: {
+                  "sentry-trace": sentryTrace,
+                  baggage: baggage ?? "",
+                },
+              }
+            : request;
+          try {
+            // Split the span duration into "sync send" (JSI hop + UDS write
+            // to Node) and "await" (entire round-trip incl. response delivery
+            // back to the JS thread). If the gap between this span and the
+            // Node-side rpc span is dominated by JS-thread contention on
+            // cold boot, `rn.send.syncMs` stays small while total stays high.
+            const sendStart = performance.now();
+            const responsePromise = next(tracedRequest);
+            span.setAttribute?.("rn.send.syncMs", performance.now() - sendStart);
+            await responsePromise;
+            span.setStatus?.({ code: 1, message: "ok" });
+          } catch (error) {
+            span.setStatus?.({ code: 2, message: "internal_error" });
+            Sentry.captureException(error);
+          }
+        },
+      );
+    // Mint a fresh trace_id when there's no caller context to inherit.
+    // Without `startNewTrace`, every standalone RPC pulls the trace_id
+    // from the isolation-scope's propagation context, which is set
+    // once at SDK init and never rotates — so unrelated RPC calls
+    // (across reloads, even across days) end up sharing one trace.
+    if (Sentry.getActiveSpan()) {
+      runSpan();
+    } else {
+      startNewTrace(runSpan);
+    }
   },
 });
 
