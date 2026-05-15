@@ -92,7 +92,22 @@ final class MockBackend {
 
         MockNodeServer.sendFramedMessage(fd: fd, message: #"{"type":"started"}"#)
 
-        if let initFrame = MockNodeServer.receiveFramedMessage(fd: fd) {
+        // The frame after `started` is either `init` (happy path) or
+        // `error-native` (service-side rootkey/watchdog failure). The
+        // production backend's `handleFatal` re-broadcasts the latter
+        // as `error` and exits the process; mirror that here so the
+        // service stays in `.error` instead of being flipped back to
+        // STARTED by a blind `ready`.
+        let frameAfterStarted = MockNodeServer.receiveFramedMessage(fd: fd)
+        if let frame = frameAfterStarted, frame.contains("\"error-native\"") {
+            let (phase, message) = MockBackend.extractErrorNative(fromFrame: frame)
+            let errorFrame =
+                #"{"type":"error","phase":"\#(phase)","message":"\#(message)"}"#
+            MockNodeServer.sendFramedMessage(fd: fd, message: errorFrame)
+            handshakeComplete.signal()
+            return
+        }
+        if let initFrame = frameAfterStarted {
             receivedRootKey = MockBackend.extractRootKey(fromInitFrame: initFrame)
         }
         MockNodeServer.sendFramedMessage(fd: fd, message: #"{"type":"ready"}"#)
@@ -128,5 +143,22 @@ final class MockBackend {
         }
         let b64 = String(frame[valueStart..<endQuote.lowerBound])
         return Data(base64Encoded: b64)
+    }
+
+    /// Extracts `(phase, message)` from a string like
+    /// `{"type":"error-native","phase":"...","message":"..."}`. Matches the
+    /// shape `JSONSerialization` emits from `NodeJSService.sendErrorNativeFrame`.
+    /// Returns empty strings for missing fields so the synthesized response
+    /// frame is still well-formed.
+    private static func extractErrorNative(fromFrame frame: String) -> (String, String) {
+        func extract(_ key: String) -> String {
+            guard let r = frame.range(of: "\"\(key)\":\"") else { return "" }
+            let start = r.upperBound
+            guard let end = frame.range(of: "\"", range: start..<frame.endIndex) else {
+                return ""
+            }
+            return String(frame[start..<end.lowerBound])
+        }
+        return (extract("phase"), extract("message"))
     }
 }
