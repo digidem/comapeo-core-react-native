@@ -438,7 +438,7 @@ object SentryFgsBridge {
  * [SentryFgsBridge.init] for the rationale (cross-process consistency
  * with the main-process @sentry/react-native value).
  */
-private object NormalizeDeviceFamilyProcessor : EventProcessor {
+internal object NormalizeDeviceFamilyProcessor : EventProcessor {
     override fun process(event: SentryEvent, hint: Hint): SentryEvent? {
         normalize(event)
         return event

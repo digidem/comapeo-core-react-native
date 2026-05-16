@@ -1,11 +1,15 @@
 package com.comapeo.core
 
+import io.sentry.Hint
 import io.sentry.ITransaction
 import io.sentry.ITransportFactory
 import io.sentry.Sentry
 import io.sentry.SentryEnvelope
+import io.sentry.SentryEvent
 import io.sentry.SentryOptions
 import io.sentry.SpanStatus
+import io.sentry.protocol.Device
+import io.sentry.protocol.SentryTransaction
 import io.sentry.transport.ITransport
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -257,6 +261,48 @@ class SentryFgsBridgeTest {
         )
         Sentry.flush(0)
         assertEquals(1, transport.envelopes.size)
+    }
+
+    // ── NormalizeDeviceFamilyProcessor tests ───────────────────────
+    //
+    // Pure-function tests against the processor singleton. They catch
+    // regressions where the override value drifts (e.g. "Android-FGS"
+    // instead of "Android") or where one of the two overloads
+    // (SentryEvent vs SentryTransaction) is dropped. They do NOT
+    // assert that production init wires the processor up — that's
+    // the smoke test's job.
+
+    @Test
+    fun normalizeDeviceFamilyOverridesEventDeviceFamily() {
+        // Seed the event with what sentry-android's ContextUtils.getFamily()
+        // would produce on a Pixel — `Build.MODEL.split(" ")[0]` → "Google".
+        // The processor must rewrite it to "Android".
+        val event = SentryEvent().apply {
+            contexts.setDevice(Device().apply { family = "Google" })
+        }
+        val processed = NormalizeDeviceFamilyProcessor.process(event, Hint())
+        assertNotNull(processed)
+        assertEquals("Android", processed!!.contexts.device?.family)
+    }
+
+    @Test
+    fun normalizeDeviceFamilyOverridesTransactionDeviceFamily() {
+        // The SentryTransaction overload is what mutates `comapeo.boot`
+        // and `rpc.server` transactions. Dropping it would let
+        // transaction-shaped envelopes keep the raw `Build.MODEL` value.
+        val transaction = SentryTransaction(
+            /* transaction = */ "test",
+            /* startTimestamp = */ 0.0,
+            /* timestamp = */ 0.0,
+            /* spans = */ emptyList(),
+            /* measurements = */ emptyMap(),
+            /* transactionInfo = */ io.sentry.protocol.TransactionInfo("manual"),
+        ).apply {
+            contexts.setDevice(Device().apply { family = "Google" })
+        }
+        val processed = NormalizeDeviceFamilyProcessor.process(transaction, Hint())
+        assertNotNull(processed)
+        assertEquals("Android", processed!!.contexts.device?.family)
     }
 
     /**
