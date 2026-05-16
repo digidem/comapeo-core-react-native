@@ -5,6 +5,8 @@ import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import io.sentry.Breadcrumb
+import io.sentry.EventProcessor
+import io.sentry.Hint
 import io.sentry.IScope
 import io.sentry.ISpan
 import io.sentry.ITransaction
@@ -13,6 +15,7 @@ import io.sentry.NoOpLogger
 import io.sentry.Sentry
 import io.sentry.SentryAttribute
 import io.sentry.SentryAttributes
+import io.sentry.SentryBaseEvent
 import io.sentry.SentryDate
 import io.sentry.SentryEvent
 import io.sentry.SentryLevel
@@ -25,6 +28,7 @@ import io.sentry.TransactionOptions
 import io.sentry.android.core.InternalSentrySdk
 import io.sentry.android.core.SentryAndroid
 import io.sentry.logger.SentryLogParameters
+import io.sentry.protocol.SentryTransaction
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.StringReader
@@ -79,6 +83,16 @@ object SentryFgsBridge {
                 // Mirrors the RN-side `comapeo.rn` global tag. event.modules is
                 // skipped (sentry-java's setter is package-private).
                 config.moduleVersion?.let { options.setTag("comapeo.rn", it) }
+                // Normalise `device.family` to "Android". sentry-android's
+                // ContextUtils.getFamily() returns `Build.MODEL.split(" ")[0]`
+                // (so "Google" on a Pixel/emulator); the main-process events
+                // — captured via @sentry/react-native, which doesn't fetch a
+                // device.family from native — surface as "Android" in
+                // Sentry's UI via server-side derivation from `os.name`. Set
+                // it explicitly here so FGS-captured spans like
+                // `comapeo.boot` match the main-process value rather than
+                // splitting the dashboard.
+                options.addEventProcessor(NormalizeDeviceFamilyProcessor)
             }
 
             // SentryOptions has no "set context at init" hook; ride a configureScope after init.
@@ -416,4 +430,26 @@ object SentryFgsBridge {
     }
 
     private const val TAG = "ComapeoCore.Sentry"
+}
+
+/**
+ * Forces `device.family = "Android"` on every event sentry-android emits
+ * from this process. See the comment at the addEventProcessor callsite in
+ * [SentryFgsBridge.init] for the rationale (cross-process consistency
+ * with the main-process @sentry/react-native value).
+ */
+private object NormalizeDeviceFamilyProcessor : EventProcessor {
+    override fun process(event: SentryEvent, hint: Hint): SentryEvent? {
+        normalize(event)
+        return event
+    }
+
+    override fun process(transaction: SentryTransaction, hint: Hint): SentryTransaction? {
+        normalize(transaction)
+        return transaction
+    }
+
+    private fun normalize(event: SentryBaseEvent) {
+        event.contexts.device?.family = "Android"
+    }
 }
