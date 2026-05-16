@@ -178,6 +178,25 @@ const noop = () => {};
 // transport closing, not via this timeout.
 const RPC_TIMEOUT_MS = 30_000;
 
+/**
+ * `true` if there's an active span whose ROOT span op is meaningful
+ * as a parent for an RPC — i.e. user-initiated work like navigation
+ * or a tap. The `appStartIntegration`'s `app.start.*` transaction is
+ * explicitly NOT a meaningful parent: it stays open for ~10s after
+ * launch and would otherwise sweep any RPC fired during that window
+ * into the App Start trace.
+ */
+function hasInheritableActiveSpan(): boolean {
+  const active = Sentry.getActiveSpan();
+  if (!active) return false;
+  const root = Sentry.getRootSpan(active);
+  const rootOp = Sentry.spanToJSON(root).op;
+  // Skip only the `app.start.*` case explicitly. Everything else
+  // with an active span (navigation, tap, host-instrumented work)
+  // counts as a meaningful parent the RPC should join.
+  return !(typeof rootOp === "string" && rootOp.startsWith("app.start."));
+}
+
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
   timeout: RPC_TIMEOUT_MS,
   onRequestHook: (request, next) => {
@@ -235,12 +254,17 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
           }
         },
       );
-    // Mint a fresh trace_id when there's no caller context to inherit.
-    // Without `startNewTrace`, every standalone RPC pulls the trace_id
-    // from the isolation-scope's propagation context, which is set
-    // once at SDK init and never rotates — so unrelated RPC calls
-    // (across reloads, even across days) end up sharing one trace.
-    if (Sentry.getActiveSpan()) {
+    // Mint a fresh trace_id when there's no caller context worth
+    // inheriting. Without `startNewTrace`, every standalone RPC pulls
+    // the trace_id from the isolation-scope's propagation context,
+    // which is set once at SDK init and never rotates — so unrelated
+    // RPC calls (across reloads, even across days) end up sharing
+    // one trace. Skip `app.start.*` parents specifically: the
+    // `appStartIntegration` keeps its transaction open for ~10s
+    // post-launch, which would otherwise sweep any RPC fired during
+    // that window into the App Start trace and make the dashboard
+    // render them as nested under it.
+    if (hasInheritableActiveSpan()) {
       runSpan();
     } else {
       startNewTrace(runSpan);

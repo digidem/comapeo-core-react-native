@@ -82,6 +82,14 @@ describe("initSentry", () => {
     jest.doMock("@sentry/core", () => ({
       getTraceData: jest.fn(() => ({})),
     }));
+
+    // `react-native` is needed because `src/sentry.ts` reads
+    // `Platform.OS`. Without the mock, Jest tries to load the real
+    // RN bundle and trips on its ESM-style imports under the
+    // expo-module-scripts preset.
+    jest.doMock("react-native", () => ({
+      Platform: { OS: "ios" },
+    }));
   });
 
   test("skips Sentry.init when diagnosticsEnabled is false", () => {
@@ -121,6 +129,21 @@ describe("initSentry", () => {
     const { initSentry } = require("../sentry");
     initSentry();
     expect(initSpy.mock.calls[0][0].tracesSampleRate).toBe(0.5);
+  });
+
+  test("autoInitializeNativeSdk=false on iOS so AppLifecycleDelegate's native init isn't replaced", () => {
+    // Default mock is iOS.
+    const { initSentry } = require("../sentry");
+    initSentry();
+    expect(initSpy.mock.calls[0][0].autoInitializeNativeSdk).toBe(false);
+  });
+
+  test("autoInitializeNativeSdk omitted on Android so RNSentry inits the main-process SDK", () => {
+    jest.doMock("react-native", () => ({ Platform: { OS: "android" } }));
+    const { initSentry } = require("../sentry");
+    initSentry();
+    const opts = initSpy.mock.calls[0][0];
+    expect("autoInitializeNativeSdk" in opts).toBe(false);
   });
 
   test("throws migration error when host called Sentry.init first", () => {

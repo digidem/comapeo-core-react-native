@@ -12,6 +12,7 @@
  * attaches the state listeners so they're ready to fire — they no-op
  * until [initSentry] runs and flips `sentryReady`.
  */
+import { Platform } from "react-native";
 import * as Sentry from "@sentry/react-native";
 
 import {
@@ -245,11 +246,16 @@ export function initSentry(options: InitSentryOptions = {}): void {
     release: sentryConfig.release,
     sampleRate: sentryConfig.sampleRate,
     tracesSampleRate: effectiveTracesSampleRate,
-    // Native SDK is initialized in `AppLifecycleDelegate.didFinishLaunching`
-    // (iOS) / `ComapeoCoreService.onCreate` (Android FGS) so the native
-    // bridge is live before any `nodeService.start()` work. JS init only
-    // attaches JS instrumentation against the existing native hub.
-    autoInitializeNativeSdk: false,
+    // iOS only: native init runs in `AppLifecycleDelegate.didFinishLaunching`
+    // (before `applicationDidBecomeActive` fires `nodeService.start()`),
+    // so JS-side init must NOT re-initialise sentry-cocoa or it would
+    // replace the live client mid-flight. On Android the main process
+    // has no equivalent native init (the FGS process inits its own
+    // sentry-android via `SentryFgsBridge.init` in
+    // `ComapeoCoreService.onCreate`, but that doesn't reach the main
+    // process), so JS-triggered init via `RNSentry` is what brings the
+    // main-process sentry-android up. Keep the default `true` there.
+    ...(Platform.OS === "ios" ? { autoInitializeNativeSdk: false } : {}),
     // Locked.
     sendDefaultPii: false,
     // Plugin-controlled. Off by default; opt in via plugin config.
