@@ -191,10 +191,15 @@ function hasInheritableActiveSpan(): boolean {
   if (!active) return false;
   const root = Sentry.getRootSpan(active);
   const rootOp = Sentry.spanToJSON(root).op;
-  // Skip only the `app.start.*` case explicitly. Everything else
-  // with an active span (navigation, tap, host-instrumented work)
-  // counts as a meaningful parent the RPC should join.
-  return !(typeof rootOp === "string" && rootOp.startsWith("app.start."));
+  if (typeof rootOp !== "string") return true;
+  // The `appStartIntegration` keeps its transaction open for ~10s
+  // post-launch; RPCs fired during that window would otherwise get
+  // swept into the App Start trace. The transaction's op is
+  // `ui.load` (not `app.start.*` — that's only on its children), so
+  // we filter both. Everything else with an active span (navigation,
+  // tap, host-instrumented work) is a meaningful parent the RPC
+  // should join.
+  return rootOp !== "ui.load" && !rootOp.startsWith("app.start.");
 }
 
 export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
