@@ -20,6 +20,7 @@ git history stay valid.
 | Phase 7 — iOS app-exit telemetry                                           | Subscribe to `MXMetricPayload` and forward `MXAppExitMetric` buckets (memory-pressure, background-task-assertion-timeout, watchdog, etc.) as Sentry events. 24h-aggregate resolution. iOS 14+. Optional 7b sub-phase adds a `UserDefaults`-anchored "killed-in-background" heuristic.          |
 | Phase 8 — refinements                                                      | Sample-rate tuning from real data; optional dual-bundle if size matters.                                                                                                                                                                                                                       |
 | Phase 9b — PII scrubber, user.id rotation, context reclassification        | Substring scrubber; installation UUID with monthly hash at diagnostic tier; native-scope field split; consoleIntegration gating; network-URL scrubbing.                                                                                                                                       |
+| Phase 11 — Metrics-first observability + `debug` tier                      | Shift day-to-day performance signal from per-RPC tracing to Sentry metrics (with bucketed device tags so "Samsung A52 is slow at sync" is a dashboard query). Rename `captureApplicationData` → `applicationUsageData` (now: stable `user.id` + usage events). New user-facing `debug` toggle enables per-RPC tracing for investigation. |
 
 ---
 
@@ -772,6 +773,496 @@ duration-anchor keys. Simple per-toggle hook on the setter path.
 
 ---
 
+## Phase 11 — Metrics-first observability + `debug` tier
+
+Shift day-to-day performance signal from per-RPC tracing to **Sentry
+metrics** ([product docs](https://docs.sentry.io/product/explore/metrics/)),
+keeping tracing as an investigation-only mode behind a new user-facing
+`debug` toggle. Rename `captureApplicationData` → `applicationUsageData`
+with refined semantics (stable `user.id` + usage events, no longer perf
+tracing).
+
+Motivation: Platformatic's [Hidden Cost of Async Context](https://blog.platformatic.dev/the-hidden-cost-of-context)
+benchmarks show full OTel auto-instrumentation removes ~80% of throughput
+and 4×s p99 latency. On a mobile RPC server the CPU number is invisible
+at ~10 RPS, but the per-call envelope egress (battery + mobile data +
+ingest $$$) and the always-on `Sentry.startSpan` + ALS wrapper are real
+costs paid for a question — "what's our p95 of `observation.create` on
+low-end Android?" — that a histogram answers more directly with no
+egress per call.
+
+Companion changes elsewhere:
+
+- §11.4 supersedes [Phase 9b.2](#9b2-userid--installation-uuid--monthly-rotation)'s
+  diagnostic-vs-app-usage gating for `user.id` rotation. The new
+  contract: monthly hash whenever `applicationUsageData=false`, raw
+  `installationId` whenever `applicationUsageData=true`. `debug` does
+  not unlock stable `user.id`.
+- §11.3 supersedes Phase 5's "per-RPC client + server spans" entry —
+  RPC spans are now `debug`-only; metrics carry the day-to-day perf
+  signal. Phase 5 retains the sync-session transaction and the
+  `before_send` privacy processor.
+
+### 11.1 Three-toggle model
+
+Rename `captureApplicationData` → `applicationUsageData` and add `debug`.
+All three are **orthogonal** but `applicationUsageData` and `debug` AND
+with `diagnosticsEnabled` internally; host UI never has to mirror that.
+
+| Toggle                 | What it gates                                                                                          | Default                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| `diagnosticsEnabled`   | `Sentry.init` runs. Errors, lifecycle, **metrics**, boot/sync/shutdown transactions.                   | `true` (per plugin)                 |
+| `applicationUsageData` | Feature-usage breadcrumbs/counters + **stable `user.id`** (no monthly hash).                           | `false`                             |
+| `debug`                | Per-RPC traces, `@comapeo/core` OTel spans, `consoleIntegration`, `rpcArgsBytes` capture (if plugin >0). | `false`                             |
+
+Effective combinations:
+
+| State                  | `Sentry.init` | Errors | Boot/sync trace | **Metrics** | Usage events | `user.id`        | Per-RPC trace |
+| ---------------------- | ------------- | ------ | --------------- | ----------- | ------------ | ---------------- | ------------- |
+| Off                    | –             | –      | –               | –           | –            | –                | –             |
+| Diagnostic (default)   | ✓             | ✓      | ✓               | ✓           | –            | sha256 monthly   | –             |
+| Diag + Usage           | ✓             | ✓      | ✓               | ✓           | ✓            | **stable**       | –             |
+| Diag + Debug           | ✓             | ✓      | ✓               | ✓           | –            | sha256 monthly   | ✓ 100%        |
+| Diag + Usage + Debug   | ✓             | ✓      | ✓               | ✓           | ✓            | stable           | ✓ 100%        |
+
+### 11.2 Metrics inventory (always-on at diagnostic)
+
+All recordings use `Sentry.metrics.distribution(...)` /
+`Sentry.metrics.increment(...)` /
+`Sentry.metrics.gauge(...)` from `@sentry/node-core` v10 (Node) and
+`@sentry/react-native` v7+ (RN). Envelopes ride the existing forwarding
+transport (`backend/lib/sentry.js` `forwardingTransport`) — same DSN,
+same control-socket → native sink, same offline-aware native queue. No
+new pipeline.
+
+Tags follow strict low-cardinality rules (see §11.8). Three **default
+tags** are attached by `metrics.js` to every emission so we can never
+forget them at the call site:
+
+- `platform` (`ios` / `android`)
+- `device_class` (`low` / `mid` / `high` — see §11.2.b)
+- `os_major` (`ios.17`, `android.13`, …)
+
+#### 11.2.a Metric inventory
+
+The first metric in each pair carries per-method detail for "which
+operation is slow"; the `.by_device` mirror exists where the
+device-slowness question is interesting and keeps per-method ×
+per-device cardinality bounded (§11.2.c).
+
+| Metric                                       | Type         | Tags                                                  | Source                              |
+| -------------------------------------------- | ------------ | ----------------------------------------------------- | ----------------------------------- |
+| `comapeo.rpc.server.duration_ms`             | distribution | `method`, `status` + defaults                         | `backend/lib/sentry.js` `rpcHook`   |
+| `comapeo.rpc.server.duration_ms.by_device`   | distribution | `status` + defaults                                   | same call site                      |
+| `comapeo.rpc.server.errors`                  | counter      | `method`, `error_class` + defaults                    | server hook on catch                |
+| `comapeo.rpc.client.duration_ms`             | distribution | `method`, `status` + defaults                         | `src/ComapeoCoreModule.ts` hook     |
+| `comapeo.rpc.client.duration_ms.by_device`   | distribution | `status` + defaults                                   | same call site                      |
+| `comapeo.rpc.client.send_ms`                 | distribution | `method` + defaults                                   | existing `rn.send.syncMs` measurement |
+| `comapeo.boot.phase_duration_ms`             | distribution | `phase` (`fgs-launch`, `extract-assets`, `node-spawn`, `loader-init`, `manager-init`, `rootkey-load`) + defaults | each boot-span `end()`              |
+| `comapeo.boot.phase_duration_ms.by_device`   | distribution | `phase` + defaults                                    | same call site                      |
+| `comapeo.boot.outcome`                       | counter      | `outcome` (`started` / `error`), `error_phase?` + defaults | `STARTED` / ERROR transition        |
+| `comapeo.sync.session.duration_ms`           | distribution | `outcome` + defaults                                  | sync session end                    |
+| `comapeo.sync.session.duration_ms.by_device` | distribution | `outcome` + defaults                                  | same call site                      |
+| `comapeo.sync.session.peers_bucket`          | counter      | `bucket` (`1-3` / `4-10` / `10+`) + defaults          | session start                       |
+| `comapeo.sync.bytes_bucket`                  | counter      | `bucket` (`<1M` / `1-10M` / `10-100M` / `100M+`) + defaults | session end                         |
+| `comapeo.backend.memory_rss_bytes`           | gauge        | defaults only                                         | 60s timer in `backend/index.js`     |
+| `comapeo.backend.heap_used_bytes`            | gauge        | defaults only                                         | same timer                          |
+| `comapeo.fgs.uptime_s`                       | gauge        | defaults only                                         | same timer                          |
+| `comapeo.state.transitions`                  | counter      | `from`, `to` + defaults                               | every `stateChange`                 |
+
+#### 11.2.b Device classification
+
+Raw `device.model` would explode metric cardinality (~2,000 distinct
+values on Android alone, × methods × statuses). The classification
+bucket gives us the actionable signal — "low-end devices are 4× slower
+at `observation.create`" — at low cardinality. Raw model/manufacturer
+stay on Sentry's event/trace scope (already attached via native SDK
+scope per [`sentry-integration.md` §7.3](./sentry-integration.md#73-native-telemetry-data-design)),
+so one debug-mode trace from the slow bucket gives the specific model.
+
+Thresholds (revisit with comapeo-mobile's low-end device list if one
+exists; otherwise these are first-cut):
+
+| Class  | Memory      | Cores       |
+| ------ | ----------- | ----------- |
+| `low`  | < 3 GB      | OR < 4      |
+| `mid`  | 3–6 GB      | AND 4–6     |
+| `high` | ≥ 6 GB      | AND ≥ 6     |
+
+Computed once at native process start; cached on the `SentryConfig`
+object alongside DSN/environment/release. Plumbed:
+
+- to RN via the existing `readSentryConfig()` Expo constant (extended
+  with a `deviceTags` field);
+- to Node via new argv flags `--deviceClass`, `--osMajor`,
+  `--platformTag` (parsed in `loader.mjs`, stored on the singleton in
+  `backend/lib/sentry.js`).
+
+`os_major` is `<platform>.<major>` — `Build.VERSION.RELEASE.split(".")[0]`
+on Android, `UIDevice.systemVersion.split(".")[0]` on iOS. Major-only
+because point releases rarely move the perf needle and would expand
+cardinality unnecessarily.
+
+#### 11.2.c Cardinality math
+
+Per-metric series ceiling with the default tags applied:
+
+- Base from defaults: 2 (platform) × 3 (device_class) × ~10 (os_major)
+  = **60** combinations.
+- `rpc.server.duration_ms` with `method` (~50) × `status` (3) on top:
+  60 × 150 = **9,000** series. Sentry's metric-cardinality guidance
+  warns above ~10k; leaves headroom for one more low-cardinality tag
+  if we discover one we need.
+- `.by_device` variant drops `method`, so base × `status` (3) = **180**.
+  Cheap.
+- `boot.phase_duration_ms` (~6 phases × 3 status-equivalent) ≈ 1k.
+- `state.transitions` (5 states × 5 states = 25 valid pairs) × 60 = 1.5k.
+
+Total across all metrics: ~25k series at steady state. Cost-comparable
+to typical web-app instrumentation; well-bounded.
+
+#### 11.2.d Why bucketed device tags, not raw
+
+Two practical pitfalls if we tagged with raw `device.model`:
+
+1. **Cardinality cost** — ~2,000 Android model strings × 50 methods × 3
+   status × ~10 OS-major = ~3M series for one metric. Unaffordable on
+   any Sentry plan and unusable on dashboards.
+2. **Long-tail noise** — a histogram with 10 samples from "Tecno Spark
+   7" isn't actionable. Bucketed by class, the same 10 samples become
+   "12,847 low-end Android samples this hour, p95 480ms" and we can
+   act on it.
+
+Raw model stays on the event/trace side (Sentry's native SDK scope
+attaches it today). When a metric flags "low-end Android 11 is bad,"
+one `debug`-mode trace from that bucket gives the actual model in
+`device.model` + `device.manufacturer`.
+
+### 11.3 Trace inventory
+
+**Always-on essential (diagnostic tier, 100% sample, not gated by `debug`):**
+
+- `comapeo.boot` transaction + phase children — once per launch.
+- `comapeo.shutdown` transaction + phase children — once per launch.
+- `comapeo.sync.session` transaction (top-level only; no per-peer or
+  per-block child spans). Span attributes restricted to bucketed peer
+  count, bucketed bytes, outcome. Frequency-bounded by sync sessions
+  themselves so volume stays low.
+
+**Gated on `debug=true` (100% sample while on):**
+
+- `rpc.client` span (JS) + `rpc.server` transaction (Node) per RPC.
+- `@comapeo/core` PR #1051 OTel spans (inherit the RPC parent — when
+  `debug=on` the parent exists).
+- `consoleIntegration` breadcrumbs on backend (currently always-on per
+  `backend/lib/sentry.js:127`; moves to `debug`-only, superseding the
+  Phase 9b.7 plan).
+- `rpc.args` span attribute when `rpcArgsBytes>0` in plugin AND
+  `debug=true`. (Two gates because `rpcArgsBytes` is build-time
+  developer config and `debug` is runtime; both must agree.)
+
+100% sample on `debug` because the user-bounded window keeps total
+volume small. No partial sampling logic in v1.
+
+### 11.4 `applicationUsageData` redefined
+
+Previously this gated per-RPC tracing + the perf grab bag. After this
+phase it gates only:
+
+1. **Stable `user.id`** — disables the monthly hash rotation specified
+   in Phase 9b.2. Locks to raw `installationId`. Without
+   `applicationUsageData` the user.id rotates monthly across
+   diagnostic captures (cohort-unlinkable). With it on, stable across
+   launches and months (cohort analysis works).
+2. **Usage breadcrumbs / counters** — a module-supplied helper:
+
+   ```ts
+   import { recordUsage } from "@comapeo/core-react-native/sentry";
+   recordUsage.screen("ObservationList");
+   recordUsage.feature("export.geojson");
+   ```
+
+   Emits a `comapeo.usage.*` breadcrumb (for crash-context) and a
+   `comapeo.usage.{screen,feature}` counter (for aggregate cohort
+   analysis). No-op when `applicationUsageData=false`. The module
+   ships the helper; the consumer decides which screens/features to
+   instrument.
+
+3. **Background/foreground breadcrumbs** (from Phase 5 — moves here as
+   the natural home for "how is the app used" data).
+
+What this no longer unlocks (compared to the old `captureApplicationData`):
+
+- Per-RPC tracing → moved to `debug` (§11.3).
+- `rpc.args` capture → still requires plugin's `rpcArgsBytes>0` AND
+  `debug=true`.
+- Anything on the [§8 hard never-capture list](./sentry-integration.md#hard-never-capture-list).
+
+### 11.5 `debug` toggle — shape
+
+User-facing in settings, restart-to-activate, same pattern as the other
+two toggles.
+
+```ts
+export function getDebugEnabled(): boolean;
+export function setDebugEnabled(value: boolean): Promise<void>;
+```
+
+- **Storage**: `ComapeoPrefs` key `sentry.debug`. Default `false`.
+- **Plugin default**: `debugDefault` field, default `false` everywhere
+  (including internal builds — the workflow is "support tells the
+  user to flip Debug on, reproduce, send the trace link, flip it
+  off"; baking it on for QA would dilute the signal).
+- **Argv**: `--debug` (boolean flag, native passes only when on).
+- **Effective gates** (enforced inside the module, never in host UI):
+  - `Sentry.init` requires `diagnosticsEnabled`.
+  - Usage events / stable `user.id` require `diagnosticsEnabled && applicationUsageData`.
+  - Per-RPC traces require `diagnosticsEnabled && debug`.
+  - `rpc.args` requires `diagnosticsEnabled && debug && rpcArgsBytes>0`.
+- **Breadcrumb on transition**: `comapeo.debug.enabled` /
+  `comapeo.debug.disabled` so the timeline records when a session was
+  diagnostic-only vs. tracing.
+- **`tracesSampleRate`**: `debug ? 1.0 : 0` (full sample because the
+  window is user-bounded; no partial sampling). Replaces the current
+  `applicationUsageData ? 0.1 : 0` logic in
+  `backend/lib/sentry.js:121-123` and `src/sentry.ts:227-229`.
+
+**v1 guardrails not included** (track for v2 if needed):
+
+- Auto-off-after-N-hours timer. Document in host guidance: "Debug
+  stays on until you turn it off."
+- Sample-rate cap. Add only if support reports forgotten-debug-on
+  sessions filling Sentry.
+
+### 11.6 Code changes by file
+
+#### Toggle plumbing (rename + new)
+
+- `src/sentry.ts` — rename `getCaptureApplicationData` /
+  `setCaptureApplicationData` → `…ApplicationUsageData`; add
+  `get/setDebugEnabled`; `initSentry` reads all three prefs.
+  `tracesSampleRate` derived from `debug` (not from
+  `applicationUsageData`).
+- `src/ComapeoCoreModule.ts` — rename native bridge methods; add
+  `setDebugEnabledNative`; `readSentryPreferences()` returns
+  `{ diagnosticsEnabled, applicationUsageData, debug }`. The
+  `onRequestHook` (`:207-277`) splits into:
+  - always: `performance.now()` delta + `metrics.rpcClient(method, status, ms)` + dual write to `.by_device`;
+  - when `debug`: the existing `Sentry.startSpan` /
+    `startNewTrace` / `getTraceData` block, including
+    `hasInheritableActiveSpan` plumbing.
+- `android/src/main/java/com/comapeo/core/ComapeoPrefs.kt` — rename
+  `captureApplicationData` key + reader/writer; **one-shot migration**
+  on open: if old key present and new absent, copy then delete. Add
+  `sentry.debug` slot.
+- `android/src/main/java/com/comapeo/core/SentryConfig.kt` — rename
+  `captureApplicationDataDefault`; add `debugDefault` and
+  `deviceTags` (computed via new `DeviceTags.kt`).
+- `android/src/main/java/com/comapeo/core/ComapeoCoreService.kt` —
+  argv now includes `--applicationUsageData`, `--debug`,
+  `--deviceClass`, `--osMajor`, `--platformTag`.
+- `android/src/main/java/com/comapeo/core/DeviceTags.kt` (new) —
+  `classify(ctx): DeviceTags(platform, deviceClass, osMajor)`. Uses
+  `ActivityManager.MemoryInfo.totalMem` +
+  `Runtime.getRuntime().availableProcessors()`. Cached lazy.
+- `ios/ComapeoPrefs.swift`, `ios/SentryConfig.swift`,
+  `ios/AppLifecycleDelegate.swift` — mirror the Android changes.
+- `ios/DeviceTags.swift` (new) — same shape; `ProcessInfo.physicalMemory`
+  + `ProcessInfo.processorCount`.
+- `app.plugin.js` — rename `captureApplicationDataDefault` →
+  `applicationUsageDataDefault`; add `debugDefault`. Validation: warn
+  (don't error) on `captureApplicationDataDefault` for one minor with
+  a pointer to the new field.
+- `backend/lib/sentry.js` — rename `captureApplicationData` field in
+  `argSpec` + `Argv` typedef → `applicationUsageData`; add `debug`,
+  `deviceClass`, `osMajor`, `platformTag`. Update `init`:
+  ```js
+  tracesSampleRate: argv.debug ? 1.0 : 0,
+  // rpcHook registered only when debug; metrics layer always-on at diagnostic
+  ```
+  Split `rpcHook` (`:282-341`): always call
+  `metrics.rpcServer(method, status, ms)`; only run the
+  `continueTrace` + `startSpan` block when `argv.debug`.
+- `backend/loader.mjs` — parse the new argv flags through the existing
+  `sentry.argSpec` machinery.
+
+#### New metrics module
+
+- `backend/lib/metrics.js` (new) — module-private wrapper around
+  `Sentry.metrics.*`. Singletons populated from `sentry-init.js`.
+  Exports:
+  - `rpcServer(method, status, ms)` — writes both the
+    `…duration_ms{method,status}` distribution and the
+    `…by_device{status}` distribution.
+  - `rpcServerError(method, errorClass)` — counter.
+  - `bootPhase(phase, ms)` — dual-write.
+  - `syncSession(outcome, ms, peersBucket, bytesBucket)` — three writes.
+  - `backendMemorySample()` — three gauges from `process.memoryUsage()`.
+  - `stateTransition(from, to)` — counter.
+  - `usageScreen(name)`, `usageFeature(name)` — counters, no-op unless
+    `applicationUsageData=true`.
+  - Internal `defaultTags` built once from
+    `{platform, deviceClass, osMajor}` argv; merged on every write so
+    call sites can't forget.
+  - No-ops entirely when Sentry is off.
+- `backend/lib/sentry-init.js` — also export `Sentry.metrics` for
+  `metrics.js` to consume; no additional dependency (it's part of
+  `@sentry/node-core` v10).
+- `backend/index.js` — register periodic memory gauge timer when
+  `diagnosticsEnabled` (was Phase 5 opt-in; promote). Each
+  `boot.<phase>` span end calls `metrics.bootPhase(phase, ms)`
+  alongside `span.end()`. Wire `metrics.stateTransition(...)` on
+  every state change.
+- `backend/lib/comapeo-rpc.js` — pass-through; the actual recording
+  lives in `sentry.js`'s `rpcHook` since that's where method + status
+  + duration are known.
+- `src/sentry-metrics.ts` (new) — RN-side mirror. Exports
+  `recordUsage.{screen,feature}` (no-op unless `applicationUsageData`)
+  and internal helpers for RPC metric recording. Same `defaultTags`
+  shape, read from `sentryConfig.deviceTags`.
+
+#### Trace simplification
+
+- `src/ComapeoCoreModule.ts:198-203` — `hasInheritableActiveSpan` /
+  `startNewTrace` plumbing stays but moves inside the `debug` branch.
+  With per-RPC tracing gated on `debug` only, the App-Start race no
+  longer exists for the diagnostic tier and the plumbing becomes
+  cold code outside debug windows.
+- `backend/lib/sentry.js:282-341` `rpcHook` — `forceTransaction: true`
+  stays for `debug` mode; without `debug`, the hook returns
+  `undefined` so the RPC server skips middleware entirely (the
+  metric is recorded in a sibling, always-on shim).
+
+#### Docs
+
+- `docs/sentry-integration.md` §9 — rewrite the tier table; rename
+  `captureApplicationData` → `applicationUsageData` throughout; add
+  `debug` row. Add a §9.6 cross-link to this Phase 11 for the
+  metrics inventory and gating.
+- `docs/sentry-integration-history.md` — append Phase 11 entry once
+  landed.
+
+### 11.7 Migration of existing consumers
+
+- **Plugin field**: `captureApplicationDataDefault` continues to be
+  read for one minor but logs a deprecation warning pointing to
+  `applicationUsageDataDefault`. Drop in the minor after.
+- **Prefs key**: one-shot migration on first open of `ComapeoPrefs`:
+  if `sentry.captureApplicationData` exists and `sentry.applicationUsageData`
+  does not, copy then delete the old key. Idempotent.
+- **JS API**: `getCaptureApplicationData` / `setCaptureApplicationData`
+  re-exported with `@deprecated` JSDoc forwarding to the new names
+  for one minor. Drop in the minor after.
+- **Native bridge methods**: same deprecation shape; old method names
+  forward to new for one minor.
+- **Behaviour at the boundary**: a user with `captureApplicationData=true`
+  today gets `applicationUsageData=true` after migration → keeps stable
+  `user.id` + usage breadcrumbs. They also lose per-RPC tracing
+  unless support flips `debug` on. This is the intended boundary —
+  most users won't notice; the few hitting perf issues get a focused
+  debug session rather than always-on traces.
+
+### 11.8 Cardinality budget + forbidden tags
+
+#### Allowed default tags (auto-attached by `metrics.js`)
+
+- `platform`: 2 values
+- `device_class`: 3 values
+- `os_major`: ~10 values per platform
+
+#### Allowed per-metric tags
+
+- `method`: small enum (~50 RPC methods)
+- `status`: 3 values (`ok` / `error` / `timeout`)
+- `phase`: 6 boot phases / 3 shutdown phases
+- `outcome`: 2 values
+- `from` / `to`: 5 state enum each
+- `bucket`: ≤ 4 values per bucket family
+- `error_class`: bounded (`TimeoutError`, `IPCError`, `RpcError`, etc.)
+
+#### Forbidden tags
+
+These are off by construction on the metrics path, mirroring the
+[§8 hard never-capture list](./sentry-integration.md#hard-never-capture-list):
+
+- `device.model`, `device.id`, `device.manufacturer` — raw model
+  stays on event/trace scope, NEVER on metrics.
+- Raw `os.version` (use `os_major` only).
+- `screen.resolution`, `screen.density`, `screen.dpi`.
+- Locale, timezone.
+- `project_id` (raw or hashed).
+- `peer_id` of any kind, raw peer count (use `peers_bucket`).
+- `rootkey` substring, base64-22-char strings.
+- File paths.
+- Lat/lng or quantised location.
+- RPC method args (raw or sliced).
+
+#### Defensive gate
+
+A `before_metric_send` hook (cheap regex, same shape as `before_send`)
+runs symmetrically on RN and Node sides. Drops emissions whose tag
+names or values match a forbidden pattern. This is belt-and-suspenders
+— the fix is always at the call site, but the hook catches typos and
+copy-paste mistakes before they ship a high-cardinality tag.
+
+Lands alongside `backend/before-send.js` from Phase 9b.1; the two
+hooks share the regex list.
+
+### 11.9 Test plan
+
+- **Unit (Kotlin / Swift)**: `ComapeoPrefs` migration — old key
+  present + new absent → new populated, old key deleted, value
+  preserved. Both platforms.
+- **Unit (Kotlin / Swift)**: `DeviceTags` classification — boundary
+  cases (exactly 3 GB RAM, exactly 4 cores, both platforms).
+- **Unit (JS)**: `metrics.js` no-ops when Sentry off; records correct
+  metric names + tags when on; applies default tags via the singleton.
+- **Unit (JS)**: `before_metric_send` drops events with forbidden tag
+  names (e.g. `project_id`) and forbidden tag values (raw base64-22).
+- **Integration (Node)**: extend `backend/lib/sentry.test.mjs` —
+  debug-off ⇒ `rpcHook` doesn't create a span; metric recorded.
+  debug-on ⇒ span created and metric recorded.
+- **Integration (RN)**: extend `src/__tests__/sentry.test.js` — same
+  shape on the client side.
+- **Manual smoke** (Sentry test project): flip each combination,
+  verify on Sentry's metrics explorer:
+  - Diagnostic only → boot trace present, error events present,
+    `rpc.server.duration_ms` populated, no per-RPC traces, no
+    usage breadcrumbs, `user.id` differs between two launches
+    one month apart (mock by setting system clock).
+  - + Usage → `comapeo.usage.*` counters appear, `user.id` stable
+    across launches.
+  - + Debug → per-RPC traces appear with `@comapeo/core` spans as
+    children. Metrics still recording in parallel.
+  - Verify `.by_device` metric splits cleanly across two physical
+    test devices (different `device_class`).
+- **Regression**: existing `e2e/run-instrumented-tests.sh` + Swift /
+  Xcode test suites pass with all toggles off (Sentry inert).
+
+### 11.10 Open decisions
+
+1. **Sentry plan availability**: metrics ingestion is metered separately
+   from spans/events on some Sentry plans. Verify against the org's
+   current plan before landing — the volume math in §11.2.c is
+   conservative but worth confirming on the billing side.
+2. **`comapeo.sync.session` transaction tier**: §11.3 keeps it
+   always-on at diagnostic with bucketed attributes. Alternative is to
+   move it to `debug`-only and rely on the
+   `comapeo.sync.session.duration_ms` distribution for the everyday
+   answer. Current plan trades a known small trace volume (one per
+   sync session) for richer drill-down on sync issues.
+3. **Auto-off for `debug`**: §11.5 leaves this for v2. Revisit once
+   we see real support traffic — if users routinely forget to flip
+   `debug` back off, a 24h auto-off timer adds bounded cost at the
+   expense of one more piece of state to test.
+4. **Device-class thresholds**: §11.2.b's table is a first cut.
+   Either pull thresholds from comapeo-mobile's existing low-end
+   device list (if one exists) or instrument with a temporary
+   `device_class_v2` shadow metric using alternate thresholds and
+   pick the version that aligns better with observed perf cliffs.
+
+---
+
 ## Test plan (remaining phases)
 
 ### Unit / integration
@@ -921,3 +1412,61 @@ duration-anchor keys. Simple per-toggle hook on the setter path.
   `captureApplicationData`.
 - Setter paths (`setDiagnosticsEnabled`, `setCaptureApplicationData`)
   — reset Phase 6 anchors on toggle cycle (§9b.9).
+
+### Phase 11
+
+Renames (`captureApplicationData` → `applicationUsageData`) and new
+`debug` toggle plumbing:
+
+- `src/sentry.ts` — rename toggle accessors; add `get/setDebugEnabled`;
+  derive `tracesSampleRate` from `debug` (not `applicationUsageData`).
+- `src/ComapeoCoreModule.ts` — rename native bridge methods; split
+  `onRequestHook` into always-on metric recording and debug-gated
+  `Sentry.startSpan` block.
+- `src/sentry-metrics.ts` (new) — RN-side `metrics.*` wrappers +
+  `recordUsage.{screen, feature}` helpers; default-tag injection from
+  `sentryConfig.deviceTags`.
+- `app.plugin.js` — rename `captureApplicationDataDefault` →
+  `applicationUsageDataDefault`; add `debugDefault`; deprecation
+  warning on the old field for one minor.
+- `android/.../ComapeoPrefs.kt`, `ios/ComapeoPrefs.swift` — rename
+  pref key + one-shot migration of the old key; add `sentry.debug`
+  slot.
+- `android/.../SentryConfig.kt`, `ios/SentryConfig.swift` — rename
+  `captureApplicationDataDefault`; add `debugDefault` and
+  `deviceTags`.
+- `android/.../ComapeoCoreService.kt`, `ios/AppLifecycleDelegate.swift`
+  — extend argv with `--applicationUsageData`, `--debug`,
+  `--deviceClass`, `--osMajor`, `--platformTag`.
+- `android/.../DeviceTags.kt` (new), `ios/DeviceTags.swift` (new) —
+  device classification + OS-major computation.
+- `backend/lib/sentry.js` — rename `captureApplicationData` argv
+  field; add `debug` / `deviceClass` / `osMajor` / `platformTag`;
+  `tracesSampleRate: argv.debug ? 1.0 : 0`; split `rpcHook` into
+  always-on metric write + debug-gated span.
+- `backend/lib/metrics.js` (new) — `Sentry.metrics.*` wrapper with
+  default-tag injection and the `before_metric_send` defensive
+  scrubber.
+- `backend/lib/sentry-init.js` — re-export `Sentry.metrics` to
+  `metrics.js`.
+- `backend/index.js` — register periodic memory gauge timer; call
+  `metrics.bootPhase` at each boot-span end; wire
+  `metrics.stateTransition`.
+- `backend/loader.mjs` — parse the new argv flags via the existing
+  `sentry.argSpec`.
+- `docs/sentry-integration.md` — rewrite §9 tier table to match
+  Phase 11's three-toggle model; add §9.6 cross-link to this section.
+- `docs/sentry-integration-history.md` — append Phase 11 entry on
+  landing.
+
+Tests added:
+
+- `android/src/test/java/com/comapeo/core/DeviceTagsTest.kt`,
+  `ios/Tests/DeviceTagsTests.swift` — classification boundary cases.
+- `android/.../ComapeoPrefsMigrationTest.kt`,
+  `ios/Tests/ComapeoPrefsMigrationTest.swift` — old-key → new-key
+  one-shot migration.
+- `backend/lib/metrics.test.mjs` (new) — default-tag injection,
+  `before_metric_send` defensive scrubber, no-op when Sentry off.
+- Extensions to `backend/lib/sentry.test.mjs` and
+  `src/__tests__/sentry.test.js` for debug-on / debug-off branching.
