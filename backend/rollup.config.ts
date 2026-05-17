@@ -1,6 +1,5 @@
 import { rmSync } from "node:fs";
-import { cp, mkdir, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { cp } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
@@ -16,7 +15,6 @@ import addonLoaderPlugin, {
   androidAddonLoaderBanner,
   iosAddonLoaderBanner,
 } from "./rollup-plugins/rollup-plugin-addon-loader.js";
-import importHookPlugin from "./rollup-plugins/rollup-plugin-import-hook.mjs";
 import {
   captureDebugIdsPlugin,
   relocateSourcemapsPlugin,
@@ -24,7 +22,6 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const require = createRequire(import.meta.url);
 
 /**
  * Per-platform output dirs. `scripts/build-backend.ts` sets these env
@@ -149,14 +146,6 @@ const STATIC_ASSET_PATHS = [
  * Copies the static asset paths from `backend/` into `outDir` after the
  * rollup write completes. Replaces the per-platform staging copy that
  * `scripts/build-backend.ts` used to do.
- *
- * Also drops the upstream `import-in-the-middle/lib/register.js` (CJS)
- * verbatim at `lib/register.js`, plus a sibling `lib/package.json`
- * marking the dir as commonjs. iitm's loader-thread hook generates ESM
- * source `import { register } from '<file:.../lib/register.js>'`; if
- * we let rollup bundle `lib/register` it emits a default-only ESM file
- * that breaks the import. Letting Node load the real CJS via its
- * ESM-over-CJS interop layer gives us the named exports iitm needs.
  */
 function copyStaticAssetsPlugin(outDir: string): Plugin {
   return {
@@ -169,18 +158,6 @@ function copyStaticAssetsPlugin(outDir: string): Plugin {
           }),
         ),
       );
-      const libDir = path.join(outDir, "lib");
-      await mkdir(libDir, { recursive: true });
-      await Promise.all([
-        cp(
-          require.resolve("import-in-the-middle/lib/register.js"),
-          path.join(libDir, "register.js"),
-        ),
-        writeFile(
-          path.join(libDir, "package.json"),
-          '{"type":"commonjs"}\n',
-        ),
-      ]);
     },
   };
 }
@@ -224,9 +201,6 @@ function buildPlugins({
     // per output via the platform-specific banner — see `output.banner`
     // entries below.
     addonLoaderPlugin(),
-    // Rewrites `module.register('import-in-the-middle/hook.mjs', ...)`
-    // to point at the bundled `./importHook.js` entry below.
-    importHookPlugin(),
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
     commonjs({ ignoreDynamicRequires: true }),
     // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
@@ -276,20 +250,9 @@ function cleanOutputDirPlugin(dir: string): Plugin {
 // OpenTelemetry SDK) and initialises Sentry, then dynamic-imports
 // `./index.mjs` (the platform-appropriate bundle of either
 // `index.js` or `index.ios.js`).
-//
-// `importHook` is a dedicated entry because
-// `module.register('import-in-the-middle/hook.mjs', ...)` loads the
-// hook fresh in a child loader thread — can't be inlined.
-//
-// `lib/register.js` is NOT bundled; copyStaticAssetsPlugin drops the
-// upstream CJS file at `lib/register.js` so iitm's loader-thread
-// `import { register } from '...'` finds named exports via Node's
-// ESM-over-CJS interop. Bundling it would emit a default-only ESM
-// shim and break iitm at runtime.
 const ANDROID_INPUT = {
   loader: path.join(__dirname, "loader.mjs"),
   index: path.join(__dirname, "index.js"),
-  importHook: require.resolve("import-in-the-middle/hook.mjs"),
 };
 
 // iOS uses a thin entry that imports `lib/install-polywasm.js` first
@@ -298,19 +261,12 @@ const ANDROID_INPUT = {
 const IOS_INPUT = {
   loader: path.join(__dirname, "loader.mjs"),
   index: path.join(__dirname, "index.ios.js"),
-  importHook: require.resolve("import-in-the-middle/hook.mjs"),
 };
 
 const sharedOutput: OutputOptions = {
   format: "esm",
   sourcemap: true,
-  entryFileNames: (chunk) => {
-    // `rollup-plugin-import-hook.mjs` rewrites
-    // `register('import-in-the-middle/hook.mjs', ...)` to
-    // `register('./importHook.js', ...)` — must land with `.js`.
-    if (chunk.name === "importHook") return "[name].js";
-    return "[name].mjs";
-  },
+  entryFileNames: "[name].mjs",
   // `@sentry/node-core` + `@sentry/opentelemetry` + the OpenTelemetry
   // SDK land here (via `./lib/sentry-init.js`), loaded only when the
   // loader's argv check passes.

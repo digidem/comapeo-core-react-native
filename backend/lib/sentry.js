@@ -124,6 +124,12 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
     // v9 moved this out of `_experiments` — keep the CLI flag name so
     // native doesn't have to change.
     enableLogs: argv.sentryEnableLogs,
+    // We register no OTel auto-instrumentations, so the iitm loader
+    // thread that `@sentry/node-core`'s `initializeEsmLoader` would
+    // spin up has nothing to hook. Disabling it lets us drop iitm
+    // from the bundle entirely (rollup `importHook` entry +
+    // `lib/register.js` static copy + the rewrite plugin).
+    registerEsmLoaderHooks: false,
     transport: forwardingTransport,
     // Function form preserves SDK defaults (inboundFilters, linkedErrors,
     // nodeContext, etc.) — the array form would replace them.
