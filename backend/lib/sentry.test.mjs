@@ -1,39 +1,36 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import * as Sentry from "@sentry/node";
+import * as Sentry from "@sentry/node-core";
 
-import { init, rpcHook, setSink, flush } from "./sentry.js";
-import { envelopeToFrame } from "./sentry-frame.js";
+import { initSentry } from "./sentry-init.js";
+import { rpcHook, setSink, flush } from "./sentry.js";
 
 /**
  * End-to-end "is the Node Sentry layer alive" check. Drives the real
- * `@sentry/node` SDK through `sentry.js`'s `forwardingTransport` and
- * asserts that an envelope frame reaches the sink. If init silently
- * skips, if the transport doesn't get wired, if rpcHook returns
- * undefined when it shouldn't, or if the sink stops draining — this
- * test fails.
+ * `@sentry/node-core` SDK + OpenTelemetry SDK through `sentry.js`'s
+ * `forwardingTransport` and asserts that an envelope frame reaches
+ * the sink. If init silently skips, if the OTel SDK isn't wired so
+ * `startSpan` produces nothing, if the transport doesn't get connected,
+ * if rpcHook returns undefined when it shouldn't, or if the sink stops
+ * draining — this test fails.
  *
  * Deliberately asserts on **presence**, not on op-name strings or
  * attribute shapes. Renaming `rpc.server` or adding new attributes
  * is a legitimate refactor that should not break this test; the
  * regression class to catch is "no envelope at all".
  */
-test("rpcHook produces an envelope frame end-to-end via real @sentry/node", async () => {
-  init({
-    Sentry,
-    argv: {
-      sentryDsn: "https://x@sentry.io/1",
-      sentryEnvironment: "test",
-      sentryRelease: "0.0.0+test",
-      sentrySampleRate: "1.0",
-      sentryTracesSampleRate: "1.0",
-      sentryRpcArgsBytes: "0",
-      sentryEnableLogs: false,
-      sentryBaggage: "",
-      captureApplicationData: true,
-    },
-    envelopeToFrame,
+test("rpcHook produces an envelope frame end-to-end via real @sentry/node-core", async () => {
+  initSentry({
+    sentryDsn: "https://x@sentry.io/1",
+    sentryEnvironment: "test",
+    sentryRelease: "0.0.0+test",
+    sentrySampleRate: "1.0",
+    sentryTracesSampleRate: "1.0",
+    sentryRpcArgsBytes: "0",
+    sentryEnableLogs: false,
+    sentryBaggage: "",
+    captureApplicationData: true,
   });
 
   const captured = [];

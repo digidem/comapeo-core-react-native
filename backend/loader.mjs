@@ -1,10 +1,8 @@
-// nodejs-mobile spawn target. `Sentry.init()` must run before
-// `index.js`'s static imports so OpenTelemetry's import-in-the-middle
-// hook can patch them.
+// nodejs-mobile spawn target. The Sentry SDK init must run before
+// `index.js`'s static imports so the OpenTelemetry SDK is registered
+// as the global tracer provider before any code starts producing
+// spans through `sentry.js`'s wrappers.
 
-// Local name `register` (not aliased) so `rollup-plugin-import-hook.mjs`'s
-// `register('import-in-the-middle/hook.mjs', ...)` regex matches.
-import { register } from "node:module";
 import { parseArgs } from "node:util";
 import * as sentry from "./lib/sentry.js";
 
@@ -23,21 +21,20 @@ const { values } = parseArgs({
 /** @type {Date | undefined} */ let importSentryNodeEndDate;
 
 if (values.sentryDsn) {
-  // iitm must register BEFORE @sentry/node loads — the SDK's own
-  // `maybeInitializeEsmLoader` is dead code in our esm-shim'd bundle
-  // (gated on `typeof require === 'undefined'`, which createRequire
-  // injection makes always-truthy). The literal string is rewritten
-  // to `'./importHook.js'` by `rollup-plugin-import-hook.mjs`.
-  register("import-in-the-middle/hook.mjs", import.meta.url);
-
+  // `sentry-init.js` is the staging file that aggregates every heavy
+  // dependency we hold out of the always-on chunk: `@sentry/node-core`,
+  // `@sentry/opentelemetry`, the OpenTelemetry SDK, and `sentry-frame.js`.
   // Dynamic import keeps the rollup chunk unloaded when no DSN is
-  // configured.
+  // configured; the span around it measures the full SDK load+init.
+  //
+  // We do NOT register `import-in-the-middle` here. The slim
+  // `@sentry/node-core` SDK bundles no auto-instrumentations (that
+  // was the ~2s cost of `@sentry/node`), so the iitm loader thread
+  // would have nothing to hook and is pure dead weight.
   importSentryNodeStartDate = new Date();
-  const Sentry = await import("@sentry/node");
+  const { initSentry } = await import("./lib/sentry-init.js");
+  initSentry(values);
   importSentryNodeEndDate = new Date();
-  const { envelopeToFrame } = await import("./lib/sentry-frame.js");
-
-  sentry.init({ Sentry, argv: values, envelopeToFrame });
 }
 
 await sentry.withBootTrace(

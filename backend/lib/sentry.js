@@ -1,7 +1,8 @@
 // SDK adapter. Singletons are populated by `init()` (called from
-// loader.mjs only when `--sentryDsn` is set). No static dep on
-// `@sentry/node` — the SDK is injected so the rollup chunk stays
-// unloaded otherwise. Every export here no-ops if `init` never runs.
+// `sentry-init.js`, itself dynamic-imported from `loader.mjs` only
+// when `--sentryDsn` is set). No static dep on `@sentry/node-core-core` —
+// the SDK is injected so the rollup chunk stays unloaded otherwise.
+// Every export here no-ops if `init` never runs.
 
 /** @typedef {import("./sentry-frame.js").SentryFrame} SentryFrame */
 
@@ -40,7 +41,7 @@ export const argSpec = {
  * }} Argv
  */
 
-/** @type {typeof import("@sentry/node") | null} */
+/** @type {typeof import("@sentry/node-core") | null} */
 let Sentry = null;
 /** @type {{ rpcArgsBytes: number, captureApplicationData: boolean } | null} */
 let config = null;
@@ -99,7 +100,7 @@ function numericArg(raw) {
  * Caller has already verified `argv.sentryDsn` is set.
  *
  * @param {{
- *   Sentry: typeof import("@sentry/node"),
+ *   Sentry: typeof import("@sentry/node-core"),
  *   argv: Argv,
  *   envelopeToFrame: (envelope: any) => SentryFrame,
  * }} args
@@ -120,7 +121,9 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
     tracesSampleRate: argv.captureApplicationData
       ? numericArg(argv.sentryTracesSampleRate ?? DEFAULT_TRACES_SAMPLE_RATE)
       : 0,
-    _experiments: argv.sentryEnableLogs ? { enableLogs: true } : undefined,
+    // v9 moved this out of `_experiments` — keep the CLI flag name so
+    // native doesn't have to change.
+    enableLogs: argv.sentryEnableLogs,
     transport: forwardingTransport,
     // Function form preserves SDK defaults (inboundFilters, linkedErrors,
     // nodeContext, etc.) — the array form would replace them.
@@ -168,7 +171,7 @@ export async function withBootTrace(args, loadIndex) {
       // IIFE captures node-spawn (not loader-init) for `boot.manager-init`.
       // loader-init must stay LIVE while children attach — passing an
       // already-ended span as `parentSpan` doesn't reliably parent
-      // under @sentry/node's OTel backend.
+      // under @sentry/node-core's OTel backend.
       const loaderInitSpan = sentryRef.startInactiveSpan({
         name: "boot.loader-init",
         op: "boot.loader-init",
