@@ -1027,12 +1027,39 @@ export function setDebugEnabled(value: boolean): Promise<void>;
   `applicationUsageData ? 0.1 : 0` logic in
   `backend/lib/sentry.js:121-123` and `src/sentry.ts:227-229`.
 
+#### 24h auto-off
+
+`debug=true` auto-expires 24 hours after the most recent enable.
+Bounds the cost of a user (or support engineer) forgetting to flip
+it back off without forcing a per-session re-enable.
+
+- **Storage**: new pref slot `sentry.debugEnabledAtMs` written
+  synchronously alongside `sentry.debug=true`. Cleared on
+  `debug=false`. Wall-clock (`currentTimeMillis()` / `Date()`) not
+  monotonic so it survives reboots.
+- **Check point**: at native process start (both the main process
+  and the FGS, before argv is built). Single
+  `now - storedTs > 24h` comparison; if true, the prefs writer
+  flips `debug=false`, clears the timestamp, and queues a
+  `comapeo.debug.auto_disabled` breadcrumb to fire on the next
+  `Sentry.init`. Argv is built with `debug=false` for that launch.
+- **Re-enable semantics**: `setDebugEnabled(true)` always writes a
+  fresh `debugEnabledAtMs`. Calling it while already enabled
+  refreshes the 24h window — toggling at 23h59m gives another 24h.
+- **Clock skew**: winding the system clock forward triggers early
+  auto-off; backward delays it. Acceptable — this is a best-effort
+  cost guardrail, not a security boundary.
+- **Edge case**: `debug=true` with no timestamp (older install
+  predating Phase 11 with the cell missing) → treat as "enabled
+  now"; write the timestamp on first read so the 24h clock starts
+  cleanly. Not reachable in practice since Phase 11 ships the slot
+  alongside the toggle, but cheap to handle.
+
 **v1 guardrails not included** (track for v2 if needed):
 
-- Auto-off-after-N-hours timer. Document in host guidance: "Debug
-  stays on until you turn it off."
 - Sample-rate cap. Add only if support reports forgotten-debug-on
-  sessions filling Sentry.
+  sessions filling Sentry — but the 24h auto-off above is the
+  primary mitigation, so this is unlikely to be needed.
 
 ### 11.6 Code changes by file
 
@@ -1054,7 +1081,11 @@ export function setDebugEnabled(value: boolean): Promise<void>;
 - `android/src/main/java/com/comapeo/core/ComapeoPrefs.kt` — rename
   `captureApplicationData` key + reader/writer; **one-shot migration**
   on open: if old key present and new absent, copy then delete. Add
-  `sentry.debug` slot.
+  `sentry.debug` slot and `sentry.debugEnabledAtMs` slot. The
+  `readDebugEnabled()` reader implements the §11.5 24h auto-off: if
+  the stored age exceeds 24h, flips `debug=false`, clears the
+  timestamp, queues the `auto_disabled` breadcrumb, returns `false`.
+  The setter writes the timestamp synchronously alongside the value.
 - `android/src/main/java/com/comapeo/core/SentryConfig.kt` — rename
   `captureApplicationDataDefault`; add `debugDefault` and
   `deviceTags` (computed via new `DeviceTags.kt`).
@@ -1066,7 +1097,8 @@ export function setDebugEnabled(value: boolean): Promise<void>;
   `ActivityManager.MemoryInfo.totalMem` +
   `Runtime.getRuntime().availableProcessors()`. Cached lazy.
 - `ios/ComapeoPrefs.swift`, `ios/SentryConfig.swift`,
-  `ios/AppLifecycleDelegate.swift` — mirror the Android changes.
+  `ios/AppLifecycleDelegate.swift` — mirror the Android changes,
+  including `sentry.debugEnabledAtMs` and the auto-off reader logic.
 - `ios/DeviceTags.swift` (new) — same shape; `ProcessInfo.physicalMemory`
   + `ProcessInfo.processorCount`.
 - `app.plugin.js` — rename `captureApplicationDataDefault` →
@@ -1213,6 +1245,11 @@ hooks share the regex list.
 - **Unit (Kotlin / Swift)**: `ComapeoPrefs` migration — old key
   present + new absent → new populated, old key deleted, value
   preserved. Both platforms.
+- **Unit (Kotlin / Swift)**: `ComapeoPrefs.readDebugEnabled` 24h
+  auto-off — fresh enable returns `true`; +23h59m returns `true`;
+  +24h01m returns `false`, clears the timestamp, and the next
+  read returns `false` with no further mutation. Setter refresh
+  resets the window. Both platforms.
 - **Unit (Kotlin / Swift)**: `DeviceTags` classification — boundary
   cases (exactly 3 GB RAM, exactly 4 cores, both platforms).
 - **Unit (JS)**: `metrics.js` no-ops when Sentry off; records correct
@@ -1239,27 +1276,14 @@ hooks share the regex list.
 - **Regression**: existing `e2e/run-instrumented-tests.sh` + Swift /
   Xcode test suites pass with all toggles off (Sentry inert).
 
-### 11.10 Open decisions
+### 11.10 Decisions
 
-1. **Sentry plan availability**: metrics ingestion is metered separately
-   from spans/events on some Sentry plans. Verify against the org's
-   current plan before landing — the volume math in §11.2.c is
-   conservative but worth confirming on the billing side.
-2. **`comapeo.sync.session` transaction tier**: §11.3 keeps it
-   always-on at diagnostic with bucketed attributes. Alternative is to
-   move it to `debug`-only and rely on the
-   `comapeo.sync.session.duration_ms` distribution for the everyday
-   answer. Current plan trades a known small trace volume (one per
-   sync session) for richer drill-down on sync issues.
-3. **Auto-off for `debug`**: §11.5 leaves this for v2. Revisit once
-   we see real support traffic — if users routinely forget to flip
-   `debug` back off, a 24h auto-off timer adds bounded cost at the
-   expense of one more piece of state to test.
-4. **Device-class thresholds**: §11.2.b's table is a first cut.
-   Either pull thresholds from comapeo-mobile's existing low-end
-   device list (if one exists) or instrument with a temporary
-   `device_class_v2` shadow metric using alternate thresholds and
-   pick the version that aligns better with observed perf cliffs.
+| Question                                            | Decision                                                                                                                                                                                                                  |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sentry plan availability for metrics ingestion      | Verified — metrics are included in the current plan. Land Phase 11 as drafted; no `.by_device` mirror drop needed.                                                                                                        |
+| `comapeo.sync.session` transaction tier             | Always-on at diagnostic with bucketed attributes (current §11.3 draft). Trades a known small trace volume — one per sync session — for richer drill-down on the rare sync issues.                                          |
+| Auto-off guardrail for `debug`                      | Ship 24h auto-off in v1 (see §11.5). Sample-rate cap deferred to v2 unless real support traffic demands it.                                                                                                                |
+| `device_class` thresholds                           | Use the first-cut thresholds in §11.2.b (Low < 3 GB OR < 4 cores; Mid 3–6 GB AND 4–6 cores; High ≥ 6 GB AND ≥ 6 cores). Revisit post-landing if observed perf cliffs don't align — the table is straightforward to retune. |
 
 ---
 
@@ -1431,7 +1455,8 @@ Renames (`captureApplicationData` → `applicationUsageData`) and new
   warning on the old field for one minor.
 - `android/.../ComapeoPrefs.kt`, `ios/ComapeoPrefs.swift` — rename
   pref key + one-shot migration of the old key; add `sentry.debug`
-  slot.
+  and `sentry.debugEnabledAtMs` slots; implement the 24h auto-off
+  in the debug reader (§11.5).
 - `android/.../SentryConfig.kt`, `ios/SentryConfig.swift` — rename
   `captureApplicationDataDefault`; add `debugDefault` and
   `deviceTags`.
