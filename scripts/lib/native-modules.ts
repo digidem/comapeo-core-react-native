@@ -1,5 +1,6 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { $ } from "execa";
 
 export type NativeModule = { name: string; usesNapi: boolean };
 
@@ -33,65 +34,32 @@ export type NativePair = {
   usesNapi: boolean;
 };
 
-/**
- * Walk `<backendDir>/node_modules` for every installed `(name,
- * version)` of `name` (top-level + every nested copy). Multi-version
- * dep trees ship one artifact per `(name, version)` pair, not one per
- * name (which would silently shadow the lower version with the higher
- * one).
- */
-function findNativeModuleVersions(
-  backendDir: string,
-  name: string,
-): { version: string }[] {
-  const topLevelNodeModules = join(backendDir, "node_modules");
-  const versions: { version: string }[] = [];
-  const seenDirs = new Set<string>();
-  const stack: string[] = [topLevelNodeModules];
-  while (stack.length > 0) {
-    const dir = stack.pop()!;
-    const candidate = join(dir, name, "package.json");
-    if (existsSync(candidate)) {
-      const packageDir = dirname(candidate);
-      if (!seenDirs.has(packageDir)) {
-        seenDirs.add(packageDir);
-        const { version } = JSON.parse(readFileSync(candidate, "utf-8"));
-        versions.push({ version });
-      }
-    }
-    const entries = (() => {
-      try {
-        return readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return [];
-      }
-    })();
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const nested = join(dir, entry.name, "node_modules");
-      if (existsSync(nested)) stack.push(nested);
-    }
-  }
-  return versions;
-}
-
-/**
- * Resolve every `(name, version)` pair that needs a prebuild +
- * platform packaging. Multiple disk locations can share the same
- * version (e.g. four nested `sodium-native@5.1.0` copies); the
- * addon-loader rewrite loads each one by its versioned key, so build-
- * side dedup avoids racing parallel fetches into the same temp dir.
- */
-export function collectNativePairs(
+export async function collectNativePairs(
   backendDir: string,
   modules: readonly NativeModule[],
-): NativePair[] {
-  const seen = new Map<string, NativePair>();
+): Promise<NativePair[]> {
+  const pairs: NativePair[] = [];
+
   for (const { name, usesNapi } of modules) {
-    for (const { version } of findNativeModuleVersions(backendDir, name)) {
-      const key = `${name}__${version}`;
-      if (!seen.has(key)) seen.set(key, { name, version, usesNapi });
+    const npmListResult = await $({
+      cwd: backendDir,
+      lines: true,
+    })`npm list ${name} --parseable`;
+
+    const versions = new Set<string>();
+
+    for (const modulePath of npmListResult.stdout) {
+      const { version } = JSON.parse(
+        readFileSync(join(modulePath, "package.json"), "utf-8"),
+      );
+
+      versions.add(version);
+    }
+
+    for (const version of versions.values()) {
+      pairs.push({ name, version, usesNapi });
     }
   }
-  return [...seen.values()];
+
+  return pairs;
 }
