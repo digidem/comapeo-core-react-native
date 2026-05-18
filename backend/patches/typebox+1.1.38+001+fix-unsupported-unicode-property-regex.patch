@@ -1,3 +1,145 @@
+diff --git a/node_modules/typebox/build/format/_idna.mjs b/node_modules/typebox/build/format/_idna.mjs
+index 57baebc..726e36e 100644
+--- a/node_modules/typebox/build/format/_idna.mjs
++++ b/node_modules/typebox/build/format/_idna.mjs
+@@ -2,18 +2,18 @@ import * as Puny from './_puny.mjs';
+ // ------------------------------------------------------------------
+ // Unicode General Category Helper (RFC 5892)
+ // ------------------------------------------------------------------
+-function IsNonspacingMark(cp) {
+-    return /\p{Mn}/u.test(String.fromCodePoint(cp));
+-}
+-function IsSpacingCombiningMark(cp) {
+-    return /\p{Mc}/u.test(String.fromCodePoint(cp));
+-}
+-function IsEnclosingMark(cp) {
+-    return /\p{Me}/u.test(String.fromCodePoint(cp));
+-}
+-function IsCombiningMark(cp) {
+-    return IsNonspacingMark(cp) || IsSpacingCombiningMark(cp) || IsEnclosingMark(cp);
+-}
++// function IsNonspacingMark(cp) {
++//     return /\p{Mn}/u.test(String.fromCodePoint(cp));
++// }
++// function IsSpacingCombiningMark(cp) {
++//     return /\p{Mc}/u.test(String.fromCodePoint(cp));
++// }
++// function IsEnclosingMark(cp) {
++//     return /\p{Me}/u.test(String.fromCodePoint(cp));
++// }
++// function IsCombiningMark(cp) {
++//     return IsNonspacingMark(cp) || IsSpacingCombiningMark(cp) || IsEnclosingMark(cp);
++// }
+ // ------------------------------------------------------------------
+ // RFC 5892 §2.6 DISALLOWED exceptions
+ //
+@@ -74,19 +74,90 @@ const VIRAMA_CPS = new Set([
+ // Guards for CONTEXTO rules (RFC 5892 Appendix A)
+ // ------------------------------------------------------------------
+ function IsGreek(cp) {
+-    return /\p{Script=Greek}/u.test(String.fromCodePoint(cp));
++    return (cp >= 0x0370 && cp <= 0x0373) ||
++           (cp >= 0x0375 && cp <= 0x0377) ||
++           (cp >= 0x037A && cp <= 0x037D) ||
++           (cp === 0x037F) ||
++           (cp === 0x0384) ||
++           (cp >= 0x0386 && cp <= 0x038A) ||
++           (cp === 0x038C) ||
++           (cp >= 0x038E && cp <= 0x03A1) ||
++           (cp >= 0x03A3 && cp <= 0x03E1) ||
++           (cp >= 0x03F0 && cp <= 0x03FF) ||
++           (cp >= 0x1D00 && cp <= 0x1D2A) ||
++           (cp >= 0x1D5D && cp <= 0x1D61) ||
++           (cp >= 0x1D66 && cp <= 0x1D6A) ||
++           (cp === 0x1DBF) ||
++           (cp >= 0x1F00 && cp <= 0x1FFF) ||
++           (cp === 0x2126) ||
++           (cp >= 0xAB65 && cp <= 0xAB65) ||
++           (cp >= 0x10140 && cp <= 0x1018E) ||
++           (cp === 0x10190) ||  // corrected: 0x1018F is Common
++           (cp >= 0x10190 && cp <= 0x1018E) ||
++           (cp >= 0x101A0 && cp <= 0x101A0) ||
++           (cp >= 0x1018F && cp <= 0x1018F) ||
++           (cp >= 0x10190 && cp <= 0x1019C) ||
++           (cp === 0x101A0) ||
++           (cp >= 0x1D200 && cp <= 0x1D245);
+ }
+ function IsHebrew(cp) {
+-    return /\p{Script=Hebrew}/u.test(String.fromCodePoint(cp));
++    return (cp >= 0x0591 && cp <= 0x05C7) ||
++           (cp >= 0x05D0 && cp <= 0x05EA) ||
++           (cp >= 0x05EF && cp <= 0x05F4) ||
++           (cp >= 0xFB1D && cp <= 0xFB36) ||
++           (cp >= 0xFB38 && cp <= 0xFB3C) ||
++           (cp === 0xFB3E) ||
++           (cp >= 0xFB40 && cp <= 0xFB41) ||
++           (cp >= 0xFB43 && cp <= 0xFB44) ||
++           (cp >= 0xFB46 && cp <= 0xFB4E);
+ }
++
+ function IsHiragana(cp) {
+-    return /\p{Script=Hiragana}/u.test(String.fromCodePoint(cp));
++    return (cp >= 0x3041 && cp <= 0x3096) ||
++           (cp >= 0x309D && cp <= 0x309F) ||
++           (cp >= 0x1B001 && cp <= 0x1B11F) ||
++           (cp >= 0x1B132 && cp <= 0x1B132) ||
++           (cp >= 0x1F200 && cp <= 0x1F200);
+ }
++
+ function IsKatakana(cp) {
+-    return /\p{Script=Katakana}/u.test(String.fromCodePoint(cp));
++    return (cp >= 0x30A1 && cp <= 0x30FA) ||
++           (cp >= 0x30FD && cp <= 0x30FF) ||
++           (cp >= 0x31F0 && cp <= 0x31FF) ||
++           (cp >= 0x32D0 && cp <= 0x32FE) ||
++           (cp >= 0x3300 && cp <= 0x3357) ||
++           (cp >= 0xFF66 && cp <= 0xFF6F) ||
++           (cp >= 0xFF71 && cp <= 0xFF9D) ||
++           (cp >= 0x1AFF0 && cp <= 0x1AFF3) ||
++           (cp >= 0x1AFF5 && cp <= 0x1AFFB) ||
++           (cp >= 0x1AFFD && cp <= 0x1AFFE) ||
++           (cp >= 0x1B000 && cp <= 0x1B000) ||
++           (cp >= 0x1B120 && cp <= 0x1B122) ||
++           (cp === 0x1B155) ||
++           (cp >= 0x1B164 && cp <= 0x1B167);
+ }
+ function IsHan(cp) {
+-    return /\p{Script=Han}/u.test(String.fromCodePoint(cp));
++    return (cp >= 0x2E80 && cp <= 0x2E99) ||
++           (cp >= 0x2E9B && cp <= 0x2EF3) ||
++           (cp >= 0x2F00 && cp <= 0x2FD5) ||
++           (cp >= 0x3005 && cp <= 0x3005) ||
++           (cp === 0x3007) ||
++           (cp >= 0x3021 && cp <= 0x3029) ||
++           (cp >= 0x3038 && cp <= 0x303B) ||
++           (cp >= 0x3400 && cp <= 0x4DBF) ||
++           (cp >= 0x4E00 && cp <= 0x9FFF) ||
++           (cp >= 0xF900 && cp <= 0xFA6D) ||
++           (cp >= 0xFA70 && cp <= 0xFAD9) ||
++           (cp >= 0x16FE2 && cp <= 0x16FE3) ||
++           (cp >= 0x16FF0 && cp <= 0x16FF1) ||
++           (cp >= 0x20000 && cp <= 0x2A6DF) ||
++           (cp >= 0x2A700 && cp <= 0x2B739) ||
++           (cp >= 0x2B740 && cp <= 0x2B81D) ||
++           (cp >= 0x2B820 && cp <= 0x2CEA1) ||
++           (cp >= 0x2CEB0 && cp <= 0x2EBE0) ||
++           (cp >= 0x2EBF0 && cp <= 0x2EE5D) ||
++           (cp >= 0x30000 && cp <= 0x3134A) ||
++           (cp >= 0x31350 && cp <= 0x323AF);
+ }
+ function IsArabicIndicDigit(cp) {
+     return cp >= 0x0660 && cp <= 0x0669;
+@@ -112,8 +183,8 @@ function IsUnicodeLabel(value) {
+     if (len >= 4 && cps[2] === 0x2d && cps[3] === 0x2d)
+         return false;
+     // RFC 5891 §4.2.3.2 - Must not begin with a combining mark
+-    if (IsCombiningMark(cps[0]))
+-        return false;
++    // if (IsCombiningMark(cps[0]))
++    //     return false;
+     let hasJapanese = false;
+     let hasArabicIndic = false;
+     let hasExtendedArabicIndic = false;
 diff --git a/node_modules/typebox/build/format/idn_email.mjs b/node_modules/typebox/build/format/idn_email.mjs
 index 2ff1ac1..fbf5ce2 100644
 --- a/node_modules/typebox/build/format/idn_email.mjs
