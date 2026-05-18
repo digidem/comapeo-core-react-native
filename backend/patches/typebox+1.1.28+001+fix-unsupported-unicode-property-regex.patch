@@ -1,5 +1,5 @@
 diff --git a/node_modules/typebox/build/format/_idna.mjs b/node_modules/typebox/build/format/_idna.mjs
-index 57baebc..726e36e 100644
+index 57baebc..def8e16 100644
 --- a/node_modules/typebox/build/format/_idna.mjs
 +++ b/node_modules/typebox/build/format/_idna.mjs
 @@ -2,18 +2,18 @@ import * as Puny from './_puny.mjs';
@@ -33,7 +33,7 @@ index 57baebc..726e36e 100644
  // ------------------------------------------------------------------
  // RFC 5892 §2.6 DISALLOWED exceptions
  //
-@@ -74,19 +74,90 @@ const VIRAMA_CPS = new Set([
+@@ -74,19 +74,89 @@ const VIRAMA_CPS = new Set([
  // Guards for CONTEXTO rules (RFC 5892 Appendix A)
  // ------------------------------------------------------------------
  function IsGreek(cp) {
@@ -76,7 +76,6 @@ index 57baebc..726e36e 100644
 +           (cp >= 0xFB43 && cp <= 0xFB44) ||
 +           (cp >= 0xFB46 && cp <= 0xFB4E);
  }
-+
  function IsHiragana(cp) {
 -    return /\p{Script=Hiragana}/u.test(String.fromCodePoint(cp));
 +    return (cp >= 0x3041 && cp <= 0x3096) ||
@@ -129,7 +128,7 @@ index 57baebc..726e36e 100644
  }
  function IsArabicIndicDigit(cp) {
      return cp >= 0x0660 && cp <= 0x0669;
-@@ -112,8 +183,8 @@ function IsUnicodeLabel(value) {
+@@ -112,8 +182,8 @@ function IsUnicodeLabel(value) {
      if (len >= 4 && cps[2] === 0x2d && cps[3] === 0x2d)
          return false;
      // RFC 5891 §4.2.3.2 - Must not begin with a combining mark
@@ -140,10 +139,10 @@ index 57baebc..726e36e 100644
      let hasJapanese = false;
      let hasArabicIndic = false;
      let hasExtendedArabicIndic = false;
-diff --git a/node_modules/typebox/build/format/idn_email.mjs b/node_modules/typebox/build/format/idn_email.mjs
+diff --git a/node_modules/typebox/build/format/idn-email.mjs b/node_modules/typebox/build/format/idn-email.mjs
 index 2ff1ac1..fbf5ce2 100644
---- a/node_modules/typebox/build/format/idn_email.mjs
-+++ b/node_modules/typebox/build/format/idn_email.mjs
+--- a/node_modules/typebox/build/format/idn-email.mjs
++++ b/node_modules/typebox/build/format/idn-email.mjs
 @@ -1,4 +1,4 @@
 -const IdnEmail = /^(?!.*\.\.)[\p{L}\p{N}!#$%&'*+/=?^_`{|}~-]+(?:\.[\p{L}\p{N}!#$%&'*+/=?^_`{|}~-]+)*@[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?(?:\.[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?)*$/iu;
 +const IdnEmail = /^(?!.*\.\.)[a-zA-Z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/i;
