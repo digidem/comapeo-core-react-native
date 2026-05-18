@@ -48,10 +48,10 @@ class NodeJSIPC(
     private var connectJob: Job? = null
     private var sendChannel = Channel<String>(Channel.UNLIMITED)
 
-    // Reusable buffers to reduce GC pressure
+    // Reusable buffers to reduce GC pressure; larger messages use temporary buffers.
     private val receiveLengthBuffer = ByteArray(4)
     private val sendLengthBuffer = ByteArray(4)
-    private var receiveMessageBuffer = ByteArray(1024) // Larger messages use temporary buffers
+    private val receiveMessageBuffer = ByteArray(1024)
 
     sealed class State {
         data object Connecting : State()
@@ -85,11 +85,9 @@ class NodeJSIPC(
         if (state.value is State.Connected || state.value is State.Connecting) {
             return
         }
-        // Allow reconnection from error state
         if (state.value is State.Error) {
             state.value = State.Disconnected
         }
-        // Create fresh send channel if previous was closed
         if (sendChannel.isClosedForSend) {
             sendChannel = Channel(Channel.UNLIMITED)
         }
@@ -97,27 +95,16 @@ class NodeJSIPC(
             while (isActive) {
                 when (state.value) {
                     is State.Connecting, is State.Connected -> return@launch
-                    is State.Disconnecting -> {
-                        state.first { it is State.Disconnected }
-                    }
+                    is State.Disconnecting -> state.first { it is State.Disconnected }
                     is State.Disconnected -> {
-                        if (state.compareAndSet(State.Disconnected, State.Connecting)) {
-                            break
-                        }
-                        // Loop continues if another thread changed the state before we could set it
+                        // Loop on CAS contention from another thread changing the state.
+                        if (state.compareAndSet(State.Disconnected, State.Connecting)) break
                     }
-                    is State.Error -> {
-                        // Reset to disconnected to allow reconnection
-                        state.value = State.Disconnected
-                    }
+                    is State.Error -> state.value = State.Disconnected
                 }
             }
             if (::socket.isInitialized) {
-                try {
-                    socket.close()
-                } catch (e: Exception) {
-                    // Ignore exceptions when closing - socket might already be closed
-                }
+                try { socket.close() } catch (_: Exception) {}
             }
             try {
                 socket = connectWithRetry(socketAddress).apply {
@@ -169,10 +156,8 @@ class NodeJSIPC(
             ByteBuffer.wrap(receiveLengthBuffer).order(ByteOrder.LITTLE_ENDIAN).int
 
         val buffer = if (messageLength <= receiveMessageBuffer.size) {
-            // Reuse fixed buffer for small messages
             receiveMessageBuffer
         } else {
-            // Allocate temporary buffer for large messages
             ByteArray(messageLength)
         }
 

@@ -1,7 +1,12 @@
 import { comapeo } from "@comapeo/core-react-native";
+import * as Sentry from "@sentry/react-native";
 import React, { useEffect, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Button, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// `initSentry` is called in `index.ts` (with `Sentry.wrap` around
+// the root component for app-start tracking). Don't call it again
+// here — it throws on second init by design.
 
 let renderCount = 0;
 
@@ -24,6 +29,22 @@ export default function App() {
         </Group>
         <Group name="Render count">
           <Text testID="render-count">{renderCount++}</Text>
+        </Group>
+        <Group name="Sentry smoke">
+          <Button
+            title="Capture RN-side exception"
+            onPress={() => {
+              Sentry.captureException(
+                new Error("smoke-test: RN-side exception"),
+              );
+            }}
+          />
+          <Button
+            title="Reload projects (warm listProjects)"
+            onPress={() => {
+              comapeo.listProjects().then(setProjects);
+            }}
+          />
         </Group>
       </ScrollView>
     </SafeAreaView>

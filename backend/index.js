@@ -4,12 +4,11 @@ import Fastify from "fastify";
 import { ComapeoRpcServer } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
+import * as sentry from "./lib/sentry.js";
+import ensureError from "ensure-error";
 
-// Resolved relative to this file at evaluation time. The drizzle
-// migrations directory is kept alongside the bundle by
-// `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` so this path
-// is valid both at npm-install time and inside the staged
-// `nodejs-project/` resource tree on device.
+// `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` mirrors this
+// directory into the on-device bundle.
 const MIGRATIONS_FOLDER_PATH = fileURLToPath(
   new URL("./node_modules/@comapeo/core/drizzle", import.meta.url),
 );
@@ -21,10 +20,8 @@ const [comapeoSocketPath, controlSocketPath, privateStorageDir] =
 
 const fastify = Fastify();
 
-// `MapeoManager` cannot exist until native sends the rootKey on the control
-// socket. Hold the comapeo RPC server in a closure so the shutdown handler
-// can close it if it ever got built, while staying a no-op if shutdown lands
-// before init.
+// Manager construction is gated on native sending the rootKey; hold
+// these so shutdown can close them if construction succeeded.
 /** @type {ComapeoRpcServer | undefined} */
 let comapeoRpcServer;
 /** @type {Awaited<ReturnType<typeof createComapeo>> | undefined} */
@@ -43,14 +40,9 @@ let initConsumed = false;
 
 const controlIpcServer = new SimpleRpcServer({
   /**
-   * Receive the 16-byte rootKey from native and unblock manager construction.
-   *
-   * The first valid `init` resolves `initPromise`. Subsequent inits are
-   * rejected with a warning so a misbehaving native side cannot reset the
-   * manager mid-session. A malformed payload (non-string `rootKey`, bad
-   * base64, or wrong length after decode) rejects `initPromise` once,
-   * which surfaces to native as the process exiting non-zero — native then
-   * transitions to its `error` state.
+   * First valid init resolves `initPromise`; subsequent inits ignore
+   * (so a misbehaving native side can't reset the manager mid-session).
+   * Malformed payload rejects once → process exits → native enters ERROR.
    *
    * @param {Record<string, unknown>} message
    */
@@ -68,13 +60,9 @@ const controlIpcServer = new SimpleRpcServer({
       initConsumed = true;
       return;
     }
-    // Strict base64 shape check. `Buffer.from(s, "base64")` is
-    // permissive — invalid characters are silently dropped, so a
-    // tampered string could still decode to 16 bytes that aren't the
-    // bytes the producer encoded. Both Android (`Base64.NO_WRAP`) and
-    // iOS (`base64EncodedString()`) emit standard base64 with `=`
-    // padding; for a 16-byte input that's exactly 22 base64 chars
-    // followed by `==`. Anything else is malformed.
+    // `Buffer.from(s, "base64")` silently drops invalid chars, so a
+    // tampered string can still decode to 16 unrelated bytes. Both
+    // platforms emit standard base64; 16 bytes = 22 chars + "==".
     if (!/^[A-Za-z0-9+/]{22}==$/.test(message.rootKey)) {
       rejectInit(
         new Error(
@@ -87,9 +75,6 @@ const controlIpcServer = new SimpleRpcServer({
     }
     const rootKey = Buffer.from(message.rootKey, "base64");
     if (rootKey.byteLength !== 16) {
-      // Belt-and-braces: regex matched but decoded to wrong length.
-      // Shouldn't be reachable given the regex, but the check is
-      // free and the consequence of a bad rootKey is identity loss.
       rejectInit(
         new Error(
           `init.rootKey must decode to 16 bytes, got ${rootKey.byteLength}`,
@@ -102,14 +87,8 @@ const controlIpcServer = new SimpleRpcServer({
     resolveInit(rootKey);
   },
   shutdown: async () => {
-    // Announce graceful shutdown BEFORE closing anything. Native peers
-    // (FGS-side and main-app-side on Android) use the presence of this
-    // frame to distinguish "expected disconnect" from "unexpected
-    // disconnect" — a control socket that closes without a preceding
-    // `stopping` frame is unambiguously a crash or kill, not a graceful
-    // exit. AF_UNIX is a stream socket; the kernel guarantees that the
-    // 'stopping' frame is delivered before the EOF (socket close),
-    // allowing the peer to distinguish graceful shutdown from a crash.
+    // Broadcast BEFORE close: AF_UNIX guarantees this frame reaches
+    // peers before EOF, so they can tell graceful shutdown from a crash.
     controlIpcServer.broadcast({ type: "stopping" });
     const closePromises = [controlIpcServer.close(), fastify.close()];
     if (comapeoRpcServer) closePromises.push(comapeoRpcServer.close());
@@ -117,23 +96,10 @@ const controlIpcServer = new SimpleRpcServer({
     if (comapeo) await comapeo.close();
   },
   /**
-   * Cross-process error attribution channel (Android FGS → Node →
-   * main-app process). When the FGS-side `NodeJSService` enters ERROR
-   * from a *local* cause (rootkey load failure, startup watchdog
-   * timeout) while Node is still alive, it sends this frame. The
-   * backend re-broadcasts via `handleFatal` (which broadcasts the
-   * `error` frame and exits 1 after a 100ms flush) so the main-app
-   * process sees a real `error` frame with the correct phase and
-   * message — not a generic "unexpected disconnect" inferred from a
-   * sudden socket close.
-   *
-   * Without this channel, an FGS-side rootkey failure leaves Node
-   * hanging on `await initPromise` (no backend timeout on init) while
-   * the main-app process stays at STARTING forever. iOS doesn't use
-   * this — in-process, the module reads service state directly.
-   *
-   * Validates the input: a misbehaving native side sending a
-   * malformed payload is logged and ignored, not crashed on.
+   * Android-only attribution channel: FGS-local failures (rootkey load,
+   * startup watchdog) send this so the main-app process gets a real
+   * `error` frame instead of inferring "unexpected disconnect" from a
+   * socket close. iOS reads service state directly in-process.
    *
    * @param {Record<string, unknown>} message
    */
@@ -145,26 +111,25 @@ const controlIpcServer = new SimpleRpcServer({
       console.warn("Received malformed error-native frame, ignoring", message);
       return;
     }
-    handleFatal(message.phase, new Error(message.message));
+    const err = new Error(message.message);
+    /** @type {Error & { source?: string }} */ (err).source = "native";
+    handleFatal(message.phase, err);
   },
 });
 
 /**
- * Routes any startup failure or uncaught throw through a single exit
- * handler. Tagged with the boot `phase` so native (which receives the
- * frame on the control socket) can surface a precise error to the user.
- *
- * Centralising failure here means the boot IIFE below can stay
- * straight-line: each `await` either succeeds or throws, and the catch
- * funnels into the same broadcast-then-exit machinery as
- * `uncaughtException` / `unhandledRejection`.
+ * Single exit handler for startup/runtime failures: tag the Sentry
+ * event with `phase`, broadcast to native, flush, exit. Keeps the boot
+ * IIFE straight-line.
  *
  * @param {string} phase
  * @param {unknown} error
  */
 async function handleFatal(phase, error) {
-  const err = error instanceof Error ? error : new Error(String(error));
+  const err = ensureError(error);
   console.error(`Fatal during ${phase}:`, err);
+  const source = getStringProp(err, "source") || "unknown";
+  sentry.captureFatal(phase, err, source);
   try {
     controlIpcServer.broadcast({
       type: "error",
@@ -175,17 +140,15 @@ async function handleFatal(phase, error) {
   } catch (broadcastErr) {
     console.error("Failed to broadcast error frame", broadcastErr);
   }
-  // Give the broadcast a moment to flush over the socket before we
-  // tear the process down. The control socket is local AF_UNIX so the
-  // kernel buffer flush is fast; a 100ms cap is generous and bounds
-  // the worst case where the peer is slow to drain.
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  // 100ms covers AF_UNIX flush; Sentry flushes in parallel.
+  await Promise.all([
+    sentry.flush(100),
+    new Promise((resolve) => setTimeout(resolve, 100)),
+  ]);
   process.exit(1);
 }
 
-// Async handlers are supported here. Node will not auto-exit while the
-// handler's microtasks/timers are pending, so the broadcast above gets
-// a chance to flush before our explicit `process.exit(1)`.
+// Async handlers OK: Node waits on pending microtasks/timers before exit.
 process.on("uncaughtException", (error) => {
   handleFatal("runtime", error);
 });
@@ -193,50 +156,67 @@ process.on("unhandledRejection", (reason) => {
   handleFatal("runtime", reason);
 });
 
+/**
+ * Tag a thrown error with `.phase` (non-enumerable) for `handleFatal`
+ * attribution. Sentry-agnostic — works in the no-DSN path.
+ *
+ * @template T
+ * @param {string} phase
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+async function withPhase(phase, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    const err = ensureError(e);
+    Object.defineProperty(err, "phase", {
+      value: phase,
+      enumerable: false,
+      configurable: true,
+    });
+    throw err;
+  }
+}
+
 (async () => {
   try {
-    // 1. Bind the control socket. Native is already polling for it; once
-    // bound, the `started` broadcast tells native it can send the init frame.
-    try {
-      await controlIpcServer.listen(controlSocketPath);
-    } catch (e) {
-      throw Object.assign(e, { phase: "listen-control" });
-    }
+    await withPhase("listen-control", () =>
+      controlIpcServer.listen(controlSocketPath),
+    );
     console.log(`Control socket listening on ${controlSocketPath}`);
+
+    // Drain loader.mjs's pre-listen queue; SimpleRpcServer's own ring
+    // buffer covers the gap until clients connect.
+    sentry.setSink((frame) => controlIpcServer.broadcast(frame));
+
     controlIpcServer.setReadinessPhase("started");
 
-    // 2. Wait for native to send the rootKey. `initPromise` resolves on the
-    // first valid init frame; rejects on a malformed one.
-    let rootKey;
-    try {
-      rootKey = await initPromise;
-    } catch (e) {
-      throw Object.assign(e, { phase: "init" });
-    }
+    // No span: native already measures `boot.rootkey-load` on the
+    // same trace; a duplicate would only add noise.
+    const rootKey = await withPhase("init", () => initPromise);
 
-    // 3. Construct the manager and bind the comapeo RPC socket.
-    try {
-      comapeo = createComapeo({
-        privateStorageDir,
-        fastify,
-        migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
-        rootKey,
-      });
-      comapeoRpcServer = new ComapeoRpcServer(comapeo);
-      await comapeoRpcServer.listen(comapeoSocketPath);
-    } catch (e) {
-      throw Object.assign(e, { phase: "construct" });
-    }
+    // Dashboard label (`boot.manager-init`) vs. wire phase (`construct`)
+    // used by native error frames.
+    await withPhase("construct", () =>
+      sentry.withSpan("boot.manager-init", async () => {
+        comapeo = createComapeo({
+          privateStorageDir,
+          fastify,
+          migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
+          rootKey,
+        });
+        comapeoRpcServer = new ComapeoRpcServer(comapeo, {
+          onRequestHook: sentry.rpcHook(),
+        });
+        await comapeoRpcServer.listen(comapeoSocketPath);
+      }),
+    );
     console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
 
-    // 4. Announce ready. The settle-window-then-ready dance is gone now
-    // that `ready` carries actual meaning (manager exists, RPC is safe).
     controlIpcServer.setReadinessPhase("ready");
   } catch (error) {
-    const phase =
-      (error && typeof error === "object" && "phase" in error
-        ? /** @type {{phase: string}} */ (error).phase
-        : null) ?? "boot";
+    const phase = getStringProp(error, "phase") || "boot";
     handleFatal(phase, error);
   }
 })();
@@ -244,3 +224,12 @@ process.on("unhandledRejection", (reason) => {
 process.on("exit", () => {
   console.log("node exiting");
 });
+
+/**
+ * @param {unknown} e
+ * @param {string} prop
+ */
+function getStringProp(e, prop) {
+  const value = /** @type {any} */ (e)?.[prop];
+  return typeof value === "string" ? value : undefined;
+}

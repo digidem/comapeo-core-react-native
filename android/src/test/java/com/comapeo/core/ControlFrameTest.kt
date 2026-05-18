@@ -67,6 +67,47 @@ class ControlFrameTest {
     }
 
     @Test
+    fun parsesSentryEventReSerializingPayload() {
+        val frame = ControlFrame.parse(
+            """{"type":"sentry-event","payload":{"event_id":"abc","level":"error"}}"""
+        )
+        assertTrue("expected SentryEvent, got $frame", frame is ControlFrame.SentryEvent)
+        // The payload object is re-serialised so the SDK's
+        // `SentryEvent.Deserializer` can re-parse it. JSONObject key
+        // order isn't guaranteed across the round-trip, so assert on
+        // contents rather than literal equality.
+        val payload = (frame as ControlFrame.SentryEvent).payloadJson
+        assertTrue(payload.contains("\"event_id\":\"abc\""))
+        assertTrue(payload.contains("\"level\":\"error\""))
+    }
+
+    @Test
+    fun sentryEventMissingPayloadReturnsMalformed() {
+        val frame = ControlFrame.parse("""{"type":"sentry-event"}""")
+        assertTrue(frame is ControlFrame.Malformed)
+        assertTrue(
+            (frame as ControlFrame.Malformed).detail.contains("payload"),
+        )
+    }
+
+    @Test
+    fun parsesSentryEnvelope() {
+        val frame = ControlFrame.parse(
+            """{"type":"sentry-envelope","data":"aGVsbG8="}"""
+        )
+        assertEquals(ControlFrame.SentryEnvelope("aGVsbG8="), frame)
+    }
+
+    @Test
+    fun sentryEnvelopeMissingDataReturnsMalformed() {
+        val frame = ControlFrame.parse("""{"type":"sentry-envelope"}""")
+        assertTrue(frame is ControlFrame.Malformed)
+        assertTrue(
+            (frame as ControlFrame.Malformed).detail.contains("data"),
+        )
+    }
+
+    @Test
     fun nonJsonReturnsMalformed() {
         val frame = ControlFrame.parse("not json at all")
         assertTrue("expected Malformed, got $frame", frame is ControlFrame.Malformed)

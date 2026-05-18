@@ -27,11 +27,10 @@ import java.util.concurrent.atomic.AtomicReference
 data class ShutdownMessage(val type: String = "shutdown")
 
 /**
- * Frame native sends to Node when an FGS-side local failure (rootkey
- * load, startup watchdog timeout) needs cross-process attribution. The
- * backend's `error-native` handler re-broadcasts via `broadcastError`
- * and exits, so the main-app process sees a real `error` frame with
- * the actual phase rather than a generic "unexpected disconnect".
+ * Native→Node frame for cross-process attribution of FGS-side local failures
+ * (rootkey, startup watchdog). The backend's `error-native` handler re-broadcasts
+ * and exits, so the main-app process sees a real `error` frame with the actual
+ * phase rather than a generic "unexpected disconnect".
  */
 @Serializable
 private data class ErrorNativeMessage(
@@ -43,83 +42,57 @@ private data class ErrorNativeMessage(
 const val APK_LAST_UPDATE_TIME_KEY = "apk_last_update_time"
 const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
-const val NODEJS_PROJECT_INDEX_FILENAME = "index.mjs"
+// loader.mjs parses --sentry* argv, optionally inits @sentry/node, then imports index.mjs.
+const val NODEJS_PROJECT_INDEX_FILENAME = "loader.mjs"
 
-/**
- * Bound on `ipcDeferred.await()` inside `sendErrorNativeFrame`. If the
- * FGS fails before NodeJSIPC is constructed, the deferred never
- * completes and an unbounded await would pin a coroutine. Two seconds
- * is generous for an in-process completion that normally happens in
- * milliseconds; on miss, the frame is logged as dropped.
- */
+/** Bound on `ipcDeferred.await()` in [sendErrorNativeFrame] so a never-completing
+ *  deferred (FGS failed before NodeJSIPC was constructed) doesn't pin a coroutine. */
 private const val SEND_ERROR_NATIVE_TIMEOUT_MS = 2_000L
 
 @Suppress("KotlinJniMissingFunction")
 class NodeJSService(
     context: android.content.Context,
-    /**
-     * Maximum milliseconds the service may stay in STARTING before the
-     * watchdog forces ERROR. Configurable so tests (and slow CI) can
-     * tighten or relax it. Default 30 s covers cold device boot plus
-     * addon dlopens (sodium-native + better-sqlite3 dominate) with
-     * margin; without the watchdog, a backend hang would leave STARTING
-     * as a black hole.
-     */
+    /** Forwarded as `--sentry*` argv to backend/loader.mjs. `null` → loader skips Sentry. */
+    private val sentryConfig: SentryConfig? = null,
+    /** Backend forwards span/event data with potential app content when `true`. Ignored when [sentryConfig] is null. */
+    private val captureApplicationData: Boolean = false,
+    /** Max ms in STARTING before the watchdog forces ERROR. 30 s covers cold boot + native addon dlopens. */
     private val startupTimeoutMs: Long = 30_000,
 ) : ContextWrapper(context) {
     /**
-     * Public lifecycle state mirroring iOS's `NodeJSService.State`. This
-     * is a *derived* value — see `deriveState` for the inputs. The FGS's
-     * `ComapeoCoreService` forwards transitions to the JS layer via the
-     * Expo module so callers can render UI feedback. See issue #29.
+     * Public lifecycle state mirroring iOS's `NodeJSService.State`. *Derived* —
+     * see [deriveState] for inputs. ComapeoCoreService forwards transitions to
+     * the JS layer via the Expo module.
      *
-     * State semantics:
-     * - STOPPED  — initial; not running.
-     * - STARTING — Node process has been spawned (or is about to be) AND
-     *              we're awaiting the backend's `ready` broadcast on the
-     *              control socket. The rootkey hand-off happens in this
-     *              window: backend sends `started`, FGS sends the init
-     *              frame with the rootkey, backend constructs MapeoManager
-     *              and replies with `ready`.
-     * - STARTED  — RPC is safe to use. The comapeo socket is bound.
+     * - STOPPED  — initial.
+     * - STARTING — Node spawned (or about to be); awaiting `ready` on the control
+     *              socket. Rootkey handshake happens in this window.
+     * - STARTED  — RPC safe; comapeo socket bound.
      * - STOPPING — graceful shutdown initiated.
-     * - ERROR    — observable failure (rootkey load failed, backend boot
-     *              error, shutdown timed out, IPC connect error,
-     *              malformed control frame). `getLastError()` carries
-     *              the structured detail.
+     * - ERROR    — observable failure. `getLastError()` carries the detail.
      *
-     * **ERROR is per-instance terminal.** Once an instance enters ERROR,
-     * `start()` and `stop()` are refused — the application must
-     * `destroy()` the instance and create a fresh `NodeJSService`. On
-     * Android this is the natural model: the FGS creates a new
-     * `NodeJSService` in `onCreate` for every service start, so a
-     * recovery flow is "stop the FGS, start it again" and a brand-new
-     * instance gets STOPPED → STARTING. The node thread may still be
-     * alive when ERROR is set (this layer does not tear it down on
-     * error); `destroy()` is what releases it.
+     * **ERROR is per-instance terminal.** `start()` and `stop()` refuse it;
+     * recovery is `destroy()` + create a fresh instance. The FGS does this
+     * naturally by creating a new NodeJSService in `onCreate` for each start.
+     * The node thread may still be alive on ERROR — `destroy()` releases it.
      */
     enum class State {
         STOPPED, STARTING, STARTED, STOPPING, ERROR
     }
 
     /**
-     * Structured detail attached to ERROR transitions sourced from the
-     * backend's `{type:"error",phase,message,stack?}` control frame, or
-     * synthesized when the node thread exits unexpectedly without a
-     * frame. `phase` mirrors the boot phase strings the backend tags
-     * errors with (`listen-control`, `init`, `construct`, `runtime`)
-     * plus the local `rootkey`, `starting-timeout`, `node-runtime`,
-     * `node-runtime-unexpected`.
+     * Structured detail attached to ERROR. Sourced from the backend's
+     * `{type:"error",phase,message,…}` frame or synthesized on unexpected exit.
+     * `phase` is one of the backend's boot-phase strings (`listen-control`, `init`,
+     * `construct`, `runtime`) or a local phase (`extract-assets`, `rootkey`,
+     * `starting-timeout`, `node-runtime`, `node-runtime-unexpected`).
      */
     data class ErrorInfo(val phase: String, val message: String)
 
     /**
-     * Whether the Node.js runtime thread is running, not yet started, or
-     * has exited. The exit reason distinguishes a graceful exit (we asked
-     * for it via `stop()` or saw a `stopping` frame) from an unexpected
-     * one (thread returned without us asking) — the latter derives to
-     * ERROR so a crash in a native addon or an unrecoverable
-     * `process.abort()` is observable as ERROR rather than STOPPED.
+     * Node runtime-thread lifecycle. `Exited` carries an [ExitReason] so an
+     * unexpected exit (native-addon crash, `process.abort()`) derives to ERROR
+     * rather than STOPPED.
      */
     sealed class NodeRuntimeState {
         object NotRunning : NodeRuntimeState()
@@ -128,25 +101,16 @@ class NodeJSService(
     }
 
     enum class ExitReason {
-        /**
-         * `stop()` was called or the backend broadcast `{type:"stopping"}`
-         * before the thread exited. The graceful path.
-         */
+        /** stop() was called or a `stopping` frame arrived before exit. */
         REQUESTED,
-
-        /**
-         * The thread returned without a preceding stop signal. Derives
-         * to ERROR via `deriveState`.
-         */
+        /** Thread returned without a stop signal. Derives to ERROR. */
         UNEXPECTED,
     }
 
     /**
-     * What the backend has told us via control-socket frames, plus local
-     * failures that share the same conceptual slot (rootkey load,
-     * watchdog timeout). Mirrors the boot phases the backend tags errors
-     * with, with `Unknown` for "no frames yet" and `ControlBound` for
-     * "received `started`, awaiting init→ready".
+     * Backend status reported via control-socket frames (plus local failures sharing
+     * the same slot). `Unknown` = no frames yet; `ControlBound` = saw `started`,
+     * awaiting init→ready.
      */
     sealed class BackendState {
         object Unknown : BackendState()
@@ -157,11 +121,9 @@ class NodeJSService(
     }
 
     /**
-     * Atomic snapshot of the three component states plus the derived
-     * `state` and the most recent error detail. Stored together in a
-     * single `MutableStateFlow` so concurrent CAS-loops update the
-     * tuple as a unit and observers always see a matching `(state,
-     * lastError)` view.
+     * Atomic snapshot of the three component states + derived `state` + most-recent
+     * error. One `MutableStateFlow` so CAS updates the tuple as a unit and observers
+     * always see a matching `(state, lastError)` view.
      */
     private data class ComponentSnapshot(
         val nodeRuntime: NodeRuntimeState = NodeRuntimeState.NotRunning,
@@ -179,14 +141,7 @@ class NodeJSService(
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var nodeJob: Job? = null
 
-    /**
-     * Active startup-watchdog job slot. Launched in `start()`, cancelled
-     * by `cancelWatchdog()` whenever the service leaves STARTING.
-     * Holds an `AtomicReference` so `getAndSet(null)` is a single
-     * thread-safe operation pairing "take ownership of the current
-     * watchdog ref" with "clear the slot" — avoids any window where
-     * two threads could both observe and try to cancel the same job.
-     */
+    /** Active watchdog slot. `getAndSet(null)` pairs "take ownership" with "clear" atomically. */
     private val startupWatchdogJob = AtomicReference<Job?>(null)
     private val dataDir: String = filesDir.absolutePath
     private val nodeProjectDir: File = File(filesDir, NODEJS_PROJECT_DIRNAME)
@@ -197,38 +152,25 @@ class NodeJSService(
     private val json = Json { encodeDefaults = true }
     private val ipcDeferred = CompletableDeferred<NodeJSIPC>()
 
-    /**
-     * Sentry boot transaction handle. Opened in [start], closed in
-     * [applyAndEmit] on the first non-STARTING transition. `Any?`
-     * keeps `io.sentry.*` types out of this file.
-     */
+    /** elapsedRealtime stamp from the activity intent, used to backdate boot.fgs-launch.
+     *  `-1L` when the FGS was restarted by the system without an intent. */
+    @Volatile
+    var serviceStartElapsedMs: Long = -1L
+
+    /** Sentry boot transaction handle. Opened in [start], closed in [applyAndEmit]
+     *  on the first non-STARTING transition. `Any?` keeps io.sentry.* out of callers. */
     private val bootTx = AtomicReference<Any?>(null)
 
-    /**
-     * In-flight boot-phase spans keyed by phase. The FGS process
-     * observes `rootkey-load` and `init-frame` directly; the
-     * remaining phases (`listen-control`, `construct`,
-     * `ipc-connect`) live in the Node-side boot once Phase 3
-     * wires them up via distributed tracing.
-     */
+    /** In-flight FGS-side boot-phase spans keyed by phase
+     *  (`fgs-launch`, `extract-assets`, `node-spawn`, `rootkey-load`). */
     private val bootSpans = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
-    /**
-     * Single-slot state observer. The FGS routes transitions through here
-     * to `ComapeoCoreService`, which broadcasts to the main app process via
-     * the control socket's `started`/`ready`/`stopping`/`error` messages —
-     * JS side derives its own state machine from those (no extra
-     * cross-process IPC needed beyond the `error-native` channel).
-     */
+    /** Single-slot state observer; FGS routes through here to broadcast on the control socket. */
     @Volatile
     var onStateChange: ((State) -> Unit)? = null
 
-    /**
-     * Atomic state container. `MutableStateFlow.getAndUpdate` is a
-     * CAS-loop, so concurrent transitions resolve in a defined order
-     * and the entire `(nodeRuntime, backendState, stopRequested,
-     * state, lastError)` tuple is always observed as a matching unit.
-     */
+    /** Atomic state container — `getAndUpdate` is a CAS loop, so the
+     *  `(nodeRuntime, backendState, stopRequested, state, lastError)` tuple is always coherent. */
     private val stateFlow = MutableStateFlow(ComponentSnapshot())
 
     fun getState(): State = stateFlow.value.state
@@ -247,14 +189,8 @@ class NodeJSService(
         @JvmStatic
         external fun startNodeWithArguments(args: Array<String>): Int
 
-        /**
-         * Pure function: maps the three component states to the public
-         * `State`. The decision order lives on [deriveLifecycleState]
-         * — single source of truth. This delegate exists so the
-         * companion can expose it as a [@JvmStatic] entry point;
-         * tests prefer the top-level helper to avoid triggering
-         * the companion's `System.loadLibrary` init.
-         */
+        /** Companion delegate over the top-level [deriveLifecycleState]. Tests use
+         *  the top-level helper to avoid the companion's `System.loadLibrary` init. */
         @JvmStatic
         fun deriveState(
             nodeRuntime: NodeRuntimeState,
@@ -267,20 +203,15 @@ class NodeJSService(
         initialize(dataDir)
         serviceScope.launch {
             withContext(Dispatchers.IO) {
-                log("Deleting socket files if they exist")
                 deleteSocketFiles()
-                log("Deleted socket files")
             }
-            // Drives the rootkey handshake: on `started` we ship the init
-            // frame with the bytes from RootKeyStore; on `ready` we
-            // promote to STARTED (via the derivation).
+            // Drives the rootkey handshake: on `started` ship the init frame from
+            // RootKeyStore; on `ready` promote to STARTED via the derivation.
             ipcDeferred.complete(
                 NodeJSIPC(
                     controlSocketFile,
                     onConnectionStateChange = { ipcState ->
-                        // applyAndEmit already captures the
-                        // exception on the ERROR state derived
-                        // from a bad disconnect — crumb only.
+                        // applyAndEmit captures the ERROR derived from a bad disconnect — crumb only here.
                         logCrumb(
                             SentryCategories.IPC,
                             "control IPC: ${ipcState.javaClass.simpleName}",
@@ -298,26 +229,18 @@ class NodeJSService(
     }
 
     /**
-     * Mutates the component-state snapshot under a CAS-loop, recomputes
-     * the derived `state`, and fires `onStateChange` outside the lock if
-     * the derived value changed.
+     * Mutates the component-state snapshot under a CAS loop, recomputes the
+     * derived `state`, and fires `onStateChange` outside the lock if it changed.
      *
-     * `error` is set when the transition has a caller-supplied error
-     * detail (most error paths). When the derived state lands in ERROR
-     * *without* a caller-supplied detail (e.g. an unexpected
-     * `nodeRuntime.exited`), a synthetic `ErrorInfo` is generated from
-     * the offending component so `getLastError()` is never silent on
-     * an ERROR.
+     * Caller-supplied `error` wins on a fresh ERROR; otherwise synthesise from
+     * the component state so `getLastError()` is never silent on ERROR.
      */
     private fun applyAndEmit(
         error: ErrorInfo? = null,
         mutate: (ComponentSnapshot) -> ComponentSnapshot,
     ) {
-        // `committed` captures the snapshot the CAS loop actually
-        // wrote, regardless of how many retries happened. Using it
-        // (rather than re-reading stateFlow.value after) guarantees
-        // we compare prev → committed for OUR transition only, even
-        // if another thread updates the flow in between.
+        // `committed` is the snapshot the CAS loop actually wrote, no matter how many
+        // retries. Re-reading stateFlow.value after could observe someone else's update.
         lateinit var committed: ComponentSnapshot
         val prev = stateFlow.getAndUpdate { snap ->
             val mutated = mutate(snap)
@@ -326,11 +249,7 @@ class NodeJSService(
                 mutated.backendState,
                 mutated.stopRequested,
             )
-            // Capture lastError when entering ERROR. Caller-supplied
-            // detail wins; otherwise synthesize from the component
-            // state so getLastError() is never silent on an ERROR.
-            // Compare against `snap.state` (the pre-mutation value)
-            // since `mutated.copy(...)` preserves that field.
+            // Compare against snap.state (pre-mutation) since mutated.copy preserves it.
             val newLastError = if (
                 derived == State.ERROR && snap.state != State.ERROR
             ) {
@@ -358,8 +277,7 @@ class NodeJSService(
         if (prev.state != committed.state) {
             if (prev.state == State.STARTING) cancelStartupWatchdog()
 
-            // FGS-process state-transition breadcrumb. The main
-            // process emits its own via src/sentry.ts.
+            // FGS-process transition breadcrumb; the main process emits its own.
             logCrumb(
                 SentryCategories.STATE,
                 "${prev.state} → ${committed.state}",
@@ -373,12 +291,9 @@ class NodeJSService(
                 ),
             )
 
-            // Close the boot transaction on the first terminal-or-
-            // cancelling transition. STOPPING/STOPPED-via-stop()
-            // bypass STARTED/ERROR entirely per
-            // `deriveLifecycleState` — without the cancelled case
-            // the txn leaks. `getAndSet(null)` ensures a single
-            // owner so subsequent transitions can't double-finish.
+            // Close the boot transaction on the first non-STARTING transition.
+            // STOPPING/STOPPED-via-stop() bypass STARTED/ERROR so without the
+            // cancelled case the txn leaks. `getAndSet(null)` guards double-finish.
             val terminalStatus = when (committed.state) {
                 State.STARTED -> "ok"
                 State.ERROR -> "internal_error"
@@ -386,13 +301,8 @@ class NodeJSService(
                 State.STARTING -> null
             }
             if (terminalStatus != null) {
-                // Drain in-flight phase spans BEFORE finishing the
-                // parent transaction. Sentry's Transaction.finish
-                // closes the span tree — child spans finished after
-                // the parent are dropped. Pre-STARTED closure uses
-                // the same status as the parent so the dashboard
-                // doesn't show "boot.rootkey-load succeeded" alongside
-                // "comapeo.boot cancelled".
+                // Drain in-flight phase spans BEFORE finishing the parent: Sentry's
+                // Transaction.finish closes the tree, dropping later child finishes.
                 val phases = bootSpans.keys.toList()
                 for (phase in phases) {
                     bootSpans.remove(phase)?.let {
@@ -408,24 +318,44 @@ class NodeJSService(
         }
     }
 
-    /**
-     * Atomically swaps the watchdog slot to null and cancels whatever
-     * was there. Safe under concurrent calls because `getAndSet` is a
-     * single atomic operation: only one thread takes ownership of the
-     * pre-swap reference, so a job is never cancelled twice and the
-     * slot never re-references a cancelled job.
-     */
+    /** `getAndSet` ensures only one thread owns the pre-swap ref — no double-cancel. */
     private fun cancelStartupWatchdog() {
         startupWatchdogJob.getAndSet(null)?.cancel()
     }
 
+    /** Positionals are read by backend/index.js; `--sentry*` flags by backend/loader.mjs. */
+    private fun buildBackendArgs(entryPath: String): Array<String> {
+        val args = mutableListOf(
+            "node",
+            entryPath,
+            comapeoSocketFile.absolutePath,
+            controlSocketFile.absolutePath,
+            dataDir,
+        )
+        sentryConfig?.let { cfg ->
+            args += "--sentryDsn=${cfg.dsn}"
+            args += "--sentryEnvironment=${cfg.environment}"
+            args += "--sentryRelease=${cfg.release}"
+            cfg.sampleRate?.let { args += "--sentrySampleRate=$it" }
+            cfg.tracesSampleRate?.let { args += "--sentryTracesSampleRate=$it" }
+            cfg.rpcArgsBytes?.let { args += "--sentryRpcArgsBytes=$it" }
+            if (cfg.enableLogs == true) args += "--sentryEnableLogs"
+            if (captureApplicationData) args += "--captureApplicationData"
+
+            // Forward node-spawn's trace so Node spans nest under it; fall back to
+            // the transaction defensively if node-spawn hasn't opened yet.
+            val traceParent = bootSpans["node-spawn"] ?: bootTx.get()
+            SentryFgsBridge.getTraceData(traceParent)?.let { (trace, baggage) ->
+                args += "--sentryTrace=$trace"
+                if (baggage != null) args += "--sentryBaggage=$baggage"
+            }
+        }
+        return args.toTypedArray()
+    }
+
     fun start(callback: Callback) {
-        // Strict guard: start is only valid from STOPPED. Refusing
-        // STARTING/STARTED is the existing behaviour (nodeJob check
-        // below); refusing STOPPING/ERROR is the new behaviour that
-        // makes ERROR per-instance terminal — a caller that sees ERROR
-        // must `destroy()` and create a new instance to recover, which
-        // is what the FGS lifecycle does naturally on Android. iOS has
+        // Strict guard: start is only valid from STOPPED. Refusing ERROR is what makes
+        // ERROR per-instance terminal — recovery is `destroy()` + new instance. iOS has
         // the same guard.
         val current = getState()
         if (current != State.STOPPED) {
@@ -439,18 +369,28 @@ class NodeJSService(
         }
         logCrumb(SentryCategories.BOOT, "start()")
 
-        // Open boot transaction BEFORE the STOPPED→STARTING
-        // transition; applyAndEmit's close-on-terminal logic only
-        // fires when bootTx is non-null at transition time.
-        bootTx.set(SentryFgsBridge.startBootTransaction())
+        // Open boot transaction BEFORE STOPPED→STARTING — applyAndEmit's close-on-
+        // terminal logic only fires when bootTx is non-null at transition time.
+        // Backdate to startForegroundService so boot.fgs-launch sits at t=0.
+        // Absence of the stamp means a system restart without an intent — tag both
+        // populations separately.
+        val backdatedStart =
+            if (serviceStartElapsedMs >= 0) serviceStartElapsedMs else null
+        val bootKind = if (backdatedStart != null) {
+            SentryTags.BOOT_KIND_USER_FOREGROUND
+        } else {
+            SentryTags.BOOT_KIND_SYSTEM_RESTART
+        }
+        val tx = SentryFgsBridge.startBootTransaction(backdatedStart, bootKind)
+        bootTx.set(tx)
+        if (tx != null && backdatedStart != null) {
+            SentryFgsBridge.startBootSpan(tx, "fgs-launch", backdatedStart)?.let {
+                SentryFgsBridge.finishSpan(it, "ok")
+            }
+        }
 
-        // Reset component state for a fresh start cycle and transition
-        // STOPPED → STARTING via the derivation. `lastError` is cleared
-        // explicitly: today this only matters as defense-in-depth (the
-        // start guard above refuses ERROR, so fresh start is reachable
-        // only from STOPPED, where lastError is null in clean cycles)
-        // but it removes any chance of a stale ErrorInfo leaking across
-        // start cycles if that invariant ever weakens.
+        // Reset component state and transition STOPPED → STARTING via the derivation.
+        // lastError is cleared as defense-in-depth in case the start-from-STOPPED invariant ever weakens.
         applyAndEmit { it.copy(
             nodeRuntime = NodeRuntimeState.Running,
             backendState = BackendState.Unknown,
@@ -458,12 +398,8 @@ class NodeJSService(
             lastError = null,
         ) }
 
-        // Arm the startup watchdog. `delay()` respects coroutine
-        // cancellation, so `cancelStartupWatchdog()` (called when
-        // applyAndEmit observes a leave from STARTING) reliably aborts
-        // the job before it fires. The `getState()` recheck inside the
-        // delay'd body covers the narrow window where the timer wakes
-        // up after delay() but before its cancellation has propagated.
+        // Arm the watchdog. The getState() recheck covers the narrow window where the
+        // timer wakes after delay() but before cancellation has propagated.
         startupWatchdogJob.set(serviceScope.launch {
             delay(startupTimeoutMs)
             if (getState() == State.STARTING) {
@@ -471,9 +407,7 @@ class NodeJSService(
                     phase = "starting-timeout",
                     message = "Service did not reach STARTED within ${startupTimeoutMs}ms",
                 )
-                // Capture BEFORE the applyAndEmit that drives ERROR
-                // so the breadcrumb stack ends with STARTING (the
-                // in-flight state) rather than the terminal ERROR.
+                // Capture BEFORE applyAndEmit so the breadcrumb stack ends in STARTING, not ERROR.
                 logCapture(
                     SentryCategories.STATE,
                     "comapeo: startup timeout fired",
@@ -483,10 +417,8 @@ class NodeJSService(
                         SentryTags.PHASE to "starting-timeout",
                     ),
                 )
-                // Send error-native to backend so the main-app process
-                // gets the same error frame via re-broadcast — keeps
-                // cross-process error attribution intact when the
-                // FGS-side knows about the failure but Node is hung.
+                // Forward to backend so the main-app process gets the same error frame
+                // via re-broadcast — keeps cross-process attribution intact when Node is hung.
                 sendErrorNativeFrame(info.phase, info.message)
                 applyAndEmit(error = info) {
                     it.copy(backendState = BackendState.Error(info.phase, info.message))
@@ -494,8 +426,16 @@ class NodeJSService(
             }
         })
         nodeJob = serviceScope.launch {
+            // Tracks the in-flight phase for the catch below — set before each phase
+            // so an exception in extract-assets doesn't attribute to node-runtime.
+            var phase = "extract-assets"
             try {
                 if (shouldCopyAssets()) {
+                    // Only opened on first boot after install/update; presence in a trace
+                    // identifies cold-start-after-update.
+                    SentryFgsBridge.startBootSpan(bootTx.get(), "extract-assets")?.let {
+                        bootSpans["extract-assets"] = it
+                    }
                     withContext(Dispatchers.IO) {
                         nodeProjectDir.deleteRecursively()
                         copyAssetFolder(NODEJS_PROJECT_DIRNAME, nodeProjectDir)
@@ -505,16 +445,20 @@ class NodeJSService(
                             data = mapOf("dir" to NODEJS_PROJECT_DIRNAME),
                         )
                     }
+                    bootSpans.remove("extract-assets")?.let {
+                        SentryFgsBridge.finishSpan(it, "ok")
+                    }
+                }
+
+                phase = "node-spawn"
+                // boot.node-spawn (stage B): JNI → V8 init → loader.mjs → Sentry.init
+                // → `started` frame. Closed in handleControlMessage.
+                SentryFgsBridge.startBootSpan(bootTx.get(), "node-spawn")?.let {
+                    bootSpans["node-spawn"] = it
                 }
 
                 val exitCode = startNodeWithArguments(
-                    arrayOf(
-                        "node",
-                        jsFile.absolutePath,
-                        comapeoSocketFile.absolutePath,
-                        controlSocketFile.absolutePath,
-                        dataDir,
-                    )
+                    buildBackendArgs(jsFile.absolutePath)
                 )
                 logCrumb(
                     SentryCategories.BOOT,
@@ -523,12 +467,8 @@ class NodeJSService(
                     data = mapOf("exitCode" to exitCode),
                 )
 
-                // Classify the exit. "Requested" means we asked for it
-                // (stop()) or the backend announced it (`stopping`) or
-                // the backend already reported an error. Anything else
-                // is unexpected — a crash in a native addon, a
-                // `process.abort()` we didn't see coming, a SIGSEGV —
-                // and derives to ERROR with a synthesized phase.
+                // REQUESTED = we asked (stop), backend announced (stopping), or backend
+                // already reported an error. Anything else derives to ERROR.
                 applyAndEmit { snap ->
                     val isRequested = snap.stopRequested ||
                         snap.backendState is BackendState.Stopping ||
@@ -543,29 +483,41 @@ class NodeJSService(
 
                 callback.onComplete(exitCode)
             } catch (e: Exception) {
-                // captureException so the runtime-launch failure is
-                // a first-class Sentry event with the full stack;
-                // applyAndEmit below drives ERROR but the JS adapter
-                // only synthesises a thin Error from the phase/msg.
+                // Close the in-flight span with internal_error before applyAndEmit's
+                // terminal logic drains it with the parent's status.
+                bootSpans.remove(phase)?.let {
+                    SentryFgsBridge.finishSpan(it, "internal_error")
+                }
+                // node-spawn failures map to the legacy `node-runtime` error phase
+                // so the JS-adapter mapping and Sentry dashboards keep working.
+                val (errPhase, errMessage, errSource) = when (phase) {
+                    "extract-assets" -> Triple(
+                        "extract-assets",
+                        "Failed to extract Node.js assets",
+                        "copy-asset-folder",
+                    )
+                    else -> Triple(
+                        "node-runtime",
+                        "Error starting node",
+                        "startNodeWithArguments",
+                    )
+                }
+                // captureException so the failure lands as a first-class event with the
+                // full stack; applyAndEmit drives ERROR but JS only synthesises a thin Error.
                 logException(
                     SentryCategories.BOOT,
                     e,
-                    message = "Error starting node",
+                    message = errMessage,
                     tags = mapOf(
-                        SentryTags.PHASE to "node-runtime",
+                        SentryTags.PHASE to errPhase,
                         SentryTags.STATE to "ERROR",
-                        SentryTags.SOURCE to "startNodeWithArguments",
+                        SentryTags.SOURCE to errSource,
                     ),
                 )
-                val info = ErrorInfo("node-runtime", e.message ?: e.javaClass.simpleName)
-                // The thread has unwound, so mark the runtime as exited
-                // alongside the backend-error transition. Without this,
-                // the component triple is left inconsistent (runtime
-                // still Running) — visible state derives correctly via
-                // the backend-error rule, but a later applyAndEmit that
-                // mutates other fields would re-derive against a stale
-                // runtime. Reason is REQUESTED to keep the derivation
-                // anchored on the explicit backend error.
+                val info = ErrorInfo(errPhase, e.message ?: e.javaClass.simpleName)
+                // Mark runtime as exited alongside the backend-error transition; otherwise
+                // a later applyAndEmit could re-derive against a stale `Running` triple.
+                // Reason = REQUESTED keeps the derivation anchored on the backend error.
                 applyAndEmit(error = info) {
                     it.copy(
                         backendState = BackendState.Error(info.phase, info.message),
@@ -582,37 +534,26 @@ class NodeJSService(
         }
     }
 
-    /**
-     * Routes raw control-socket frames into component-state mutations
-     * and the rootkey handshake. Frames are JSON of the shape
-     * `{"type":"<name>",…}` (well-known names: `started`, `ready`,
-     * `stopping`, `error`). Parsing happens on the IPC's receive
-     * coroutine; the parser cost is negligible and the init-frame send
-     * is already async via `serviceScope.launch`, so there is no
-     * ordering or throughput reason to avoid a real parser here.
-     */
+    /** Routes raw control-socket frames into component-state mutations and the
+     *  rootkey handshake. */
     private fun handleControlMessage(message: String) {
         when (val frame = ControlFrame.parse(message)) {
             ControlFrame.Started -> {
                 logCrumb(SentryCategories.CONTROL, "received: started")
+                bootSpans.remove("node-spawn")?.let {
+                    SentryFgsBridge.finishSpan(it, "ok")
+                }
                 applyAndEmit { it.copy(backendState = BackendState.ControlBound) }
                 sendInitFrame()
             }
             ControlFrame.Ready -> {
                 logCrumb(SentryCategories.CONTROL, "received: ready")
-                // `ready` is the natural close point for the
-                // boot.init-frame span opened in sendInitFrame().
-                bootSpans.remove("init-frame")?.let {
-                    SentryFgsBridge.finishSpan(it, "ok")
-                }
                 applyAndEmit { it.copy(backendState = BackendState.Ready) }
             }
             ControlFrame.Stopping -> {
                 logCrumb(SentryCategories.CONTROL, "received: stopping")
-                // Backend is gracefully shutting down. The next thing
-                // we'll see is the socket close; the derivation maps
-                // this to STOPPING and the subsequent runtime exit
-                // will derive to STOPPED (via Exited(_, REQUESTED)).
+                // Graceful shutdown — next we see the socket close; derivation maps
+                // this to STOPPING and the subsequent runtime exit to STOPPED.
                 applyAndEmit { it.copy(backendState = BackendState.Stopping) }
             }
             is ControlFrame.Error -> {
@@ -627,10 +568,15 @@ class NodeJSService(
                     it.copy(backendState = BackendState.Error(frame.phase, frame.message))
                 }
             }
+            is ControlFrame.SentryEvent -> {
+                SentryFgsBridge.captureEventJson(frame.payloadJson)
+            }
+            is ControlFrame.SentryEnvelope -> {
+                SentryFgsBridge.captureEnvelopeBase64(frame.data)
+            }
             is ControlFrame.Malformed -> {
-                // Logged but not raised to ERROR: a single bad frame
-                // shouldn't take down the lifecycle. The main-app
-                // Module surfaces `messageerror` separately.
+                // Logged but not raised to ERROR — a single bad frame shouldn't take
+                // down the lifecycle. The main-app Module surfaces `messageerror` separately.
                 logCrumb(
                     SentryCategories.CONTROL,
                     "malformed control frame",
@@ -642,18 +588,14 @@ class NodeJSService(
     }
 
     /**
-     * Reads the rootkey via `RootKeyStore`, base64-encodes, and ships the
-     * init frame on the control socket. Failures here transition the
-     * service to ERROR via `backendState = .error(...)` and additionally
-     * send `error-native` to Node so the main-app process gets the same
-     * error attribution via the re-broadcast path. We deliberately do
-     * **not** tear down the node thread: ERROR is observable by the
-     * application (via the JS `stateChange` event) and recovery —
-     * restarting the FGS, prompting the user, etc. — is the
-     * application's responsibility, not this layer's.
+     * Reads the rootkey, base64-encodes, and ships the init frame on the control
+     * socket. Failures transition to ERROR and forward `error-native` to Node so
+     * the main-app process sees the same phase via re-broadcast. The node thread
+     * is left alive — recovery (restart FGS, prompt user, …) is the application's
+     * responsibility, exposed via the JS `stateChange` event.
      *
-     * The ByteArray is zeroed after encoding — best-effort, since the
-     * encoded base64 string still lives in the JVM string pool until GC.
+     * Best-effort zero of the ByteArray after encoding; the base64 string still
+     * lives in the JVM string pool until GC.
      */
     private fun sendInitFrame() {
         val rootkeyLoadSpan = SentryFgsBridge.startBootSpan(bootTx.get(), "rootkey-load")
@@ -661,16 +603,15 @@ class NodeJSService(
             bootSpans["rootkey-load"] = rootkeyLoadSpan
         }
         val rootKeyBytes: ByteArray = try {
-            RootKeyStore(applicationContext).loadOrInitialize().also {
-                bootSpans.remove("rootkey-load")?.let { sp ->
-                    SentryFgsBridge.finishSpan(sp, "ok")
-                }
+            val result = RootKeyStore(applicationContext).loadOrInitialize()
+            bootSpans.remove("rootkey-load")?.let { sp ->
+                SentryFgsBridge.setSpanData(sp, "generated", result.generated)
+                SentryFgsBridge.finishSpan(sp, "ok")
             }
+            result.key
         } catch (e: Exception) {
-            // FGS-scope capture. The same exception is forwarded to
-            // Node via sendErrorNativeFrame and re-broadcast, then
-            // re-captured by the main-process JS adapter with
-            // proc:main — Sentry de-dupes via fingerprinting.
+            // FGS-scope capture; the same exception is re-captured on the main-process
+            // JS adapter via error-native re-broadcast — Sentry de-dupes by fingerprint.
             logException(
                 SentryCategories.BOOT,
                 e,
@@ -694,11 +635,6 @@ class NodeJSService(
         val b64 = Base64.encodeToString(rootKeyBytes, Base64.NO_WRAP)
         rootKeyBytes.fill(0)
         val frame = "{\"type\":\"init\",\"rootKey\":\"$b64\"}"
-        // boot.init-frame span: from "init sent" to "ready
-        // received" (closed in handleControlMessage).
-        SentryFgsBridge.startBootSpan(bootTx.get(), "init-frame")?.let {
-            bootSpans["init-frame"] = it
-        }
         serviceScope.launch {
             ipcDeferred.await().sendMessage(frame)
             logCrumb(SentryCategories.BOOT, "init frame sent")
@@ -706,24 +642,13 @@ class NodeJSService(
     }
 
     /**
-     * Cross-process error attribution: send `{type:"error-native",phase,
-     * message}` to Node. The backend's `error-native` handler routes to
-     * `handleFatal`, which broadcasts an `error` frame to all control
-     * clients (including the main-app process's read-only observer) and
-     * exits 1 after a 100ms flush window.
+     * Sends `{type:"error-native",phase,message}` to Node for cross-process
+     * attribution. The backend re-broadcasts as an `error` frame to all control
+     * clients and exits 1, so the main-app process sees the actual phase rather
+     * than hanging at STARTING when the FGS knows it has failed but Node is
+     * stuck on `await initPromise`.
      *
-     * Without this, an FGS-side rootkey or watchdog failure leaves Node
-     * hanging on `await initPromise` (no backend timeout on init) while
-     * the main-app process stays at STARTING forever — the FGS knows it
-     * has failed but has no way to tell the main app.
-     *
-     * Best-effort: fires async and returns immediately. Bounded by
-     * [SEND_ERROR_NATIVE_TIMEOUT_MS] so a never-completing
-     * `ipcDeferred` (e.g. an FGS that fails before the IPC is
-     * constructed) doesn't pin a coroutine forever — it's logged as
-     * dropped after the timeout. In that case the FGS is also losing
-     * the only channel to the main-app process, so the dropped frame
-     * is no worse than today.
+     * Best-effort: fires async, bounded by [SEND_ERROR_NATIVE_TIMEOUT_MS].
      */
     private fun sendErrorNativeFrame(phase: String, message: String) {
         val payload = json.encodeToString(
@@ -735,12 +660,8 @@ class NodeJSService(
                     ipcDeferred.await()
                 }
                 if (ipc == null) {
-                    // Warning rather than error: the FGS already
-                    // captured the original cause locally; this
-                    // only degrades cross-process attribution to
-                    // the synthetic `node-runtime-unexpected` phase
-                    // the main-app process derives from the
-                    // control-socket close.
+                    // Warning, not error — original cause was captured FGS-side; this
+                    // only degrades attribution to the synthetic node-runtime-unexpected.
                     logCapture(
                         SentryCategories.IPC,
                         "comapeo: error-native frame dropped (phase=$phase)",
@@ -761,13 +682,8 @@ class NodeJSService(
     }
 
     suspend fun stop() {
-        // Strict guard: stop is only valid from STARTING/STARTED.
-        // Refusing STOPPED/STOPPING is "nothing to do, already there".
-        // Refusing ERROR is what makes ERROR per-instance terminal —
-        // a stop() on ERROR would otherwise transition ERROR -> STOPPING,
-        // a transition that doesn't map to any clear semantic.
-        // Callers that need to release resources after ERROR should
-        // call `destroy()`. iOS has the same guard.
+        // Strict guard: stop only valid from STARTING/STARTED. Refusing ERROR keeps
+        // ERROR per-instance terminal (callers use destroy() to release resources).
         val current = getState()
         if (current != State.STARTING && current != State.STARTED) {
             log("Cannot stop NodeJS service from state $current (not STARTING/STARTED)")
@@ -777,8 +693,6 @@ class NodeJSService(
             log("NodeJS service is not running, nothing to stop")
             return
         }
-        // Mark intent — derivation moves toward STOPPING, then STOPPED
-        // once the runtime exits.
         applyAndEmit { it.copy(stopRequested = true) }
         try {
             val message = json.encodeToString(ShutdownMessage())
@@ -806,10 +720,8 @@ class NodeJSService(
         deleteSocketFiles()
         nodeJob?.cancel()
         serviceScope.cancel()
-        // Force a clean STOPPED via the same trick `cleanup()` uses on
-        // iOS: assert intent, mark the runtime as exited, drop any
-        // backend-side state. `lastError` is preserved for any caller
-        // that wants to inspect why this instance is being destroyed.
+        // Force a clean STOPPED (mirrors iOS `cleanup()`). lastError is preserved
+        // so callers can inspect why this instance is being destroyed.
         applyAndEmit {
             it.copy(
                 nodeRuntime = NodeRuntimeState.Exited(code = 0, reason = ExitReason.REQUESTED),
@@ -828,7 +740,6 @@ class NodeJSService(
         val prefs = getSharedPreferences(sharedPrefsName, MODE_PRIVATE)
         val lastUpdateTime = prefs.getLong(APK_LAST_UPDATE_TIME_KEY, -1)
         val currentUpdateTime = packageManager.getPackageInfo(packageName, 0).lastUpdateTime
-        log("Last update time: $lastUpdateTime, current update time: $currentUpdateTime")
         return lastUpdateTime != currentUpdateTime
     }
 

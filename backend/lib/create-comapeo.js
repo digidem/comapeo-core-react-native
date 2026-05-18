@@ -24,12 +24,12 @@ export function createComapeo({
       }`,
     );
   }
-  // Do not touch these!
+  // Renaming these breaks existing on-device data — leave as-is.
   const DB_DIR_NAME = "sqlite-dbs";
   const CORE_STORAGE_DIR_NAME = "core-storage";
   const CUSTOM_MAPS_DIR_NAME = "maps";
 
-  const DEFAULT_ONLINE_MAP_STYLE_URL = `https://demotiles.maplibre.org/style.json`;
+  const DEFAULT_ONLINE_MAP_STYLE_URL = "https://demotiles.maplibre.org/style.json";
 
   const dbFolder = path.join(privateStorageDir, DB_DIR_NAME);
   const indexFolder = path.join(privateStorageDir, CORE_STORAGE_DIR_NAME);

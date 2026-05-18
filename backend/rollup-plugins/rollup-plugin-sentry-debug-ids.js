@@ -59,21 +59,31 @@ export function relocateSourcemapsPlugin(outDir, sourcemapDir, idMap) {
     async writeBundle() {
       rmSync(sourcemapDir, { force: true, recursive: true });
       await mkdir(sourcemapDir, { recursive: true });
-      const entries = await readdir(outDir);
-      const mapNames = entries.filter((name) => name.endsWith(".map"));
+      // Walk recursively so subdir entries (`lib/register.js`,
+      // `chunks/*.mjs`) are relocated too — leaving them in `outDir`
+      // would bloat the APK/IPA.
+      const mapRelPaths = (await readdir(outDir, { recursive: true })).filter(
+        (name) => name.endsWith(".map"),
+      );
       await Promise.all(
-        mapNames.map(async (name) => {
-          const bundleName = name.slice(0, -".map".length);
+        mapRelPaths.map(async (relPath) => {
+          const bundleName = relPath.slice(0, -".map".length);
           const debugId = idMap.get(bundleName);
-          if (!debugId) {
-            throw new Error(
-              `relocate-sourcemaps: no captured debug ID for ${bundleName}; ` +
-                "is captureDebugIdsPlugin in plugins[] before sentryRollupPlugin?",
-            );
-          }
           const bundlePath = path.join(outDir, bundleName);
-          const mapSrc = path.join(outDir, name);
-          const mapDst = path.join(sourcemapDir, name);
+          const mapSrc = path.join(outDir, relPath);
+          const mapDst = path.join(sourcemapDir, relPath);
+          await mkdir(path.dirname(mapDst), { recursive: true });
+
+          // Auto-emitted helper chunks (e.g. `_commonjsHelpers-*`)
+          // bypass renderChunk so we have no debug ID. Relocate the
+          // map as-is; sentry-cli matches them by filename.
+          if (!debugId) {
+            const mapSourceUntagged = await readFile(mapSrc, "utf8");
+            await writeFile(mapDst, mapSourceUntagged, "utf8");
+            await unlink(mapSrc);
+            return;
+          }
+
           const [bundleSource, mapSource] = await Promise.all([
             readFile(bundlePath, "utf8"),
             readFile(mapSrc, "utf8"),

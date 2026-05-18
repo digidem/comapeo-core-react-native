@@ -47,4 +47,15 @@ export default defineConfig([
       "prettier/prettier": "off",
     },
   },
+  {
+    // Jest tests use per-test `require()` to reset module-state
+    // singletons (e.g. `initSentry`'s `initialized` flag). ESM
+    // dynamic `import()` would re-resolve through the cache and
+    // not give us a fresh module instance.
+    name: "tests",
+    files: ["**/__tests__/**", "**/*.test.{js,jsx,ts,tsx}"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
 ]);

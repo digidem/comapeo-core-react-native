@@ -6,16 +6,12 @@ import android.os.Build
 import android.os.Bundle
 
 /**
- * Typed view of the AndroidManifest meta-data the Expo plugin
- * (`app.plugin.js`) writes at prebuild time.
+ * Typed view of the AndroidManifest meta-data the Expo plugin (`app.plugin.js`)
+ * writes at prebuild. Meta-data on the `<application>` tag is visible to both
+ * the host UI process and the `:ComapeoCore` FGS process.
  *
- * The meta-data lives on the main `<application>` tag, so both
- * the host UI process and the `:ComapeoCore` FGS process see them
- * — `getApplicationInfo(...).metaData` is shared across processes
- * within the package.
- *
- * `loadFromManifest` returns `null` when the DSN is absent, which
- * is the consumer's signal that Sentry isn't configured.
+ * [loadFromManifest] returns null when the DSN is absent — the consumer's
+ * signal that Sentry isn't configured.
  */
 data class SentryConfig(
     val dsn: String,
@@ -25,49 +21,66 @@ data class SentryConfig(
     val tracesSampleRate: Double? = null,
     /** Cap on RPC argument bytes captured. Defaults to never capture. */
     val rpcArgsBytes: Int? = null,
-    /**
-     * Default value for the capture-application-data toggle on
-     * fresh installs. `null` → treated as `false`.
-     */
+    /** Fresh-install default for diagnostics toggle. `null` → `true`. User write wins. */
+    val diagnosticsEnabledDefault: Boolean? = null,
+    /** Fresh-install default for capture-application-data toggle. `null` → `false`. */
     val captureApplicationDataDefault: Boolean? = null,
-    /**
-     * Opt in to Sentry structured logs (`Sentry.logger.*`). When
-     * `true`, the FGS hub initialises with `options.logs.isEnabled
-     * = true` and our log helpers route to the Logs UI in addition
-     * to the existing logcat / breadcrumb / event pipelines.
-     * `null` (or `false`) leaves logs off.
-     */
+    /** Opt in to Sentry structured logs (`Sentry.logger.*`). `null` → off. */
     val enableLogs: Boolean? = null,
+    /**
+     * Module build label `<version>[+git<sha>[-dirty<hash>]]` from `build/version.js`
+     * (falls back to package.json when unbuilt). Applied as the `comapeo.rn` scope
+     * tag so FGS / Node / RN events all carry matching module identification.
+     */
+    val moduleVersion: String? = null,
+    /**
+     * JSON map of bundled-backend dependency versions, filtered to comapeo-owned deps.
+     * Applied as the `comapeoBackend` scope context.
+     */
+    val backendModulesJson: String? = null,
 ) {
+    /**
+     * Subset that maps cleanly to `Sentry.init` options on the RN side. Sent to JS
+     * as the `sentryConfig` constant; consumers spread into `Sentry.init({...})`.
+     */
+    fun toSentryInitMap(): Map<String, Any> = buildMap {
+        put("dsn", dsn)
+        put("environment", environment)
+        put("release", release)
+        sampleRate?.let { put("sampleRate", it) }
+        tracesSampleRate?.let { put("tracesSampleRate", it) }
+        enableLogs?.let { put("enableLogs", it) }
+    }
+
     companion object {
-        // Manifest meta-data keys. Must stay in sync with
-        // app.plugin.js's ANDROID_KEYS.
+        // Manifest meta-data keys — must stay in sync with app.plugin.js's ANDROID_KEYS.
         const val META_DSN = "com.comapeo.core.sentry.dsn"
         const val META_ENVIRONMENT = "com.comapeo.core.sentry.environment"
         const val META_RELEASE = "com.comapeo.core.sentry.release"
         const val META_SAMPLE_RATE = "com.comapeo.core.sentry.sampleRate"
         const val META_TRACES_SAMPLE_RATE = "com.comapeo.core.sentry.tracesSampleRate"
         const val META_RPC_ARGS_BYTES = "com.comapeo.core.sentry.rpcArgsBytes"
+        const val META_DIAGNOSTICS_ENABLED_DEFAULT =
+            "com.comapeo.core.sentry.diagnosticsEnabledDefault"
         const val META_CAPTURE_APPLICATION_DATA_DEFAULT =
             "com.comapeo.core.sentry.captureApplicationDataDefault"
         const val META_ENABLE_LOGS = "com.comapeo.core.sentry.enableLogs"
+        const val META_MODULE_VERSION = "com.comapeo.core.module.version"
+        const val META_BACKEND_MODULES = "com.comapeo.core.backend.modules"
 
         /** Returns null when no DSN is present (Sentry off). */
         @JvmStatic
         fun loadFromManifest(context: Context): SentryConfig? {
             val meta = readApplicationMetaData(context) ?: return null
-            // Android's manifest parser coerces `android:value="true"`
-            // to Boolean and `"1.0"` to Float before the Bundle sees it,
-            // so `getString` returns null for anything that wasn't a
-            // pure string. `get(key)?.toString()` preserves the wire
-            // value regardless of underlying type.
+            // Android's manifest parser coerces `"true"` → Boolean and `"1.0"` → Float
+            // before the Bundle sees it; `get(key)?.toString()` preserves the wire value
+            // where `getString` would return null for non-string-typed entries.
             return load({ meta.get(it)?.toString() }) { resolveDefaultRelease(context) }
         }
 
         /**
-         * Pure variant for unit-testing. The string-getter avoids
-         * mocking `android.os.Bundle` (unmocked on the JVM
-         * unit-test classpath); the release producer avoids
+         * Pure variant for unit testing. The string-getter avoids mocking `Bundle`
+         * (unmocked on the JVM unit-test classpath); the release producer avoids
          * mocking `PackageManager`.
          */
         @JvmStatic
@@ -76,15 +89,11 @@ data class SentryConfig(
             defaultRelease: () -> String,
         ): SentryConfig? {
             val dsn = metaString(META_DSN) ?: return null
-            // The plugin refuses to prebuild without `environment`,
-            // but a stale prebuild from before that validation was
-            // added would still ship. Log loud and return null
-            // (Sentry off) so the host doesn't crash on every cold
-            // start; re-prebuilding fixes it.
             val environment = metaString(META_ENVIRONMENT)
             if (environment == null) {
-                // System.err rather than android.util.Log.e because
-                // the latter is unmocked on the JVM unit-test classpath.
+                // Plugin refuses to prebuild without `environment`, but a stale prebuild
+                // from before that validation could still ship. Log loud and return null.
+                // System.err rather than Log.e — the latter is unmocked on JVM unit tests.
                 System.err.println(
                     "[ComapeoCore.SentryConfig] $META_ENVIRONMENT missing " +
                         "from manifest while $META_DSN is set. Re-run " +
@@ -101,10 +110,15 @@ data class SentryConfig(
                 sampleRate = metaString(META_SAMPLE_RATE)?.toDoubleOrNull(),
                 tracesSampleRate = metaString(META_TRACES_SAMPLE_RATE)?.toDoubleOrNull(),
                 rpcArgsBytes = metaString(META_RPC_ARGS_BYTES)?.toIntOrNull(),
+                diagnosticsEnabledDefault = metaString(
+                    META_DIAGNOSTICS_ENABLED_DEFAULT,
+                )?.toBooleanStrictOrNull(),
                 captureApplicationDataDefault = metaString(
                     META_CAPTURE_APPLICATION_DATA_DEFAULT,
                 )?.toBooleanStrictOrNull(),
                 enableLogs = metaString(META_ENABLE_LOGS)?.toBooleanStrictOrNull(),
+                moduleVersion = metaString(META_MODULE_VERSION),
+                backendModulesJson = metaString(META_BACKEND_MODULES),
             )
         }
 
@@ -130,9 +144,8 @@ data class SentryConfig(
         }
 
         /**
-         * Default release tag: `versionName + "+" + versionCode`.
-         * Successive EAS builds of the same marketing version get
-         * distinct releases because EAS auto-increments versionCode.
+         * Default release tag `versionName+versionCode` — EAS auto-increments
+         * versionCode so successive builds of one marketing version still differ.
          */
         private fun resolveDefaultRelease(context: Context): String {
             val pkg = if (Build.VERSION.SDK_INT >= 33) {

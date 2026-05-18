@@ -14,11 +14,9 @@ import ensureError from "ensure-error";
  * @property {() => void} close
  */
 
-/**
- * Node's built-in types for MessagePort are misleading so we opt for this limited type definition
- * that fits our usage and works in both Node and browser contexts
- * @typedef {Pick<import('node:events').EventEmitter, 'addListener' | 'removeListener'> & { postMessage: (message: any) => void }} MessagePortLike
- */
+// Narrower than Node's `MessagePort`, which has misleading types and
+// doesn't match browser usage.
+/** @typedef {Pick<import('node:events').EventEmitter, 'addListener' | 'removeListener'> & { postMessage: (message: any) => void }} MessagePortLike */
 
 /**
  * @extends {TypedEmitter<Events>}

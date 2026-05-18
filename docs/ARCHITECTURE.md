@@ -602,14 +602,25 @@ What each emit site captures:
   emits from this process; reserved for future use.
 - **`layer:native, proc:fgs` (Android FGS) / `proc:main`
   (iOS)** — `SentryFgsBridge` (Android) / equivalent Swift
-  bridge. `comapeo.boot` transaction with phase spans
-  (`boot.rootkey-load`, `boot.init-frame`), state-transition
-  breadcrumbs, control-frame breadcrumbs, FGS-lifecycle
-  breadcrumbs (Android only), timeout events, rootkey-load
-  `captureException`.
-- **`layer:node`** (Phase 3 — pending) — `@sentry/node` via
-  `loader.mjs`. Per-RPC method spans, `handleFatal`
-  `captureException`, `@comapeo/core` OTel spans (Phase 4).
+  bridge. `comapeo.boot` transaction with child spans
+  `boot.fgs-launch` (Android only), `boot.extract-assets`
+  (Android only, first boot after install/update),
+  `boot.node-spawn`, and `boot.rootkey-load`. The
+  "init frame sent" → "received: ready" breadcrumb pair marks the
+  init-frame round-trip (no span — duration is dominated by the
+  Node-side `boot.manager-init`). Plus state-transition
+  breadcrumbs, control-frame breadcrumbs,
+  FGS-lifecycle breadcrumbs (Android only), timeout events,
+  rootkey-load `captureException`.
+- **`layer:node`** — `@sentry/node` via `loader.mjs`. Per-RPC
+  method spans, `handleFatal` `captureException`, and two top-level
+  boot-phase root spans that share the FGS-side trace via
+  `Sentry.continueTrace`: `boot.loader-init` (with two children,
+  `boot.loader-import-sentry-node` and `boot.import-index`) and
+  `boot.manager-init`. `listen-control` and `init` keep their phase
+  tags for error attribution but no longer emit spans — they are
+  reliably fast and (for `init`) duplicated by native
+  `boot.rootkey-load`.
 
 The same FGS-local error (rootkey load failure, watchdog
 timeout) reaches multiple scopes via the cross-process
@@ -644,6 +655,23 @@ return a typed `SentryConfig?` (`null` when DSN is absent =
 the plugin didn't supply one, so successive EAS builds of the
 same marketing version produce distinct release tags.
 
+The module owns the RN-side `Sentry.init` lifecycle via
+`initSentry()` (exported from `@comapeo/core-react-native/sentry`).
+The host calls it once at app entry and passes allowlisted
+extensions (integrations, `beforeSend`, `beforeBreadcrumb`, tags);
+`initSentry` throws if the host has already called `Sentry.init`
+separately. Locked options (dsn, environment, release, sampleRate,
+tracesSampleRate, sendDefaultPii=false, enableLogs, user.id) come
+from the plugin so all three hubs use the same values without the
+host having to copy them.
+
+The same plugin-baked subset is also exported as `sentryConfig` for
+read-only inspection — empty `{}` when the plugin isn't registered.
+It is NOT meant to be spread into a separate `Sentry.init` call;
+`initSentry` is the supported entrypoint. Plugin-internal fields
+(`rpcArgsBytes`, `captureApplicationDataDefault`) stay on the
+native-side `SentryConfig` only.
+
 The FGS process's Sentry SDK is initialised in
 `ComapeoCoreService.onCreate` from the manifest meta-data —
 because Android creates a fresh `Application` instance per
@@ -651,28 +679,27 @@ process, the host's `@sentry/react-native` (which inits in the
 main `MainApplication`) doesn't reach the FGS. The bridge fills
 that gap.
 
-### 7.3 The Guard / Impl split (Android)
+### 7.3 The FGS-side SDK init (Android)
 
-`SentryFgsBridge.kt` — the public entry point that the rest of
-the native code calls — has **zero `io.sentry.*` imports**. It
-delegates to `SentryFgsBridgeImpl.kt` only after a `Class.forName`
-probe (with `initialize=false`) confirms the SDK is on the
-runtime classpath. The Gradle dep is `compileOnly` — the
-runtime classes come transitively from the consumer's
-`@sentry/react-native@^7` peer dep (which ships
-`sentry-android@8.32.x` — first line that has the structured-
-log API the bridge calls in `SentryFgsBridgeImpl.log`). When
-that peer dep is absent, the bridge stays inert and the
-module continues to function.
+`SentryFgsBridge.kt` owns `SentryAndroid.init(...)` inside the FGS
+process. Android creates a fresh `Application` per process, so the
+host's main-process `SentryAndroid.init` (from `@sentry/react-native`)
+never reaches the FGS — the bridge re-runs init from
+`ComapeoCoreService.onCreate` before `NodeJSService` is constructed.
+This is the same pattern used on iOS, see §7.4.
 
-This split matters because the JVM/Dalvik verifier inspects
-bytecode references at class-load time of the *containing*
-class. Putting any `io.sentry.*` reference in `SentryFgsBridge`
-itself would force the bridge class to fail loading on a
-Sentry-less classpath — even if the offending method is never
-called. The Impl class is only loaded when a method on it is
-actually invoked, which happens only after `isEnabled()`
-returned `true`.
+A `@Volatile initialized` flag guards every public method so callers
+that fire before init no-op silently. Each method also wraps its
+Sentry call in a try/catch — a thrown Sentry path must never take
+the FGS down.
+
+`sentry-android` is now a regular `implementation` dep (not
+`compileOnly`) because `@sentry/react-native` is a **mandatory peer
+dep** of this module. Earlier design split the bridge into a guard
++ impl pair behind a `Class.forName` classpath probe; that
+indirection became unnecessary once the SDK was guaranteed on the
+classpath, and the two halves were merged back into a single
+`SentryFgsBridge.kt`.
 
 ### 7.4 What this design *doesn't* attempt
 
@@ -681,12 +708,16 @@ returned `true`.
   process crashes that `sentry-android` / `sentry-cocoa`
   catches at the JNI/Cocoa layer. We do not bundle
   `sentry-native` into the embedded runtime.
-- **iOS multi-process Sentry**. iOS runs everything in one
-  process, so there's no equivalent of Android's separate
-  FGS-process SDK init: native iOS code (boot transaction,
-  spans, breadcrumbs, captures from `SentryNativeBridge`)
-  emits against the host's already-initialised
-  `@sentry/react-native` hub directly.
+- **iOS single-process equivalent of FGS init**. iOS is
+  single-process, so the FGS-style separate-process init isn't
+  needed — but we still own sentry-cocoa init natively, from
+  `AppLifecycleDelegate.application(_:didFinishLaunchingWithOptions:)`
+  via `SentryNativeBridge.initFromConfig`. The JS layer's
+  `Sentry.init` runs with `autoInitializeNativeSdk: false`, so the
+  native hub is the single owner of the SDK lifecycle. This keeps
+  the boot transaction and pre-JS-bundle native spans on a live
+  hub — the same invariant Android gets from
+  `ComapeoCoreService.onCreate`.
 - **DSN secrecy**. Sentry DSNs are not high-secret values —
   they identify a project rather than authenticate writes,
   and they appear in stripped binaries of every Sentry-using
@@ -715,6 +746,7 @@ this table.
 | `comapeo.state` | `STOPPED` · `STARTING` · `STARTED` · `STOPPING` · `ERROR` | ERROR captureExceptions only |
 | `source` | `control-socket` · `rootkey-store` · `startNodeWithArguments` · `comapeo-core` (Phase 3) | Captured exceptions, narrows the origin within a phase |
 | `timeout` | `startup` · `shutdown` · `fgsStop` · `errorNativeForward` · `waitForFile` · `connectRetry` | `captureMessage` events for timeout firings |
+| `boot.kind` | `user-foreground` · `system-restart` | On `comapeo.boot` transactions (Android FGS only). `user-foreground` when the activity lifecycle initiated the start (stamped `serviceStartTimeMs`); `system-restart` when Android brought the FGS back without an intent — no `boot.fgs-launch` span and the timeline starts at `NodeJSService.start()`. |
 
 #### Breadcrumb categories
 
@@ -728,11 +760,32 @@ this table.
 
 #### Spans
 
-| Operation | Description | When it opens / closes |
+All boot phases use `op = name = "boot.<phase>"`. sentry-java's child-
+span wire format has no separate `name` field — Discover renders
+`span.name = op` for child spans, so the op carries the phase
+identifier directly. The Node-side `name`/`op` fields are set to the
+same value so all three layers (RN, native, Node) match. Filter the
+whole boot timeline with `op:boot.*` in Discover.
+
+| Operation | Layer | When it opens / closes |
 |---|---|---|
-| `comapeo.boot` (root tx) | "boot" — forced 100% sampled | Opens in `start()`; closes on first non-`STARTING` transition with status `ok` (STARTED), `internal_error` (ERROR), or `cancelled` (STOPPING/STOPPED) |
-| `boot.rootkey-load` | "Load 16-byte rootkey from RootKeyStore" | Wraps `RootKeyStore.loadOrInitialize()` in `sendInitFrame()` |
-| `boot.init-frame` | "Send init frame, await ready" | Opens after the init frame is sent; closes when the `ready` control frame is received |
+| `comapeo.boot` (root tx) | `proc:fgs` Android / `proc:main` iOS | Opens in `NodeJSService.start()`; closes on first non-`STARTING` transition with status `ok` (STARTED), `internal_error` (ERROR), or `cancelled` (STOPPING/STOPPED). Forced 100% sampled; tagged `boot.kind=user-foreground` or `system-restart`. |
+| `boot.fgs-launch` (Android only) | `proc:fgs` | Backdated to `serviceStartTimeMs` (stamped by the activity lifecycle listener); closes immediately on entry to `NodeJSService.start()`. `user-foreground` boots only — absent on `system-restart`. |
+| `boot.extract-assets` (Android only) | `proc:fgs` | Recursive copy of `nodejs-project/` from APK assets into internal storage. Opened only when `shouldCopyAssets()` returns true — i.e. first boot after install or app update. Presence in a trace is itself diagnostic ("this was a cold start after update"); absent on every subsequent boot. iOS reads the bundle in place (no extraction). |
+| `boot.node-spawn` | `proc:fgs` Android / `proc:main` iOS | JNI call to `startNodeWithArguments` (Android) / `nodeEntryPoint` (iOS) → backend's `started` frame on the control socket. Spans the C/C++ V8-bootstrap phase plus the Node-side loader/import/manager-init phases (visible as nested child transactions on the same trace). |
+| `boot.loader-init` | `layer:node` | Backdated to `loader.mjs` first line; closed just after `Sentry.init`. Covers the C/C++ → JS handover including V8 bootstrap and the iitm hook install. Has two child spans: `boot.loader-import-sentry-node` (brackets `import("@sentry/node")` — the dominant chunk on the reference device) and `boot.import-index` (brackets the dynamic `import("./index.js")`). The gap between loader-init's duration and the import-sentry-node child is parseArgs + iitm `register()` + smaller imports + `Sentry.init` (collectively <200ms on the reference device; no spans of their own). `boot.import-index` parents to loader-init via an explicit `parentSpan` reference (not via AsyncLocalStorage) so the IIFE inside `index.js` still captures `boot.node-spawn` as the parent for `boot.manager-init` — keeping it a top-level Node phase rather than nesting it further. Sentry renders import-index as a child whose duration extends past its parent's. |
+| `boot.manager-init` | `layer:node` | Wraps `createComapeo(...)` + `comapeoRpcServer.listen(...)` — drizzle migrations + SQLite open + hypercore init + fastify + RPC socket bind. |
+| `boot.rootkey-load` | `proc:fgs` Android / `proc:main` iOS | Wraps `RootKeyStore.loadOrInitialize()` (Android) / `RootKeyStore.loadKey()` (iOS) in `sendInitFrame()`. Span data: `generated=true` on first install, `false` on steady-state. |
+
+Cross-layer trace propagation: native opens `comapeo.boot`, then
+forwards the `boot.node-spawn` span's `sentry-trace` header to the
+Node process as the `--sentryTrace` argv flag. The Node side's
+`Sentry.continueTrace` wraps all three Node-side boot spans so they
+inherit the FGS-side trace_id and parent_span_id. Result: every boot
+span across all three layers shares a single trace, viewable on a
+single timeline in Sentry's Trace view. Cross-layer with the RN-side
+`App Start` transaction is tracked in
+[#68](https://github.com/digidem/comapeo-core-react-native/issues/68).
 
 #### Standard captureMessage events
 

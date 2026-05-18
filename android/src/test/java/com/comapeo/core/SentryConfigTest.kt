@@ -50,6 +50,7 @@ class SentryConfigTest {
         assertNull(config.sampleRate)
         assertNull(config.tracesSampleRate)
         assertNull(config.rpcArgsBytes)
+        assertNull(config.diagnosticsEnabledDefault)
         assertNull(config.captureApplicationDataDefault)
         assertNull(config.enableLogs)
     }
@@ -109,6 +110,47 @@ class SentryConfigTest {
         )!!
         assertNull(config.sampleRate)
         assertNull(config.rpcArgsBytes)
+    }
+
+    @Test
+    fun diagnosticsEnabledDefaultParses() {
+        val on = SentryConfig.load(
+            mapGetter(
+                mapOf(
+                    SentryConfig.META_DSN to "https://x@sentry.io/1",
+                    SentryConfig.META_ENVIRONMENT to "qa",
+                    SentryConfig.META_DIAGNOSTICS_ENABLED_DEFAULT to "true",
+                ),
+            ),
+            DEFAULT_RELEASE,
+        )!!
+        assertEquals(true, on.diagnosticsEnabledDefault)
+
+        val off = SentryConfig.load(
+            mapGetter(
+                mapOf(
+                    SentryConfig.META_DSN to "https://x@sentry.io/1",
+                    SentryConfig.META_ENVIRONMENT to "production",
+                    SentryConfig.META_DIAGNOSTICS_ENABLED_DEFAULT to "false",
+                ),
+            ),
+            DEFAULT_RELEASE,
+        )!!
+        assertEquals(false, off.diagnosticsEnabledDefault)
+
+        // Strict parse: "yes" is rejected → null → ComapeoPrefs falls
+        // back to the baked-in default (diagnostics on).
+        val stray = SentryConfig.load(
+            mapGetter(
+                mapOf(
+                    SentryConfig.META_DSN to "https://x@sentry.io/1",
+                    SentryConfig.META_ENVIRONMENT to "qa",
+                    SentryConfig.META_DIAGNOSTICS_ENABLED_DEFAULT to "yes",
+                ),
+            ),
+            DEFAULT_RELEASE,
+        )!!
+        assertNull(stray.diagnosticsEnabledDefault)
     }
 
     @Test

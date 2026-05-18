@@ -147,6 +147,46 @@ relevant phase (`rootkey`, `starting-timeout`,
 `node-runtime-unexpected`, etc.); state transitions show up as
 breadcrumbs that ride along on the next event.
 
+### 3a. Initialise Sentry via `initSentry`
+
+This module owns the RN-side `Sentry.init` call. Do NOT call
+`Sentry.init` yourself — call `initSentry()` once at app entry
+and pass any allowlisted extensions through it:
+
+```ts
+import { initSentry } from "@comapeo/core-react-native/sentry";
+import * as Sentry from "@sentry/react-native";
+
+initSentry({
+  // Optional — append your own integrations to the defaults.
+  integrations: (defaults) => [
+    ...defaults,
+    Sentry.reactNavigationIntegration(),
+  ],
+  // Optional — runs AFTER this module's PII scrubber.
+  beforeSend: (event) => event,
+  // Optional — extra scope tags on the persistent global scope.
+  tags: { releaseChannel: "internal" },
+});
+```
+
+`initSentry` reads the plugin-baked DSN / environment / release /
+sample rates from the native config and wires the RN, Node, and
+Android-FGS hubs to the same values, so events from all three sides
+land under one release / environment. Locked options (`dsn`,
+`release`, `environment`, `sampleRate`, `tracesSampleRate`,
+`sendDefaultPii: false`, `enableLogs`, `user.id`) come from the
+plugin and can't be overridden by the host — TypeScript refuses them
+at the call site. `initSentry` throws if the host already called
+`Sentry.init` separately.
+
+The same plugin-baked subset is also exported as `sentryConfig`
+(empty `{}` when the plugin isn't registered) for read-only
+inspection — e.g. logging which release the host is reporting under,
+or rendering it in a debug screen — but it is NOT meant to be spread
+into a separate `Sentry.init` call; `initSentry` is the supported
+init entrypoint.
+
 ### What gets captured automatically
 
 Once the plugin is registered with a `dsn`, the module captures
@@ -156,14 +196,33 @@ events from three layers, tagged for filtering in the dashboard:
   is imported) — state-machine ERROR transitions and
   `messageerror` parse failures; every state transition rides
   along as a breadcrumb.
-- **`layer:native`** (Kotlin / Swift) — `comapeo.boot`
-  transaction with phase spans (`boot.rootkey-load`,
-  `boot.init-frame`), state-transition breadcrumbs,
-  control-frame breadcrumbs, watchdog/shutdown timeout events,
-  rootkey-load `captureException`. On Android adds FGS-lifecycle
-  breadcrumbs.
-- **`layer:node`** (Phase 3, not yet shipped) — RPC method spans
-  and `handleFatal` exceptions from the embedded nodejs-mobile.
+- **`layer:native`** (Kotlin / Swift) — `comapeo.boot` transaction
+  (root, force-sampled) with child spans `boot.fgs-launch`
+  (Android only — `startForegroundService` → FGS process ready),
+  `boot.extract-assets` (Android only, first boot after install/
+  update — recursive copy of `nodejs-project/` from APK assets to
+  internal storage; iOS reads the bundle in place so no equivalent),
+  `boot.node-spawn` (nodejs-mobile JNI call → control `started`),
+  `boot.rootkey-load`, and `boot.init-frame`. Plus
+  state-transition breadcrumbs, control-frame breadcrumbs,
+  watchdog/shutdown timeout events, rootkey-load
+  `captureException`. On Android adds FGS-lifecycle breadcrumbs.
+- **`layer:node`** — `boot.loader-init` (process spawn → Sentry.init
+  done), `boot.import-index` (around `import("./index.js")`),
+  `boot.listen-control` (control-socket bind), `boot.manager-init`
+  (drizzle + SQLite + RPC bind), plus per-RPC method spans,
+  `handleFatal` exceptions, and `error-native` forwards from the
+  embedded nodejs-mobile. Node-side spans inherit the FGS-side
+  trace via `Sentry.continueTrace` on the `boot.node-spawn` span
+  ID forwarded as the `--sentryTrace` argv flag.
+  `@sentry/node` has no offline transport, so its envelopes are
+  forwarded over the control socket to the FGS-side
+  `sentry-android` (or sentry-cocoa on iOS) for queueing and send.
+  Error events are deserialised into a `SentryEvent` and captured
+  via `Sentry.captureEvent`, which applies the native SDK's scope
+  (device, OS, app, user, native breadcrumbs) at capture time so
+  Node-emitted events end up with the same context as RN-side
+  captures.
 
 Each event also carries a `proc` tag for the *actual* OS process:
 `proc:main` for everything on iOS (single-process), and
@@ -182,12 +241,14 @@ continues to function unchanged.
 
 ### 4. Upload backend sourcemaps to your Sentry project
 
-The Node-backend bundle (the `index.mjs` that runs in nodejs-mobile)
-ships rolled-up + minified, so without sourcemaps stack traces in
-Sentry are unreadable. The bundle's sourcemaps ship inside the npm
-tarball with deterministic, content-hashed [Sentry debug IDs][] baked
-in at build time — symbolication is keyed off the IDs, so you do
-*not* have to align this module's version with your app's `release`.
+The Node-backend bundle (the `loader.mjs` spawn target plus its
+dynamically-imported `index.mjs`, the `import-in-the-middle` hook
+files, and the auto-emitted `@sentry/node` chunks) ships rolled-up +
+minified, so without sourcemaps stack traces in Sentry are unreadable.
+The bundle's sourcemaps ship inside the npm tarball with deterministic,
+content-hashed [Sentry debug IDs][] baked in at build time —
+symbolication is keyed off the IDs, so you do *not* have to align this
+module's version with your app's `release`.
 
 Add one step to your release pipeline (after `eas build`, or as part
 of the build's post-publish phase):
