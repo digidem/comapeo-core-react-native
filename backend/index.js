@@ -1,11 +1,12 @@
 import { fileURLToPath } from "node:url";
+import ensureError from "ensure-error";
 import Fastify from "fastify";
 
-import { ComapeoRpcServer } from "./lib/comapeo-rpc.js";
+import { AppRpcServer, ComapeoRpcServer } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
+import { createMapServer } from "./lib/create-map-server.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 import * as sentry from "./lib/sentry.js";
-import ensureError from "ensure-error";
 
 // `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` mirrors this
 // directory into the on-device bundle.
@@ -26,6 +27,10 @@ const fastify = Fastify();
 let comapeoRpcServer;
 /** @type {Awaited<ReturnType<typeof createComapeo>> | undefined} */
 let comapeo;
+/** @type {Awaited<ReturnType<typeof createMapServer>> | undefined} */
+let mapServer;
+/** @type {AppRpcServer | undefined} */
+let appRpcServer;
 
 /** @type {(rootKey: Buffer) => void} */
 let resolveInit;
@@ -206,10 +211,17 @@ async function withPhase(phase, fn) {
           migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
           rootKey,
         });
+        mapServer = createMapServer({ privateStorageDir, rootKey });
+
         comapeoRpcServer = new ComapeoRpcServer(comapeo, {
           onRequestHook: sentry.rpcHook(),
         });
-        await comapeoRpcServer.listen(comapeoSocketPath);
+        appRpcServer = new AppRpcServer(mapServer);
+
+        await Promise.all([
+          comapeoRpcServer.listen(comapeoSocketPath),
+          appRpcServer.listen(comapeoSocketPath),
+        ]);
       }),
     );
     console.log(`Comapeo socket listening on ${comapeoSocketPath}`);

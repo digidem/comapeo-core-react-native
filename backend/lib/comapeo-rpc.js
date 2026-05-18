@@ -1,6 +1,7 @@
 import { SocketMessagePort } from "./message-port.js";
 import { ServerHelper } from "./server-helper.js";
-import { createMapeoServer } from "@comapeo/ipc/server.js";
+import { createAppRpcServer, createMapeoServer } from "@comapeo/ipc/server.js";
+
 /** @import {MapeoManager} from '@comapeo/core' */
 
 export class ComapeoRpcServer extends ServerHelper {
@@ -18,6 +19,25 @@ export class ComapeoRpcServer extends ServerHelper {
           messagePort
         ),
         onRequestHook ? { onRequestHook } : undefined,
+      );
+      messagePort.on("close", () => server.close());
+    });
+  }
+}
+
+export class AppRpcServer extends ServerHelper {
+  /**
+   * @param {import('@comapeo/map-server').MapServer} mapServer
+   */
+  constructor(mapServer) {
+    super((socket) => {
+      const messagePort = new SocketMessagePort(socket);
+      messagePort.start();
+      const server = createAppRpcServer(
+        { mapServer },
+        /** @type {Pick<MessagePort, 'postMessage' | 'addEventListener' | 'removeEventListener'>} */ (
+          messagePort
+        ),
       );
       messagePort.on("close", () => server.close());
     });
