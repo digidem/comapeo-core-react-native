@@ -835,40 +835,45 @@ transport (`backend/lib/sentry.js` `forwardingTransport`) — same DSN,
 same control-socket → native sink, same offline-aware native queue. No
 new pipeline.
 
-Tags follow strict low-cardinality rules (see §11.8). Three **default
-tags** are attached by `metrics.js` to every emission so we can never
-forget them at the call site:
+Tags follow strict low-cardinality rules (see §11.8). One **default
+tag** is attached by `metrics.js` to every emission so we can never
+forget it at the call site:
 
 - `platform` (`ios` / `android`)
-- `device_class` (`low` / `mid` / `high` — see §11.2.b)
-- `os_major` (`ios.17`, `android.13`, …)
+
+Device tags (`device_class`, `os_major`) ride **only on the
+`.by_device` mirror metrics**, not on every metric. Sticking them on
+every emission would multiply cardinality by ~30× on the per-method
+metrics (see §11.2.c) and the mirror metric exists precisely so the
+primary metric can stay narrow.
 
 #### 11.2.a Metric inventory
 
-The first metric in each pair carries per-method detail for "which
-operation is slow"; the `.by_device` mirror exists where the
-device-slowness question is interesting and keeps per-method ×
-per-device cardinality bounded (§11.2.c).
+The primary metric in each pair carries per-method (or per-phase)
+detail for "which operation is slow"; the `.by_device` mirror drops
+the question-specific dimension and carries device tags instead, so
+the per-method × per-device join doesn't materialise as one bloated
+metric. Same call site emits both with one helper call.
 
-| Metric                                       | Type         | Tags                                                  | Source                              |
-| -------------------------------------------- | ------------ | ----------------------------------------------------- | ----------------------------------- |
-| `comapeo.rpc.server.duration_ms`             | distribution | `method`, `status` + defaults                         | `backend/lib/sentry.js` `rpcHook`   |
-| `comapeo.rpc.server.duration_ms.by_device`   | distribution | `status` + defaults                                   | same call site                      |
-| `comapeo.rpc.server.errors`                  | counter      | `method`, `error_class` + defaults                    | server hook on catch                |
-| `comapeo.rpc.client.duration_ms`             | distribution | `method`, `status` + defaults                         | `src/ComapeoCoreModule.ts` hook     |
-| `comapeo.rpc.client.duration_ms.by_device`   | distribution | `status` + defaults                                   | same call site                      |
-| `comapeo.rpc.client.send_ms`                 | distribution | `method` + defaults                                   | existing `rn.send.syncMs` measurement |
-| `comapeo.boot.phase_duration_ms`             | distribution | `phase` (`fgs-launch`, `extract-assets`, `node-spawn`, `loader-init`, `manager-init`, `rootkey-load`) + defaults | each boot-span `end()`              |
-| `comapeo.boot.phase_duration_ms.by_device`   | distribution | `phase` + defaults                                    | same call site                      |
-| `comapeo.boot.outcome`                       | counter      | `outcome` (`started` / `error`), `error_phase?` + defaults | `STARTED` / ERROR transition        |
-| `comapeo.sync.session.duration_ms`           | distribution | `outcome` + defaults                                  | sync session end                    |
-| `comapeo.sync.session.duration_ms.by_device` | distribution | `outcome` + defaults                                  | same call site                      |
-| `comapeo.sync.session.peers_bucket`          | counter      | `bucket` (`1-3` / `4-10` / `10+`) + defaults          | session start                       |
-| `comapeo.sync.bytes_bucket`                  | counter      | `bucket` (`<1M` / `1-10M` / `10-100M` / `100M+`) + defaults | session end                         |
-| `comapeo.backend.memory_rss_bytes`           | gauge        | defaults only                                         | 60s timer in `backend/index.js`     |
-| `comapeo.backend.heap_used_bytes`            | gauge        | defaults only                                         | same timer                          |
-| `comapeo.fgs.uptime_s`                       | gauge        | defaults only                                         | same timer                          |
-| `comapeo.state.transitions`                  | counter      | `from`, `to` + defaults                               | every `stateChange`                 |
+| Metric                                       | Type         | Tags                                                                                                       | Source                              |
+| -------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `comapeo.rpc.server.duration_ms`             | distribution | `method`, `status`, `platform`                                                                             | `backend/lib/sentry.js` `rpcHook`   |
+| `comapeo.rpc.server.duration_ms.by_device`   | distribution | `status`, `platform`, `device_class`, `os_major`                                                           | same call site                      |
+| `comapeo.rpc.server.errors`                  | counter      | `method`, `error_class`, `platform`                                                                        | server hook on catch                |
+| `comapeo.rpc.client.duration_ms`             | distribution | `method`, `status`, `platform`                                                                             | `src/ComapeoCoreModule.ts` hook     |
+| `comapeo.rpc.client.duration_ms.by_device`   | distribution | `status`, `platform`, `device_class`, `os_major`                                                           | same call site                      |
+| `comapeo.rpc.client.send_ms`                 | distribution | `method`, `platform`                                                                                       | existing `rn.send.syncMs` measurement |
+| `comapeo.boot.phase_duration_ms`             | distribution | `phase` (`fgs-launch`, `extract-assets`, `node-spawn`, `loader-init`, `manager-init`, `rootkey-load`), `platform` | each boot-span `end()`              |
+| `comapeo.boot.phase_duration_ms.by_device`   | distribution | `phase`, `platform`, `device_class`, `os_major`                                                            | same call site                      |
+| `comapeo.boot.outcome`                       | counter      | `outcome` (`started` / `error`), `error_phase?`, `platform`                                                | `STARTED` / ERROR transition        |
+| `comapeo.sync.session.duration_ms`           | distribution | `outcome`, `platform`                                                                                      | sync session end                    |
+| `comapeo.sync.session.duration_ms.by_device` | distribution | `outcome`, `platform`, `device_class`, `os_major`                                                          | same call site                      |
+| `comapeo.sync.session.peers_bucket`          | counter      | `bucket` (`1-3` / `4-10` / `10+`), `platform`                                                              | session start                       |
+| `comapeo.sync.bytes_bucket`                  | counter      | `bucket` (`<1M` / `1-10M` / `10-100M` / `100M+`), `platform`                                               | session end                         |
+| `comapeo.backend.memory_rss_bytes`           | gauge        | `platform`                                                                                                 | 60s timer in `backend/index.js`     |
+| `comapeo.backend.heap_used_bytes`            | gauge        | `platform`                                                                                                 | same timer                          |
+| `comapeo.fgs.uptime_s`                       | gauge        | `platform`                                                                                                 | same timer                          |
+| `comapeo.state.transitions`                  | counter      | `from`, `to`, `platform`                                                                                   | every `stateChange`                 |
 
 #### 11.2.b Device classification
 
@@ -905,29 +910,69 @@ cardinality unnecessarily.
 
 #### 11.2.c Cardinality math
 
-Per-metric series ceiling with the default tags applied:
+**Worked example, why we split.** Take `rpc.server.duration_ms` with
+the worst-case tag bag (the old "everything on every metric" design,
+preserved here as the counter-example):
 
-- Base from defaults: 2 (platform) × 3 (device_class) × ~10 (os_major)
-  = **60** combinations.
-- `rpc.server.duration_ms` with `method` (~50) × `status` (3) on top:
-  60 × 150 = **9,000** series. Sentry's metric-cardinality guidance
-  warns above ~10k; leaves headroom for one more low-cardinality tag
-  if we discover one we need.
-- `.by_device` variant drops `method`, so base × `status` (3) = **180**.
-  Cheap.
-- `boot.phase_duration_ms` (~6 phases × 3 status-equivalent) ≈ 1k.
-- `state.transitions` (5 states × 5 states = 25 valid pairs) × 60 = 1.5k.
+| Dimension                       | Count        | Notes                                                                                                                          |
+| ------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `method`                        | ~50–80       | full `@comapeo/core` IPC surface; includes namespaced methods                                                                  |
+| `status`                        | 3            | `ok` / `error` / `timeout`                                                                                                     |
+| `platform`                      | 2            |                                                                                                                                |
+| `os_major`                      | 5 ios + 6 android = ~11 valid platform+os pairs | not 20 — `(ios, android.13)` can't co-occur, so the **joint** is the sum, not the product |
+| `device_class`                  | 3            |                                                                                                                                |
+| `release` (Sentry auto-tag)     | 3–5 active   | distinct releases in active install base                                                                                       |
+| `environment` (Sentry auto-tag) | 1–3          | usually `prod` plus internal/qa                                                                                                |
 
-Total across all metrics: ~25k series at steady state. Cost-comparable
-to typical web-app instrumentation; well-bounded.
+Cartesian, middle values: 70 × 3 × 11 × 3 × 4 × 2 = **~55k series**
+for that one metric. Even discounting `release` and `environment`
+(if Sentry's billing indexes them separately, which is the optimistic
+read): 70 × 3 × 11 × 3 = **6.9k base series** per metric — and with
+five RPC-shaped metrics that path lands well past Sentry's 10k-per-
+metric guidance the moment two of them run side-by-side.
+
+**The split fixes it.** With device tags moved off the primary
+metrics and onto the `.by_device` mirrors, no single metric carries
+all the dimensions:
+
+| Metric                                       | Tags                                              | Series (base × release-env)                         |
+| -------------------------------------------- | ------------------------------------------------- | --------------------------------------------------- |
+| `rpc.server.duration_ms`                     | method × status × platform                        | 70 × 3 × 2 = **420** (× 12 ≈ 5,040 worst-case)      |
+| `rpc.server.duration_ms.by_device`           | status × platform × device_class × os_major       | 3 × 11 × 3 = **99** (× 12 ≈ 1,188)                  |
+| `rpc.server.errors`                          | method × error_class × platform                   | 70 × 5 × 2 = **700** (× 12 ≈ 8,400)                 |
+| `rpc.client.duration_ms`                     | method × status × platform                        | 420 (× 12 ≈ 5,040)                                  |
+| `rpc.client.duration_ms.by_device`           | status × platform × device_class × os_major       | 99 (× 12 ≈ 1,188)                                   |
+| `rpc.client.send_ms`                         | method × platform                                 | 140 (× 12 ≈ 1,680)                                  |
+| `boot.phase_duration_ms`                     | phase × platform                                  | 12 (× 12 ≈ 144)                                     |
+| `boot.phase_duration_ms.by_device`           | phase × platform × device_class × os_major        | 198 (× 12 ≈ 2,376)                                  |
+| `boot.outcome`                               | outcome × error_phase × platform                  | ≈ 24 (× 12 ≈ 288)                                   |
+| `sync.session.duration_ms`                   | outcome × platform                                | 6 (× 12 ≈ 72)                                       |
+| `sync.session.duration_ms.by_device`         | outcome × platform × device_class × os_major      | 99 (× 12 ≈ 1,188)                                   |
+| `sync.session.peers_bucket`                  | bucket × platform                                 | 6 (× 12 ≈ 72)                                       |
+| `sync.bytes_bucket`                          | bucket × platform                                 | 8 (× 12 ≈ 96)                                       |
+| `backend.memory_rss_bytes`                   | platform                                          | 2 (× 12 ≈ 24)                                       |
+| `backend.heap_used_bytes`                    | platform                                          | 2                                                   |
+| `fgs.uptime_s`                               | platform                                          | 2                                                   |
+| `state.transitions`                          | from × to × platform                              | 25 × 2 = **50** (× 12 ≈ 600)                        |
+
+No metric over 10k even at the worst case where `release` and
+`environment` count toward the budget (which is conservative — Sentry's
+docs aren't explicit but historical behaviour was to index those
+separately from user-defined tags). Most metrics under 2k.
+
+**Open question on auto-tags.** Worth confirming with Sentry support
+or empirical testing before landing whether `release` and `environment`
+count toward the per-metric series limit. If they do, the table above
+is the budget we live within. If they don't, we have ~10× more
+headroom than this table suggests.
 
 #### 11.2.d Why bucketed device tags, not raw
 
 Two practical pitfalls if we tagged with raw `device.model`:
 
-1. **Cardinality cost** — ~2,000 Android model strings × 50 methods × 3
-   status × ~10 OS-major = ~3M series for one metric. Unaffordable on
-   any Sentry plan and unusable on dashboards.
+1. **Cardinality cost** — ~2,000 Android model strings × 80 methods ×
+   3 status × ~6 Android-major = ~3M series for one metric on Android
+   alone. Unaffordable on any Sentry plan and unusable on dashboards.
 2. **Long-tail noise** — a histogram with 10 samples from "Tecno Spark
    7" isn't actionable. Bucketed by class, the same 10 samples become
    "12,847 low-end Android samples this hour, p95 480ms" and we can
@@ -1133,9 +1178,11 @@ it back off without forcing a per-session re-enable.
   - `stateTransition(from, to)` — counter.
   - `usageScreen(name)`, `usageFeature(name)` — counters, no-op unless
     `applicationUsageData=true`.
-  - Internal `defaultTags` built once from
-    `{platform, deviceClass, osMajor}` argv; merged on every write so
-    call sites can't forget.
+  - Internal `defaultTags = { platform }` (the only one cheap enough
+    to attach to every metric — see §11.2.c). `device_class` and
+    `os_major` are passed explicitly only to the `.by_device`
+    helpers, so the cardinality split is enforced at the API
+    boundary, not at the call site.
   - No-ops entirely when Sentry is off.
 - `backend/lib/sentry-init.js` — also export `Sentry.metrics` for
   `metrics.js` to consume; no additional dependency (it's part of
@@ -1151,7 +1198,8 @@ it back off without forcing a per-session re-enable.
 - `src/sentry-metrics.ts` (new) — RN-side mirror. Exports
   `recordUsage.{screen,feature}` (no-op unless `applicationUsageData`)
   and internal helpers for RPC metric recording. Same `defaultTags`
-  shape, read from `sentryConfig.deviceTags`.
+  shape (platform only); device tags supplied explicitly to
+  `.by_device` helpers, read from `sentryConfig.deviceTags`.
 
 #### Trace simplification
 
@@ -1196,15 +1244,23 @@ it back off without forcing a per-session re-enable.
 
 ### 11.8 Cardinality budget + forbidden tags
 
-#### Allowed default tags (auto-attached by `metrics.js`)
+#### Allowed default tags (auto-attached by `metrics.js` to every metric)
 
 - `platform`: 2 values
+
+#### Tags allowed on `.by_device` mirror metrics only
+
+These multiply cardinality enough that they don't ride on every
+metric — only on the explicit `.by_device` variants that drop the
+question-specific dimension in exchange.
+
 - `device_class`: 3 values
-- `os_major`: ~10 values per platform
+- `os_major`: ~5–6 values per platform (so the joint with `platform`
+  is ~11 valid pairs, not 20)
 
 #### Allowed per-metric tags
 
-- `method`: small enum (~50 RPC methods)
+- `method`: small enum (~50–80 RPC methods across the full `@comapeo/core` IPC surface)
 - `status`: 3 values (`ok` / `error` / `timeout`)
 - `phase`: 6 boot phases / 3 shutdown phases
 - `outcome`: 2 values
