@@ -41,7 +41,9 @@ let mockTestRootKey = Data(repeating: 0xAB, count: 16)
 func makeMockNodeService(
     socketDir: String,
     privateStorageDir: String? = nil,
-    rootKeyProvider: @escaping NodeJSService.RootKeyProvider = { mockTestRootKey }
+    rootKeyProvider: @escaping NodeJSService.RootKeyProvider = {
+        RootKeyResult(key: mockTestRootKey, generated: false)
+    }
 ) -> (service: NodeJSService, signalExit: () -> Void) {
     let (entryPoint, signal) = makeMockNodeEntryPoint()
     let service = NodeJSService(

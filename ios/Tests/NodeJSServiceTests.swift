@@ -239,9 +239,12 @@ final class NodeJSServiceTests: XCTestCase {
         let (service, signalExit) = makeTestService()
 
         let startedExpectation = expectation(description: "State reached STARTED")
+        let stoppingExpectation = expectation(description: "State reached STOPPING")
         service.onStateChange = { state in
             if state == .started {
                 startedExpectation.fulfill()
+            } else if state == .stopping {
+                stoppingExpectation.fulfill()
             }
         }
 
@@ -250,14 +253,22 @@ final class NodeJSServiceTests: XCTestCase {
         // post-handshake read loop and is captured in `receivedShutdown`.
         let backend = try startServiceWithMockBackend(service)
         defer { backend.stop() }
-        waitForExpectations(timeout: 5)
+        wait(for: [startedExpectation], timeout: 5)
 
-        // Stop the service on a background thread (stop() blocks)
+        // Stop the service on a background thread (stop() blocks waiting
+        // on the node thread to exit).
         let stopFinished = expectation(description: "stop() returned")
         DispatchQueue.global().async {
             service.stop(timeout: 2)
             stopFinished.fulfill()
         }
+
+        // Wait for stop() to set stopRequested (observable via the STOPPING
+        // transition) before signalling the mock node to exit. Otherwise
+        // the bg dispatch can be scheduled late enough that the runtime
+        // exits while stopRequested is still false, making the exit look
+        // Unexpected and landing the service in .error.
+        wait(for: [stoppingExpectation], timeout: 5)
 
         // Signal the mock node process to exit so stop() can complete.
         signalExit()
@@ -574,21 +585,41 @@ final class NodeJSServiceTests: XCTestCase {
         let lock = NSLock()
 
         let startedExpectation = expectation(description: "Started")
+        let stoppingExpectation = expectation(description: "Stopping")
         service.onStateChange = { state in
             lock.lock()
             transitions.append(state)
             lock.unlock()
             if state == .started { startedExpectation.fulfill() }
+            if state == .stopping { stoppingExpectation.fulfill() }
         }
 
         // Start
         let backend = try startServiceWithMockBackend(service)
         defer { backend.stop() }
-        waitForExpectations(timeout: 5)
+        wait(for: [startedExpectation], timeout: 5)
 
-        // Stop
+        // Stop the service on a background thread (stop() blocks waiting
+        // on the node thread to exit).
+        let stopFinished = expectation(description: "stop() returned")
+        DispatchQueue.global().async {
+            service.stop(timeout: 1)
+            stopFinished.fulfill()
+        }
+
+        // Wait for the STOPPING observer to fire before signalling the mock
+        // node to exit. `applyAndEmit` calls onStateChange outside the
+        // service lock (required by testObserverCanReenterLockedMethodFromCallback),
+        // so the observer invocation order is not guaranteed to match the
+        // underlying state-transition order: a STOPPED callback emitted from
+        // the node thread can race ahead of a STOPPING callback emitted from
+        // stop() on the main thread, even when the locked transitions
+        // themselves ran in the right order. Serialising the test on the
+        // STOPPING observer pins the recorded sequence.
+        wait(for: [stoppingExpectation], timeout: 5)
+
         signalExit()
-        service.stop(timeout: 1)
+        wait(for: [stopFinished], timeout: 5)
 
         lock.lock()
         let finalTransitions = transitions

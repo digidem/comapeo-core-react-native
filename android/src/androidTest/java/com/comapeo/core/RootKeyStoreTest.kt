@@ -59,19 +59,29 @@ class RootKeyStoreTest {
 
         val first = store.loadOrInitialize()
         assertEquals(
+            "first call must report generated=true on a purged store",
+            true,
+            first.generated,
+        )
+        assertEquals(
             "rootkey must be 16 bytes",
             RootKeyStore.ROOTKEY_BYTE_LENGTH,
-            first.size,
+            first.key.size,
         )
 
         // A fresh instance proves the state lives in persistent storage,
         // not just in this object's memory. The second-call return must
         // byte-equal the first — anything else is identity loss.
         val second = RootKeyStore(context).loadOrInitialize()
+        assertEquals(
+            "second call must report generated=false (loaded from prefs)",
+            false,
+            second.generated,
+        )
         assertArrayEquals(
             "second call must return identical bytes (else identity rotation)",
-            first,
-            second,
+            first.key,
+            second.key,
         )
     }
 

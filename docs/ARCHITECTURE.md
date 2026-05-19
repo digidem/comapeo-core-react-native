@@ -32,6 +32,11 @@ to it, and the alternatives we considered along the way. Companion docs:
   did not use Android Intent broadcasts / `Messenger` / a bound service
   for FGS↔main state notification, and did not collapse the boot sequence
   into a single broadcast. Rationales below.
+- Optional **Sentry observability** is wired up via an Expo config
+  plugin (`app.plugin.js`) and the `@comapeo/core-react-native/sentry`
+  sub-export. The FGS process gets its own Sentry SDK init via a
+  guarded bridge (zero runtime cost when the consumer doesn't use
+  Sentry). See §7.
 
 ---
 
@@ -139,15 +144,18 @@ late-connecting client (the React Native module on Android races the
 FGS's IPC client; both connect to the same socket, see §4) would miss
 the events that already fired.
 
-The other broadcast frames — `stopping` (via `broadcast()`) and `error`
-(via `broadcastError()`) — are explicitly **not** replayed. They're
-one-shot announcements that pair with the natural socket close: a late
-client connecting after either frame fires sees nothing on the wire,
-but observes the impending disconnect and infers ERROR / STOPPED from
-its own pre-disconnect state (see §5.4 for the disconnect-reason
-table). The control socket is short-lived in those scenarios — the
-process is about to exit — so the no-replay choice avoids buffering
-lifecycle history on a server that's tearing itself down.
+Terminal lifecycle frames — `stopping` and `error`, both sent via
+`broadcast()` — are **also** cached and replayed, but only the latest
+one. The window between either frame and the natural socket close is
+non-zero (~100 ms for `error` before `process.exit(1)`; the duration
+of `Promise.all([close…])` for `stopping`), and a client that connects
+in that window would otherwise have to infer the terminal state from
+the disconnect alone. That inference is lossy in two ways: a graceful
+`stopping`-then-close looks identical to an unexpected crash to a
+client that missed the frame (STARTING/STARTED → ERROR per §5.4), and
+an `error` frame's phase and message are replaced by a synthetic
+`node-runtime-unexpected`. Caching the latest terminal frame closes
+both gaps with a single object reference of overhead.
 
 ### 3.2 Why two sockets
 
@@ -308,8 +316,8 @@ The model addresses three previously-broken paths:
 - **FGS-side local failure (rootkey, watchdog) before Node can
   broadcast** → see §5.5 (Native→Node error forwarding). The FGS
   ships an `error-native` frame to Node, the backend re-broadcasts
-  via `broadcastError`, and the main-app process gets a real `error`
-  frame with the actual phase rather than a generic disconnect.
+  it as an `error` frame, and the main-app process gets a real
+  `error` frame with the actual phase rather than a generic disconnect.
 
 ### 5.2 What feeds each component
 
@@ -420,8 +428,8 @@ Three failure surfaces, all converging on `ERROR`:
    `process.on("uncaughtException")` and
    `process.on("unhandledRejection")` route through
    `handleFatal(phase, error)` which calls
-   `controlIpcServer.broadcastError({phase, message, stack})` and
-   exits 1 after a 100ms flush wait. Boot-phase errors (`init`,
+   `controlIpcServer.broadcast({type:"error", phase, message, stack})`
+   and exits 1 after a 100ms flush wait. Boot-phase errors (`init`,
    `listen-control`, `construct`, `runtime`) follow the same path
    via the boot IIFE's catch. The `error-native` handler from §1 is
    what bridges Android FGS-local failures *into* this same path,
@@ -486,7 +494,7 @@ codebases.
 
 | # | Where | Default | Guards against | On expiry |
 |---|-------|---------|---------------|-----------|
-| 9 | `handleFatal` flush window | 100 ms | `broadcastError` not flushed before `process.exit(1)` | Hard exit |
+| 9 | `handleFatal` flush window | 100 ms | `error` frame not flushed before `process.exit(1)` | Hard exit |
 | 10 | `ServerHelper.listen` retry on `EADDRINUSE` | ~4 s (3 retries × 1 s) | Stale socket file blocking bind | Reject — caller surfaces ERROR with phase `listen-control` / `construct` |
 
 **Unbounded waits (with safety nets, not internal timeouts):**
@@ -553,9 +561,348 @@ gaps. The remaining ones are inherent to the platform or out of scope:
 
 ---
 
-## 7. Alternatives considered
+## 7. Sentry observability (optional)
 
-### 7.1 FGS↔main process state notification (Android)
+Companion doc: [`sentry-integration-plan.md`](./sentry-integration-plan.md).
+This section is the architectural overview; the plan has the
+phasing, decision log, and per-file change list.
+
+Sentry is **opt-in**. Consumers that don't register the Expo
+config plugin and don't import the `@comapeo/core-react-native/sentry`
+sub-export pay nothing — no DSN ends up in the APK/IPA, no
+`io.sentry` classes are loaded at runtime, no Sentry-shaped
+captures fire from this module.
+
+### 7.1 Three event streams
+
+Two tags split the emit sites in the dashboard:
+
+- **`proc`** — actual OS process. iOS is always `main`. Android
+  is `main` for code in the host UI process and `fgs` for code
+  in the `:ComapeoCore` foreground-service process (Kotlin FGS
+  code AND the embedded nodejs-mobile that runs there).
+- **`layer`** — `rn` for the JS adapter, `native` for
+  Kotlin/Swift, `node` for the embedded nodejs-mobile backend.
+
+```
+                              iOS (one process)         Android
+                              ────────────────────      ─────────────────────────
+  layer: rn    (JS adapter)   proc: main                proc: main
+  layer: native (Kotlin/Swift) proc: main               proc: main + proc: fgs
+  layer: node  (Phase 3)      proc: main                proc: fgs
+```
+
+What each emit site captures:
+
+- **`layer:rn`** — `src/sentry.ts` adapter. State ERROR
+  transitions → `captureException`; `messageerror` → warning;
+  every state transition → breadcrumb.
+- **`layer:native, proc:main` (Android main process)** —
+  `ComapeoCoreModule.kt` (the RN bridge). Currently no native
+  emits from this process; reserved for future use.
+- **`layer:native, proc:fgs` (Android FGS) / `proc:main`
+  (iOS)** — `SentryFgsBridge` (Android) / equivalent Swift
+  bridge. `comapeo.boot` transaction with child spans
+  `boot.fgs-launch` (Android only), `boot.extract-assets`
+  (Android only, first boot after install/update),
+  `boot.node-spawn`, and `boot.rootkey-load`. The
+  "init frame sent" → "received: ready" breadcrumb pair marks the
+  init-frame round-trip (no span — duration is dominated by the
+  Node-side `boot.manager-init`). Plus state-transition
+  breadcrumbs, control-frame breadcrumbs,
+  FGS-lifecycle breadcrumbs (Android only), timeout events,
+  rootkey-load `captureException`.
+- **`layer:node`** — `@sentry/node` via `loader.mjs`. Per-RPC
+  method spans, `handleFatal` `captureException`, and two top-level
+  boot-phase root spans that share the FGS-side trace via
+  `Sentry.continueTrace`: `boot.loader-init` (with two children,
+  `boot.loader-import-sentry-node` and `boot.import-index`) and
+  `boot.manager-init`. `listen-control` and `init` keep their phase
+  tags for error attribution but no longer emit spans — they are
+  reliably fast and (for `init`) duplicated by native
+  `boot.rootkey-load`.
+
+The same FGS-local error (rootkey load failure, watchdog
+timeout) reaches multiple scopes via the cross-process
+attribution path (§5.5): the FGS captures it directly, then
+`error-native` re-broadcasts to Node which captures from the
+node layer, and the `error` control frame propagates to the
+main-app process where the JS adapter captures again. Sentry
+de-dupes via fingerprinting; each vantage point carries
+distinct context (FGS logcat / foreground state, node
+stacktrace, RN state-machine trail).
+
+### 7.2 Build-time config flow
+
+The Expo config plugin (`app.plugin.js` at module root) is the
+single source of truth for DSN / environment / release / sample
+rates. At `expo prebuild` it writes:
+
+- **Android**: meta-data on the main `<application>` tag
+  (`com.comapeo.core.sentry.dsn`, `…environment`, `…release`,
+  `…sampleRate`, `…tracesSampleRate`, `…rpcArgsBytes`,
+  `…captureApplicationDataDefault`). meta-data is shared across
+  processes within the package, so both the main process and
+  the `:ComapeoCore` FGS process read the same values.
+- **iOS**: keys in `Info.plist` with the `ComapeoCore` prefix
+  (e.g. `ComapeoCoreSentryDsn`).
+
+Native readers — `SentryConfig.kt` and `SentryConfig.swift` —
+return a typed `SentryConfig?` (`null` when DSN is absent =
+"Sentry off"). `release` defaults to
+`versionName + "+" + versionCode` (Android) /
+`CFBundleShortVersionString + "+" + CFBundleVersion` (iOS) when
+the plugin didn't supply one, so successive EAS builds of the
+same marketing version produce distinct release tags.
+
+The module owns the RN-side `Sentry.init` lifecycle via
+`initSentry()` (exported from `@comapeo/core-react-native/sentry`).
+The host calls it once at app entry and passes allowlisted
+extensions (integrations, `beforeSend`, `beforeBreadcrumb`, tags);
+`initSentry` throws if the host has already called `Sentry.init`
+separately. Locked options (dsn, environment, release, sampleRate,
+tracesSampleRate, sendDefaultPii=false, enableLogs, user.id) come
+from the plugin so all three hubs use the same values without the
+host having to copy them.
+
+The same plugin-baked subset is also exported as `sentryConfig` for
+read-only inspection — empty `{}` when the plugin isn't registered.
+It is NOT meant to be spread into a separate `Sentry.init` call;
+`initSentry` is the supported entrypoint. Plugin-internal fields
+(`rpcArgsBytes`, `captureApplicationDataDefault`) stay on the
+native-side `SentryConfig` only.
+
+The FGS process's Sentry SDK is initialised in
+`ComapeoCoreService.onCreate` from the manifest meta-data —
+because Android creates a fresh `Application` instance per
+process, the host's `@sentry/react-native` (which inits in the
+main `MainApplication`) doesn't reach the FGS. The bridge fills
+that gap.
+
+### 7.3 The FGS-side SDK init (Android)
+
+`SentryFgsBridge.kt` owns `SentryAndroid.init(...)` inside the FGS
+process. Android creates a fresh `Application` per process, so the
+host's main-process `SentryAndroid.init` (from `@sentry/react-native`)
+never reaches the FGS — the bridge re-runs init from
+`ComapeoCoreService.onCreate` before `NodeJSService` is constructed.
+This is the same pattern used on iOS, see §7.4.
+
+A `@Volatile initialized` flag guards every public method so callers
+that fire before init no-op silently. Each method also wraps its
+Sentry call in a try/catch — a thrown Sentry path must never take
+the FGS down.
+
+`sentry-android` is now a regular `implementation` dep (not
+`compileOnly`) because `@sentry/react-native` is a **mandatory peer
+dep** of this module. Earlier design split the bridge into a guard
++ impl pair behind a `Class.forName` classpath probe; that
+indirection became unnecessary once the SDK was guaranteed on the
+classpath, and the two halves were merged back into a single
+`SentryFgsBridge.kt`.
+
+### 7.4 What this design *doesn't* attempt
+
+- **Native crashes inside `nodejs-mobile`** (V8 abort, addon
+  SIGSEGV, OOM) are not captured by us. They surface as host-
+  process crashes that `sentry-android` / `sentry-cocoa`
+  catches at the JNI/Cocoa layer. We do not bundle
+  `sentry-native` into the embedded runtime.
+- **iOS single-process equivalent of FGS init**. iOS is
+  single-process, so the FGS-style separate-process init isn't
+  needed — but we still own sentry-cocoa init natively, from
+  `AppLifecycleDelegate.application(_:didFinishLaunchingWithOptions:)`
+  via `SentryNativeBridge.initFromConfig`. The JS layer's
+  `Sentry.init` runs with `autoInitializeNativeSdk: false`, so the
+  native hub is the single owner of the SDK lifecycle. This keeps
+  the boot transaction and pre-JS-bundle native spans on a live
+  hub — the same invariant Android gets from
+  `ComapeoCoreService.onCreate`.
+- **DSN secrecy**. Sentry DSNs are not high-secret values —
+  they identify a project rather than authenticate writes,
+  and they appear in stripped binaries of every Sentry-using
+  app's APK/IPA. Treating them as build-time public config is
+  intentional.
+- **PII capture**. Per the plan §7.4.9, observation contents,
+  precise location, peer identities, raw project IDs, and
+  user-entered text are never captured even with the
+  capture-application-data toggle on.
+
+### 7.5 Metadata reference
+
+Single source of truth for what we emit. Constants live in
+`SentryTags.{kt,swift}` / `src/sentry-tags.ts` (tags) and
+`SentryCategories.{kt,swift}` / `src/sentry-tags.ts`
+(breadcrumb categories). Update those files first, then
+this table.
+
+#### Tags (set on captureException / captureMessage / span)
+
+| Key | Values | Where |
+|---|---|---|
+| `proc` | `main` (host UI process) · `fgs` (Android `:ComapeoCore`) | Process-level on FGS-side init; per-call on iOS, RN, and main-process Android |
+| `layer` | `rn` · `native` · `node` (Phase 3) | Same as `proc` |
+| `comapeo.phase` | `rootkey` · `node-runtime` · `starting-timeout` · `shutdown-timeout` · `node-runtime-unexpected` · `ipc` · `listen-control` · `init` · `construct` · `runtime` · `errorNativeForward` | Captured exceptions and timeout messages |
+| `comapeo.state` | `STOPPED` · `STARTING` · `STARTED` · `STOPPING` · `ERROR` | ERROR captureExceptions only |
+| `source` | `control-socket` · `rootkey-store` · `startNodeWithArguments` · `comapeo-core` (Phase 3) | Captured exceptions, narrows the origin within a phase |
+| `timeout` | `startup` · `shutdown` · `fgsStop` · `errorNativeForward` · `waitForFile` · `connectRetry` | `captureMessage` events for timeout firings |
+| `boot.kind` | `user-foreground` · `system-restart` | On `comapeo.boot` transactions (Android FGS only). `user-foreground` when the activity lifecycle initiated the start (stamped `serviceStartTimeMs`); `system-restart` when Android brought the FGS back without an intent — no `boot.fgs-launch` span and the timeline starts at `NodeJSService.start()`. |
+
+#### Breadcrumb categories
+
+| Category | What it carries | `data` fields |
+|---|---|---|
+| `comapeo.state` | Every state-machine transition | `from`, `to`, `backendState`, `nodeRuntime`, `stopRequested` (Android), `from`, `to` (iOS) |
+| `comapeo.control` | Control-socket frames the parser accepted, plus malformed | `phase`+`message` (error frames), `detail` (malformed) |
+| `comapeo.ipc` | NodeJSIPC connection-state transitions | `error` (only when `State.Error`) |
+| `comapeo.fgs` | FGS lifecycle (Android only) | `startId`, `action`, `exitCode` (varies by callsite) |
+| `comapeo.boot` | Boot-phase progress (start, asset copy, init frame, exit) | varies — `dir`, `exitCode`, etc. |
+
+#### Spans
+
+All boot phases use `op = name = "boot.<phase>"`. sentry-java's child-
+span wire format has no separate `name` field — Discover renders
+`span.name = op` for child spans, so the op carries the phase
+identifier directly. The Node-side `name`/`op` fields are set to the
+same value so all three layers (RN, native, Node) match. Filter the
+whole boot timeline with `op:boot.*` in Discover.
+
+| Operation | Layer | When it opens / closes |
+|---|---|---|
+| `comapeo.boot` (root tx) | `proc:fgs` Android / `proc:main` iOS | Opens in `NodeJSService.start()`; closes on first non-`STARTING` transition with status `ok` (STARTED), `internal_error` (ERROR), or `cancelled` (STOPPING/STOPPED). Forced 100% sampled; tagged `boot.kind=user-foreground` or `system-restart`. |
+| `boot.fgs-launch` (Android only) | `proc:fgs` | Backdated to `serviceStartTimeMs` (stamped by the activity lifecycle listener); closes immediately on entry to `NodeJSService.start()`. `user-foreground` boots only — absent on `system-restart`. |
+| `boot.extract-assets` (Android only) | `proc:fgs` | Recursive copy of `nodejs-project/` from APK assets into internal storage. Opened only when `shouldCopyAssets()` returns true — i.e. first boot after install or app update. Presence in a trace is itself diagnostic ("this was a cold start after update"); absent on every subsequent boot. iOS reads the bundle in place (no extraction). |
+| `boot.node-spawn` | `proc:fgs` Android / `proc:main` iOS | JNI call to `startNodeWithArguments` (Android) / `nodeEntryPoint` (iOS) → backend's `started` frame on the control socket. Spans the C/C++ V8-bootstrap phase plus the Node-side loader/import/manager-init phases (visible as nested child transactions on the same trace). |
+| `boot.loader-init` | `layer:node` | Backdated to `loader.mjs` first line; closed just after `Sentry.init`. Covers the C/C++ → JS handover including V8 bootstrap and the iitm hook install. Has two child spans: `boot.loader-import-sentry-node` (brackets `import("@sentry/node")` — the dominant chunk on the reference device) and `boot.import-index` (brackets the dynamic `import("./index.js")`). The gap between loader-init's duration and the import-sentry-node child is parseArgs + iitm `register()` + smaller imports + `Sentry.init` (collectively <200ms on the reference device; no spans of their own). `boot.import-index` parents to loader-init via an explicit `parentSpan` reference (not via AsyncLocalStorage) so the IIFE inside `index.js` still captures `boot.node-spawn` as the parent for `boot.manager-init` — keeping it a top-level Node phase rather than nesting it further. Sentry renders import-index as a child whose duration extends past its parent's. |
+| `boot.manager-init` | `layer:node` | Wraps `createComapeo(...)` + `comapeoRpcServer.listen(...)` — drizzle migrations + SQLite open + hypercore init + fastify + RPC socket bind. |
+| `boot.rootkey-load` | `proc:fgs` Android / `proc:main` iOS | Wraps `RootKeyStore.loadOrInitialize()` (Android) / `RootKeyStore.loadKey()` (iOS) in `sendInitFrame()`. Span data: `generated=true` on first install, `false` on steady-state. |
+
+Cross-layer trace propagation: native opens `comapeo.boot`, then
+forwards the `boot.node-spawn` span's `sentry-trace` header to the
+Node process as the `--sentryTrace` argv flag. The Node side's
+`Sentry.continueTrace` wraps all three Node-side boot spans so they
+inherit the FGS-side trace_id and parent_span_id. Result: every boot
+span across all three layers shares a single trace, viewable on a
+single timeline in Sentry's Trace view. Cross-layer with the RN-side
+`App Start` transaction is tracked in
+[#68](https://github.com/digidem/comapeo-core-react-native/issues/68).
+
+#### Standard captureMessage events
+
+| Message | Level | Tags |
+|---|---|---|
+| `comapeo: startup timeout fired` | `error` | `timeout:startup`, `comapeo.phase:starting-timeout` |
+| `comapeo: stop timeout fired` (iOS) / `comapeo: FGS stop timeout fired` (Android) | `error` | `timeout:shutdown` (iOS) / `timeout:fgsStop` (Android), `comapeo.phase:shutdown-timeout` |
+| `comapeo: error-native frame dropped` (Android FGS) | `warning` | `timeout:errorNativeForward`, `comapeo.phase:<inner>` |
+
+#### Standard captureException tag sets
+
+| Origin | `comapeo.phase` | `source` | `comapeo.state` | Where |
+|---|---|---|---|---|
+| Rootkey-store load failure | `rootkey` | `rootkey-store` | `ERROR` | FGS-side (Android) and iOS native |
+| Node-runtime launch failure | `node-runtime` | `startNodeWithArguments` | `ERROR` | Android FGS only (iOS lifts the throw via the same path) |
+| Synthesised JS-side ERROR | from `info.errorPhase` | (none) | `ERROR` | `src/sentry.ts` |
+| Control-socket parse failure | (none) | `control-socket` | (none, level `warning`) | `src/sentry.ts` |
+
+The plan's §7.4.9 never-capture list is enforced at every emit
+site (no observation contents, precise location, peer
+identities, raw project IDs, or user-entered text). Phase 5's
+`before_send` processor will add a defensive substring scrub
+on top.
+
+### 7.6 When to log, when to breadcrumb, when to capture
+
+Logs, breadcrumbs, and captured events serve different
+purposes and shouldn't be 1-to-1.
+
+| | Logs (`logcat` / `os_log`) | Breadcrumbs | Captured events (`captureException` / `captureMessage`) |
+|---|---|---|---|
+| Cost | Unbounded — OS rotates the buffer | Finite ring buffer (Sentry's default 100 per scope) | Counted toward Sentry quota; surface as Issues |
+| Visibility | Live during local debug only | Attached to next captured event | First-class dashboard entries |
+| Audience | Developer at the keyboard | Reader of a captured event later | Triage reader |
+| Use for | Anything | Lifecycle context | Errors / notable non-error events |
+
+The codebase has four helpers. `log()` is the foundation;
+the other three compose on top of it:
+
+- **`log(message, level, attributes)`** — the single
+  primitive. Always writes a logcat / os_log line at the
+  matching priority; also forwards to Sentry's
+  structured-log pipeline (`Sentry.logger.*` Android,
+  `SentrySDK.logger.*` iOS), which the SDK gates on
+  `enableLogs`. Use for debug noise, cache-check diagnostics,
+  guard-rejection paths.
+- **`logCrumb(category, message, level, data)`** — `log()`
+  + Sentry breadcrumb. Lifecycle progress events: state
+  transitions, control-socket frames, IPC state, FGS
+  lifecycle, boot phases. ~20–25 emissions per app session,
+  well under the breadcrumb buffer cap.
+- **`logException(category, throwable, message, tags)`** —
+  `log()` (with throwable, so the stack lands in logcat via
+  3-arg `Log.e(TAG, msg, t)`) + `captureException`. Use when
+  you have a `Throwable` in hand. Examples: rootkey-load
+  failure, node-runtime launch failure.
+- **`logCapture(category, message, level, tags)`** —
+  `log()` + `captureMessage`. Use when you don't have a
+  throwable but the event is notable: timeouts (startup,
+  shutdown, fgsStop, errorNativeForward), dropped frames,
+  protocol violations.
+
+Plus one more shape that doesn't go through the helpers:
+**breadcrumb only** is used by `src/sentry.ts` (the JS
+adapter) on Android — the matching FGS-side `logCrumb`
+already produces the logcat line; emitting from JS too
+would just round-trip through Metro's bridge.
+
+`captureException` vs `captureMessage` — when in doubt:
+have a throwable → `logException`; making a synthetic
+exception just to use captureException would lose the
+"this isn't really a stack-traceable error" semantic and
+the dashboard's grouping wouldn't be useful.
+
+**iOS dual-crumb caveat.** On iOS, single-process means both
+the native bridge's breadcrumb and the JS adapter's breadcrumb
+land on the same Sentry hub for every state transition. They
+carry different `data` payloads (native has the full
+`(backendState, nodeRuntime, stopRequested)` triple; JS has
+the simplified state derivation), so they're complementary,
+but they do roughly halve the effective lookback window. The
+JS adapter is the resilience layer when the native bridge is
+gated off (`#if canImport(Sentry)` false), so we keep both.
+
+**Phase 3 forward-look.** When backend RPC tracing lands, do
+NOT `logCrumb` every RPC method call — a noisy sync session
+can fire 100+ RPCs and evict every boot/state crumb from the
+buffer. The right shape is: log per RPC (cheap), crumb only
+on RPC errors, and let the sampled-trace span infrastructure
+(`tracesSampleRate`) handle the success path.
+
+**Sentry structured logs.** Sentry has a separate "Logs"
+pipeline (`SentrySDK.logger.*` / `Sentry.logger.*`),
+queryable independently in the Logs UI and *not* attached
+to events the way breadcrumbs are. Our `log()` primitive
+forwards every call through this pipeline; the SDK gates
+on `enableLogs` so it costs nothing for consumers who
+haven't opted in.
+
+To enable: set `enableLogs: true` on the
+`@comapeo/core-react-native` plugin (controls the Android
+FGS-process hub, where we own the SDK init) and on
+`Sentry.init({ enableLogs: true, ... })` in the host app
+(controls the main-process hub on Android and the
+single-process hub on iOS — that init is the host's, not
+ours, on those paths). When enabled, every `log` /
+`logCrumb` / `logException` / `logCapture` call lands in
+the Logs UI in addition to its primary destination,
+giving cross-process timeline reconstruction across
+`proc:main` / `proc:fgs` / `proc:node` (breadcrumbs don't
+cross scopes; logs do).
+
+---
+
+## 8. Alternatives considered
+
+### 8.1 FGS↔main process state notification (Android)
 
 The current approach (§4.4) is a second `NodeJSIPC` connection to
 `control.sock`. We considered:
@@ -577,7 +924,7 @@ for a channel that carries ~6 messages per process lifetime." That cost
 is real but small. If profiling later shows it matters, **ContentProvider
 + ContentObserver** is the runner-up.
 
-### 7.2 Rootkey storage: Why not `expo-secure-store`?
+### 8.2 Rootkey storage: Why not `expo-secure-store`?
 
 Detailed comparison: see
 [`root-key-storage-and-migration-plan.md`](./root-key-storage-and-migration-plan.md).
@@ -616,7 +963,7 @@ Net: ~215 lines of ours doing exactly what we need with stronger
 at-rest properties; `expo-secure-store` is ~740 lines doing a
 different problem.
 
-### 7.3 Single-socket variants
+### 8.3 Single-socket variants
 
 Earlier prototypes carried lifecycle frames over the comapeo socket
 (prepended to the RPC stream). Rejected because:
@@ -626,7 +973,7 @@ Earlier prototypes carried lifecycle frames over the comapeo socket
 - The replay semantics for `started`/`ready` only make sense for the
   control surface; carrying replay through RPC was nonsense.
 
-### 7.4 Eager rootkey injection
+### 8.4 Eager rootkey injection
 
 Prototype: ship the rootkey in `argv` to the Node process so the
 backend reads it from `process.argv[N]` on boot, no handshake needed.
@@ -642,7 +989,7 @@ constraint. Both are small.
 
 ---
 
-## 8. References
+## 9. References
 
 - `backend/index.js` — boot sequence, `handleFatal`, init handler.
 - `backend/lib/simple-rpc.js` — control socket server, replay, error
@@ -650,5 +997,7 @@ constraint. Both are small.
 - `ios/NodeJSService.swift`, `android/.../NodeJSService.kt` — native
   lifecycle state.
 - `src/ComapeoCoreModule.ts` — JS-facing observers (`comapeo`, `state`).
+- `docs/sentry-integration-plan.md` — Sentry integration plan (§7
+  is the architectural overview).
 - [GitHub issue #29](https://github.com/digidem/comapeo-core-react-native/issues/29)
   — original "expose Node.js lifecycle state to JS" tracking issue.

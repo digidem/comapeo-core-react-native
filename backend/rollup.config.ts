@@ -7,6 +7,7 @@ import alias from "@rollup/plugin-alias";
 import commonjs from "@rollup/plugin-commonjs";
 import { default as esmShim } from "@rollup/plugin-esm-shim";
 import json from "@rollup/plugin-json";
+import { sentryRollupPlugin } from "@sentry/rollup-plugin";
 import type { OutputOptions, Plugin, RollupOptions } from "rollup";
 import { minify } from "rollup-plugin-esbuild";
 
@@ -14,11 +15,13 @@ import addonLoaderPlugin, {
   androidAddonLoaderBanner,
   iosAddonLoaderBanner,
 } from "./rollup-plugins/rollup-plugin-addon-loader.js";
+import {
+  captureDebugIdsPlugin,
+  relocateSourcemapsPlugin,
+} from "./rollup-plugins/rollup-plugin-sentry-debug-ids.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-const MAPS_STUB_PATH = path.join(__dirname, "lib", "maps-stub.js");
 
 /**
  * Per-platform output dirs. `scripts/build-backend.ts` sets these env
@@ -39,20 +42,72 @@ const ANDROID_OUT_MAIN =
 const IOS_OUT = process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
 
 /**
- * Resolves `@comapeo/core`'s `./fastify-plugins/maps.js` import to the
- * iOS-only no-op stub. Scoped tightly to the `@comapeo/core/src/` importer
- * so unrelated packages with a similarly-named file aren't caught.
+ * Per-platform sourcemap relocation targets. The `.mjs.map` file rollup
+ * writes alongside the bundle is moved here after `writeBundle` so it
+ * never enters the per-platform asset/resource tree consumed by the
+ * APK / IPA builds. The maps still ship in the npm tarball (the parent
+ * of these dirs is whitelisted in `package.json`'s `files`) so the
+ * `comapeo-rn-upload-sourcemaps` CLI can resolve them at consumer build
+ * time.
+ *
+ * For the production build these are passed by `scripts/build-backend.ts`;
+ * the fallbacks keep the standalone `cd backend && npm run build` case
+ * working — maps land in `<outDir>-sourcemaps/` next to the bundle dir.
  */
-function stubComapeoMapsPlugin(): Plugin {
+const ANDROID_SOURCEMAPS_DEBUG =
+  process.env.SOURCEMAPS_DIR_ANDROID_DEBUG ?? `${ANDROID_OUT_DEBUG}-sourcemaps`;
+
+const ANDROID_SOURCEMAPS_MAIN =
+  process.env.SOURCEMAPS_DIR_ANDROID_MAIN ?? `${ANDROID_OUT_MAIN}-sourcemaps`;
+
+const IOS_SOURCEMAPS =
+  process.env.SOURCEMAPS_DIR_IOS ?? `${IOS_OUT}-sourcemaps`;
+
+/**
+ * iOS-only: redirects undici's `require('../llhttp/llhttp_simd-wasm.js')`
+ * call to the non-SIMD wasm module beside it. polywasm 0.2 doesn't
+ * implement WASM SIMD (opcode 0xfd) — it compiles the SIMD bytes
+ * successfully but throws `Unsupported instruction: 0xFD` lazily on
+ * the first export call, which undici's try/catch around `compile`
+ * doesn't intercept. Aliasing at bundle time forces the non-SIMD
+ * path so the SIMD bytes never reach polywasm.
+ */
+function aliasUndiciSimdWasmPlugin(): Plugin {
   return {
-    name: "stub-comapeo-maps-plugin",
+    name: "alias-undici-simd-wasm",
     resolveId(source, importer) {
       if (
-        source === "./fastify-plugins/maps.js" &&
+        source === "../llhttp/llhttp_simd-wasm.js" &&
         importer &&
-        importer.includes("@comapeo/core/src/")
+        importer.includes("/undici/lib/dispatcher/")
       ) {
-        return MAPS_STUB_PATH;
+        return path.resolve(path.dirname(importer), "../llhttp/llhttp-wasm.js");
+      }
+      return null;
+    },
+  };
+}
+
+/**
+ * iOS only: redirect `loader.mjs`'s dynamic `import("./index.js")` to
+ * `index.ios.js` (the polywasm-installing wrapper that re-imports
+ * `index.js`). Without this, rollup resolves the literal `./index.js`
+ * specifier from loader.mjs to the source `index.js` and emits a
+ * second chunk that bypasses the polywasm install — undici then
+ * throws `ReferenceError: WebAssembly is not defined` at module-init
+ * inside the loaded backend. Android resolves `./index.js` to the
+ * `index.js` entry naturally; the redirect is iOS-specific.
+ */
+function redirectLoaderIndexToPolywasmEntryPlugin(): Plugin {
+  return {
+    name: "redirect-loader-index-to-polywasm-entry",
+    resolveId(source, importer) {
+      if (
+        source === "./index.js" &&
+        importer &&
+        importer.endsWith("/loader.mjs")
+      ) {
+        return path.join(__dirname, "index.ios.js");
       }
       return null;
     },
@@ -62,8 +117,8 @@ function stubComapeoMapsPlugin(): Plugin {
 /**
  * Runtime data files copied alongside the rollup output into the per-
  * platform output dir. Identical for Android and iOS: only the bundled
- * JS differs (iOS has the maps fastify plugin stubbed out — see
- * `stubComapeoMapsPlugin` above).
+ * JS differs (iOS prefixes a polywasm bootstrap and aliases undici's
+ * SIMD wasm — see `aliasUndiciSimdWasmPlugin` above).
  *
  *   - `package.json`: required by Node's module resolver to set the
  *     unpacked nodejs-project tree's module type.
@@ -111,10 +166,12 @@ function buildPlugins({
   platform,
   outDir,
   shouldMinify,
+  debugIdMap,
 }: {
   platform: "android" | "ios";
   outDir: string;
   shouldMinify: boolean;
+  debugIdMap: Map<string, string>;
 }): Plugin[] {
   return [
     alias({
@@ -127,9 +184,17 @@ function buildPlugins({
         },
       ],
     }),
-    // iOS-only: stub the maps fastify plugin so undici stays out of the
-    // bundle. See lib/maps-stub.js.
-    ...(platform === "ios" ? [stubComapeoMapsPlugin()] : []),
+    // iOS-only: redirect undici's SIMD llhttp wasm to the non-SIMD
+    // module so polywasm doesn't trip on opcode 0xfd at runtime. See
+    // aliasUndiciSimdWasmPlugin above.
+    ...(platform === "ios" ? [aliasUndiciSimdWasmPlugin()] : []),
+    // iOS-only: redirect loader.mjs's `import("./index.js")` to the
+    // polywasm-installing entry so the polyfill is in place before
+    // undici's module-init `WebAssembly.compile`. See
+    // redirectLoaderIndexToPolywasmEntryPlugin above.
+    ...(platform === "ios"
+      ? [redirectLoaderIndexToPolywasmEntryPlugin()]
+      : []),
     // Native addon loader rewrite is identical for both platforms:
     // every loader pattern (`bindings`, `node-gyp-build`, `require.addon`)
     // becomes `__loadAddon(name, version)`. The helper itself differs
@@ -145,6 +210,22 @@ function buildPlugins({
     json(),
     shouldMinify ? minify() : undefined,
     copyStaticAssetsPlugin(outDir),
+    // Capture the debug ID sentry-rollup-plugin will compute for this
+    // chunk so `relocateSourcemapsPlugin` can read it directly at
+    // writeBundle. Must run *before* sentry-rollup-plugin in
+    // renderChunk so both see the same `code` input.
+    captureDebugIdsPlugin(debugIdMap),
+    // Inject `_sentryDebugIdIdentifier` (runtime snippet) into the
+    // bundle so Sentry symbolicates by ID, independent of the consumer's
+    // release. Upload is disabled — published tarballs carry the maps;
+    // consumers run `comapeo-rn-upload-sourcemaps` from CI to push them
+    // to their own Sentry project. Debug IDs are `stringToUUID(chunk.code)`
+    // so identical bundle bytes produce identical IDs across re-publishes.
+    sentryRollupPlugin({
+      sourcemaps: { disable: "disable-upload" },
+      telemetry: false,
+      release: { inject: false, create: false },
+    }),
   ];
 }
 
@@ -163,23 +244,42 @@ function cleanOutputDirPlugin(dir: string): Plugin {
   };
 }
 
-const sharedInput = {
+// `loader` is the spawn target on both platforms: it parses `--sentry*`
+// argv, conditionally dynamic-imports `./lib/sentry-init.js` (which
+// brings in `@sentry/node-core` + `@sentry/opentelemetry` + the
+// OpenTelemetry SDK) and initialises Sentry, then dynamic-imports
+// `./index.mjs` (the platform-appropriate bundle of either
+// `index.js` or `index.ios.js`).
+const ANDROID_INPUT = {
+  loader: path.join(__dirname, "loader.mjs"),
   index: path.join(__dirname, "index.js"),
+};
+
+// iOS uses a thin entry that imports `lib/install-polywasm.js` first
+// so polywasm replaces the absent `globalThis.WebAssembly` before the
+// shared `index.js` (and undici through the maps plugin) is evaluated.
+const IOS_INPUT = {
+  loader: path.join(__dirname, "loader.mjs"),
+  index: path.join(__dirname, "index.ios.js"),
 };
 
 const sharedOutput: OutputOptions = {
   format: "esm",
   sourcemap: true,
   entryFileNames: "[name].mjs",
+  // `@sentry/node-core` + `@sentry/opentelemetry` + the OpenTelemetry
+  // SDK land here (via `./lib/sentry-init.js`), loaded only when the
+  // loader's argv check passes.
+  chunkFileNames: "chunks/[name]-[hash].mjs",
 };
 
 /**
  * Three outputs from the same source tree: Android debug, Android release, and iOS.
  * Android gets the full bundle — its nodejs-mobile build permits JIT, so undici
- * (and therefore the maps fastify plugin) loads cleanly. iOS gets the same bundle but with
- * `@comapeo/core`'s maps plugin swapped for a no-op (see lib/maps-stub.js)
- * because nodejs-mobile iOS runs V8 with `--jitless` and undici's
- * WebAssembly init would crash module load.
+ * (and therefore the maps fastify plugin) loads cleanly. iOS uses a wrapper
+ * entry (`index-ios.js`) that installs polywasm as `globalThis.WebAssembly`
+ * before the shared `index.js` runs, so undici can compile its non-SIMD
+ * llhttp wasm under nodejs-mobile's jitless V8.
  *
  * Each output's `banner` defines `__loadAddon(name, version)` with the
  * platform-appropriate `process.dlopen` target — Android does
@@ -187,9 +287,18 @@ const sharedOutput: OutputOptions = {
  * Embed-&-Sign'd xcframework binary at NATIVE_LIB_DIR/<key>.framework/<key>.
  * See `rollup-plugin-addon-loader.js` for the helper bodies.
  */
+// One Map per output config. Populated by `captureDebugIdsPlugin` in
+// `renderChunk` and read by `relocateSourcemapsPlugin` in `writeBundle`.
+// Per-config (rather than one shared Map) so a stale entry from a
+// previous output can't bleed across — rollup runs the configs
+// sequentially.
+const androidDebugDebugIds = new Map<string, string>();
+const androidMainDebugIds = new Map<string, string>();
+const iosDebugIds = new Map<string, string>();
+
 const config: RollupOptions[] = [
   {
-    input: sharedInput,
+    input: ANDROID_INPUT,
     output: {
       ...sharedOutput,
       dir: ANDROID_OUT_DEBUG,
@@ -202,11 +311,17 @@ const config: RollupOptions[] = [
         outDir: ANDROID_OUT_DEBUG,
         // Android debug does not minify the bundle.
         shouldMinify: false,
+        debugIdMap: androidDebugDebugIds,
       }),
+      relocateSourcemapsPlugin(
+        ANDROID_OUT_DEBUG,
+        ANDROID_SOURCEMAPS_DEBUG,
+        androidDebugDebugIds,
+      ),
     ],
   },
   {
-    input: sharedInput,
+    input: ANDROID_INPUT,
     output: {
       ...sharedOutput,
       dir: ANDROID_OUT_MAIN,
@@ -218,11 +333,17 @@ const config: RollupOptions[] = [
         platform: "android",
         outDir: ANDROID_OUT_MAIN,
         shouldMinify: true,
+        debugIdMap: androidMainDebugIds,
       }),
+      relocateSourcemapsPlugin(
+        ANDROID_OUT_MAIN,
+        ANDROID_SOURCEMAPS_MAIN,
+        androidMainDebugIds,
+      ),
     ],
   },
   {
-    input: sharedInput,
+    input: IOS_INPUT,
     output: {
       ...sharedOutput,
       dir: IOS_OUT,
@@ -234,7 +355,9 @@ const config: RollupOptions[] = [
         platform: "ios",
         outDir: IOS_OUT,
         shouldMinify: true,
+        debugIdMap: iosDebugIds,
       }),
+      relocateSourcemapsPlugin(IOS_OUT, IOS_SOURCEMAPS, iosDebugIds),
     ],
   },
 ];

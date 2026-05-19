@@ -1,22 +1,17 @@
 import Foundation
 import Security
 
-/// Persistent store for the 16-byte CoMapeo rootkey on iOS.
+/// Persistent store for the 16-byte CoMapeo rootkey.
 ///
-/// The rootkey is the device's identity in every CoMapeo project it
-/// participates in. It is generated once on first launch and never rotated —
-/// regenerating produces a new device identity, which is identity loss.
+/// The rootkey is the device's identity across every CoMapeo project.
+/// Generated once on first launch and never rotated — regenerating
+/// produces a new device identity (identity loss).
 ///
-/// Storage:
-///   - `kSecClassGenericPassword` keychain item.
-///   - `kSecAttrService = <bundle id>` (or a fixed fallback if the bundle id
-///     is unavailable, e.g. under `swift test`).
-///   - `kSecAttrAccount = "rootkey.v1"`.
-///   - `kSecAttrAccessible = AfterFirstUnlockThisDeviceOnly` — readable in
-///     the background once the user has unlocked at least once since reboot,
-///     never iCloud-migrated, never device-to-device-restored.
-///   - No biometrics, no user-presence flags.
-///   - Value: raw 16 bytes. The keychain encrypts transparently.
+/// Storage: `kSecClassGenericPassword`, account `rootkey.v1`, service
+/// = bundle id (or fallback under `swift test`). Accessibility is
+/// `AfterFirstUnlockThisDeviceOnly` (background-readable post unlock,
+/// no iCloud, no device-to-device restore). No biometrics. Raw 16
+/// bytes; keychain encrypts transparently.
 final class RootKeyStore {
     enum RootKeyError: Error, LocalizedError {
         case interactionNotAllowed
@@ -44,23 +39,23 @@ final class RootKeyStore {
     private let service: String
 
     init(service: String? = nil) {
-        // Fall back to a stable identifier if no bundle id is available
-        // (e.g. macOS unit-test process). Production callers always have a
-        // bundle id, so this only matters for ad-hoc tooling.
+        // Fallback covers ad-hoc tooling without a bundle id (e.g. macOS
+        // unit-test process). Production always has one.
         self.service = service
             ?? Bundle.main.bundleIdentifier
             ?? "com.comapeo.core"
     }
 
-    /// Returns the 16-byte rootkey, generating and persisting it on first
-    /// launch. Throws if the keychain is unavailable (device locked since
-    /// reboot) or if a stored entry has the wrong length — never silently
-    /// regenerates on read failure.
-    func loadOrInitialize() throws -> Data {
-        if let existing = try load() { return existing }
+    /// Generates and persists on first launch; subsequent calls return
+    /// the stored bytes. Throws on keychain unavailable (device locked
+    /// since reboot) or wrong length — never silently regenerates.
+    func loadOrInitialize() throws -> RootKeyResult {
+        if let existing = try load() {
+            return RootKeyResult(key: existing, generated: false)
+        }
         let fresh = try generate()
         try store(fresh)
-        return fresh
+        return RootKeyResult(key: fresh, generated: true)
     }
 
     private func load() throws -> Data? {
@@ -117,7 +112,7 @@ final class RootKeyStore {
     }
 
     private func baseQuery() -> [String: Any] {
-        return [
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: RootKeyStore.account,

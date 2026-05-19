@@ -1,0 +1,58 @@
+package com.comapeo.core
+
+/**
+ * Tag keys for Sentry events. Centralised so a typo can't silently route an
+ * event to the wrong dashboard column. Values are documented in
+ * `docs/sentry-integration-plan.md` and `docs/ARCHITECTURE.md` §7.
+ *
+ * `proc` reflects the OS process, not a logical layer: iOS is always `main`;
+ * Android is `main` for RN/native in the host UI process and `fgs` for code
+ * in the `:ComapeoCore` foreground-service process (Kotlin + embedded Node).
+ */
+object SentryTags {
+    const val PROC = "proc"
+    const val LAYER = "layer"
+    const val PHASE = "comapeo.phase"
+    const val STATE = "comapeo.state"
+    const val SOURCE = "source"
+    const val TIMEOUT = "timeout"
+
+    /**
+     * On `comapeo.boot` transactions: distinguishes activity-initiated starts
+     * (has `serviceStartElapsedMs` + `boot.fgs-launch` span) from system-driven
+     * FGS restarts (no intent, no stamp, no span). Filter the two populations
+     * separately — their timelines are structurally different.
+     */
+    const val BOOT_KIND = "boot.kind"
+
+    // proc values
+    const val PROC_MAIN = "main"
+    const val PROC_FGS = "fgs"
+
+    // layer values
+    const val LAYER_RN = "rn"
+    const val LAYER_NATIVE = "native"
+    const val LAYER_NODE = "node"
+
+    // boot.kind values
+    const val BOOT_KIND_USER_FOREGROUND = "user-foreground"
+    const val BOOT_KIND_SYSTEM_RESTART = "system-restart"
+}
+
+/**
+ * Breadcrumb category names. Single source of truth for the
+ * dot-separated category strings so a typo can't silently route
+ * crumbs to the wrong dashboard filter.
+ */
+object SentryCategories {
+    /** State-machine transitions (STOPPED → STARTING → STARTED …). */
+    const val STATE = "comapeo.state"
+    /** Control-socket frames (started/ready/stopping/error/malformed). */
+    const val CONTROL = "comapeo.control"
+    /** FGS (foreground-service) lifecycle (Android only). */
+    const val FGS = "comapeo.fgs"
+    /** NodeJSIPC connection state transitions. */
+    const val IPC = "comapeo.ipc"
+    /** Boot phases (start, asset copy, rootkey load, init frame, ready). */
+    const val BOOT = "comapeo.boot"
+}

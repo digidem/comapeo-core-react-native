@@ -66,6 +66,46 @@ final class ControlFrameTests: XCTestCase {
         XCTAssertEqual(message, "x")
     }
 
+    func testParsesSentryEventReSerializingPayload() {
+        let frame = ControlFrame.parse(
+            #"{"type":"sentry-event","payload":{"event_id":"abc","level":"error"}}"#
+        )
+        guard case let .sentryEvent(payloadJson) = frame else {
+            XCTFail("expected .sentryEvent, got \(frame)"); return
+        }
+        // The payload object is re-serialised so the SDK's decoder can
+        // re-parse it. Key order across the round-trip isn't guaranteed,
+        // so assert on contents rather than literal equality.
+        XCTAssertTrue(payloadJson.contains("\"event_id\":\"abc\""))
+        XCTAssertTrue(payloadJson.contains("\"level\":\"error\""))
+    }
+
+    func testSentryEventMissingPayloadReturnsMalformed() {
+        let frame = ControlFrame.parse(#"{"type":"sentry-event"}"#)
+        guard case let .malformed(detail) = frame else {
+            XCTFail("expected .malformed, got \(frame)"); return
+        }
+        XCTAssertTrue(detail.contains("payload"))
+    }
+
+    func testParsesSentryEnvelope() {
+        let frame = ControlFrame.parse(
+            #"{"type":"sentry-envelope","data":"aGVsbG8="}"#
+        )
+        guard case let .sentryEnvelope(data) = frame else {
+            XCTFail("expected .sentryEnvelope, got \(frame)"); return
+        }
+        XCTAssertEqual(data, "aGVsbG8=")
+    }
+
+    func testSentryEnvelopeMissingDataReturnsMalformed() {
+        let frame = ControlFrame.parse(#"{"type":"sentry-envelope"}"#)
+        guard case let .malformed(detail) = frame else {
+            XCTFail("expected .malformed, got \(frame)"); return
+        }
+        XCTAssertTrue(detail.contains("data"))
+    }
+
     func testNonJSONReturnsMalformed() {
         let frame = ControlFrame.parse("not json at all")
         guard case let .malformed(detail) = frame else {

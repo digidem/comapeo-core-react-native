@@ -32,12 +32,9 @@ class ComapeoCoreService : Service() {
         const val NOTIFICATION_ID = 1
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
         const val CONTROL_SOCKET_FILENAME = "control.sock"
-        /**
-         * Tracks the number of active service instances in this process.
-         * Used to prevent Process.killProcess() in onDestroy from killing a
-         * process that has already created a new service instance (e.g. during
-         * a stop→restart cycle where Android reuses the same process).
-         */
+
+        /** Guards `Process.killProcess` from racing a stop→restart cycle that
+         *  reuses the same process and creates a new instance. */
         @Volatile
         private var activeInstanceCount = 0
     }
@@ -45,12 +42,45 @@ class ComapeoCoreService : Service() {
     override fun onCreate() {
         super.onCreate()
         activeInstanceCount++
-        nodeJSService = NodeJSService(applicationContext)
-        log("The service has been created".uppercase())
+
+        // Snapshot-at-boot: `diagnosticsEnabled = false` leaves the FGS bridge inert
+        // AND zeroes the `--sentry*` argv passed to loader.mjs (backend short-circuits
+        // its own Sentry.init on absent DSN). Restart-to-activate.
+        val sentryConfig = SentryConfig.loadFromManifest(applicationContext)
+        val prefs = ComapeoPrefs.open(applicationContext)
+        val effectiveConfig = if (prefs.readDiagnosticsEnabled()) sentryConfig else null
+        effectiveConfig?.let { cfg ->
+            SentryFgsBridge.init(applicationContext, cfg)
+        }
+
+        logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
+
+        nodeJSService = NodeJSService(
+            applicationContext,
+            sentryConfig = effectiveConfig,
+            captureApplicationData = prefs.readCaptureApplicationData(),
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        log("onStartCommand startId: $startId action: ${intent?.action}")
+        // Forward the activity's `serviceStartTimeMs` stamp so
+        // NodeJSService can backdate boot.fgs-launch. -1 means the
+        // intent didn't carry one (system restart); we'll skip the
+        // backdated span in that case.
+        val serviceStartElapsedMs =
+            intent?.getLongExtra(EXTRA_SERVICE_START_ELAPSED_MS, -1L) ?: -1L
+        if (serviceStartElapsedMs >= 0) {
+            nodeJSService.serviceStartElapsedMs = serviceStartElapsedMs
+        }
+
+        logCrumb(
+            SentryCategories.FGS,
+            "onStartCommand",
+            data = mapOf(
+                "startId" to startId,
+                "action" to (intent?.action ?: "(restart)"),
+            ),
+        )
 
         when (intent?.action) {
             Actions.USER_FOREGROUND.name -> {
@@ -69,12 +99,11 @@ class ComapeoCoreService : Service() {
             }
 
             null -> {
-                // Service restarted by system - check current app state
+                // System-driven restart (no intent): recover the foreground/background
+                // notification state from the app lifecycle.
                 val isAppInForeground = ProcessLifecycleOwner.get()
                     .lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
-
                 log("Service restarted by system - app in foreground: $isAppInForeground")
-
                 startService()
                 updateNotification(isAppInForeground)
             }
@@ -82,29 +111,32 @@ class ComapeoCoreService : Service() {
             else -> log("Unknown action in received intent: ${intent.action}")
         }
 
-        // If the system kills the service after onStartCommand() returns,
-        // recreate the service and call onStartCommand(), but do not redeliver
-        // the last intent. Instead, the system calls onStartCommand() with a
-        // null intent unless there are pending intents to start the service. In
-        // that case, those intents are delivered.
         return START_STICKY
     }
 
     private val nodeJSServiceCallback = object : NodeJSService.Callback {
         override fun onComplete(exitCode: Int) {
-            log("NodeJS service completed with exit code $exitCode")
+            logCrumb(
+                SentryCategories.FGS,
+                "NodeJS exited",
+                data = mapOf("exitCode" to exitCode),
+            )
             stopService()
         }
 
         override fun onError(e: Exception) {
-            log("NodeJS service error: ${e.message}")
+            logCrumb(
+                SentryCategories.FGS,
+                "NodeJS service error: ${e.message}",
+                level = "error",
+            )
             stopService()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        log("onDestroy")
+        logCrumb(SentryCategories.FGS, "ComapeoCoreService.onDestroy")
         isServiceStarted = false
         activeInstanceCount--
         serviceScope.launch {
@@ -112,15 +144,23 @@ class ComapeoCoreService : Service() {
                 withTimeout(10_000) {
                     nodeJSService.stop()
                 }
-                log("NodeJS service stopped")
             } catch (e: Exception) {
-                log("Error stopping NodeJS service: ${e.message}")
+                // Capture before killProcess; the flush below is what gets it on the wire.
+                logCapture(
+                    SentryCategories.FGS,
+                    "comapeo: FGS stop timeout fired",
+                    level = "error",
+                    tags = mapOf(
+                        SentryTags.TIMEOUT to "fgsStop",
+                        SentryTags.PHASE to "shutdown-timeout",
+                    ),
+                )
             }
-            log("The service has been destroyed".uppercase())
-            // Only kill the process if no new service instance has started.
-            // During a stop→restart cycle, Android may create a new instance
-            // in the same process before this coroutine completes.
             if (activeInstanceCount <= 0) {
+                logCrumb(SentryCategories.FGS, "killProcess: no active instances")
+                // 2s flush — long enough to deliver under typical network, short enough
+                // not to stall shutdown noticeably.
+                SentryFgsBridge.flush(2_000)
                 Process.killProcess(Process.myPid())
             } else {
                 log("Skipping process kill — new service instance is active")
@@ -130,11 +170,8 @@ class ComapeoCoreService : Service() {
 
     private fun startService() {
         log("Starting the foreground service")
-
         val notification = createNotification(true)
-
-        // Always call startForeground — Android requires it every time
-        // startForegroundService() is called, even if already in foreground.
+        // Android requires startForeground on every startForegroundService call.
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
@@ -143,11 +180,9 @@ class ComapeoCoreService : Service() {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             } else {
                 0
-            }
+            },
         )
-
         if (isServiceStarted) return
-
         Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
         nodeJSService.start(nodeJSServiceCallback)
         isServiceStarted = true
@@ -165,8 +200,6 @@ class ComapeoCoreService : Service() {
     }
 
     private fun createNotification(isForeground: Boolean): Notification {
-        // depending on the Android API that we're dealing with we will have
-        // to use a specific method to create the notification
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val notificationManager =
                 getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -179,7 +212,6 @@ class ComapeoCoreService : Service() {
                 setSound(null, null)
             }
             notificationManager.createNotificationChannel(channel)
-            log("Notification channel created")
         }
 
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
@@ -192,7 +224,7 @@ class ComapeoCoreService : Service() {
             .setContentIntent(pendingIntent)
             .setProgress(100, 25, true)
             .setSmallIcon(R.drawable.ic_map_pin)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT) // for under android 26 compatibility
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setTicker("Ticker text")
 
         if (!isForeground) {
@@ -210,23 +242,16 @@ class ComapeoCoreService : Service() {
     }
 
     private fun createStopAction(): NotificationCompat.Action {
-        // Create an intent to stop the service
         val stopIntent = Intent(this, ComapeoCoreService::class.java).apply {
             action = Actions.STOP.name
         }
-
         val pendingIntent = PendingIntent.getService(
             this,
             0,
             stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-
-        return NotificationCompat.Action(
-            R.drawable.ic_stop,
-            "Stop",
-            pendingIntent
-        )
+        return NotificationCompat.Action(R.drawable.ic_stop, "Stop", pendingIntent)
     }
 
     override fun onBind(p0: Intent): IBinder? {

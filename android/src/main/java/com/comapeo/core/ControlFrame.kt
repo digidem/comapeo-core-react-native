@@ -4,56 +4,47 @@ import org.json.JSONException
 import org.json.JSONObject
 
 /**
- * Typed representation of a control-socket frame received from the
- * embedded Node.js backend. Replaces the parse+`when (type)` chain that
- * was duplicated across `NodeJSService.handleControlMessage` (FGS-side)
- * and `ComapeoCoreModule`'s `onMessage` (main-app-side).
- *
- * Frame names match what `backend/lib/simple-rpc.js` emits and what
- * `backend/index.js` broadcasts. Adding a new frame type means adding
- * a case here AND a branch on each consumer's `when` — the compiler's
- * exhaustiveness check is the point: a forgotten branch fails to
- * build, rather than silently dropping the frame at runtime.
- *
- * `Malformed` is a single case covering "non-JSON" and "JSON without a
- * usable type" — the consumers don't need to distinguish them today,
- * and the human-readable detail is what gets surfaced to JS via
- * `messageerror` regardless of which produced it.
+ * Typed control-socket frame from the embedded Node.js backend. Names match what
+ * `backend/lib/simple-rpc.js` emits / `backend/index.js` broadcasts. The compiler's
+ * exhaustiveness check on consumers is the point — adding a frame fails the build
+ * until every `when` is updated, rather than silently dropping it at runtime.
  */
 sealed class ControlFrame {
     object Started : ControlFrame()
     object Ready : ControlFrame()
 
-    /**
-     * Backend has begun graceful shutdown. Sent before any close work so
-     * peers can distinguish "expected disconnect" from "unexpected
-     * disconnect" — a control socket that closes without a preceding
-     * `Stopping` is unambiguously a crash or kill, not a graceful exit.
-     */
+    /** Graceful shutdown — sent before close so peers can tell expected from crash. */
     object Stopping : ControlFrame()
 
     data class Error(val phase: String, val message: String) : ControlFrame()
 
     /**
-     * The frame could not be processed: not JSON, missing `type`, or
-     * `type` not in the well-known set. `detail` is a developer-facing
-     * description suitable for logs and the JS `messageerror` event.
+     * `@sentry/node` error event, JSON-encoded. Fed to `SentryEvent.Deserializer`
+     * + `Sentry.captureEvent` so native scope (device/OS/app/user) is merged at
+     * capture time and Node doesn't have to carry it.
      */
+    data class SentryEvent(val payloadJson: String) : ControlFrame()
+
+    /**
+     * `@sentry/node` envelope (transactions, sessions, check-ins, profiles, …)
+     * base64-encoded. Handed to the hybrid-SDK envelope entrypoint for offline-
+     * capable transport. Native scope is NOT applied — parent transaction is
+     * opened natively and Node spans inherit via `continueTrace`.
+     */
+    data class SentryEnvelope(val data: String) : ControlFrame()
+
+    /** Frame could not be processed; `detail` is suitable for logs / `messageerror`. */
     data class Malformed(val detail: String) : ControlFrame()
 
     companion object {
-        /**
-         * Parses a raw control-socket message into a typed frame.
-         * Never throws; every failure mode resolves to `Malformed`.
-         */
+        /** Never throws; every failure mode resolves to [Malformed]. */
         fun parse(raw: String): ControlFrame {
             val json = try {
                 JSONObject(raw)
             } catch (_: JSONException) {
                 return Malformed("Non-JSON control frame: ${raw.take(100)}")
             }
-            val type = json.optString("type", "")
-            return when (type) {
+            return when (val type = json.optString("type", "")) {
                 "started" -> Started
                 "ready" -> Ready
                 "stopping" -> Stopping
@@ -61,6 +52,17 @@ sealed class ControlFrame {
                     phase = json.optString("phase", "unknown"),
                     message = json.optString("message", "(no message)"),
                 )
+                "sentry-event" -> {
+                    val payload = json.optJSONObject("payload")
+                    // Re-serialize so SentryEvent.Deserializer can re-parse against the bytes it expects.
+                    payload?.let { SentryEvent(it.toString()) }
+                        ?: Malformed("sentry-event frame missing object `payload`")
+                }
+                "sentry-envelope" -> {
+                    val data = json.optString("data", "")
+                    if (data.isEmpty()) Malformed("sentry-envelope frame missing string `data`")
+                    else SentryEnvelope(data)
+                }
                 else -> Malformed("Unknown control frame type=\"$type\"")
             }
         }

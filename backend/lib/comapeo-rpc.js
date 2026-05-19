@@ -4,8 +4,11 @@ import { createMapeoServer } from "@comapeo/ipc/server.js";
 /** @import {MapeoManager} from '@comapeo/core' */
 
 export class ComapeoRpcServer extends ServerHelper {
-  /** @param {MapeoManager} manager */
-  constructor(manager) {
+  /**
+   * @param {MapeoManager} manager
+   * @param {{ onRequestHook?: NonNullable<Parameters<typeof createMapeoServer>[2]>['onRequestHook'] }} [options]
+   */
+  constructor(manager, { onRequestHook } = {}) {
     super((socket) => {
       const messagePort = new SocketMessagePort(socket);
       messagePort.start();
@@ -14,6 +17,7 @@ export class ComapeoRpcServer extends ServerHelper {
         /** @type {Pick<MessagePort, 'postMessage' | 'addEventListener' | 'removeEventListener'>} */ (
           messagePort
         ),
+        onRequestHook ? { onRequestHook } : undefined,
       );
       messagePort.on("close", () => server.close());
     });

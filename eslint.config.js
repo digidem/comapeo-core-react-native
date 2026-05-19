@@ -24,7 +24,11 @@ export default defineConfig([
   includeIgnoreFile(gitExcludePath),
   {
     name: "ignores",
-    ignores: ["android/**/*", "apps/**/*", "ios/**/*"],
+    // `.claude/**` excludes claude-code worktrees, which carry
+    // their own `apps/`, `backend/`, etc. trees that the
+    // root-level `apps/**` / etc. ignores don't match (they're
+    // nested under `.claude/worktrees/<name>/`).
+    ignores: ["android/**/*", "apps/**/*", "ios/**/*", ".claude/**/*"],
   },
   js.configs.recommended,
   tseslint.configs.recommended,
@@ -41,6 +45,17 @@ export default defineConfig([
     rules: {
       "import/order": "off",
       "prettier/prettier": "off",
+    },
+  },
+  {
+    // Jest tests use per-test `require()` to reset module-state
+    // singletons (e.g. `initSentry`'s `initialized` flag). ESM
+    // dynamic `import()` would re-resolve through the cache and
+    // not give us a fresh module instance.
+    name: "tests",
+    files: ["**/__tests__/**", "**/*.test.{js,jsx,ts,tsx}"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
     },
   },
 ]);
