@@ -74,7 +74,7 @@ const { abi: NODE_ABI } = readNodeJsMobileVersions();
 // 2. Enumerate every concrete (name, version) pair of native modules
 //    in the dep tree. `npm ci` ran via the `prebackend:build` npm
 //    hook, so node_modules is current.
-const nativePairs = collectNativePairs(BACKEND_SRC_DIR, NATIVE_MODULES);
+const nativePairs = await collectNativePairs(BACKEND_SRC_DIR, NATIVE_MODULES);
 
 // 3. Rollup bundles backend/index.js into both per-platform output
 //    dirs in one pass. The `OUTPUT_DIR_*` env vars point rollup at
