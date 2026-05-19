@@ -114,3 +114,17 @@ runs:
 
         echo "Timed out after ${MAX_WAIT}s waiting for build $BUILD_ID"
         exit 1
+
+    - name: Stop BrowserStack build on cancel
+      if: cancelled() && steps.trigger.outputs.build_id != ''
+      env:
+        BUILD_ID: ${{ steps.trigger.outputs.build_id }}
+        BROWSERSTACK_USERNAME: ${{ inputs.browserstack_username }}
+        BROWSERSTACK_ACCESS_KEY: ${{ inputs.browserstack_access_key }}
+      shell: bash
+      run: |
+        [[ "$BUILD_ID" == "null" ]] && exit 0
+        echo "Stopping BrowserStack build $BUILD_ID"
+        curl --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+          -X POST "https://api-cloud.browserstack.com/app-automate/maestro/builds/$BUILD_ID/stop" \
+          -H "Content-Type: application/json" || true
