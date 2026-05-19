@@ -39,27 +39,27 @@ export async function collectNativePairs(
   modules: readonly NativeModule[],
 ): Promise<NativePair[]> {
   const pairs: NativePair[] = [];
+  const deps = new Set<string>();
 
-  for (const { name, usesNapi } of modules) {
-    const npmListResult = await $({
-      cwd: backendDir,
-      lines: true,
-    })`npm list ${name} --parseable`;
+  const npmListResult = await $({
+    cwd: backendDir,
+    lines: true,
+  })`npm list --all --parseable --long --production`;
 
-    const versions = new Set<string>();
-
-    for (const modulePath of npmListResult.stdout) {
-      const { version } = JSON.parse(
-        readFileSync(join(modulePath, "package.json"), "utf-8"),
-      );
-
-      versions.add(version);
-    }
-
-    for (const version of versions.values()) {
-      pairs.push({ name, version, usesNapi });
-    }
+  for (const line of npmListResult.stdout) {
+    const moduleInfo = line.split(":").at(-1);
+    if (!moduleInfo) continue;
+    deps.add(moduleInfo);
   }
 
+  for (const moduleInfo of deps.values()) {
+    const version = moduleInfo.split("@").at(-1);
+    if (!version) continue;
+    const name = moduleInfo.slice(0, -version.length - 1);
+    const nativeModule = modules.find((m) => m.name === name);
+    if (!nativeModule) continue;
+    const { usesNapi } = nativeModule;
+    pairs.push({ name, version, usesNapi });
+  }
   return pairs;
 }
