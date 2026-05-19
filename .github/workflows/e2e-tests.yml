@@ -59,9 +59,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Install npm dependencies
-        run: |
-          npm install --ignore-scripts
-          npx patch-package
+        run: npm install
 
       - name: Build backend bundle
         run: npm run backend:build
@@ -69,8 +67,7 @@ jobs:
       - name: Set up E2E app
         working-directory: apps/e2e
         run: |
-          npm install --ignore-scripts
-          npx patch-package
+          npm install
           npx expo prebuild --platform android --no-install
 
       - name: Build APK
@@ -128,9 +125,7 @@ jobs:
         run: ./scripts/download-nodejs-mobile.sh
 
       - name: Install npm dependencies
-        run: |
-          npm install --ignore-scripts
-          npx patch-package
+        run: npm install
 
       - name: Build backend bundle
         run: npm run backend:build
@@ -138,8 +133,7 @@ jobs:
       - name: Set up E2E app
         working-directory: apps/e2e
         run: |
-          npm install --ignore-scripts
-          npx patch-package
+          npm install
           npx expo prebuild --platform ios
 
       - name: Build .ipa
