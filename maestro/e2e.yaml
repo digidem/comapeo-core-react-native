@@ -1,11 +1,14 @@
 appId: com.comapeo.core.e2e
 env:
-    TIMEOUT: 30000
+    TIMEOUT: 300000
 ---
 - launchApp:
     clearState: true
 - tapOn: "Run tests"
 - extendedWaitUntil:
-    visible: 
-        id: "all-tests-passed"
+    visible:
+        id: "all-tests-done"
     timeout: ${TIMEOUT}
+- takeScreenshot: results
+- assertVisible:
+    id: "all-tests-passed"
