@@ -3,43 +3,38 @@ import { ServerHelper } from "./server-helper.js";
 import { createAppRpcServer, createMapeoServer } from "@comapeo/ipc/server.js";
 
 /** @import {MapeoManager} from '@comapeo/core' */
+/** @import {MapServer} from '@comapeo/map-server' */
 
-export class ComapeoRpcServer extends ServerHelper {
+export class ComapeoRpc extends ServerHelper {
   /**
-   * @param {MapeoManager} manager
+   * @param {{comapeoManager: MapeoManager, mapServer: MapServer}} options
    * @param {{ onRequestHook?: NonNullable<Parameters<typeof createMapeoServer>[2]>['onRequestHook'] }} [options]
    */
-  constructor(manager, { onRequestHook } = {}) {
+  constructor({ comapeoManager, mapServer }, { onRequestHook } = {}) {
     super((socket) => {
       const messagePort = new SocketMessagePort(socket);
+
       messagePort.start();
-      const server = createMapeoServer(
-        manager,
+
+      const comapeoRpcServer = createMapeoServer(
+        comapeoManager,
         /** @type {Pick<MessagePort, 'postMessage' | 'addEventListener' | 'removeEventListener'>} */ (
           messagePort
         ),
         onRequestHook ? { onRequestHook } : undefined,
       );
-      messagePort.on("close", () => server.close());
-    });
-  }
-}
 
-export class AppRpcServer extends ServerHelper {
-  /**
-   * @param {import('@comapeo/map-server').MapServer} mapServer
-   */
-  constructor(mapServer) {
-    super((socket) => {
-      const messagePort = new SocketMessagePort(socket);
-      messagePort.start();
-      const server = createAppRpcServer(
+      const mapRpcServer = createAppRpcServer(
         { mapServer },
         /** @type {Pick<MessagePort, 'postMessage' | 'addEventListener' | 'removeEventListener'>} */ (
           messagePort
         ),
       );
-      messagePort.on("close", () => server.close());
+
+      messagePort.on("close", () => {
+        comapeoRpcServer.close();
+        mapRpcServer.close();
+      });
     });
   }
 }

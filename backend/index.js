@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import ensureError from "ensure-error";
 import Fastify from "fastify";
 
-import { AppRpcServer, ComapeoRpcServer } from "./lib/comapeo-rpc.js";
+import { ComapeoRpc } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { createMapServer } from "./lib/create-map-server.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
@@ -23,14 +23,12 @@ const fastify = Fastify();
 
 // Manager construction is gated on native sending the rootKey; hold
 // these so shutdown can close them if construction succeeded.
-/** @type {ComapeoRpcServer | undefined} */
+/** @type {ComapeoRpc | undefined} */
 let comapeoRpcServer;
 /** @type {Awaited<ReturnType<typeof createComapeo>> | undefined} */
-let comapeo;
+let comapeoManager;
 /** @type {Awaited<ReturnType<typeof createMapServer>> | undefined} */
 let mapServer;
-/** @type {AppRpcServer | undefined} */
-let appRpcServer;
 
 /** @type {(rootKey: Buffer) => void} */
 let resolveInit;
@@ -98,7 +96,8 @@ const controlIpcServer = new SimpleRpcServer({
     const closePromises = [controlIpcServer.close(), fastify.close()];
     if (comapeoRpcServer) closePromises.push(comapeoRpcServer.close());
     await Promise.all(closePromises);
-    if (comapeo) await comapeo.close();
+    if (comapeoManager) await comapeoManager.close();
+    if (mapServer) await mapServer.close();
   },
   /**
    * Android-only attribution channel: FGS-local failures (rootkey load,
@@ -205,23 +204,21 @@ async function withPhase(phase, fn) {
     // used by native error frames.
     await withPhase("construct", () =>
       sentry.withSpan("boot.manager-init", async () => {
-        comapeo = createComapeo({
+        comapeoManager = createComapeo({
           privateStorageDir,
           fastify,
           migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
           rootKey,
         });
+
         mapServer = createMapServer({ privateStorageDir, rootKey });
 
-        comapeoRpcServer = new ComapeoRpcServer(comapeo, {
-          onRequestHook: sentry.rpcHook(),
-        });
-        appRpcServer = new AppRpcServer(mapServer);
+        comapeoRpcServer = new ComapeoRpc(
+          { comapeoManager, mapServer },
+          { onRequestHook: sentry.rpcHook() },
+        );
 
-        await Promise.all([
-          comapeoRpcServer.listen(comapeoSocketPath),
-          appRpcServer.listen(comapeoSocketPath),
-        ]);
+        await comapeoRpcServer.listen(comapeoSocketPath);
       }),
     );
     console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
