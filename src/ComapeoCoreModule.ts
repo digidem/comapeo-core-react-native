@@ -8,7 +8,12 @@ import {
   type MessageEventPayload,
   type StateChangeEventPayload,
 } from "./ComapeoCore.types";
-import { createMapeoClient, type MapeoClientApi } from "@comapeo/ipc/client.js";
+import {
+  AppRpcApi,
+  createAppRpcClient,
+  createMapeoClient,
+  type MapeoClientApi,
+} from "@comapeo/ipc/client.js";
 import * as Sentry from "@sentry/react-native";
 // `getTraceData` / `startNewTrace` aren't re-exported from
 // `@sentry/react-native@7`; `@sentry/core` is a direct dep of RN so
@@ -20,7 +25,9 @@ import type { SentryInitConfig } from "./sentry";
 // any hook-signature change up-stream is a compile error here. The
 // hook input omits `metadata`; we re-add it to write into `next(...)`.
 type IpcHookRequest = Parameters<
-  NonNullable<NonNullable<Parameters<typeof createMapeoClient>[1]>["onRequestHook"]>
+  NonNullable<
+    NonNullable<Parameters<typeof createMapeoClient>[1]>["onRequestHook"]
+  >
 >[0];
 type IpcRequestWithMetadata = IpcHookRequest & {
   metadata?: Record<string, string>;
@@ -106,9 +113,7 @@ export function setDiagnosticsEnabledNative(value: boolean): Promise<void> {
 }
 
 /** Persist `captureApplicationData`. See `setCaptureApplicationData` JSDoc. */
-export function setCaptureApplicationDataNative(
-  value: boolean,
-): Promise<void> {
+export function setCaptureApplicationDataNative(value: boolean): Promise<void> {
   return nativeModule.setCaptureApplicationData(value);
 }
 
@@ -212,9 +217,11 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
     // it's undefined whenever no transaction is in progress (e.g. after
     // App Start ends), which is exactly when we still want to create the
     // span and propagate the trace to the backend.
-    const isInitialized = (Sentry as unknown as {
-      isInitialized?: () => boolean;
-    }).isInitialized;
+    const isInitialized = (
+      Sentry as unknown as {
+        isInitialized?: () => boolean;
+      }
+    ).isInitialized;
     if (typeof isInitialized === "function" && !isInitialized()) {
       next(request).catch(noop);
       return;
@@ -232,7 +239,9 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
           },
         },
         async (span) => {
-          const { "sentry-trace": sentryTrace, baggage } = getTraceData({ span });
+          const { "sentry-trace": sentryTrace, baggage } = getTraceData({
+            span,
+          });
           const tracedRequest: IpcRequestWithMetadata = sentryTrace
             ? {
                 ...request,
@@ -250,7 +259,10 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
             // cold boot, `rn.send.syncMs` stays small while total stays high.
             const sendStart = performance.now();
             const responsePromise = next(tracedRequest);
-            span.setAttribute?.("rn.send.syncMs", performance.now() - sendStart);
+            span.setAttribute?.(
+              "rn.send.syncMs",
+              performance.now() - sendStart,
+            );
             await responsePromise;
             span.setStatus?.({ code: 1, message: "ok" });
           } catch (error) {
@@ -318,7 +330,9 @@ class State extends EventEmitter<StateEvents> {
     return nativeModule.getLastError();
   }
 
-  startObserving<EventName extends keyof StateEvents>(eventName: EventName): void {
+  startObserving<EventName extends keyof StateEvents>(
+    eventName: EventName,
+  ): void {
     if (eventName === "stateChange") {
       nativeModule.addListener("stateChange", this.#handleStateChangeEvent);
     } else if (eventName === "messageerror") {
@@ -326,11 +340,16 @@ class State extends EventEmitter<StateEvents> {
     }
   }
 
-  stopObserving<EventName extends keyof StateEvents>(eventName: EventName): void {
+  stopObserving<EventName extends keyof StateEvents>(
+    eventName: EventName,
+  ): void {
     if (eventName === "stateChange") {
       nativeModule.removeListener("stateChange", this.#handleStateChangeEvent);
     } else if (eventName === "messageerror") {
-      nativeModule.removeListener("messageerror", this.#handleMessageErrorEvent);
+      nativeModule.removeListener(
+        "messageerror",
+        this.#handleMessageErrorEvent,
+      );
     }
   }
 
@@ -348,3 +367,5 @@ class State extends EventEmitter<StateEvents> {
 }
 
 export const state = new State();
+
+export const appRpcClient: AppRpcApi = createAppRpcClient(messagePort);
