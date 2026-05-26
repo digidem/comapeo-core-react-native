@@ -1,4 +1,4 @@
-import { comapeo } from "@comapeo/core-react-native";
+import { comapeo, appRpcClient } from "@comapeo/core-react-native";
 import * as Sentry from "@sentry/react-native";
 import React, { useEffect, useState } from "react";
 import { Button, ScrollView, Text, View } from "react-native";
@@ -10,11 +10,30 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 let renderCount = 0;
 
+const mapServerListenPromise = appRpcClient.mapServer.listen();
+
+const mapServerApi = {
+  async getBaseUrl() {
+    const { localPort } = await mapServerListenPromise;
+    return new URL(`http://127.0.0.1:${localPort}`);
+  },
+};
+
 export default function App() {
   const [projects, setProjects] = useState<unknown[]>([]);
 
   useEffect(() => {
     comapeo.listProjects().then(setProjects);
+  }, []);
+
+  const [mapServerUrl, setMapServerUrl] = useState<string | undefined>(
+    undefined,
+  );
+
+  useEffect(() => {
+    mapServerApi.getBaseUrl().then((url) => {
+      setMapServerUrl(url.href);
+    });
   }, []);
 
   return (
@@ -45,6 +64,10 @@ export default function App() {
               comapeo.listProjects().then(setProjects);
             }}
           />
+        </Group>
+
+        <Group name="Map server">
+          <Text>{mapServerUrl}</Text>
         </Group>
       </ScrollView>
     </SafeAreaView>
