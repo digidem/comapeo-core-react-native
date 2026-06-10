@@ -27,7 +27,11 @@ import configPlugins from "@expo/config-plugins";
 import { createRequire } from "node:module";
 const { withAndroidManifest } = configPlugins;
 const { withInfoPlist } = configPlugins;
+const { withPodfile } = configPlugins;
 const require = createRequire(import.meta.url);
+const {
+  mergeContents,
+} = require("@expo/config-plugins/build/utils/generateCode");
 
 // Manifest meta-data on the main `<application>` tag is shared
 // across processes within the package.
@@ -78,7 +82,37 @@ function withComapeoCore(config, props) {
   const moduleIdent = sentry ? readModuleIdentification() : null;
   config = withSentryAndroid(config, sentry, moduleIdent);
   config = withSentryIos(config, sentry);
+  config = withSentryLibraryEvolution(config);
   return config;
+}
+
+// getsentry/sentry-cocoa#7950: Xcode 26's Swift compiler drops
+// `SentrySDK.startTransaction` (and other Swift-only APIs) from the
+// Sentry module unless the pod builds with library evolution.
+// `SentryNativeBridge.swift` calls that API, so every consumer needs
+// this. Inserted INSIDE the existing `post_install` block because
+// CocoaPods allows only one `post_install` hook per Podfile.
+const SENTRY_LIBRARY_EVOLUTION_HOOK = `\
+    installer.pods_project.targets.each do |target|
+      if target.name.start_with?('Sentry')
+        target.build_configurations.each do |build_configuration|
+          build_configuration.build_settings['BUILD_LIBRARY_FOR_DISTRIBUTION'] = 'YES'
+        end
+      end
+    end`;
+
+function withSentryLibraryEvolution(config) {
+  return withPodfile(config, (cfg) => {
+    cfg.modResults.contents = mergeContents({
+      tag: "comapeo-core-sentry-library-evolution",
+      src: cfg.modResults.contents,
+      newSrc: SENTRY_LIBRARY_EVOLUTION_HOOK,
+      anchor: /post_install do \|installer\|/,
+      offset: 1,
+      comment: "#",
+    }).contents;
+    return cfg;
+  });
 }
 
 /**
