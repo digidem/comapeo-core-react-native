@@ -1122,6 +1122,106 @@ Sentry event from inside Node — but it will produce an Android-process
 crash (since the FGS process dies) which `sentry-android` captures with a
 stacktrace from the JNI side.
 
+### 7.5 App-exit telemetry
+
+Post-mortem visibility on _why the OS killed us_, answering "does our
+backend stay alive long enough on this user's device?" per platform. Both
+sides emit plain Sentry events with a stable message per cause so Sentry
+groups one issue per kill class (sliceable in Discover; archive the
+issues once — they're stat buckets, not bugs to resolve). Sentry's
+Application Metrics (`Sentry.metrics.count/gauge/distribution`) would be
+the better primitive — no issue lifecycle — but the native SDKs this
+module pins don't have it yet: metrics needs sentry-android ≥ 8.34
+(we pin 8.32) and sentry-cocoa ≥ 9.12 (we pin 8.58, lock-stepped with
+`@sentry/react-native`'s HybridSDK pin). Migration is contained in the
+two emission helpers (`capture()` in `ExitReasonsCollector.kt`, the
+bridge call in `AppExitMetricsCollector.swift`) once the pins catch up —
+see the plan's Phase 8/11. Breadcrumb category: `comapeo.exit`.
+
+#### 7.5.1 Android — historical exit reasons (`ExitReasonsCollector.kt`)
+
+On each process start (API 30+ only; pre-30 sets a one-time scope tag
+`exitReasons.supported=false`), `ActivityManager.getHistoricalProcessExitReasons`
+records newer than a per-process high-water timestamp are decoded and
+captured as `"android exit: REASON_<NAME>"` events. Two callers, each
+reporting its own process only: the main process via
+`ComapeoCoreApplicationLifecycleListener` and the FGS process from
+`ComapeoCoreService.onCreate`. First observation initialises the
+high-water mark to "now" and emits nothing, so a device's first update
+never floods Sentry with the pre-feature backlog.
+
+Diagnostic-tier tags: `proc`, `exit.reason` (decoded `REASON_*`,
+lowercase; unknown ints → `unknown:<int>`), `exit.process_state` (decoded
+importance), `exit.signal` (when signaled), `exit.intentional`
+(user/app-initiated exits, so kill-rate dashboards can exclude them), and
+the headline `oem.killer.suspected` — `signaled` + SIGKILL +
+foreground/foreground-service importance, the signature of OEM custom
+killers reaching past FGS protection. Extras: `description`, `pss_kb`,
+`rss_kb`, `exit_timestamp_ms`. Level: `error` for system kills
+(low_memory / signaled / excessive_resource_usage / dependency_died),
+`warning` for crash-shaped reasons (the crash itself is captured by
+sentry-android; this is the cross-referenceable post-mortem), `info`
+otherwise.
+
+App-usage-tier additions (only when `captureApplicationData` is on —
+duration anchors are usage-shape data, see §8): `uptime_bucket` /
+`bg_duration_bucket` (coarse pre-bucketed strings so Discover can
+`count(*)` cohorts; exact `alive_for_ms` / `backgrounded_for_ms` ride as
+extras for drill-down) and `comapeo.fgs.killed_in_background`. Durations
+derive from wall-clock anchors in `BackgroundAnchors.kt`
+(`<proc>.process_started_at_wall_ms`, `main.backgrounded_at_wall_ms` —
+stamped via `ProcessLifecycleOwner` ON_STOP/ON_START), stored in the
+shared `com.comapeo.core.prefs` file so the FGS can read the main
+process's background state. Collection runs before the current run's
+anchors are stamped so the decoder sees the previous session's values.
+
+Known coverage gaps (affects dashboard math): some OEM killers (older
+MIUI, EMUI) kill via `init`-level paths that leave no
+`ApplicationExitInfo` record, and some ROMs clear records on reboot.
+The system also persists records asynchronously — a START_STICKY FGS
+restart can query within ~2s of the kill and see nothing (the record
+then surfaces on the next start, since the high-water mark only advances
+past reported records), and in a rapid kill→restart burst the first
+record can be skipped permanently when a newer one is reported while it
+is still unwritten (observed on an API 34 emulator). Best-effort by
+design. `traceInputStream()` is deliberately not captured (size + PII
+risk); `description` is a short vendor label and safe.
+
+#### 7.5.2 iOS — MetricKit app-exit metrics (`AppExitMetricsCollector.swift`)
+
+sentry-cocoa subscribes only to MetricKit's _diagnostic_ side; the
+_metric_ side — `MXMetricPayload`, where `MXAppExitMetric` lives — is an
+explicit gap this module closes. `AppExitMetricsCollector` subscribes in
+`AppLifecycleDelegate.didFinishLaunchingWithOptions` (once per process;
+retained statically because deliveries are 24h aggregates arriving up to
+a day later) and forwards each non-zero exit bucket as
+`"ios exit: <cohort>_<bucket>"` events.
+
+Tags: `exit.cohort` (`foreground`/`background`), `exit.bucket`,
+`exit.intentional` (`normal_app_exit` only), `exit.cause_class`
+(`memory` / `watchdog` / `crash` / `lock` / `normal`; unknown future
+buckets degrade to `unknown`), `window_id`
+(`<timeStampBegin ms>-<cohort>_<bucket>`). Extras: `window_count`,
+`window_start_iso`, `window_end_iso`, `window_duration_seconds`,
+`app_version`, `os_version`. Level: `error` for the background-kill and
+user-visible-quality buckets, `warning` for crash-shaped buckets
+(sentry-cocoa's crash reporter has the real crash), `info` for
+normal/lock exits.
+
+At the app-usage tier a bucket count of N emits N identical events so
+dashboard queries are a trivial `count(*)` (collapse back to distinct
+windows with `count_unique(window_id)`); at the diagnostic tier the
+duplication is collapsed to one event per window+bucket because frequency
+reveals session-shape activity — `window_count` still carries the true
+count. The pure decode logic (`AppExitDecoder`) is MetricKit-free and
+unit-tested on macOS.
+
+Rollout caveats: TestFlight builds don't receive MetricKit data (App
+Store + Xcode-attached debug sessions only — the feature is invisible in
+beta channels), there's no back-fill (each fresh install has a warm-up
+day), and `cumulative*` fields are per-window aggregates — never subtract
+across payloads.
+
 ---
 
 ## 8. PII, sampling, and privacy

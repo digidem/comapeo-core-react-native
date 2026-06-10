@@ -16,8 +16,7 @@ git history stay valid.
 | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Phase 4 — `@comapeo/core` OTel forwarding                                  | Blocked on `@comapeo/core` PR #1051 landing. Verification work only.                                                                                                                                                                                                                           |
 | Phase 5 — capture-application-data opt-in surface                          | Per-RPC method spans, sync session transaction, bg/fg breadcrumbs, memory checkpoints, storage size sample, and the `before_send` privacy processor. The toggle plumbing itself is already done in Phase 9a.                                                                                  |
-| Phase 6 — Android historical exit reasons                                  | Surface `ApplicationExitInfo` records on next start; isolates OEM-killer FGS deaths, LMK background kills, and "alive-for / backgrounded-for" durations per device. API 30+ only.                                                                                                              |
-| Phase 7 — iOS app-exit telemetry                                           | Subscribe to `MXMetricPayload` and forward `MXAppExitMetric` buckets (memory-pressure, background-task-assertion-timeout, watchdog, etc.) as Sentry events. 24h-aggregate resolution. iOS 14+. Optional 7b sub-phase adds a `UserDefaults`-anchored "killed-in-background" heuristic.          |
+| Phase 7b — iOS killed-in-background heuristic (optional)                   | `UserDefaults`-anchored per-event "killed in background" inference layered on top of the landed Phase 7a MetricKit forwarding (which is 24h-aggregate only).                                                                                                                                   |
 | Phase 8 — refinements                                                      | Sample-rate tuning from real data; optional dual-bundle if size matters.                                                                                                                                                                                                                       |
 | Phase 9b — PII scrubber, user.id rotation, context reclassification        | Substring scrubber; installation UUID with monthly hash at diagnostic tier; native-scope field split; consoleIntegration gating; network-URL scrubbing.                                                                                                                                       |
 | Phase 11 — Metrics-first observability + `debug` tier                      | Shift day-to-day performance signal from per-RPC tracing to Sentry metrics (with bucketed device tags so "Samsung A52 is slow at sync" is a dashboard query). Rename `captureApplicationData` → `applicationUsageData` (now: stable `user.id` + usage events). New user-facing `debug` toggle enables per-RPC tracing for investigation. |
@@ -71,407 +70,12 @@ Cost: ~150 LOC native + JS + backend.
 
 ---
 
-## Phase 6 — Android historical exit reasons
+## Phase 7b — iOS killed-in-background heuristic (optional)
 
-Surface `ActivityManager.getHistoricalProcessExitReasons()` records to
-Sentry on the next process start. The goal is observability on two
-questions that nothing else in the integration answers:
-
-1. **How long is the app in the background before the system kills it?**
-   Aggregable by `Build.MANUFACTURER` / `Build.MODEL` so we can see
-   "Samsung A52 reliably kills our cold backend after ~12 min
-   backgrounded" type signals.
-2. **Is an OEM custom killer reaching past Android's FGS protection and
-   shooting our `:ComapeoCore` process?** Aggressive OEM killers (MIUI,
-   EMUI, OxygenOS, OneUI, etc.) bypass AOSP LMK and send SIGKILL to
-   foreground services; they show up as `REASON_SIGNALED` +
-   `processStateAtExit = IMPORTANCE_FOREGROUND_SERVICE`, which is the
-   smoking gun.
-
-### 6.1 Scope and platform availability
-
-- **Android only.** iOS doesn't expose process-death post-mortems.
-- **API 30+ (Android 11) only** for the exit-reason data. Pre-30 devices
-  emit one boot-time tag `exitReasons.supported=false` so the dashboard
-  can exclude them from death-rate math; nothing else is collected.
-- Two callers: the main UI process (`MainApplication.onCreate` via an
-  `ApplicationLifecycleListener` from `expo-modules-core`) and the FGS
-  process (`ComapeoCoreService.onCreate`). Each reports the exits for
-  _its own_ process name only — the AOSP API returns all package
-  processes when called without filters, but reporting duplicates from
-  both callers makes Sentry-side dedup harder than filtering
-  client-side.
-
-### 6.2 New files
-
-- `android/src/main/java/com/comapeo/core/ExitReasonsCollector.kt` —
-  pure-logic decoder + emission. Single entry point
-  `collectAndReport(context, processName)` that:
-  1. No-ops on `Build.VERSION.SDK_INT < 30` after setting the
-     supported=false scope tag once.
-  2. Calls
-     `ActivityManager.getHistoricalProcessExitReasons(packageName, pid=0, maxNum=10)`.
-     `maxNum=10` is enough — anything older than the last 10 cold starts
-     isn't useful.
-  3. Filters records: `processName` match AND `timestamp > lastSeenAtMs`
-     (read from prefs; see below).
-  4. For each kept record, emits a Sentry event via
-     `SentryFgsBridge.captureMessage` (FGS-side) or `Sentry.captureMessage`
-     directly (main-side).
-  5. Writes the new high-water `lastSeenAtMs` back to prefs atomically
-     (one `apply()` per process name).
-- `android/src/main/java/com/comapeo/core/BackgroundAnchors.kt` — thin
-  `SharedPreferences` wrapper holding two slots per process name:
-  `<proc>.backgrounded_at_wall_ms` and `<proc>.process_started_at_wall_ms`.
-  Wall-clock (`System.currentTimeMillis()`) so values survive reboots and
-  cross-process reads. Stored under the same prefs file the Phase 5
-  capture-application-data toggle uses
-  (`com.comapeo.core.prefs`).
-- `android/src/main/java/com/comapeo/core/ExitReasonTags.kt` — enum
-  decode helpers. Plain `when` blocks; one for `reason`, one for
-  `processStateAtExit`. Kept in a separate file so the unit test can
-  exercise them without instantiating `ApplicationExitInfo` (which can't
-  be constructed off-device).
-
-### 6.3 Anchor write sites
-
-Wall-clock stamps written to `BackgroundAnchors`:
-
-- **`process_started_at_wall_ms` (main)**: in the main `Application.onCreate`
-  or earlier — the `ApplicationLifecycleListener` from `expo-modules-core`
-  runs late enough but is still fine for "process alive duration" at
-  second-resolution.
-- **`process_started_at_wall_ms` (fgs)**: in `ComapeoCoreService.onCreate`,
-  alongside the existing Sentry init. (Don't reuse `serviceStartElapsedMs` —
-  that's `elapsedRealtime`, monotonic but not durable across process
-  death.)
-- **`backgrounded_at_wall_ms` (main)**: observe
-  `ProcessLifecycleOwner.get().lifecycle` for `ON_STOP`; stamp there.
-  Clear (set to `0`) on `ON_START` so derived "backgrounded for X" only
-  counts when the death actually happened during background. The listener
-  registration belongs in the main `ApplicationLifecycleListener`, not in
-  `ComapeoCoreReactActivityLifecycleListener` (which is per-Activity —
-  `ProcessLifecycleOwner` is the cleaner anchor and fires once per
-  whole-process transition).
-- **`backgrounded_at_wall_ms` (fgs)**: skip. The FGS doesn't have a
-  foreground/background concept; "alive for" against `process_started_at`
-  is the right derived field for FGS deaths.
-
-### 6.4 High-water timestamp persistence
-
-`lastSeenAtMs` is per-process-name (`main.exit_reasons.last_seen_ms` /
-`fgs.exit_reasons.last_seen_ms`) so the two callers don't race each other
-on a shared key. The high-water value is the max
-`ApplicationExitInfo.getTimestamp()` of the records reported in the
-current run. First run on a fresh install: `lastSeenAtMs = 0` means we'd
-report every record in the buffer; that's noise. Defend against it by
-initialising `lastSeenAtMs` to `currentTimeMillis()` on first observation
-(when the prefs key is absent), so we only report exits that happen
-_after_ the first time the collector ran. Trade-off: we'll miss the very
-first cohort of exits right after installing the feature, but in exchange
-we don't flood Sentry with the pre-feature backlog on every device's
-first update.
-
-### 6.5 Sentry emission shape
-
-One `captureMessage` per kept record. Message text:
-`"android exit: <REASON_NAME>"` (e.g. `"android exit: REASON_SIGNALED"`).
-Stable string so Sentry's grouping treats them as one issue per reason,
-sliceable by tags.
-
-| Tag                                | Source                                                                                                        | Notes                                                                                                                                                          |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `proc`                             | `main` / `fgs`                                                                                                | Already in `SentryTags`.                                                                                                                                       |
-| `exit.reason`                      | decoded `REASON_*` (lowercase, no prefix)                                                                     | e.g. `low_memory`, `signaled`, `excessive_resource_usage`.                                                                                                     |
-| `exit.process_state`               | decoded `IMPORTANCE_*`                                                                                        | e.g. `cached`, `foreground_service`.                                                                                                                           |
-| `exit.signal`                      | signal number (when `reason=signaled`)                                                                        | String. SIGKILL = `"9"`.                                                                                                                                       |
-| `exit.intentional`                 | `true` for `USER_REQUESTED` / `USER_STOPPED` / `EXIT_SELF`; `false` otherwise                                 | Lets dashboards exclude the "user / app did this on purpose" cohort from kill-rate metrics.                                                                    |
-| `oem.killer.suspected`             | `true` when `reason=signaled` ∧ `process_state ∈ {foreground, foreground_service}` ∧ `signal=9`               | The headline tag for the OEM-aggressive-killer cohort. Pair with `Build.MANUFACTURER` / `Build.MODEL` in dashboard queries.                                    |
-| `comapeo.fgs.killed_in_background` | `true` when `proc=fgs` ∧ a non-zero `main.backgrounded_at_wall_ms` was captured before the FGS exit timestamp | "FGS died while the user wasn't looking" — the cohort battery-optimization analysis cares about.                                                               |
-| `bg_duration_bucket`               | `<1m` · `1-5m` · `5-15m` · `15-60m` · `1-6h` · `>6h` · `unknown`                                              | Coarse bucket of `backgrounded_for_ms`. String tags are reliably aggregable in Discover; numeric `extra` fields aren't. `unknown` when the anchor was 0/null. |
-| `uptime_bucket`                    | `<10s` · `10-60s` · `1-5m` · `5-30m` · `30m-2h` · `>2h` · `unknown`                                           | Coarse bucket of `alive_for_ms`. Different range than `bg_duration_bucket` because process uptime distributes differently.                                     |
-
-| Extra field           | Value                                                                                                                                                                                             |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `description`         | `ApplicationExitInfo.description` (vendor string when present; Samsung/Xiaomi sometimes name their killer here).                                                                                  |
-| `pss_kb` / `rss_kb`   | Memory at kill.                                                                                                                                                                                   |
-| `exit_timestamp_ms`   | Raw wall-clock.                                                                                                                                                                                   |
-| `alive_for_ms`        | `exit_timestamp − process_started_at_wall_ms`. Null when the anchor wasn't set. Exact value, for per-record drill-down. The coarse cohort axis is `uptime_bucket` (above).                        |
-| `backgrounded_for_ms` | `exit_timestamp − backgrounded_at_wall_ms`. Main-process only; null for FGS or when anchor was 0. Exact value, for per-record drill-down. The coarse cohort axis is `bg_duration_bucket` (above). |
-
-#### 6.5.1 Why duration buckets are tags, not metrics
-
-The two duration fields are the most product-relevant numbers in this
-phase, and they need to be slice-aggregable in dashboards ("p50
-backgrounded-for-ms on Xiaomi Mi 11"). The natural primitive for that
-would be Sentry's metrics product (counters / distributions / gauges),
-but as of October 2024 Sentry sunset the standalone metrics beta and
-`Sentry.setMeasurement()` is also deprecated — the recommended
-replacement is span attributes, which require a live trace context that
-our cold-start post-mortem reads don't have. Building a synthetic span
-just to attach two numeric attributes is more ceremony than the data
-warrants given the volume (≤ a handful of records per cold start, single
-digits per session per user).
-
-So events are the right primitive. To preserve dashboard slicability,
-every numeric duration is emitted **twice**: exact value as a numeric
-`extra` (drill-down precision) AND coarse pre-bucketed string tag
-(group-by cohort in Discover). Discover's `count(*)` over a tag bucket
-gives us the actionable answer ("65% of OnePlus FGS kills happen 5-15
-min into background") without paying for true percentile aggregation
-infrastructure on a low-volume signal.
-
-Level mapping:
-
-| Reason                                                                                                             | Level                                                                                                                                                              |
-| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `LOW_MEMORY` · `SIGNALED` · `EXCESSIVE_RESOURCE_USAGE` · `DEPENDENCY_DIED`                                         | `error`                                                                                                                                                            |
-| `ANR` · `CRASH` · `CRASH_NATIVE` · `INITIALIZATION_FAILURE`                                                        | `warning` (Sentry already captures the crash itself via `sentry-android` — this is just the matching post-mortem record so the two events can be cross-referenced) |
-| `USER_REQUESTED` · `USER_STOPPED` · `EXIT_SELF` · `PACKAGE_STATE_CHANGE` · `PACKAGE_UPDATED` · `PERMISSION_CHANGE` | `info`                                                                                                                                                             |
-| Anything else (incl. `OTHER`)                                                                                      | `info`                                                                                                                                                             |
-
-Breadcrumb category: `comapeo.exit` (add to `SentryCategories`).
-
-### 6.6 Wiring
-
-- Main process: register an `ApplicationLifecycleListener` from this
-  module's `expo-module.config.json`. In `onCreate(Application)`,
-  schedule `ExitReasonsCollector.collectAndReport(context, mainProcessName)`
-  on a background `Handler` (or `lifecycleScope.launch(Dispatchers.IO)`)
-  so the prefs read + Sentry capture doesn't block app start.
-- FGS process: call from `ComapeoCoreService.onCreate` _after_
-  `SentryFgsBridge.init(...)` succeeds, on
-  `serviceScope.launch(Dispatchers.IO)`. Pass the FGS process name
-  (`packageName + ":ComapeoCore"`).
-- Both call sites must use the same `BackgroundAnchors` instance
-  semantics — the prefs file is shared. The collector takes the
-  process-name argument explicitly rather than reading
-  `Process.myProcessName()` so the test can exercise both code paths
-  without spinning up two processes.
-
-### 6.7 Why semantic separation matters
-
-`REASON_USER_STOPPED` and `REASON_USER_REQUESTED` are the user actively
-killing the app (Settings → Force stop, task-killer apps, OS update
-flows). They are arithmetically valid data points — `backgrounded_for_ms`
-and `alive_for_ms` derive correctly — but they have a different
-_meaning_ from system-driven kills. Lumping them into the same dashboard
-cohort as `LOW_MEMORY` / `SIGNALED` would inflate the "battery-optimization
-killed us" metric every time an annoyed user force-stopped the app. The
-`exit.intentional` tag lets the OEM-killer dashboard query
-`exit.intentional:false oem.killer.suspected:true` and exclude the noise
-without losing the records.
-
-### 6.8 Caveats that affect the implementation
-
-- `getHistoricalProcessExitReasons(packageName, pid=0, maxNum=0)` with
-  `maxNum=0` (= unlimited) is documented as slow on some devices. Use
-  `maxNum=10`.
-- Some OEM killers (older MIUI, Huawei EMUI) kill via `init`-level paths
-  that don't leave a clean `ApplicationExitInfo` record at all.
-  Best-effort — coverage isn't 100%. Document this in the feature notes
-  so dashboard math accounts for "missing" deaths on certain vendors.
-- `getHistoricalProcessExitReasons` records persist across reboots on
-  most ROMs but not all (some clear them on boot). The high-water
-  timestamp handles this correctly — we just won't see records older
-  than the last surviving entry.
-- `description` and the tombstone via `traceInputStream()` can contain
-  process-internal memory addresses. Don't capture `traceInputStream()`
-  (it's a stream of bytes that could exceed Sentry's event size limit
-  and contain user-context strings on some vendors); `description` is a
-  short label and is safe to forward as-is.
-- `ProcessLifecycleOwner` requires
-  `androidx.lifecycle:lifecycle-process` — check whether it's already on
-  the runtime classpath via React Native's transitive deps. If not, add
-  a thin compile dep matching the version expo brings in.
-- The FGS process gets its own `ProcessLifecycleOwner` instance but the
-  lifecycle events fired there reflect FGS activities only (none in our
-  case), so the FGS-side `backgrounded_at` slot stays unused. That's
-  intentional — the `comapeo.fgs.killed_in_background` derivation reads
-  the _main_-side anchor.
-
-### 6.9 Tests
-
-- `ExitReasonsCollectorTest.kt` (JVM unit test): inject a fake
-  `getHistoricalProcessExitReasons` source returning hand-built records
-  (use small data classes mirroring the `ApplicationExitInfo` fields you
-  care about, since the real class can't be instantiated off-device).
-  Cover:
-  - First-run no-op: prefs unset → records seen this run set
-    `lastSeenAtMs` but emit nothing.
-  - Subsequent run: only records newer than `lastSeenAtMs` are emitted;
-    tag/extra/level mapping is correct.
-  - OEM-killer detection: `signaled` + `foreground_service` + signal 9
-    sets `oem.killer.suspected=true`.
-  - Intentional exits: `user_stopped` sets `exit.intentional=true` and
-    level `info`, regardless of process state.
-  - Derived fields null-safe when anchors absent.
-  - Duration buckets: every boundary case (1 ms below, 1 ms above,
-    exactly on the edge) lands in the expected bucket for both
-    `bg_duration_bucket` and `uptime_bucket`; null anchors produce
-    `unknown`.
-- `ExitReasonTagsTest.kt`: decode-table coverage (every enum value the
-  AOSP javadoc lists, plus a fallthrough for unknown ints — newer API
-  levels can add reasons, and we want `unknown:<int>` rather than a
-  crash).
-
-### 6.10 Out of scope for Phase 6
-
-- Job/alarm restriction telemetry (the _other_ half of OEM aggression —
-  they don't kill, they just stop dispatching background work). Would
-  require `JobScheduler`/`WorkManager` observation. File as a future
-  phase if it becomes a question.
-- iOS app-exit telemetry. Covered separately in Phase 7 — the iOS model
-  (`MXAppExitMetric` in MetricKit, 24h aggregates) is different enough
-  that combining it with the Android per-event post-mortem in a single
-  phase is the wrong unit of work.
-- Histogram / metrics-product emission. Initially keep it as events
-  keyed on tags; if event volume becomes a problem or histograms become
-  useful, layer `Sentry.metrics.distribution` on top later.
-
-Value: actionable visibility into the single most user-impacting class
-of failure on Android (silent FGS kill in background), and the first
-quantitative answer to "which OEMs kill our process hardest".
-
-Cost: ~250 LOC Kotlin + ~150 LOC tests. No JS/iOS/backend changes.
-
----
-
-## Phase 7 — iOS app-exit telemetry
-
-iOS counterpart to Phase 6. Provides observability on _which Apple-driven
-termination buckets the app falls into_ and how often, derived from
-MetricKit's `MXAppExitMetric`. The shape is different enough from Phase 6
-that the two are not unified.
-
-### 7.1 Why this is our implementation, not Sentry's
-
-Verified against current Sentry docs and the canonical sentry-cocoa
-MetricKit issue:
-
-- Sentry-cocoa's `SentryMetricKitIntegration` subscribes to
-  `MXHangDiagnostic`, `MXDiskWriteExceptionDiagnostic`, and
-  `MXCPUExceptionDiagnostic` — the _diagnostic_ side of MetricKit
-  (per-event records). These three reach the consumer's Sentry hub for
-  free via `@sentry/react-native`'s bundled sentry-cocoa.
-- Sentry-cocoa **does not subscribe to `MXMetricPayload`** — the _metric_
-  side, which is where `MXAppExitMetric` lives. Their stated reason:
-  aggregated 24h delivery doesn't map cleanly onto Sentry's
-  per-transaction event model. So `MXAppExitMetric` is an explicit gap
-  that we close ourselves if we want it.
-- Crashes are not captured via MetricKit at all on the Sentry-cocoa
-  side — they're caught by sentry-cocoa's own crash reporter. Don't
-  double-instrument.
-
-### 7.2 Scope and platform availability
-
-- **iOS only.** Android already covered by Phase 6.
-- **iOS 14+** for `MXAppExitMetric`. iOS 13 has `MXMetricPayload` but no
-  `applicationExitMetrics` field. Pre-14 sets a one-time scope tag
-  `appExitMetrics.supported=false` and no-ops.
-- One subscriber, owned by `AppLifecycleDelegate` (iOS-side module-load
-  path; same place that owns the existing `NodeJSService` boot wiring).
-
-### 7.3 What gets captured
-
-Per `MXMetricPayload` delivery, parse `payload.applicationExitMetrics`
-(an `MXAppExitMetric`). It exposes two child objects:
-
-- `foregroundExitData` (`MXForegroundExitData`):
-  `cumulativeNormalAppExitCount`, `cumulativeMemoryResourceLimitExitCount`,
-  `cumulativeBadAccessExitCount`, `cumulativeAbnormalExitCount`,
-  `cumulativeIllegalInstructionExitCount`,
-  `cumulativeAppWatchdogExitCount`.
-- `backgroundExitData` (`MXBackgroundExitData`): the foreground set
-  above, plus `cumulativeMemoryPressureExitCount`,
-  `cumulativeSuspendedWithLockedFileExitCount`,
-  `cumulativeBackgroundTaskAssertionTimeoutExitCount`,
-  `cumulativeCPUResourceLimitExitCount`.
-
-Emission: **one Sentry event per individual exit**, not one event per
-bucket. If a delivered payload reports
-`backgroundMemoryPressureExitCount=3`, we emit three identical events.
-Rationale: iOS app-exit volumes are tiny (typical production apps see
-single digits per user per day across all buckets), the duplication is
-negligible, and every dashboard query becomes a trivial `count(*)`
-instead of a sum-over-extras. Each event carries a stable `window_id`
-tag (`<timeStampBegin epoch>-<bucket>`) so analyses that want to collapse
-back to per-window distinct counts can do so. Zero-count buckets emit
-nothing, so the no-op-day case stays free.
-
-### 7.4 New files
-
-- `ios/AppExitMetricsCollector.swift` — `NSObject`-conforming class
-  implementing `MXMetricManagerSubscriber`. One method:
-  `didReceive(_ payloads: [MXMetricPayload])`. Decoded buckets are
-  forwarded to `SentryNativeBridge` (existing) for the actual capture
-  call.
-- `ios/AppExitMetricsCollectorTests.swift` — XCTest module. Hand-build
-  mocked `MXMetricPayload` JSON blobs (MetricKit payloads expose
-  `jsonRepresentation()` and can be reconstructed via
-  `MXMetricPayload(jsonRepresentation:)` on iOS 17+; on iOS 14–16, fall
-  back to a small protocol the collector accepts so the test injects a
-  fake without instantiating `MXMetricPayload` directly).
-
-### 7.5 Subscription wiring
-
-- Subscribe via `MXMetricManager.shared.add(collector)` in
-  `AppLifecycleDelegate.didFinishLaunchingWithOptions` (or the
-  Expo-equivalent module-load entry point), guarded on iOS 14+.
-- Subscribe **once per process lifetime**; subscribing more than once
-  produces duplicate deliveries. Use a static `Bool` guard on the
-  collector.
-- Unsubscribe in `applicationWillTerminate` for cleanliness, though
-  Apple's lifecycle docs note this is best-effort —
-  `applicationWillTerminate` doesn't fire on system kills.
-- MetricKit delivery is async and typically happens ~24h after launch.
-  The collector must be alive for _future_ deliveries, not the launch
-  where it was registered. There's no back-fill — the first day of data
-  is lost. Document this so dashboard math accounts for a "warm-up day"
-  per fresh install.
-
-### 7.6 Sentry emission shape
-
-Message: `"ios exit: <bucket_name>"` — e.g.
-`"ios exit: background_memory_pressure"`, `"ios exit: foreground_watchdog"`.
-Bucket names are derived from the MetricKit field name with `cumulative`
-and `ExitCount` stripped and snake-cased.
-
-| Tag                | Value                                                                                                                                                                                                                                                         | Notes                                                                                                                                                                              |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `proc`             | `main`                                                                                                                                                                                                                                                        | iOS is single-process; tag matches Android RN-side captures.                                                                                                                       |
-| `layer`            | `native`                                                                                                                                                                                                                                                      | Same convention as the iOS state captures.                                                                                                                                         |
-| `exit.cohort`      | `foreground` · `background`                                                                                                                                                                                                                                   | Top-level split — `background_*` buckets are the ones the user cares about for "is my app surviving in the background?".                                                           |
-| `exit.bucket`      | bucket name (see message)                                                                                                                                                                                                                                     | Slice axis.                                                                                                                                                                        |
-| `exit.intentional` | `true` for `normal_app_exit`; `false` for everything else                                                                                                                                                                                                     | Matches Phase 6's tag for the same semantic split.                                                                                                                                 |
-| `exit.cause_class` | `memory` (`memory_resource_limit`, `memory_pressure`, `cpu_resource_limit`) · `watchdog` (`app_watchdog`, `background_task_assertion_timeout`) · `crash` (`bad_access`, `illegal_instruction`, `abnormal`) · `lock` (`suspended_with_locked_file`) · `normal` | Higher-level grouping for dashboards.                                                                                                                                              |
-| `window_id`        | `<timeStampBegin epoch ms>-<bucket>`                                                                                                                                                                                                                          | Stable across the duplicate events emitted for one window+bucket. Lets analyses collapse `count(*)` back to "distinct windows that saw this bucket" via `count_unique(window_id)`. |
-
-| Extra field               | Value                                                                                                                                                                                                                         |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `window_count`            | The cumulative bucket value from this payload (= the number of duplicate events emitted for this window+bucket). Per-event drill-down only; aggregate via `count(*)` on the events themselves rather than summing this field. |
-| `window_start_iso`        | `payload.timeStampBegin` ISO-8601.                                                                                                                                                                                            |
-| `window_end_iso`          | `payload.timeStampEnd` ISO-8601.                                                                                                                                                                                              |
-| `window_duration_seconds` | Derived. Sanity-check for "is this actually a 24h window?".                                                                                                                                                                   |
-| `app_version`             | `payload.metaData.applicationBuildVersion` if present.                                                                                                                                                                        |
-| `os_version`              | `payload.metaData.osVersion` if present.                                                                                                                                                                                      |
-
-Level mapping (per bucket):
-
-| Bucket                                                                                                                                                                | Level                                                                                                                                                                       |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `background_memory_pressure` · `background_memory_resource_limit` · `background_task_assertion_timeout` · `background_cpu_resource_limit` · `background_app_watchdog` | `error` — the "battery/background kill" cohort we explicitly want visibility on                                                                                             |
-| `foreground_app_watchdog` · `foreground_memory_resource_limit` · `foreground_cpu_resource_limit`                                                                      | `error` — user-visible quality issues                                                                                                                                       |
-| `*_bad_access` · `*_illegal_instruction` · `*_abnormal`                                                                                                               | `warning` — sentry-cocoa's own crash reporter captures the actual crash; this is just the matching post-mortem count, useful for cross-reference but not the primary signal |
-| `*_normal_app_exit` · `*_suspended_with_locked_file`                                                                                                                  | `info`                                                                                                                                                                      |
-
-Breadcrumb category: reuse `comapeo.exit` from Phase 6's
-`SentryCategories` addition.
-
-The events-over-metrics choice mirrors Phase 6 — see §6.5.1 for the
-reasoning.
-
-### 7.7 Phase 7b — heuristic per-event anchor (optional sub-phase)
+Phase 6 (Android exit reasons) and Phase 7a (iOS MetricKit app-exit
+forwarding) have landed — see `sentry-integration.md` §7.5 for the
+as-built design. What remains from the original Phase 7 spec is the
+optional 7b sub-phase.
 
 `MXAppExitMetric` has no per-event timestamps. To answer "the app was
 alive for X seconds before the system killed it in the background" at
@@ -493,7 +97,7 @@ Two things to be honest about:
 
 - This heuristic catches _any_ unclean termination, including jetsam,
   watchdog, user-force-quit, OS reboot, and crash. `MXAppExitMetric`
-  (Phase 7a, above) and sentry-cocoa's crash reporter help disambiguate
+  (Phase 7a) and sentry-cocoa's crash reporter help disambiguate
   after the fact — combine the events on dashboards via `release` +
   timestamp proximity.
 - `time_since_last_state_ms` is a lower bound. The state marker is only
@@ -506,91 +110,41 @@ Two things to be honest about:
   cadence, only while foregrounded so we don't drain battery) to
   mitigate.
 
-Make 7b a separate sub-phase so 7a can ship without the heuristic
-complexity if scope is tight.
+### 7b.1 Tests
 
-### 7.8 Caveats that affect the implementation
-
-- `MXMetricManager.shared.add(...)` must be called from a `@MainActor`
-  context on iOS 17+; the collector's `add()` call goes through
-  `DispatchQueue.main.async`. The collector itself doesn't need to be
-  `@MainActor` — only the registration call.
-- Payloads arrive at unpredictable times. There's no `onLaunch`
-  guarantee — `didReceive` may fire mid-session. Sentry capture from
-  off-main is fine (sentry-cocoa is thread-safe).
-- The `cumulative*` fields are aggregates **across the reporting
-  window**, not since-app-install. Don't subtract previous payloads —
-  each payload is self-contained.
-- iOS may deliver an empty `MXMetricPayload` (no exits in the window).
-  Handle gracefully — `applicationExitMetrics` is optional. No emission
-  needed when all buckets are 0.
-- `MXMetricPayload.jsonRepresentation()` returns rich JSON, but
-  capturing the whole blob as an extra would blow Sentry's event size
-  budget on a busy week. Decompose into buckets as above instead.
-- TestFlight builds don't get MetricKit data; only App Store builds and
-  Xcode-attached debug sessions do. The Phase 7 feature is invisible in
-  beta channels — flag this on rollout so the team doesn't conclude
-  "the integration is broken".
-- The `applicationExitMetrics` API spec doesn't promise stable bucket
-  lists across iOS versions. Future iOS releases could add buckets;
-  decode helpers fall through to `unknown:<key>` the way Phase 6
-  handles unknown `REASON_*` ints.
-
-### 7.9 Tests
-
-- `AppExitMetricsCollectorTests.swift`: inject a fake payload source.
-  Cover:
-  - Zero-count buckets emit nothing.
-  - Non-zero foreground / background buckets emit the right tags and
-    level for each.
-  - **Per-exit duplication**: a bucket with count=N produces exactly N
-    events with identical tags + identical `window_id`; a bucket with
-    count=0 produces zero events.
-  - Multiple non-zero buckets in one payload each duplicate
-    independently (e.g. count=2 memory_pressure + count=1 watchdog → 3
-    events total, two `window_id`s).
-  - `exit.intentional` and `exit.cause_class` derive correctly.
-  - Pre-iOS-14 guard short-circuits with the `supported=false` tag and
-    no captures.
-- `AppKillHeuristicTests.swift` (7b only): mock `UserDefaults` + a
-  clock; assert:
+- `AppKillHeuristicTests.swift`: mock `UserDefaults` + a clock; assert:
   - Clean termination marker prevents the next-launch inference.
   - Stale marker fires once and is then cleared.
   - Foreground vs background marker drives `ios.killed_in_background`
     correctly.
 
-No iOS instrumentation test — exercise-by-eye on a real TestFlight +
-App Store build for 7a, and a manual jetsam test (`/usr/bin/MemoryLogger`
-or the Xcode "Simulate Memory Warning" → background → kill flow) for 7b.
+Manual verification: a jetsam test (`/usr/bin/MemoryLogger` or the
+Xcode "Simulate Memory Warning" → background → kill flow).
 
-### 7.10 Out of scope for Phase 7
+### 7b.2 Out of scope (platform limitations, unchanged from Phase 7)
 
-- Per-event timestamps for `MXAppExitMetric`. Apple doesn't expose them;
-  the 24h-aggregate constraint is a platform limitation, not something
-  we can engineer around.
+- Per-event timestamps for `MXAppExitMetric`. Apple doesn't expose them.
 - Background-task-budget instrumentation (how close to the ~30s
   assertion expiry were we when iOS suspended us?). Worth a separate
   small phase if `background_task_assertion_timeout` shows up
-  frequently in the dashboard — the budget-remaining read is
-  `UIApplication.shared.backgroundTimeRemaining`, cheap, but it's
-  runtime telemetry rather than post-mortem.
-- iOS metric payloads other than `applicationExitMetrics` (signpost
-  histograms, cell network counts, etc.). Different product question;
-  not in this phase's frame.
+  frequently in the dashboard.
 
-Value: the first quantitative answer to "is iOS killing our backend in
-the background, and which class of kill is it?". Combined with Phase 6
-the team has a per-OS framing of the same underlying product question
-— "does our backend stay alive long enough on this user's device?".
-
-Cost: ~150 LOC Swift + ~80 LOC tests for 7a. Add ~80 LOC + ~50 LOC tests
-for 7b. No JS/Android/backend changes.
+Cost: ~80 LOC Swift + ~50 LOC tests.
 
 ---
 
 ## Phase 8 — refinements
 
 - Tune sample rates from production data.
+- Migrate exit telemetry (Phases 6/7a) from events to Sentry Application
+  Metrics (`Sentry.metrics.count` with the same tags as attributes) once
+  the native pins reach the metrics floors: sentry-android ≥ 8.34 (a
+  minor bump from our 8.32) and sentry-cocoa ≥ 9.12 (arrives whenever
+  `@sentry/react-native` moves to cocoa 9 — the HybridSDK pin is
+  lock-stepped). Kills the Issues-UI noise (no issue lifecycle for
+  metrics) and the iOS per-exit event duplication (a count carries N
+  natively). Until then: archive the dozen exit issues in the Sentry UI;
+  Discover queries don't care about issue state.
 - Optional: dual backend bundles for Sentry-free consumers if bundle
   size becomes a concern.
 
@@ -749,19 +303,12 @@ the effective toggle is on).
 
 ### 9b.8 Phase 6 / Phase 7 reclassification
 
-Phase 6 (Android exit reasons) — the _records themselves_ are
-diagnostic-tier. The derived **`bg_duration_bucket`**,
-**`uptime_bucket`**, and `comapeo.fgs.killed_in_background` fields
-rely on background-duration anchors that themselves are app-usage-tier
-data. Reclassify in the Phase 6 spec: those tags only flow when
-capture-application-data is on. Phase 6 records without those tags
-still ship at diagnostic (with `exit.reason`, `exit.process_state`,
-`oem.killer.suspected`, `exit.intentional`).
-
-Phase 7 (iOS app-exit metrics) — the bucket events themselves are
-diagnostic-tier. The per-event multiplication (`window_count`
-duplication) is app-usage-tier because frequency reveals session-shape
-activity.
+**Done** — landed with the Phase 6/7 implementation rather than
+deferred here. The duration-derived fields (`bg_duration_bucket`,
+`uptime_bucket`, `comapeo.fgs.killed_in_background`, exact-duration
+extras) and the iOS per-event multiplication only flow when
+capture-application-data is on; the exit records themselves ship at
+diagnostic. See `sentry-integration.md` §7.5.
 
 ### 9b.9 Phase 6 timestamp anchor reset on toggle cycle
 

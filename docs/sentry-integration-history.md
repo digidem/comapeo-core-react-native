@@ -15,6 +15,8 @@ ahead see [`sentry-integration-plan.md`](./sentry-integration-plan.md).
 | Phase 3 — backend loader + RPC tracing                                     | `backend/loader.mjs` spawn target; `@sentry/node` + `import-in-the-middle` + multi-entry rollup with `importHook` / `lib/register` separate chunks; `handleFatal` captures via Sentry; `ComapeoRpcServer` registers `onRequestHook` when Sentry is active; client-side `ComapeoCoreModule.ts` propagates `sentry-trace`/`baggage` via request metadata. Native (Android `NodeJSService.kt` / iOS `NodeJSService.swift`) reads `SentryConfig` and forwards `--sentry*` argv flags to the loader.                                                                                                                                                          |
 | Phase 9a — `diagnosticsEnabled` + module ownership of `Sentry.init`        | New `diagnosticsEnabled` pref alongside `captureApplicationData`. Module owns `Sentry.init` via `initSentry()`. Cheap fix: free memory/disk attached to backend `handleFatal`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Phase 10 — offline transport via control-socket forwarding                 | Custom `@sentry/node` transport in `loader.mjs` inspects each envelope and routes single-item error events as `{type:"sentry-event",payload}` (decoded via `SentryEventDecoder` / `SentryEvent.Deserializer` and captured via `Sentry.captureEvent`, with native scope merged), and everything else as `{type:"sentry-envelope",data}` (passed via `InternalSentrySdk.captureEnvelope` / `PrivateSentrySDKOnly.captureEnvelope`). Two 100-frame ring buffers (loader + `SimpleRpcServer`) cover the boot-sequence gaps. `SentryNativeContext.{kt,swift}` and the `sentryContext`-in-init-frame flow removed (native applies its own scope at capture). |
+| Phase 6 — Android historical exit reasons                                  | `ExitReasonsCollector.kt` surfaces `getHistoricalProcessExitReasons` records (API 30+) as `"android exit: REASON_*"` events on next process start, from both the main process (`ComapeoCoreApplicationLifecycleListener`) and the FGS (`ComapeoCoreService.onCreate`). `oem.killer.suspected` flags SIGKILL-to-foreground-service deaths; wall-clock anchors in `BackgroundAnchors.kt` derive uptime/backgrounded-for buckets (app-usage tier only, per §9b.8).                                                                                                                                                                                          |
+| Phase 7a — iOS MetricKit app-exit forwarding                               | `AppExitMetricsCollector.swift` subscribes to `MXMetricPayload` (the metric side sentry-cocoa skips) and forwards `MXAppExitMetric` buckets as `"ios exit: <cohort>_<bucket>"` events; per-exit duplication at app-usage tier, collapsed to one event per window+bucket at diagnostic. Optional 7b heuristic remains in the plan.                                                                                                                                                                                                                                                                                                                       |
 
 ## Divergences from the original plan
 
@@ -262,6 +264,48 @@ iOS sources.
 
 ---
 
+## Phase 6 — Android historical exit reasons / Phase 7a — iOS app-exit telemetry
+
+Post-mortem visibility on OS-driven kills, per platform. Full as-built
+design (tag taxonomy, level mapping, tier gating, caveats) lives in
+[`sentry-integration.md` §7.5](./sentry-integration.md#75-app-exit-telemetry).
+
+- **Android**: `ExitReasonsCollector.collectAndReport` runs on each process
+  start (main process via a new `ApplicationLifecycleListener`, FGS from
+  `ComapeoCoreService.onCreate`, both off the main thread), decodes
+  `getHistoricalProcessExitReasons` records newer than a per-process
+  high-water timestamp, and captures one event per record via
+  `Sentry.captureEvent` (one shared path — pre-init the SDK no-ops in
+  either process). First observation initialises the high-water mark and
+  emits nothing. Wall-clock anchors (`BackgroundAnchors.kt`, same prefs
+  file as the toggles) are written *after* collection so the decoder sees
+  the previous session's values; the main process flips
+  `backgrounded_at_wall_ms` on `ProcessLifecycleOwner` ON_STOP/ON_START.
+- **iOS**: `AppExitMetricsCollector` (subscribed once from
+  `AppLifecycleDelegate`, retained statically, removed best-effort in
+  `applicationWillTerminate`) forwards `MXAppExitMetric` buckets through
+  `SentryNativeBridge.captureMessage`, which gained an `extras` parameter.
+  The decode logic (`AppExitDecoder`) is MetricKit-free and tested on
+  macOS via `swift test`.
+- Phase 9b.8's tier reclassification shipped as part of this work: the
+  duration-derived Android fields and the iOS per-exit duplication are
+  gated on `captureApplicationData`.
+- Divergence from the plan: the pre-iOS-14 `appExitMetrics.supported=false`
+  scope tag was dropped — the podspec floor is iOS 15.1, so the branch was
+  dead code. Android keeps the equivalent `exitReasons.supported=false`
+  tag (minSdk 21 < API 30).
+
+Value: actionable visibility into the most user-impacting silent failure
+class on Android (FGS killed in background, sliceable by
+manufacturer/model via `oem.killer.suspected`), and the first
+quantitative answer to "is iOS killing our backend in the background, and
+which class of kill is it?".
+
+Cost: ~330 LOC Kotlin + ~300 LOC tests; ~250 LOC Swift + ~180 LOC tests.
+No JS/backend changes.
+
+---
+
 ## Summary of file changes by landed phase
 
 ### Phase 1
@@ -428,3 +472,40 @@ on iOS.
 - `android/.../ControlFrameTest.kt`, `ios/Tests/ControlFrameTests.swift` —
   4 new cases each covering the two variants + missing-field-malformed
   paths.
+
+### Phase 6 / Phase 7a
+
+- `android/src/main/java/com/comapeo/core/ExitReasonsCollector.kt` — new;
+  filter/decode pipeline (`ExitRecord` → `ExitReasonEvent`), high-water
+  bookkeeping, `collectAndReport` production entry point with capture via
+  `Sentry.captureEvent`.
+- `android/src/main/java/com/comapeo/core/ExitReasonTags.kt` — new; decode
+  tables for `REASON_*` / `IMPORTANCE_*` ints, level mapping,
+  `exit.intentional` and `oem.killer.suspected` predicates.
+- `android/src/main/java/com/comapeo/core/BackgroundAnchors.kt` — new;
+  lambda-injected prefs wrapper for the per-process wall-clock anchors and
+  high-water keys.
+- `android/src/main/java/com/comapeo/core/ComapeoCoreApplicationLifecycleListener.kt`
+  — new; main-process collection + anchor stamping +
+  `ProcessLifecycleOwner` backgrounded-at observer.
+- `android/.../ComapeoCorePackage.kt` — registers the application lifecycle
+  listener.
+- `android/.../ComapeoCoreService.kt` — FGS-side collection + anchor stamp
+  on `serviceScope` after `SentryFgsBridge.init`.
+- `android/.../SentryTags.kt` — `exit.*`, `oem.killer.suspected`,
+  bucket-tag, and `comapeo.exit` category constants.
+- `android/src/test/.../ExitReasonsCollectorTest.kt`,
+  `ExitReasonTagsTest.kt` — 25 JVM tests (high-water behaviour, tag/level
+  mapping, tier gating, bucket boundary cases, decode-table coverage).
+- `ios/AppExitMetricsCollector.swift` — new; pure `AppExitDecoder` +
+  `MXMetricManagerSubscriber` adapter (`#if canImport(MetricKit) && os(iOS)`).
+- `ios/AppLifecycleDelegate.swift` — subscribe in
+  `didFinishLaunchingWithOptions` (diagnostics-gated), unsubscribe in
+  `applicationWillTerminate`.
+- `ios/SentryNativeBridge.swift` — `captureMessage` gains `extras`.
+- `ios/SentryTags.swift` — `exit.*` / `window_id` tag and `comapeo.exit`
+  category constants.
+- `ios/Package.swift` — `AppExitMetricsCollector.swift` added to sources.
+- `ios/Tests/AppExitMetricsCollectorTests.swift` — 11 decoder tests
+  (duplication semantics, tier gating, level/cause-class mapping, unknown
+  buckets, window-id stability).
