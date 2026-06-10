@@ -52,12 +52,12 @@ internal object ExitReasonTags {
     }
 
     /**
-     * Sentry event level per reason. `error` for the system-driven kills the
-     * dashboards care about; `warning` where sentry-android already captured
-     * the crash/ANR itself (this is just the matching post-mortem record);
-     * `info` for intentional or housekeeping exits.
+     * `exit.severity` attribute per reason. `error` for the system-driven
+     * kills the dashboards care about; `warning` where sentry-android already
+     * captured the crash/ANR itself (this is just the matching post-mortem
+     * record); `info` for intentional or housekeeping exits.
      */
-    fun levelFor(reason: Int): String = when (reason) {
+    fun severityFor(reason: Int): String = when (reason) {
         ApplicationExitInfo.REASON_LOW_MEMORY,
         ApplicationExitInfo.REASON_SIGNALED,
         ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,

@@ -10,7 +10,7 @@ let package = Package(
         // uses `@_spi(Private)` symbols — drift is a manual-review event.
         .package(
             url: "https://github.com/getsentry/sentry-cocoa",
-            exact: "8.58.0"
+            exact: "9.15.0"
         ),
     ],
     targets: [

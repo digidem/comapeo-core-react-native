@@ -176,18 +176,19 @@ dependencies {
     // the consumer's runtime classpath; declaring `implementation`
     // here lets the verifier resolve `io.sentry.*` directly without
     // relying on the transitive bring-in from `@sentry/react-native`.
-    // Gradle dedupes against the version `@sentry/react-native@7.x`
+    // Gradle dedupes against the version `@sentry/react-native@8.x`
     // pulls in.
     //
-    // Pin matches what @sentry/react-native@7.x ships
-    // (sentry-android 8.32.x — first line that has the structured-log
-    // API used by `SentryFgsBridge.log`). Bump in lock-step with
-    // the @sentry/react-native peer-dep range.
-    implementation "io.sentry:sentry-android-core:8.32.0"
+    // Pin matches what @sentry/react-native@8.x ships
+    // (sentry-android 8.43.x — has the structured-log API used by
+    // `SentryFgsBridge.log` and the Application Metrics API used by
+    // `ExitReasonsCollector`). Bump in lock-step with the
+    // @sentry/react-native peer-dep range.
+    implementation "io.sentry:sentry-android-core:8.43.0"
     // Test classpath needs the runtime classes so JVM unit tests
     // can exercise the bridge directly. Robolectric isn't on the
     // test classpath, so tests that need a real Context use a fake.
-    testImplementation "io.sentry:sentry-android-core:8.32.0"
+    testImplementation "io.sentry:sentry-android-core:8.43.0"
 
     // JVM unit test dependencies
     testImplementation 'junit:junit:4.13.2'

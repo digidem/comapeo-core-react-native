@@ -17,6 +17,7 @@ ahead see [`sentry-integration-plan.md`](./sentry-integration-plan.md).
 | Phase 10 — offline transport via control-socket forwarding                 | Custom `@sentry/node` transport in `loader.mjs` inspects each envelope and routes single-item error events as `{type:"sentry-event",payload}` (decoded via `SentryEventDecoder` / `SentryEvent.Deserializer` and captured via `Sentry.captureEvent`, with native scope merged), and everything else as `{type:"sentry-envelope",data}` (passed via `InternalSentrySdk.captureEnvelope` / `PrivateSentrySDKOnly.captureEnvelope`). Two 100-frame ring buffers (loader + `SimpleRpcServer`) cover the boot-sequence gaps. `SentryNativeContext.{kt,swift}` and the `sentryContext`-in-init-frame flow removed (native applies its own scope at capture). |
 | Phase 6 — Android historical exit reasons                                  | `ExitReasonsCollector.kt` surfaces `getHistoricalProcessExitReasons` records (API 30+) as `"android exit: REASON_*"` events on next process start, from both the main process (`ComapeoCoreApplicationLifecycleListener`) and the FGS (`ComapeoCoreService.onCreate`). `oem.killer.suspected` flags SIGKILL-to-foreground-service deaths; wall-clock anchors in `BackgroundAnchors.kt` derive uptime/backgrounded-for buckets (app-usage tier only, per §9b.8).                                                                                                                                                                                          |
 | Phase 7a — iOS MetricKit app-exit forwarding                               | `AppExitMetricsCollector.swift` subscribes to `MXMetricPayload` (the metric side sentry-cocoa skips) and forwards `MXAppExitMetric` buckets as `"ios exit: <cohort>_<bucket>"` events; per-exit duplication at app-usage tier, collapsed to one event per window+bucket at diagnostic. Optional 7b heuristic remains in the plan.                                                                                                                                                                                                                                                                                                                       |
+| SDK v8 + Application Metrics migration                                      | `@sentry/react-native` ^7.13 → ^8.13 (peer-dep major), sentry-cocoa 8.58 → 9.15 (`HybridSDK` subspec dropped — plain `Sentry` pod), sentry-android 8.32 → 8.43. Exit telemetry re-emitted as `comapeo.app.exit` count metrics (no issue lifecycle, no iOS per-event duplication); coarse duration buckets re-tiered to diagnostic, exact ms durations stay usage-tier.                                                                                                            |
 
 ## Divergences from the original plan
 
@@ -305,6 +306,40 @@ Cost: ~330 LOC Kotlin + ~300 LOC tests; ~250 LOC Swift + ~180 LOC tests.
 No JS/backend changes.
 
 ---
+
+## SDK v8 + Application Metrics migration
+
+Unlocked by `@sentry/react-native` v8 (which lock-steps sentry-android
+8.43 and sentry-cocoa 9.15 — both past the Application Metrics floors).
+
+- **Dependency bumps**: peer + dev dep `@sentry/react-native` `^7.13.0`
+  → `^8.13.0` (breaking for consumers — upgrade the host app's Sentry SDK
+  in the same release). `ios/ComapeoCore.podspec` moves from
+  `Sentry/HybridSDK '8.58.0'` to `Sentry '9.15.0'` (cocoa 9 dropped the
+  `HybridSDK` subspec; RNSentry now depends on the plain pod).
+  `ios/Package.swift` pins `exact: "9.15.0"`. `android/build.gradle`
+  bumps `sentry-android-core` to 8.43.0.
+  `scripts/check-sentry-cocoa-pin.mjs` learned RN v8's podspec shape
+  (plain `Sentry` dependency + `sentry_cocoa_version` Ruby variable).
+- **cocoa 9 API drift**: one call site — `TransactionContext` grew
+  nullable `sampleRate`/`sampleRand` params. The `@_spi(Private)`
+  surfaces (`SentryEventDecoder`, `PrivateSentrySDKOnly`) survived the
+  major unchanged.
+- **Exit telemetry → metrics**: `ExitReasonsCollector` and
+  `AppExitMetricsCollector` now emit one `comapeo.app.exit` count per
+  kill (`Sentry.metrics().count` / `SentrySDK.metrics.count`) instead of
+  events — no issue lifecycle, no regression alerts, and the iOS
+  per-exit event duplication disappears (a count carries N natively).
+  Event level became the `exit.severity` attribute. Both SDKs ship
+  metrics enabled by default, so no init changes.
+- **Tier re-split** (metrics are aggregate + low-cardinality, so they
+  need fewer opt-ins): the coarse `uptime_bucket` / `bg_duration_bucket`
+  / `comapeo.fgs.killed_in_background` attributes moved from usage tier
+  to diagnostic; exact `alive_for_ms` / `backgrounded_for_ms` stay
+  usage-tier. On iOS nothing is gated anymore.
+- Plan reshaped to match: Phase 5's per-RPC spans / memory checkpoint /
+  storage-size items re-tiered into Phase 11's diagnostic metrics
+  inventory; Phase 11 marked unblocked.
 
 ## Summary of file changes by landed phase
 

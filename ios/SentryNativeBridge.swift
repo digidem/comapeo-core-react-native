@@ -71,16 +71,34 @@ enum SentryNativeBridge {
     static func captureMessage(
         _ message: String,
         level: LogLevel = .info,
-        tags: [String: String] = [:],
-        extras: [String: Any] = [:]
+        tags: [String: String] = [:]
     ) {
         let event = Event(level: level.sentryLevel)
         event.message = SentryMessage(formatted: message)
         event.tags = mergedTags(tags)
-        if !extras.isEmpty {
-            event.extra = extras
-        }
         SentrySDK.capture(event: event)
+    }
+
+    /// `comapeo.app.exit` — one count per MetricKit exit bucket. Named here
+    /// (not at the call site) so it stays in lock-step with the Android
+    /// `ExitReasonsCollector.METRIC_NAME` spelling.
+    static let appExitMetricName = "comapeo.app.exit"
+
+    /// Forward a count to Sentry's metrics pipeline. The SDK no-ops when
+    /// not started, and drops with a log when `options.enableMetrics` is
+    /// false (it defaults to true).
+    static func countMetric(_ key: String, value: UInt, attributes: [String: Any]) {
+        var converted: [String: SentryAttributeValue] = [:]
+        for (k, v) in attributes {
+            switch v {
+            case let s as String: converted[k] = s
+            case let b as Bool: converted[k] = b
+            case let i as Int: converted[k] = i
+            case let d as Double: converted[k] = d
+            default: converted[k] = String(describing: v)
+            }
+        }
+        SentrySDK.metrics.count(key: key, value: value, attributes: converted)
     }
 
     /// Forward to Sentry's structured-log pipeline. The Cocoa SDK drops
@@ -105,11 +123,14 @@ enum SentryNativeBridge {
     /// `Any?` keeps Sentry types out of caller signatures.
     static func startBootTransaction() -> Any? {
         // `sampled: .yes` overrides global `tracesSampleRate` so the boot
-        // transaction always reaches the wire.
+        // transaction always reaches the wire. `sampleRate: 1.0` matches —
+        // it feeds the dynamic-sampling context, not the decision.
         let context = TransactionContext(
             name: "comapeo.boot",
             operation: "boot",
-            sampled: .yes
+            sampled: .yes,
+            sampleRate: 1.0,
+            sampleRand: nil
         )
         let tx = SentrySDK.startTransaction(
             transactionContext: context,

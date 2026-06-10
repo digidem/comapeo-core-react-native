@@ -8,9 +8,7 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import io.sentry.Breadcrumb
 import io.sentry.Sentry
-import io.sentry.SentryEvent
-import io.sentry.SentryLevel
-import io.sentry.protocol.Message
+import io.sentry.metrics.SentryMetricsParameters
 
 /** The `ApplicationExitInfo` fields the decoder reads, as a plain data class
  *  so JVM tests can hand-build records (the real class can't be constructed
@@ -26,29 +24,29 @@ internal data class ExitRecord(
     val description: String?,
 )
 
-/** Decoded Sentry emission for one exit record. */
-internal data class ExitReasonEvent(
-    val message: String,
-    val level: String,
-    val tags: Map<String, String>,
-    val extras: Map<String, Any>,
+/** Decoded emission for one exit record: a `comapeo.app.exit` count of 1
+ *  with these attributes. */
+internal data class ExitReasonMetric(
+    val attributes: Map<String, Any>,
 )
 
 /**
  * Surfaces `ActivityManager.getHistoricalProcessExitReasons()` records to
- * Sentry on the next process start. One event per record newer than the
- * per-process high-water timestamp; tag/level taxonomy in
- * `docs/sentry-integration.md`.
+ * Sentry on the next process start. One `comapeo.app.exit` count metric per
+ * record newer than the per-process high-water timestamp — metrics, not
+ * events, because the goal is aggregate statistics ("which OEMs kill our
+ * process hardest"), not per-incident triage in the Issues UI. Attribute
+ * taxonomy in `docs/sentry-integration.md`.
  *
  * Two callers — main process ([ComapeoCoreApplicationLifecycleListener]) and
- * the FGS process ([ComapeoCoreService]) — each reporting exits for its own
- * process name only, so Sentry never sees cross-process duplicates.
+ * the FGS process ([ComapeoCoreService]) — each reporting its own process
+ * name only, so Sentry never sees cross-process duplicates.
  *
- * The duration tags/extras derived from [BackgroundAnchors]
- * (`bg_duration_bucket`, `uptime_bucket`, `comapeo.fgs.killed_in_background`,
- * `alive_for_ms`, `backgrounded_for_ms`) are app-usage-tier data and only
- * flow when capture-application-data is on; the records themselves are
- * diagnostic-tier.
+ * Privacy tiers: the coarse duration buckets (`uptime_bucket`,
+ * `bg_duration_bucket`, `comapeo.fgs.killed_in_background`) are
+ * low-resolution aggregate data and flow at the diagnostic tier; the exact
+ * millisecond durations are usage-shape data and only flow when
+ * capture-application-data is on.
  */
 internal class ExitReasonsCollector(
     private val anchors: BackgroundAnchors,
@@ -61,7 +59,7 @@ internal class ExitReasonsCollector(
      * and emits nothing — reporting the pre-feature backlog on every device's
      * first update would flood Sentry with stale deaths.
      */
-    fun collect(processName: String, procKey: String, records: List<ExitRecord>): List<ExitReasonEvent> {
+    fun collect(processName: String, procKey: String, records: List<ExitRecord>): List<ExitReasonMetric> {
         val lastSeen = anchors.readLastSeenMs(procKey)
         if (lastSeen == null) {
             anchors.writeLastSeenMs(procKey, nowMs())
@@ -73,60 +71,49 @@ internal class ExitReasonsCollector(
         return kept.map { decode(it, procKey) }
     }
 
-    private fun decode(record: ExitRecord, procKey: String): ExitReasonEvent {
-        val reasonTag = ExitReasonTags.decodeReason(record.reason)
-        val tags = buildMap {
+    private fun decode(record: ExitRecord, procKey: String): ExitReasonMetric {
+        val attributes = buildMap {
             put(SentryTags.PROC, procKey)
-            put(SentryTags.EXIT_REASON, reasonTag)
+            put(SentryTags.EXIT_REASON, ExitReasonTags.decodeReason(record.reason))
             put(SentryTags.EXIT_PROCESS_STATE, ExitReasonTags.decodeImportance(record.importance))
             if (record.reason == ApplicationExitInfo.REASON_SIGNALED) {
                 put(SentryTags.EXIT_SIGNAL, record.status.toString())
             }
-            put(SentryTags.EXIT_INTENTIONAL, ExitReasonTags.isIntentional(record.reason).toString())
+            put(SentryTags.EXIT_INTENTIONAL, ExitReasonTags.isIntentional(record.reason))
             put(
                 SentryTags.OEM_KILLER_SUSPECTED,
-                ExitReasonTags.isOemKillerSuspected(record.reason, record.importance, record.status)
-                    .toString(),
+                ExitReasonTags.isOemKillerSuspected(record.reason, record.importance, record.status),
             )
-        }
-        val extras = buildMap<String, Any> {
+            put(SentryTags.EXIT_SEVERITY, ExitReasonTags.severityFor(record.reason))
             record.description?.let { put("description", it) }
             put("pss_kb", record.pssKb)
             put("rss_kb", record.rssKb)
             put("exit_timestamp_ms", record.timestampMs)
-        }
-        if (!captureApplicationData) {
-            return ExitReasonEvent(messageFor(reasonTag), ExitReasonTags.levelFor(record.reason), tags, extras)
-        }
 
-        val aliveForMs = durationTo(record.timestampMs, anchors.readProcessStartedAtMs(procKey))
-        // The FGS has no foreground/background concept; both procs derive the
-        // backgrounded-for cohort from the main process's anchor.
-        val mainBackgroundedAt = anchors.readBackgroundedAtMs(SentryTags.PROC_MAIN)
-        val backgroundedForMs = durationTo(record.timestampMs, mainBackgroundedAt)
-        return ExitReasonEvent(
-            message = messageFor(reasonTag),
-            level = ExitReasonTags.levelFor(record.reason),
-            tags = tags + buildMap {
-                put(SentryTags.UPTIME_BUCKET, uptimeBucket(aliveForMs))
-                put(SentryTags.BG_DURATION_BUCKET, bgDurationBucket(backgroundedForMs))
-                if (procKey == SentryTags.PROC_FGS) {
-                    put(
-                        SentryTags.FGS_KILLED_IN_BACKGROUND,
-                        (backgroundedForMs != null).toString(),
-                    )
-                }
-            },
-            extras = extras + buildMap {
+            val aliveForMs = durationTo(record.timestampMs, anchors.readProcessStartedAtMs(procKey))
+            // The FGS has no foreground/background concept; both procs derive
+            // the backgrounded-for cohort from the main process's anchor.
+            val backgroundedForMs =
+                durationTo(record.timestampMs, anchors.readBackgroundedAtMs(SentryTags.PROC_MAIN))
+            put(SentryTags.UPTIME_BUCKET, uptimeBucket(aliveForMs))
+            put(SentryTags.BG_DURATION_BUCKET, bgDurationBucket(backgroundedForMs))
+            if (procKey == SentryTags.PROC_FGS) {
+                put(SentryTags.FGS_KILLED_IN_BACKGROUND, backgroundedForMs != null)
+            }
+            if (captureApplicationData) {
                 aliveForMs?.let { put("alive_for_ms", it) }
                 if (procKey == SentryTags.PROC_MAIN) {
                     backgroundedForMs?.let { put("backgrounded_for_ms", it) }
                 }
-            },
-        )
+            }
+        }
+        return ExitReasonMetric(attributes)
     }
 
     companion object {
+        /** One count per exit, sliceable by attribute in Sentry's Explore UI. */
+        const val METRIC_NAME = "comapeo.app.exit"
+
         /** Anything older than the last 10 cold starts isn't useful, and
          *  `maxNum=0` (unlimited) is documented as slow on some devices. */
         private const val MAX_RECORDS = 10
@@ -158,14 +145,14 @@ internal class ExitReasonsCollector(
                 return
             }
             try {
-                val events = ExitReasonsCollector(
+                val metrics = ExitReasonsCollector(
                     anchors = BackgroundAnchors.open(context),
                     captureApplicationData = captureApplicationData,
                 ).collect(processName, procKey, queryRecords(context))
-                log("[${SentryCategories.EXIT}] $procKey: ${events.size} new exit record(s)")
-                if (events.isEmpty()) return
-                addRunBreadcrumb(procKey, events.size)
-                events.forEach(::capture)
+                log("[${SentryCategories.EXIT}] $procKey: ${metrics.size} new exit record(s)")
+                if (metrics.isEmpty()) return
+                addRunBreadcrumb(procKey, metrics.size)
+                metrics.forEach(::capture)
             } catch (t: Throwable) {
                 // Observability is decorative; a thrown collector must never
                 // take either process down.
@@ -187,19 +174,15 @@ internal class ExitReasonsCollector(
                         pssKb = info.pss,
                         rssKb = info.rss,
                         // traceInputStream() is deliberately not captured — it can
-                        // exceed Sentry's event size limit and carry user-context
+                        // exceed Sentry's payload limits and carry user-context
                         // strings on some vendors. `description` is a short label.
                         description = info.description,
                     )
                 }
         }
 
-        /** Stable message string so Sentry groups one issue per reason. */
-        internal fun messageFor(reasonTag: String): String =
-            "android exit: REASON_${reasonTag.uppercase()}"
-
-        /** Coarse cohort axis for `backgrounded_for_ms` — string tags are
-         *  reliably aggregable in Discover; numeric extras aren't. */
+        /** Coarse cohort axis for `backgrounded_for_ms` — pre-bucketed
+         *  strings group cleanly in Explore aggregations. */
         internal fun bgDurationBucket(ms: Long?): String = when {
             ms == null -> "unknown"
             ms < 60_000 -> "<1m"
@@ -230,26 +213,20 @@ internal class ExitReasonsCollector(
         }
 
         /**
-         * `Sentry.captureEvent` (not the FGS bridge) so one path serves both
+         * `Sentry.metrics()` (not the FGS bridge) so one path serves both
          * processes: main-side Sentry is initialised by @sentry/react-native,
-         * FGS-side by [SentryFgsBridge.init]; pre-init the SDK no-ops. Built
-         * as an event (not `captureMessage`) so numeric extras keep their type.
+         * FGS-side by [SentryFgsBridge.init]; pre-init the SDK no-ops.
          */
-        private fun capture(event: ExitReasonEvent) {
+        private fun capture(metric: ExitReasonMetric) {
             try {
-                val sentryEvent = SentryEvent().apply {
-                    message = Message().apply { formatted = event.message }
-                    level = when (event.level) {
-                        "error" -> SentryLevel.ERROR
-                        "warning" -> SentryLevel.WARNING
-                        else -> SentryLevel.INFO
-                    }
-                    event.tags.forEach { (k, v) -> setTag(k, v) }
-                    event.extras.forEach { (k, v) -> setExtra(k, v) }
-                }
-                Sentry.captureEvent(sentryEvent)
+                Sentry.metrics().count(
+                    METRIC_NAME,
+                    1.0,
+                    null,
+                    SentryMetricsParameters.create(metric.attributes),
+                )
             } catch (t: Throwable) {
-                Log.w(TAG, "exit-reason capture threw", t)
+                Log.w(TAG, "exit-reason metric threw", t)
             }
         }
 

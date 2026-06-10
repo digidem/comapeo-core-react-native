@@ -120,9 +120,7 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // MXAppExitMetric needs iOS 14+; the podspec floor (15.1)
             // guarantees it, so no availability guard.
             #if canImport(MetricKit)
-            AppExitMetricsCollector.subscribeOnce(
-                captureApplicationData: ComapeoPrefs.open().readCaptureApplicationData()
-            )
+            AppExitMetricsCollector.subscribeOnce()
             #endif
         }
         return true

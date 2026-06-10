@@ -70,7 +70,7 @@ class ExitReasonTagsTest {
     }
 
     @Test
-    fun levelMapping() {
+    fun severityMapping() {
         val errors = listOf(
             ApplicationExitInfo.REASON_LOW_MEMORY,
             ApplicationExitInfo.REASON_SIGNALED,
@@ -95,9 +95,9 @@ class ExitReasonTagsTest {
             ApplicationExitInfo.REASON_UNKNOWN,
             99, // unknown int
         )
-        errors.forEach { assertEquals("reason $it", "error", ExitReasonTags.levelFor(it)) }
-        warnings.forEach { assertEquals("reason $it", "warning", ExitReasonTags.levelFor(it)) }
-        infos.forEach { assertEquals("reason $it", "info", ExitReasonTags.levelFor(it)) }
+        errors.forEach { assertEquals("reason $it", "error", ExitReasonTags.severityFor(it)) }
+        warnings.forEach { assertEquals("reason $it", "warning", ExitReasonTags.severityFor(it)) }
+        infos.forEach { assertEquals("reason $it", "info", ExitReasonTags.severityFor(it)) }
     }
 
     @Test
