@@ -55,10 +55,24 @@ class ComapeoCoreService : Service() {
 
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
 
+        val captureApplicationData = prefs.readCaptureApplicationData()
+        serviceScope.launch(Dispatchers.IO) {
+            // Collect before stamping: the decoder must read the previous FGS
+            // session's `process_started_at`, not this run's.
+            ExitReasonsCollector.collectAndReport(
+                context = applicationContext,
+                processName = "$packageName:ComapeoCore",
+                procKey = SentryTags.PROC_FGS,
+                captureApplicationData = captureApplicationData,
+            )
+            BackgroundAnchors.open(applicationContext)
+                .writeProcessStartedAtMs(SentryTags.PROC_FGS, System.currentTimeMillis())
+        }
+
         nodeJSService = NodeJSService(
             applicationContext,
             sentryConfig = effectiveConfig,
-            captureApplicationData = prefs.readCaptureApplicationData(),
+            captureApplicationData = captureApplicationData,
         )
     }
 

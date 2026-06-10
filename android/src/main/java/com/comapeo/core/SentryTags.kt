@@ -25,6 +25,19 @@ object SentryTags {
      */
     const val BOOT_KIND = "boot.kind"
 
+    // Historical-exit-reason events (ExitReasonsCollector). Taxonomy in
+    // docs/sentry-integration.md.
+    const val EXIT_REASON = "exit.reason"
+    const val EXIT_PROCESS_STATE = "exit.process_state"
+    const val EXIT_SIGNAL = "exit.signal"
+    const val EXIT_INTENTIONAL = "exit.intentional"
+    const val OEM_KILLER_SUSPECTED = "oem.killer.suspected"
+    const val FGS_KILLED_IN_BACKGROUND = "comapeo.fgs.killed_in_background"
+    const val BG_DURATION_BUCKET = "bg_duration_bucket"
+    const val UPTIME_BUCKET = "uptime_bucket"
+    /** Boot-time scope tag on pre-API-30 devices (exit reasons unavailable). */
+    const val EXIT_REASONS_SUPPORTED = "exitReasons.supported"
+
     // proc values
     const val PROC_MAIN = "main"
     const val PROC_FGS = "fgs"
@@ -55,4 +68,6 @@ object SentryCategories {
     const val IPC = "comapeo.ipc"
     /** Boot phases (start, asset copy, rootkey load, init frame, ready). */
     const val BOOT = "comapeo.boot"
+    /** Historical process-exit reporting (ExitReasonsCollector). */
+    const val EXIT = "comapeo.exit"
 }
