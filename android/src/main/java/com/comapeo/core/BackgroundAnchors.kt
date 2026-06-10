@@ -1,55 +1,83 @@
 package com.comapeo.core
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.core.content.edit
 
 /**
  * Wall-clock anchors for exit-reason post-mortems, keyed per process name
  * (`main` / `fgs`). Wall-clock (`System.currentTimeMillis`) rather than
  * `elapsedRealtime` so values survive reboots and cross-process reads.
- * Stored in the same prefs file as the Sentry toggles
- * ([ComapeoPrefs.PREFS_NAME]) — the FGS process reads the main process's
- * `backgrounded_at` slot on its own cold start.
+ *
+ * One prefs file per proc slot, and each file has exactly one writer
+ * process — `SharedPreferences` is not multi-process safe (every write
+ * persists the writer's whole cached map, silently reverting keys another
+ * process wrote since this process loaded the file). The FGS process only
+ * READS the `main` slots, opening the file at its own cold start, which is
+ * fresh enough: the values it needs were written before it was spawned.
  *
  * Constructor takes read/write lambdas to keep tests free of
  * `SharedPreferences` (unmocked on the JVM unit-test classpath). [open] is
  * the production constructor.
  */
 internal class BackgroundAnchors(
-    private val readLong: (String) -> Long?,
-    private val writeLong: (String, Long) -> Unit,
+    private val readLong: (proc: String, key: String) -> Long?,
+    private val writeLong: (proc: String, key: String, value: Long) -> Unit,
 ) {
-    fun readProcessStartedAtMs(proc: String): Long? = readLong("$proc.$KEY_PROCESS_STARTED_AT")
+    fun readProcessStartedAtMs(proc: String): Long? = readLong(proc, KEY_PROCESS_STARTED_AT)
 
     fun writeProcessStartedAtMs(proc: String, wallMs: Long) {
-        writeLong("$proc.$KEY_PROCESS_STARTED_AT", wallMs)
+        writeLong(proc, KEY_PROCESS_STARTED_AT, wallMs)
     }
 
-    fun readBackgroundedAtMs(proc: String): Long? = readLong("$proc.$KEY_BACKGROUNDED_AT")
+    fun readBackgroundedAtMs(proc: String): Long? = readLong(proc, KEY_BACKGROUNDED_AT)
 
-    /** `0` means "currently foregrounded" — derived backgrounded-for durations
-     *  only count when the death happened during background. */
     fun writeBackgroundedAtMs(proc: String, wallMs: Long) {
-        writeLong("$proc.$KEY_BACKGROUNDED_AT", wallMs)
+        writeLong(proc, KEY_BACKGROUNDED_AT, wallMs)
     }
 
-    fun readLastSeenMs(proc: String): Long? = readLong("$proc.$KEY_LAST_SEEN")
+    fun readForegroundedAtMs(proc: String): Long? = readLong(proc, KEY_FOREGROUNDED_AT)
+
+    /** Paired with [writeBackgroundedAtMs]: the decoder treats an exit as
+     *  "in background" when the last transition before it was a background.
+     *  Never cleared — comparing both stamps against the exit timestamp
+     *  works regardless of which process reads them, or when. */
+    fun writeForegroundedAtMs(proc: String, wallMs: Long) {
+        writeLong(proc, KEY_FOREGROUNDED_AT, wallMs)
+    }
+
+    fun readLastSeenMs(proc: String): Long? = readLong(proc, KEY_LAST_SEEN)
 
     fun writeLastSeenMs(proc: String, wallMs: Long) {
-        writeLong("$proc.$KEY_LAST_SEEN", wallMs)
+        writeLong(proc, KEY_LAST_SEEN, wallMs)
     }
 
     companion object {
         const val KEY_PROCESS_STARTED_AT = "process_started_at_wall_ms"
         const val KEY_BACKGROUNDED_AT = "backgrounded_at_wall_ms"
+        const val KEY_FOREGROUNDED_AT = "foregrounded_at_wall_ms"
         const val KEY_LAST_SEEN = "exit_reasons.last_seen_ms"
+
+        private fun fileFor(proc: String) = "com.comapeo.core.anchors.$proc"
 
         @JvmStatic
         fun open(context: Context): BackgroundAnchors {
-            val sp = context.getSharedPreferences(ComapeoPrefs.PREFS_NAME, Context.MODE_PRIVATE)
+            val sps = mutableMapOf<String, SharedPreferences>()
+            fun sp(proc: String): SharedPreferences = synchronized(sps) {
+                sps.getOrPut(proc) {
+                    context.getSharedPreferences(fileFor(proc), Context.MODE_PRIVATE)
+                }
+            }
             return BackgroundAnchors(
-                readLong = { key -> if (sp.contains(key)) sp.getLong(key, 0L) else null },
-                writeLong = { key, value -> sp.edit { putLong(key, value) } },
+                readLong = { proc, key ->
+                    sp(proc).let { if (it.contains(key)) it.getLong(key, 0L) else null }
+                },
+                // commit (not apply): `backgrounded_at` lands immediately before
+                // the kill window this feature measures — an unflushed apply()
+                // dies with the process and misclassifies exactly those kills.
+                writeLong = { proc, key, value ->
+                    sp(proc).edit(commit = true) { putLong(key, value) }
+                },
             )
         }
     }

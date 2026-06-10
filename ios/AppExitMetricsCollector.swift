@@ -21,10 +21,17 @@ struct AppExitPayloadData {
 ///
 /// Emission: at the app-usage tier, one event **per individual exit** — a
 /// bucket count of 3 emits three identical events so dashboard queries are a
-/// trivial `count(*)`. At the diagnostic tier the duplication is collapsed
-/// to one event per window+bucket (frequency is session-shape data); the
-/// true count still rides in the `window_count` extra.
+/// trivial `count(*)` — capped at [maxEventsPerBucket] per window+bucket
+/// (counts are 24h cumulative totals; benign buckets like background
+/// `normal_app_exit` reach the hundreds and would burn Sentry quota in a
+/// burst). At the diagnostic tier the duplication is collapsed to one event
+/// per window+bucket (frequency is session-shape data). The true count
+/// always rides in the `window_count` extra — use `sum(window_count)` over
+/// one event per window when exactness matters.
 enum AppExitDecoder {
+    /// Mirrors Android's per-process record cap (`MAX_RECORDS`).
+    static let maxEventsPerBucket = 10
+
     struct Event {
         let message: String
         let level: LogLevel
@@ -52,7 +59,7 @@ enum AppExitDecoder {
                 out.append(
                     contentsOf: Array(
                         repeating: event,
-                        count: captureApplicationData ? count : 1
+                        count: captureApplicationData ? min(count, maxEventsPerBucket) : 1
                     )
                 )
             }
@@ -84,7 +91,7 @@ enum AppExitDecoder {
         if let osVersion = payload.osVersion { extras["os_version"] = osVersion }
         return Event(
             message: "ios exit: \(fullName)",
-            level: level(forBucket: bucket),
+            level: level(forBucket: bucket, cohort: cohort),
             tags: [
                 SentryTags.exitCohort: cohort,
                 SentryTags.exitBucket: bucket,
@@ -116,13 +123,18 @@ enum AppExitDecoder {
     }
 
     /// `error` for the background/battery-kill and user-visible-quality
-    /// cohorts; `warning` where sentry-cocoa's own crash reporter captured
-    /// the actual crash (this is just the matching post-mortem count);
-    /// `info` for intentional or benign exits — and for unknown buckets.
-    static func level(forBucket bucket: String) -> LogLevel {
+    /// cohorts; `warning` where another sentry-cocoa integration captured
+    /// the death itself, so kill-rate dashboards don't double-count it
+    /// (the crash reporter owns crash buckets; watchdog-termination
+    /// tracking owns *foreground* OOM/watchdog deaths — this is just the
+    /// matching post-mortem count); `info` for intentional or benign
+    /// exits — and for unknown buckets.
+    static func level(forBucket bucket: String, cohort: String) -> LogLevel {
         switch bucket {
-        case "memory_resource_limit", "memory_pressure", "cpu_resource_limit",
-             "app_watchdog", "background_task_assertion_timeout":
+        case "memory_resource_limit", "app_watchdog":
+            return cohort == "foreground" ? .warning : .error
+        case "memory_pressure", "cpu_resource_limit",
+             "background_task_assertion_timeout":
             return .error
         case "bad_access", "illegal_instruction", "abnormal":
             return .warning

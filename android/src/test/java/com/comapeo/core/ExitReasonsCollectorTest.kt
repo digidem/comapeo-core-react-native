@@ -2,6 +2,7 @@ package com.comapeo.core
 
 import android.app.ActivityManager.RunningAppProcessInfo
 import android.app.ApplicationExitInfo
+import io.sentry.SentryLevel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -17,13 +18,20 @@ class ExitReasonsCollectorTest {
 
     private val store = mutableMapOf<String, Long>()
     private val anchors = BackgroundAnchors(
-        readLong = { store[it] },
-        writeLong = { key, value -> store[key] = value },
+        readLong = { proc, key -> store["$proc.$key"] },
+        writeLong = { proc, key, value -> store["$proc.$key"] = value },
     )
     private var now = 1_000_000_000_000L
 
-    private fun collector(captureApplicationData: Boolean = true) =
-        ExitReasonsCollector(anchors, captureApplicationData, nowMs = { now })
+    /** Snapshots [anchors] at call time — seed anchors first, like production
+     *  snapshots before stamping the current run's values. */
+    private fun collector(procKey: String = MAIN, captureApplicationData: Boolean = true) =
+        ExitReasonsCollector(
+            anchors = anchors,
+            snapshot = AnchorSnapshot.from(anchors, procKey),
+            captureApplicationData = captureApplicationData,
+            nowMs = { now },
+        )
 
     private fun record(
         processName: String = MAIN_PROC_NAME,
@@ -40,12 +48,20 @@ class ExitReasonsCollectorTest {
         anchors.writeLastSeenMs(proc, value)
     }
 
+    private fun collectEvents(
+        procKey: String = MAIN,
+        processName: String = MAIN_PROC_NAME,
+        records: List<ExitRecord>,
+        captureApplicationData: Boolean = true,
+    ) = collector(procKey, captureApplicationData).collect(processName, procKey, records).events
+
     // ── First run / high-water behaviour ───────────────────────────
 
     @Test
     fun firstRunInitialisesHighWaterAndEmitsNothing() {
-        val events = collector().collect(MAIN_PROC_NAME, MAIN, listOf(record()))
-        assertTrue("first observation must not report the pre-feature backlog", events.isEmpty())
+        val result = collector().collect(MAIN_PROC_NAME, MAIN, listOf(record()))
+        assertTrue("first observation must not report the pre-feature backlog", result.events.isEmpty())
+        assertNull(result.newLastSeenMs)
         assertEquals(now, anchors.readLastSeenMs(MAIN))
     }
 
@@ -54,38 +70,56 @@ class ExitReasonsCollectorTest {
         seedLastSeen(MAIN, now - 100_000)
         val older = record(timestampMs = now - 200_000)
         val newer = record(timestampMs = now - 50_000)
-        val events = collector().collect(MAIN_PROC_NAME, MAIN, listOf(older, newer))
+        val events = collectEvents(records = listOf(older, newer))
         assertEquals(1, events.size)
         assertEquals(now - 50_000, events.single().extras["exit_timestamp_ms"])
     }
 
     @Test
-    fun highWaterAdvancesToMaxReportedTimestamp() {
+    fun collectReturnsNewHighWaterButDoesNotPersistIt() {
+        // The caller persists newLastSeenMs only after capture succeeds, so a
+        // failed report leaves the records pending for the next start.
         seedLastSeen(MAIN)
-        collector().collect(
+        val result = collector().collect(
             MAIN_PROC_NAME,
             MAIN,
             listOf(record(timestampMs = now - 50_000), record(timestampMs = now - 10_000)),
         )
-        assertEquals(now - 10_000, anchors.readLastSeenMs(MAIN))
+        assertEquals(now - 10_000, result.newLastSeenMs)
+        assertEquals(0L, anchors.readLastSeenMs(MAIN))
     }
 
     @Test
-    fun highWaterUnchangedWhenNothingKept() {
+    fun noNewHighWaterWhenNothingKept() {
         seedLastSeen(MAIN, now - 5_000)
-        collector().collect(MAIN_PROC_NAME, MAIN, listOf(record(timestampMs = now - 10_000)))
+        val result = collector().collect(
+            MAIN_PROC_NAME,
+            MAIN,
+            listOf(record(timestampMs = now - 10_000)),
+        )
+        assertNull(result.newLastSeenMs)
         assertEquals(now - 5_000, anchors.readLastSeenMs(MAIN))
     }
 
     @Test
     fun recordsForOtherProcessNamesAreFiltered() {
         seedLastSeen(MAIN)
-        val events = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(processName = FGS_PROC_NAME)),
-        )
+        val events = collectEvents(records = listOf(record(processName = FGS_PROC_NAME)))
         assertTrue(events.isEmpty())
+    }
+
+    @Test
+    fun burstIsCappedToNewestRecords() {
+        seedLastSeen(MAIN)
+        val burst = (1..15).map { record(timestampMs = now - 100_000 + it * 1_000) }
+        val result = collector().collect(MAIN_PROC_NAME, MAIN, burst)
+        assertEquals(10, result.events.size)
+        // Newest 10 kept; the 5 oldest dropped.
+        assertEquals(
+            now - 100_000 + 6_000,
+            result.events.first().extras["exit_timestamp_ms"],
+        )
+        assertEquals(now - 100_000 + 15_000, result.newLastSeenMs)
     }
 
     // ── Tag / extra / level mapping ────────────────────────────────
@@ -93,14 +127,12 @@ class ExitReasonsCollectorTest {
     @Test
     fun decodedEventCarriesExpectedTagsAndExtras() {
         seedLastSeen(MAIN)
-        val event = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(description = "OneUI: killed by frzInfo")),
+        val event = collectEvents(
+            records = listOf(record(description = "OneUI: killed by frzInfo")),
         ).single()
 
         assertEquals("android exit: REASON_SIGNALED", event.message)
-        assertEquals("error", event.level)
+        assertEquals(SentryLevel.ERROR, event.level)
         assertEquals("main", event.tags[SentryTags.PROC])
         assertEquals("signaled", event.tags[SentryTags.EXIT_REASON])
         assertEquals("foreground_service", event.tags[SentryTags.EXIT_PROCESS_STATE])
@@ -115,10 +147,8 @@ class ExitReasonsCollectorTest {
     @Test
     fun signalTagOnlyPresentForSignaledReason() {
         seedLastSeen(MAIN)
-        val event = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(reason = ApplicationExitInfo.REASON_LOW_MEMORY, status = 0)),
+        val event = collectEvents(
+            records = listOf(record(reason = ApplicationExitInfo.REASON_LOW_MEMORY, status = 0)),
         ).single()
         assertNull(event.tags[SentryTags.EXIT_SIGNAL])
         assertEquals("low_memory", event.tags[SentryTags.EXIT_REASON])
@@ -127,10 +157,8 @@ class ExitReasonsCollectorTest {
     @Test
     fun intentionalExitIsInfoRegardlessOfProcessState() {
         seedLastSeen(MAIN)
-        val event = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(
+        val event = collectEvents(
+            records = listOf(
                 record(
                     reason = ApplicationExitInfo.REASON_USER_STOPPED,
                     importance = RunningAppProcessInfo.IMPORTANCE_FOREGROUND,
@@ -138,21 +166,17 @@ class ExitReasonsCollectorTest {
             ),
         ).single()
         assertEquals("true", event.tags[SentryTags.EXIT_INTENTIONAL])
-        assertEquals("info", event.level)
+        assertEquals(SentryLevel.INFO, event.level)
         assertEquals("android exit: REASON_USER_STOPPED", event.message)
     }
 
     @Test
     fun unknownReasonProducesSliceableMessageAndTag() {
         seedLastSeen(MAIN)
-        val event = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(reason = 42, status = 0)),
-        ).single()
+        val event = collectEvents(records = listOf(record(reason = 42, status = 0))).single()
         assertEquals("unknown:42", event.tags[SentryTags.EXIT_REASON])
         assertEquals("android exit: REASON_UNKNOWN:42", event.message)
-        assertEquals("info", event.level)
+        assertEquals(SentryLevel.INFO, event.level)
     }
 
     // ── Derived durations & anchors ────────────────────────────────
@@ -160,7 +184,7 @@ class ExitReasonsCollectorTest {
     @Test
     fun derivedFieldsNullSafeWhenAnchorsAbsent() {
         seedLastSeen(MAIN)
-        val event = collector().collect(MAIN_PROC_NAME, MAIN, listOf(record())).single()
+        val event = collectEvents(records = listOf(record())).single()
         assertEquals("unknown", event.tags[SentryTags.UPTIME_BUCKET])
         assertEquals("unknown", event.tags[SentryTags.BG_DURATION_BUCKET])
         assertFalse(event.extras.containsKey("alive_for_ms"))
@@ -168,24 +192,13 @@ class ExitReasonsCollectorTest {
     }
 
     @Test
-    fun clearedBackgroundAnchorYieldsUnknownBucket() {
-        seedLastSeen(MAIN)
-        anchors.writeBackgroundedAtMs(MAIN, 0L)
-        val event = collector().collect(MAIN_PROC_NAME, MAIN, listOf(record())).single()
-        assertEquals("unknown", event.tags[SentryTags.BG_DURATION_BUCKET])
-    }
-
-    @Test
     fun anchorNewerThanExitYieldsUnknownBucket() {
-        // A current-run stamp that raced the read must not produce a negative duration.
+        // A current-run stamp that raced the snapshot must not produce a
+        // negative duration.
         seedLastSeen(MAIN)
         val exitAt = now - 60_000
         anchors.writeProcessStartedAtMs(MAIN, exitAt + 5_000)
-        val event = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(timestampMs = exitAt)),
-        ).single()
+        val event = collectEvents(records = listOf(record(timestampMs = exitAt))).single()
         assertEquals("unknown", event.tags[SentryTags.UPTIME_BUCKET])
         assertFalse(event.extras.containsKey("alive_for_ms"))
     }
@@ -196,11 +209,7 @@ class ExitReasonsCollectorTest {
         val exitAt = now - 60_000
         anchors.writeProcessStartedAtMs(MAIN, exitAt - 120_000) // alive 2m
         anchors.writeBackgroundedAtMs(MAIN, exitAt - 600_000) // backgrounded 10m
-        val event = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(timestampMs = exitAt)),
-        ).single()
+        val event = collectEvents(records = listOf(record(timestampMs = exitAt))).single()
         assertEquals(120_000L, event.extras["alive_for_ms"])
         assertEquals(600_000L, event.extras["backgrounded_for_ms"])
         assertEquals("1-5m", event.tags[SentryTags.UPTIME_BUCKET])
@@ -208,20 +217,59 @@ class ExitReasonsCollectorTest {
     }
 
     @Test
-    fun fgsKilledInBackgroundDerivesFromMainAnchor() {
+    fun foregroundTransitionBeforeExitClearsBackgroundDuration() {
+        // backgrounded → foregrounded → exit: the app was NOT in background
+        // when it died.
+        seedLastSeen(MAIN)
+        val exitAt = now - 60_000
+        anchors.writeBackgroundedAtMs(MAIN, exitAt - 600_000)
+        anchors.writeForegroundedAtMs(MAIN, exitAt - 100_000)
+        val event = collectEvents(records = listOf(record(timestampMs = exitAt))).single()
+        assertEquals("unknown", event.tags[SentryTags.BG_DURATION_BUCKET])
+        assertFalse(event.extras.containsKey("backgrounded_for_ms"))
+    }
+
+    @Test
+    fun foregroundTransitionAfterExitKeepsBackgroundDuration() {
+        // The kill→relaunch flow: app backgrounded, killed, user reopens it.
+        // The relaunch stamps foregrounded_at AFTER the exit — that must not
+        // erase the background window the death happened in.
+        seedLastSeen(MAIN)
+        val exitAt = now - 60_000
+        anchors.writeBackgroundedAtMs(MAIN, exitAt - 600_000)
+        anchors.writeForegroundedAtMs(MAIN, now - 1_000)
+        val event = collectEvents(records = listOf(record(timestampMs = exitAt))).single()
+        assertEquals(600_000L, event.extras["backgrounded_for_ms"])
+        assertEquals("5-15m", event.tags[SentryTags.BG_DURATION_BUCKET])
+    }
+
+    @Test
+    fun fgsKilledInBackgroundDerivesFromMainAnchors() {
+        // Killed while backgrounded; the main process relaunched (stamping
+        // foregrounded_at past the exit) before the FGS collected — the
+        // dominant real-world flow.
         seedLastSeen(FGS)
         val exitAt = now - 60_000
         anchors.writeBackgroundedAtMs(MAIN, exitAt - 300_000)
-        val killed = collector().collect(FGS_PROC_NAME, FGS, listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt))).single()
+        anchors.writeForegroundedAtMs(MAIN, now - 1_000)
+        val killed = collectEvents(
+            procKey = FGS,
+            processName = FGS_PROC_NAME,
+            records = listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)),
+        ).single()
         assertEquals("true", killed.tags[SentryTags.FGS_KILLED_IN_BACKGROUND])
         assertEquals("fgs", killed.tags[SentryTags.PROC])
         // FGS events never carry the exact backgrounded_for_ms extra.
         assertFalse(killed.extras.containsKey("backgrounded_for_ms"))
 
-        // Cleared anchor (app was foregrounded) → false.
+        // App back in foreground before the FGS died → false.
         seedLastSeen(FGS)
-        anchors.writeBackgroundedAtMs(MAIN, 0L)
-        val foreground = collector().collect(FGS_PROC_NAME, FGS, listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt))).single()
+        anchors.writeForegroundedAtMs(MAIN, exitAt - 100_000)
+        val foreground = collectEvents(
+            procKey = FGS,
+            processName = FGS_PROC_NAME,
+            records = listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)),
+        ).single()
         assertEquals("false", foreground.tags[SentryTags.FGS_KILLED_IN_BACKGROUND])
     }
 
@@ -229,7 +277,7 @@ class ExitReasonsCollectorTest {
     fun mainEventsNeverCarryFgsKilledInBackgroundTag() {
         seedLastSeen(MAIN)
         anchors.writeBackgroundedAtMs(MAIN, now - 600_000)
-        val event = collector().collect(MAIN_PROC_NAME, MAIN, listOf(record())).single()
+        val event = collectEvents(records = listOf(record())).single()
         assertNull(event.tags[SentryTags.FGS_KILLED_IN_BACKGROUND])
     }
 
@@ -241,9 +289,12 @@ class ExitReasonsCollectorTest {
         val exitAt = now - 60_000
         anchors.writeProcessStartedAtMs(FGS, exitAt - 120_000)
         anchors.writeBackgroundedAtMs(MAIN, exitAt - 600_000)
-        val event = collector(captureApplicationData = false)
-            .collect(FGS_PROC_NAME, FGS, listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)))
-            .single()
+        val event = collectEvents(
+            procKey = FGS,
+            processName = FGS_PROC_NAME,
+            records = listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)),
+            captureApplicationData = false,
+        ).single()
         assertNull(event.tags[SentryTags.UPTIME_BUCKET])
         assertNull(event.tags[SentryTags.BG_DURATION_BUCKET])
         assertNull(event.tags[SentryTags.FGS_KILLED_IN_BACKGROUND])

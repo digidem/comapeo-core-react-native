@@ -57,16 +57,20 @@ class ComapeoCoreService : Service() {
 
         val captureApplicationData = prefs.readCaptureApplicationData()
         serviceScope.launch(Dispatchers.IO) {
-            // Collect before stamping: the decoder must read the previous FGS
-            // session's `process_started_at`, not this run's.
+            // Snapshot the previous FGS session's anchors before stamping
+            // this run's — the decoder must see what was true at the old exit.
+            val anchors = BackgroundAnchors.open(applicationContext)
+            val snapshot = AnchorSnapshot.from(anchors, SentryTags.PROC_FGS)
+            anchors.writeProcessStartedAtMs(SentryTags.PROC_FGS, System.currentTimeMillis())
             ExitReasonsCollector.collectAndReport(
                 context = applicationContext,
-                processName = "$packageName:ComapeoCore",
+                // Runtime name, not a literal copy of the manifest's
+                // android:process — a rename can't silently break the filter.
+                processName = currentProcessName(applicationContext),
                 procKey = SentryTags.PROC_FGS,
                 captureApplicationData = captureApplicationData,
+                snapshot = snapshot,
             )
-            BackgroundAnchors.open(applicationContext)
-                .writeProcessStartedAtMs(SentryTags.PROC_FGS, System.currentTimeMillis())
         }
 
         nodeJSService = NodeJSService(
