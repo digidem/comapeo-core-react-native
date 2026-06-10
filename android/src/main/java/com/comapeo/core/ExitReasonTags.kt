@@ -2,6 +2,7 @@ package com.comapeo.core
 
 import android.app.ActivityManager.RunningAppProcessInfo
 import android.app.ApplicationExitInfo
+import io.sentry.SentryLevel
 
 /**
  * Decode tables for `ApplicationExitInfo` ints → Sentry tag strings.
@@ -57,20 +58,20 @@ internal object ExitReasonTags {
      * the crash/ANR itself (this is just the matching post-mortem record);
      * `info` for intentional or housekeeping exits.
      */
-    fun levelFor(reason: Int): String = when (reason) {
+    fun levelFor(reason: Int): SentryLevel = when (reason) {
         ApplicationExitInfo.REASON_LOW_MEMORY,
         ApplicationExitInfo.REASON_SIGNALED,
         ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,
         ApplicationExitInfo.REASON_DEPENDENCY_DIED,
-        -> "error"
+        -> SentryLevel.ERROR
 
         ApplicationExitInfo.REASON_ANR,
         ApplicationExitInfo.REASON_CRASH,
         ApplicationExitInfo.REASON_CRASH_NATIVE,
         ApplicationExitInfo.REASON_INITIALIZATION_FAILURE,
-        -> "warning"
+        -> SentryLevel.WARNING
 
-        else -> "info"
+        else -> SentryLevel.INFO
     }
 
     /** User/app chose this exit; dashboards exclude these from kill-rate math. */

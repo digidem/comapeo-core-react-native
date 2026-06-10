@@ -63,7 +63,10 @@ final class AppExitMetricsCollectorTests: XCTestCase {
         XCTAssertEqual(event.extras["os_version"] as? String, "17.5")
     }
 
-    func testForegroundWatchdogIsErrorAndForegroundNormalExitIsInfo() {
+    func testForegroundWatchdogIsWarningAndForegroundNormalExitIsInfo() {
+        // Foreground watchdog/OOM deaths are already captured by
+        // sentry-cocoa's watchdog-termination tracking; the MetricKit count
+        // is demoted so kill-rate dashboards don't double-count them.
         let events = AppExitDecoder.events(
             from: payload(foreground: ["app_watchdog": 1, "normal_app_exit": 1]),
             captureApplicationData: true
@@ -71,12 +74,30 @@ final class AppExitMetricsCollectorTests: XCTestCase {
         XCTAssertEqual(events.count, 2)
         let watchdog = events.first { $0.tags[SentryTags.exitBucket] == "app_watchdog" }!
         XCTAssertEqual(watchdog.message, "ios exit: foreground_app_watchdog")
-        XCTAssertEqual(watchdog.level, .error)
+        XCTAssertEqual(watchdog.level, .warning)
         XCTAssertEqual(watchdog.tags[SentryTags.exitCauseClass], "watchdog")
         let normal = events.first { $0.tags[SentryTags.exitBucket] == "normal_app_exit" }!
         XCTAssertEqual(normal.level, .info)
         XCTAssertEqual(normal.tags[SentryTags.exitIntentional], "true")
         XCTAssertEqual(normal.tags[SentryTags.exitCauseClass], "normal")
+    }
+
+    func testWatchdogClassBucketsSplitLevelByCohort() {
+        // sentry-cocoa's watchdog-termination heuristic only covers
+        // foreground deaths — background stays error.
+        let events = AppExitDecoder.events(
+            from: payload(
+                foreground: ["memory_resource_limit": 1, "app_watchdog": 1],
+                background: ["memory_resource_limit": 1, "app_watchdog": 1]
+            ),
+            captureApplicationData: true
+        )
+        XCTAssertEqual(events.count, 4)
+        for event in events {
+            let expected: LogLevel =
+                event.tags[SentryTags.exitCohort] == "foreground" ? .warning : .error
+            XCTAssertEqual(event.level, expected, "\(event.message)")
+        }
     }
 
     func testCrashBucketsAreWarnings() {
@@ -121,6 +142,17 @@ final class AppExitMetricsCollectorTests: XCTestCase {
         for event in events {
             XCTAssertEqual(event.tags, events[0].tags)
             XCTAssertEqual(event.extras["window_count"] as? Int, 3)
+        }
+    }
+
+    func testPerExitDuplicationIsCappedButKeepsTrueCount() {
+        let events = AppExitDecoder.events(
+            from: payload(background: ["normal_app_exit": 250]),
+            captureApplicationData: true
+        )
+        XCTAssertEqual(events.count, AppExitDecoder.maxEventsPerBucket)
+        for event in events {
+            XCTAssertEqual(event.extras["window_count"] as? Int, 250)
         }
     }
 
