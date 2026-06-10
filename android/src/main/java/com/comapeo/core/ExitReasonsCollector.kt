@@ -152,13 +152,22 @@ internal class ExitReasonsCollector(
          *  pathological burst. */
         private const val MAX_RECORDS = 10
 
+        /** Same budget as [SentryFgsBridge.flush] on shutdown — long enough
+         *  to drain the metrics batch under typical network, short enough
+         *  not to stall the startup coroutine noticeably. */
+        private const val FLUSH_TIMEOUT_MS = 2_000L
+
         /**
-         * Production entry point. Query → decode → capture, then advance the
-         * high-water mark — in that order, so a capture that never ran (or a
-         * process death mid-report) re-surfaces the records on the next start
-         * instead of silently consuming them. At-least-once: a death between
-         * capture and the mark write re-emits duplicates, a tolerable
-         * overcount in aggregate stats.
+         * Production entry point. Query → decode → capture → flush, then
+         * advance the high-water mark — in that order, so a capture that
+         * never ran (or a process death mid-report) re-surfaces the records
+         * on the next start instead of silently consuming them. The flush
+         * matters: metrics sit in an in-memory 5s batch with no disk
+         * persistence, so without it a kill right after collection (an FGS
+         * start under an OEM killer — the population this measures) would
+         * lose the batch while the mark write consumed the records.
+         * At-least-once: a death between flush and the mark write re-emits
+         * duplicates, a tolerable overcount in aggregate stats.
          *
          * No-op while Sentry is uninitialised (`Sentry.metrics()` would
          * silently drop everything): main-process callers must wait for the
@@ -200,6 +209,7 @@ internal class ExitReasonsCollector(
                 if (result.metrics.isEmpty()) return
                 addRunBreadcrumb(procKey, result.metrics.size)
                 result.metrics.forEach(::capture)
+                Sentry.flush(FLUSH_TIMEOUT_MS)
                 result.newLastSeenMs?.let { anchors.writeLastSeenMs(procKey, it) }
             } catch (t: Throwable) {
                 // Observability is decorative; a thrown collector must never

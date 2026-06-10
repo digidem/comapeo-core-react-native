@@ -1146,10 +1146,13 @@ callers, each reporting its own process only: the main process via
 `ComapeoCoreService.onCreate`. Collection only runs once Sentry is
 initialised — the main process waits (up to 2 minutes) for the
 JS-triggered `Sentry.init`, the FGS runs after `SentryFgsBridge.init` —
-and the high-water mark advances only AFTER the captures, so records are
-never consumed by a no-op report (at-least-once: a process death between
-capture and the mark write re-emits duplicates, a tolerable overcount in
-aggregate stats). First observation initialises the high-water mark to
+and the high-water mark advances only AFTER the captures plus a
+`Sentry.flush` (metrics sit in an in-memory 5s batch — without the flush
+a kill right after collection would lose the batch while the mark write
+consumed the records), so records are never consumed by a no-op report
+(at-least-once: a process death between flush and the mark write
+re-emits duplicates, a tolerable overcount in aggregate stats). First
+observation initialises the high-water mark to
 "now" and emits nothing, so a device's first update never floods Sentry
 with the pre-feature backlog.
 

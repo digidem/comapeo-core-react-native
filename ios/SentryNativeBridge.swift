@@ -1,7 +1,7 @@
 import Foundation
 // `@_spi(Private)` opts in to `SentryEventDecoder.decodeEvent(jsonData:)` —
 // the JSON → SentryEvent path sentry-cocoa exposes for hybrid SDKs. Stability
-// is gated by the `Sentry/HybridSDK` pin in `ComapeoCore.podspec` and the
+// is gated by the exact `Sentry` pin in `ComapeoCore.podspec` and the
 // matching SPM pin in `Package.swift`; re-validate when bumping.
 @_spi(Private) import Sentry
 
@@ -59,10 +59,9 @@ enum SentryNativeBridge {
     }
 
     static func captureException(_ error: Error, tags: [String: String] = [:]) {
-        // `Sentry/HybridSDK` only exposes single-arg `SentrySDK.capture(...)`
-        // to Swift consumers — the scope/block overloads aren't reachable.
         // Build an Event explicitly so per-call tags ride on the event,
-        // not on the (leaky) global scope.
+        // not on the (leaky) global scope — the scope/block capture
+        // overloads aren't reachable from Swift consumers.
         let event = Event(error: error as NSError)
         event.tags = mergedTags(tags)
         SentrySDK.capture(event: event)

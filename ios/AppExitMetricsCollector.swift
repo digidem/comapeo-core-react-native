@@ -51,6 +51,9 @@ enum AppExitDecoder {
         payload: AppExitPayloadData
     ) -> Metric {
         var attributes: [String: Any] = [
+            // Explicit: scope tags (where proc usually lives) don't flow
+            // into metric attributes, and Android sets it per metric.
+            SentryTags.proc: SentryTags.procMain,
             SentryTags.exitCohort: cohort,
             SentryTags.exitBucket: bucket,
             SentryTags.exitIntentional: bucket == "normal_app_exit",

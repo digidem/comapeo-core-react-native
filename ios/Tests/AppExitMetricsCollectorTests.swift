@@ -42,6 +42,9 @@ final class AppExitMetricsCollectorTests: XCTestCase {
         XCTAssertEqual(metrics.count, 1)
         let metric = metrics[0]
         XCTAssertEqual(metric.value, 1)
+        // proc must ride on the metric itself — scope tags don't propagate
+        // to metric attributes, and cross-platform slices group by it.
+        XCTAssertEqual(metric.attributes[SentryTags.proc] as? String, "main")
         XCTAssertEqual(metric.attributes[SentryTags.exitCohort] as? String, "background")
         XCTAssertEqual(metric.attributes[SentryTags.exitBucket] as? String, "memory_pressure")
         XCTAssertEqual(metric.attributes[SentryTags.exitIntentional] as? Bool, false)
