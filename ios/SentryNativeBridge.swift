@@ -71,11 +71,15 @@ enum SentryNativeBridge {
     static func captureMessage(
         _ message: String,
         level: LogLevel = .info,
-        tags: [String: String] = [:]
+        tags: [String: String] = [:],
+        extras: [String: Any] = [:]
     ) {
         let event = Event(level: level.sentryLevel)
         event.message = SentryMessage(formatted: message)
         event.tags = mergedTags(tags)
+        if !extras.isEmpty {
+            event.extra = extras
+        }
         SentrySDK.capture(event: event)
     }
 

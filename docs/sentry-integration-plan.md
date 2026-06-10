@@ -144,6 +144,15 @@ Cost: ~80 LOC Swift + ~50 LOC tests.
 ## Phase 8 — refinements
 
 - Tune sample rates from production data.
+- Migrate exit telemetry (Phases 6/7a) from events to Sentry Application
+  Metrics (`Sentry.metrics.count` with the same tags as attributes) once
+  the native pins reach the metrics floors: sentry-android ≥ 8.34 (a
+  minor bump from our 8.32) and sentry-cocoa ≥ 9.12 (arrives whenever
+  `@sentry/react-native` moves to cocoa 9 — the HybridSDK pin is
+  lock-stepped). Kills the Issues-UI noise (no issue lifecycle for
+  metrics) and the iOS per-exit event duplication (a count carries N
+  natively). Until then: archive the dozen exit issues in the Sentry UI;
+  Discover queries don't care about issue state.
 - Optional: dual backend bundles for Sentry-free consumers if bundle
   size becomes a concern.
 

@@ -17,13 +17,20 @@ class ExitReasonsCollectorTest {
 
     private val store = mutableMapOf<String, Long>()
     private val anchors = BackgroundAnchors(
-        readLong = { store[it] },
-        writeLong = { key, value -> store[key] = value },
+        readLong = { proc, key -> store["$proc.$key"] },
+        writeLong = { proc, key, value -> store["$proc.$key"] = value },
     )
     private var now = 1_000_000_000_000L
 
-    private fun collector(captureApplicationData: Boolean = true) =
-        ExitReasonsCollector(anchors, captureApplicationData, nowMs = { now })
+    /** Snapshots [anchors] at call time — seed anchors first, like production
+     *  snapshots before stamping the current run's values. */
+    private fun collector(procKey: String = MAIN, captureApplicationData: Boolean = true) =
+        ExitReasonsCollector(
+            anchors = anchors,
+            snapshot = AnchorSnapshot.from(anchors, procKey),
+            captureApplicationData = captureApplicationData,
+            nowMs = { now },
+        )
 
     private fun record(
         processName: String = MAIN_PROC_NAME,
@@ -40,12 +47,20 @@ class ExitReasonsCollectorTest {
         anchors.writeLastSeenMs(proc, value)
     }
 
+    private fun collectMetrics(
+        procKey: String = MAIN,
+        processName: String = MAIN_PROC_NAME,
+        records: List<ExitRecord>,
+        captureApplicationData: Boolean = true,
+    ) = collector(procKey, captureApplicationData).collect(processName, procKey, records).metrics
+
     // ── First run / high-water behaviour ───────────────────────────
 
     @Test
     fun firstRunInitialisesHighWaterAndEmitsNothing() {
-        val metrics = collector().collect(MAIN_PROC_NAME, MAIN, listOf(record()))
-        assertTrue("first observation must not report the pre-feature backlog", metrics.isEmpty())
+        val result = collector().collect(MAIN_PROC_NAME, MAIN, listOf(record()))
+        assertTrue("first observation must not report the pre-feature backlog", result.metrics.isEmpty())
+        assertNull(result.newLastSeenMs)
         assertEquals(now, anchors.readLastSeenMs(MAIN))
     }
 
@@ -54,38 +69,56 @@ class ExitReasonsCollectorTest {
         seedLastSeen(MAIN, now - 100_000)
         val older = record(timestampMs = now - 200_000)
         val newer = record(timestampMs = now - 50_000)
-        val metrics = collector().collect(MAIN_PROC_NAME, MAIN, listOf(older, newer))
+        val metrics = collectMetrics(records = listOf(older, newer))
         assertEquals(1, metrics.size)
         assertEquals(now - 50_000, metrics.single().attributes["exit_timestamp_ms"])
     }
 
     @Test
-    fun highWaterAdvancesToMaxReportedTimestamp() {
+    fun collectReturnsNewHighWaterButDoesNotPersistIt() {
+        // The caller persists newLastSeenMs only after the captures run, so a
+        // failed report leaves the records pending for the next start.
         seedLastSeen(MAIN)
-        collector().collect(
+        val result = collector().collect(
             MAIN_PROC_NAME,
             MAIN,
             listOf(record(timestampMs = now - 50_000), record(timestampMs = now - 10_000)),
         )
-        assertEquals(now - 10_000, anchors.readLastSeenMs(MAIN))
+        assertEquals(now - 10_000, result.newLastSeenMs)
+        assertEquals(0L, anchors.readLastSeenMs(MAIN))
     }
 
     @Test
-    fun highWaterUnchangedWhenNothingKept() {
+    fun noNewHighWaterWhenNothingKept() {
         seedLastSeen(MAIN, now - 5_000)
-        collector().collect(MAIN_PROC_NAME, MAIN, listOf(record(timestampMs = now - 10_000)))
+        val result = collector().collect(
+            MAIN_PROC_NAME,
+            MAIN,
+            listOf(record(timestampMs = now - 10_000)),
+        )
+        assertNull(result.newLastSeenMs)
         assertEquals(now - 5_000, anchors.readLastSeenMs(MAIN))
     }
 
     @Test
     fun recordsForOtherProcessNamesAreFiltered() {
         seedLastSeen(MAIN)
-        val metrics = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(processName = FGS_PROC_NAME)),
-        )
+        val metrics = collectMetrics(records = listOf(record(processName = FGS_PROC_NAME)))
         assertTrue(metrics.isEmpty())
+    }
+
+    @Test
+    fun burstIsCappedToNewestRecords() {
+        seedLastSeen(MAIN)
+        val burst = (1..15).map { record(timestampMs = now - 100_000 + it * 1_000) }
+        val result = collector().collect(MAIN_PROC_NAME, MAIN, burst)
+        assertEquals(10, result.metrics.size)
+        // Newest 10 kept; the 5 oldest dropped.
+        assertEquals(
+            now - 100_000 + 6_000,
+            result.metrics.first().attributes["exit_timestamp_ms"],
+        )
+        assertEquals(now - 100_000 + 15_000, result.newLastSeenMs)
     }
 
     // ── Attribute mapping ──────────────────────────────────────────
@@ -93,10 +126,8 @@ class ExitReasonsCollectorTest {
     @Test
     fun decodedMetricCarriesExpectedAttributes() {
         seedLastSeen(MAIN)
-        val attrs = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(description = "OneUI: killed by frzInfo")),
+        val attrs = collectMetrics(
+            records = listOf(record(description = "OneUI: killed by frzInfo")),
         ).single().attributes
 
         assertEquals("main", attrs[SentryTags.PROC])
@@ -114,10 +145,8 @@ class ExitReasonsCollectorTest {
     @Test
     fun signalAttributeOnlyPresentForSignaledReason() {
         seedLastSeen(MAIN)
-        val attrs = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(reason = ApplicationExitInfo.REASON_LOW_MEMORY, status = 0)),
+        val attrs = collectMetrics(
+            records = listOf(record(reason = ApplicationExitInfo.REASON_LOW_MEMORY, status = 0)),
         ).single().attributes
         assertNull(attrs[SentryTags.EXIT_SIGNAL])
         assertEquals("low_memory", attrs[SentryTags.EXIT_REASON])
@@ -127,10 +156,8 @@ class ExitReasonsCollectorTest {
     @Test
     fun intentionalExitIsInfoRegardlessOfProcessState() {
         seedLastSeen(MAIN)
-        val attrs = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(
+        val attrs = collectMetrics(
+            records = listOf(
                 record(
                     reason = ApplicationExitInfo.REASON_USER_STOPPED,
                     importance = RunningAppProcessInfo.IMPORTANCE_FOREGROUND,
@@ -145,11 +172,8 @@ class ExitReasonsCollectorTest {
     @Test
     fun unknownReasonProducesSliceableAttribute() {
         seedLastSeen(MAIN)
-        val attrs = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(reason = 42, status = 0)),
-        ).single().attributes
+        val attrs = collectMetrics(records = listOf(record(reason = 42, status = 0)))
+            .single().attributes
         assertEquals("unknown:42", attrs[SentryTags.EXIT_REASON])
         assertEquals("info", attrs[SentryTags.EXIT_SEVERITY])
     }
@@ -159,7 +183,7 @@ class ExitReasonsCollectorTest {
     @Test
     fun derivedFieldsNullSafeWhenAnchorsAbsent() {
         seedLastSeen(MAIN)
-        val attrs = collector().collect(MAIN_PROC_NAME, MAIN, listOf(record())).single().attributes
+        val attrs = collectMetrics(records = listOf(record())).single().attributes
         assertEquals("unknown", attrs[SentryTags.UPTIME_BUCKET])
         assertEquals("unknown", attrs[SentryTags.BG_DURATION_BUCKET])
         assertFalse(attrs.containsKey("alive_for_ms"))
@@ -167,24 +191,14 @@ class ExitReasonsCollectorTest {
     }
 
     @Test
-    fun clearedBackgroundAnchorYieldsUnknownBucket() {
-        seedLastSeen(MAIN)
-        anchors.writeBackgroundedAtMs(MAIN, 0L)
-        val attrs = collector().collect(MAIN_PROC_NAME, MAIN, listOf(record())).single().attributes
-        assertEquals("unknown", attrs[SentryTags.BG_DURATION_BUCKET])
-    }
-
-    @Test
     fun anchorNewerThanExitYieldsUnknownBucket() {
-        // A current-run stamp that raced the read must not produce a negative duration.
+        // A current-run stamp that raced the snapshot must not produce a
+        // negative duration.
         seedLastSeen(MAIN)
         val exitAt = now - 60_000
         anchors.writeProcessStartedAtMs(MAIN, exitAt + 5_000)
-        val attrs = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(timestampMs = exitAt)),
-        ).single().attributes
+        val attrs = collectMetrics(records = listOf(record(timestampMs = exitAt)))
+            .single().attributes
         assertEquals("unknown", attrs[SentryTags.UPTIME_BUCKET])
         assertFalse(attrs.containsKey("alive_for_ms"))
     }
@@ -195,11 +209,8 @@ class ExitReasonsCollectorTest {
         val exitAt = now - 60_000
         anchors.writeProcessStartedAtMs(MAIN, exitAt - 120_000) // alive 2m
         anchors.writeBackgroundedAtMs(MAIN, exitAt - 600_000) // backgrounded 10m
-        val attrs = collector().collect(
-            MAIN_PROC_NAME,
-            MAIN,
-            listOf(record(timestampMs = exitAt)),
-        ).single().attributes
+        val attrs = collectMetrics(records = listOf(record(timestampMs = exitAt)))
+            .single().attributes
         assertEquals(120_000L, attrs["alive_for_ms"])
         assertEquals(600_000L, attrs["backgrounded_for_ms"])
         assertEquals("1-5m", attrs[SentryTags.UPTIME_BUCKET])
@@ -207,27 +218,60 @@ class ExitReasonsCollectorTest {
     }
 
     @Test
-    fun fgsKilledInBackgroundDerivesFromMainAnchor() {
+    fun foregroundTransitionBeforeExitClearsBackgroundDuration() {
+        // backgrounded → foregrounded → exit: the app was NOT in background
+        // when it died.
+        seedLastSeen(MAIN)
+        val exitAt = now - 60_000
+        anchors.writeBackgroundedAtMs(MAIN, exitAt - 600_000)
+        anchors.writeForegroundedAtMs(MAIN, exitAt - 100_000)
+        val attrs = collectMetrics(records = listOf(record(timestampMs = exitAt)))
+            .single().attributes
+        assertEquals("unknown", attrs[SentryTags.BG_DURATION_BUCKET])
+        assertFalse(attrs.containsKey("backgrounded_for_ms"))
+    }
+
+    @Test
+    fun foregroundTransitionAfterExitKeepsBackgroundDuration() {
+        // The kill→relaunch flow: app backgrounded, killed, user reopens it.
+        // The relaunch stamps foregrounded_at AFTER the exit — that must not
+        // erase the background window the death happened in.
+        seedLastSeen(MAIN)
+        val exitAt = now - 60_000
+        anchors.writeBackgroundedAtMs(MAIN, exitAt - 600_000)
+        anchors.writeForegroundedAtMs(MAIN, now - 1_000)
+        val attrs = collectMetrics(records = listOf(record(timestampMs = exitAt)))
+            .single().attributes
+        assertEquals(600_000L, attrs["backgrounded_for_ms"])
+        assertEquals("5-15m", attrs[SentryTags.BG_DURATION_BUCKET])
+    }
+
+    @Test
+    fun fgsKilledInBackgroundDerivesFromMainAnchors() {
+        // Killed while backgrounded; the main process relaunched (stamping
+        // foregrounded_at past the exit) before the FGS collected — the
+        // dominant real-world flow.
         seedLastSeen(FGS)
         val exitAt = now - 60_000
         anchors.writeBackgroundedAtMs(MAIN, exitAt - 300_000)
-        val killed = collector().collect(
-            FGS_PROC_NAME,
-            FGS,
-            listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)),
+        anchors.writeForegroundedAtMs(MAIN, now - 1_000)
+        val killed = collectMetrics(
+            procKey = FGS,
+            processName = FGS_PROC_NAME,
+            records = listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)),
         ).single().attributes
         assertEquals(true, killed[SentryTags.FGS_KILLED_IN_BACKGROUND])
         assertEquals("fgs", killed[SentryTags.PROC])
         // FGS metrics never carry the exact backgrounded_for_ms.
         assertFalse(killed.containsKey("backgrounded_for_ms"))
 
-        // Cleared anchor (app was foregrounded) → false.
+        // App back in foreground before the FGS died → false.
         seedLastSeen(FGS)
-        anchors.writeBackgroundedAtMs(MAIN, 0L)
-        val foreground = collector().collect(
-            FGS_PROC_NAME,
-            FGS,
-            listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)),
+        anchors.writeForegroundedAtMs(MAIN, exitAt - 100_000)
+        val foreground = collectMetrics(
+            procKey = FGS,
+            processName = FGS_PROC_NAME,
+            records = listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)),
         ).single().attributes
         assertEquals(false, foreground[SentryTags.FGS_KILLED_IN_BACKGROUND])
     }
@@ -236,7 +280,7 @@ class ExitReasonsCollectorTest {
     fun mainMetricsNeverCarryFgsKilledInBackground() {
         seedLastSeen(MAIN)
         anchors.writeBackgroundedAtMs(MAIN, now - 600_000)
-        val attrs = collector().collect(MAIN_PROC_NAME, MAIN, listOf(record())).single().attributes
+        val attrs = collectMetrics(records = listOf(record())).single().attributes
         assertNull(attrs[SentryTags.FGS_KILLED_IN_BACKGROUND])
     }
 
@@ -252,9 +296,12 @@ class ExitReasonsCollectorTest {
         val exitAt = now - 60_000
         anchors.writeProcessStartedAtMs(FGS, exitAt - 120_000)
         anchors.writeBackgroundedAtMs(MAIN, exitAt - 600_000)
-        val attrs = collector(captureApplicationData = false)
-            .collect(FGS_PROC_NAME, FGS, listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)))
-            .single().attributes
+        val attrs = collectMetrics(
+            procKey = FGS,
+            processName = FGS_PROC_NAME,
+            records = listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)),
+            captureApplicationData = false,
+        ).single().attributes
         assertEquals("1-5m", attrs[SentryTags.UPTIME_BUCKET])
         assertEquals("5-15m", attrs[SentryTags.BG_DURATION_BUCKET])
         assertEquals(true, attrs[SentryTags.FGS_KILLED_IN_BACKGROUND])
@@ -267,9 +314,10 @@ class ExitReasonsCollectorTest {
         seedLastSeen(MAIN)
         val exitAt = now - 60_000
         anchors.writeProcessStartedAtMs(MAIN, exitAt - 120_000)
-        val attrs = collector(captureApplicationData = true)
-            .collect(MAIN_PROC_NAME, MAIN, listOf(record(timestampMs = exitAt)))
-            .single().attributes
+        val attrs = collectMetrics(
+            records = listOf(record(timestampMs = exitAt)),
+            captureApplicationData = true,
+        ).single().attributes
         assertEquals(120_000L, attrs["alive_for_ms"])
     }
 

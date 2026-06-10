@@ -60,7 +60,10 @@ final class AppExitMetricsCollectorTests: XCTestCase {
         XCTAssertEqual(metrics[0].value, 3)
     }
 
-    func testForegroundWatchdogIsErrorAndNormalExitIsIntentionalInfo() {
+    func testForegroundWatchdogIsWarningAndNormalExitIsIntentionalInfo() {
+        // Foreground watchdog/OOM deaths are already captured by
+        // sentry-cocoa's watchdog-termination tracking; the MetricKit count
+        // is demoted so kill-rate dashboards don't double-count them.
         let metrics = AppExitDecoder.metrics(
             from: payload(foreground: ["app_watchdog": 1, "normal_app_exit": 2])
         )
@@ -69,7 +72,7 @@ final class AppExitMetricsCollectorTests: XCTestCase {
             $0.attributes[SentryTags.exitBucket] as? String == "app_watchdog"
         }!
         XCTAssertEqual(watchdog.attributes[SentryTags.exitCohort] as? String, "foreground")
-        XCTAssertEqual(watchdog.attributes[SentryTags.exitSeverity] as? String, "error")
+        XCTAssertEqual(watchdog.attributes[SentryTags.exitSeverity] as? String, "warning")
         XCTAssertEqual(watchdog.attributes[SentryTags.exitCauseClass] as? String, "watchdog")
         let normal = metrics.first {
             $0.attributes[SentryTags.exitBucket] as? String == "normal_app_exit"
@@ -78,6 +81,28 @@ final class AppExitMetricsCollectorTests: XCTestCase {
         XCTAssertEqual(normal.attributes[SentryTags.exitIntentional] as? Bool, true)
         XCTAssertEqual(normal.attributes[SentryTags.exitSeverity] as? String, "info")
         XCTAssertEqual(normal.attributes[SentryTags.exitCauseClass] as? String, "normal")
+    }
+
+    func testWatchdogClassBucketsSplitSeverityByCohort() {
+        // sentry-cocoa's watchdog-termination heuristic only covers
+        // foreground deaths — background stays error.
+        let metrics = AppExitDecoder.metrics(
+            from: payload(
+                foreground: ["memory_resource_limit": 1, "app_watchdog": 1],
+                background: ["memory_resource_limit": 1, "app_watchdog": 1]
+            )
+        )
+        XCTAssertEqual(metrics.count, 4)
+        for metric in metrics {
+            let expected =
+                metric.attributes[SentryTags.exitCohort] as? String == "foreground"
+                ? "warning" : "error"
+            XCTAssertEqual(
+                metric.attributes[SentryTags.exitSeverity] as? String,
+                expected,
+                "\(metric.attributes[SentryTags.exitBucket] ?? "?")"
+            )
+        }
     }
 
     func testCrashBucketsAreWarnings() {

@@ -1140,11 +1140,18 @@ in Sentry's Explore UI. Breadcrumb category: `comapeo.exit`.
 On each process start (API 30+ only; pre-30 sets a one-time scope tag
 `exitReasons.supported=false`), `ActivityManager.getHistoricalProcessExitReasons`
 records newer than a per-process high-water timestamp are decoded into
-one count each. Two callers, each reporting its own process only: the
-main process via `ComapeoCoreApplicationLifecycleListener` and the FGS
-process from `ComapeoCoreService.onCreate`. First observation
-initialises the high-water mark to "now" and emits nothing, so a
-device's first update never floods Sentry with the pre-feature backlog.
+one count each (capped at the newest 10 per process per run). Two
+callers, each reporting its own process only: the main process via
+`ComapeoCoreApplicationLifecycleListener` and the FGS process from
+`ComapeoCoreService.onCreate`. Collection only runs once Sentry is
+initialised — the main process waits (up to 2 minutes) for the
+JS-triggered `Sentry.init`, the FGS runs after `SentryFgsBridge.init` —
+and the high-water mark advances only AFTER the captures, so records are
+never consumed by a no-op report (at-least-once: a process death between
+capture and the mark write re-emits duplicates, a tolerable overcount in
+aggregate stats). First observation initialises the high-water mark to
+"now" and emits nothing, so a device's first update never floods Sentry
+with the pre-feature backlog.
 
 Diagnostic-tier attributes: `proc`, `exit.reason` (decoded `REASON_*`,
 lowercase; unknown ints → `unknown:<int>`), `exit.process_state` (decoded
@@ -1166,12 +1173,18 @@ App-usage-tier additions (only when `captureApplicationData` is on):
 the exact `alive_for_ms` / `backgrounded_for_ms` values — millisecond
 precision over a user's backgrounding behaviour is usage-shape data,
 see §8. Durations derive from wall-clock anchors in
-`BackgroundAnchors.kt` (`<proc>.process_started_at_wall_ms`,
-`main.backgrounded_at_wall_ms` — stamped via `ProcessLifecycleOwner`
-ON_STOP/ON_START), stored in the shared `com.comapeo.core.prefs` file
-so the FGS can read the main process's background state. Collection
-runs before the current run's anchors are stamped so the decoder sees
-the previous session's values.
+`BackgroundAnchors.kt` (`process_started_at_wall_ms` per process, plus
+the main process's `backgrounded_at_wall_ms` / `foregrounded_at_wall_ms`
+stamped via `ProcessLifecycleOwner` ON_STOP/ON_START). Each process owns
+one anchors file (`com.comapeo.core.anchors.<proc>`) and only ever
+writes its own — `SharedPreferences` is not multi-process safe, so a
+shared file would let one process's write clobber the other's keys; the
+FGS reads the `main` file read-only on its cold start. An exit counts as
+"in background" when the last fg/bg stamp before its timestamp was a
+background — neither stamp is ever cleared, so the answer stays correct
+even though the relaunch (which foregrounds the app) happens before the
+FGS gets to collect. Each caller snapshots the previous session's
+anchors before stamping its own, so collection can run arbitrarily late.
 
 Known coverage gaps (affects dashboard math): some OEM killers (older
 MIUI, EMUI) kill via `init`-level paths that leave no
@@ -1202,11 +1215,14 @@ Attributes: `exit.cohort` (`foreground`/`background`), `exit.bucket`,
 `exit.intentional` (`normal_app_exit` only), `exit.cause_class`
 (`memory` / `watchdog` / `crash` / `lock` / `normal`; unknown future
 buckets degrade to `unknown`), `exit.severity` (`error` for the
-background-kill and user-visible-quality buckets, `warning` for
-crash-shaped buckets — sentry-cocoa's crash reporter has the real
-crash — `info` for normal/lock exits), `window_start_iso`,
-`window_end_iso`, `window_duration_seconds`, `app_version`,
-`os_version`. The pure decode logic (`AppExitDecoder`) is
+background-kill and user-visible-quality buckets; `warning` where
+another sentry-cocoa integration captured the death itself so kill-rate
+dashboards don't double-count — crash-shaped buckets, since the crash
+reporter has the real crash, and *foreground* `memory_resource_limit` /
+`app_watchdog`, since watchdog-termination tracking is enabled by
+default and covers foreground deaths only; `info` for normal/lock
+exits), `window_start_iso`, `window_end_iso`, `window_duration_seconds`,
+`app_version`, `os_version`. The pure decode logic (`AppExitDecoder`) is
 MetricKit-free and unit-tested on macOS.
 
 Rollout caveats: TestFlight builds don't receive MetricKit data (App

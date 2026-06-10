@@ -55,7 +55,7 @@ enum AppExitDecoder {
             SentryTags.exitBucket: bucket,
             SentryTags.exitIntentional: bucket == "normal_app_exit",
             SentryTags.exitCauseClass: causeClass(forBucket: bucket),
-            SentryTags.exitSeverity: severity(forBucket: bucket),
+            SentryTags.exitSeverity: severity(forBucket: bucket, cohort: cohort),
             "window_start_iso": iso(payload.windowStart),
             "window_end_iso": iso(payload.windowEnd),
             "window_duration_seconds":
@@ -87,13 +87,18 @@ enum AppExitDecoder {
 
     /// `exit.severity` attribute (metrics have no event level): `error` for
     /// the background/battery-kill and user-visible-quality buckets;
-    /// `warning` where sentry-cocoa's own crash reporter captured the actual
-    /// crash (this is just the matching post-mortem count); `info` for
-    /// intentional or benign exits — and for unknown buckets.
-    static func severity(forBucket bucket: String) -> String {
+    /// `warning` where another sentry-cocoa integration captured the death
+    /// itself, so kill-rate dashboards don't double-count it (the crash
+    /// reporter owns crash buckets; watchdog-termination tracking, enabled
+    /// by default, owns *foreground* OOM/watchdog deaths — this is just the
+    /// matching post-mortem count); `info` for intentional or benign exits —
+    /// and for unknown buckets.
+    static func severity(forBucket bucket: String, cohort: String) -> String {
         switch bucket {
-        case "memory_resource_limit", "memory_pressure", "cpu_resource_limit",
-             "app_watchdog", "background_task_assertion_timeout":
+        case "memory_resource_limit", "app_watchdog":
+            return cohort == "foreground" ? "warning" : "error"
+        case "memory_pressure", "cpu_resource_limit",
+             "background_task_assertion_timeout":
             return "error"
         case "bad_access", "illegal_instruction", "abnormal":
             return "warning"
