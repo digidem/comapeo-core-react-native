@@ -22,6 +22,9 @@
 			},
 			"package": "com.comapeo.core.e2e"
 		},
-		"plugins": [["expo-dev-client", { "launchMode": "most-recent" }]]
+		"plugins": [
+			["expo-dev-client", { "launchMode": "most-recent" }],
+			"./plugins/with-sentry-build-for-distribution"
+		]
 	}
 }
