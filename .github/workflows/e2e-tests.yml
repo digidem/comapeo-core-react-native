@@ -114,11 +114,19 @@ jobs:
         id: cache-ios-framework
         uses: actions/cache@v4
         with:
-          path: ios/NodeMobile.xcframework
+          # android/libnode is needed even on iOS builds:
+          # `readNodeJsMobileVersions()` in scripts/lib/node-versions.ts
+          # reads the Node ABI from the android libnode headers. The
+          # download script fetches both platforms, but a cache hit used
+          # to restore only the xcframework, breaking rerun builds.
+          path: |
+            ios/NodeMobile.xcframework
+            android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
           # download script) into the cache key, so any swap of the
-          # source repo automatically invalidates stale caches.
-          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-ios-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
+          # source repo automatically invalidates stale caches. The -v2
+          # suffix invalidates older caches that lack android/libnode.
+          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-ios-v2-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
 
       - name: Download nodejs-mobile binaries
         if: steps.cache-ios-framework.outputs.cache-hit != 'true'
