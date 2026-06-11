@@ -47,7 +47,12 @@ export async function collectNativePairs(
   })`npm list --all --parseable --long --production`;
 
   for (const line of npmListResult.stdout) {
-    const moduleInfo = line.split(":").at(-1);
+    // `--parseable --long` lines are `<path>:<name>@<version>` plus
+    // optional trailing flag fields (e.g. `:OVERRIDDEN` for packages
+    // resolved via package.json `overrides`, `:INVALID`, ...). Take
+    // the field after the path — `.at(-1)` reads a flag when present,
+    // which silently dropped sodium-native from the shipped addons.
+    const moduleInfo = line.split(":")[1];
     if (!moduleInfo) continue;
     deps.add(moduleInfo);
   }
