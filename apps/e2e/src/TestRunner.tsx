@@ -18,6 +18,9 @@ type TestState =
 	| { status: 'idle' | 'pending'; results: Array<TestResult> }
 	| { status: 'done'; info: JasmineDoneInfo; results: Array<TestResult> }
 
+// Default of 5s is too short for IPC-heavy tests on slow CI devices.
+const DEFAULT_TIMEOUT_INTERVAL_MS = 60_000
+
 export function TestRunner() {
 	const [testState, setTestState] = useState<TestState>({
 		status: 'idle',
@@ -34,9 +37,11 @@ export function TestRunner() {
 
 		jasmineEnv.addReporter({
 			jasmineStarted: () => {
+				console.log('[e2e] jasmine started')
 				setTestState({ status: 'pending', results: [] })
 			},
 			jasmineDone: (info) => {
+				console.log(`[e2e] jasmine done: ${info.overallStatus}`)
 				setTestState((prev) => {
 					if (prev.status === 'done') {
 						throw new Error(
@@ -51,8 +56,24 @@ export function TestRunner() {
 					}
 				})
 			},
+			specStarted: (result) => {
+				console.log(`[e2e] spec started: ${result.fullName}`)
+			},
 			specDone: (result) => {
 				const describeText = result.fullName.replaceAll(result.description, '')
+
+				if (result.status === 'passed') {
+					console.log(`[e2e] PASS: ${result.fullName}`)
+				} else {
+					console.log(
+						`[e2e] FAIL: ${result.fullName} — ${result.failedExpectations
+							.map((e) => e.message)
+							.join(' | ')}`,
+					)
+					for (const err of result.failedExpectations) {
+						if (err.stack) console.log(`[e2e] stack: ${err.stack}`)
+					}
+				}
 
 				setTestState((prev) => {
 					if (prev.status === 'done') {
@@ -82,12 +103,24 @@ export function TestRunner() {
 			},
 		})
 
-		const { describe, it, expect, expectAsync, jasmine } =
+		const { describe, it, expect, expectAsync, jasmine, beforeEach, afterEach } =
 			jasmineRequire.interface(jasmineCore, jasmineEnv)
 
+		jasmine.DEFAULT_TIMEOUT_INTERVAL = DEFAULT_TIMEOUT_INTERVAL_MS
+
+		const ctx = {
+			describe,
+			it,
+			expect,
+			expectAsync,
+			jasmine,
+			beforeEach,
+			afterEach,
+		}
+
 		// 👇 Register tests here!
-		basicTest({ describe, it, expect, expectAsync, jasmine })
-		projectCrudTest({ describe, it, expect, expectAsync, jasmine })
+		basicTest(ctx)
+		projectCrudTest(ctx)
 
 		await jasmineEnv.execute()
 	}
@@ -106,9 +139,20 @@ export function TestRunner() {
 						{`${testState.status === 'pending' ? 'Pending' : 'Done'}: ${testState.results.filter((r) => r.passed).length} out of ${testState.results.length} tests passed`}
 					</Text>
 
+					{testState.status === 'done' ? (
+						<Text testID="all-tests-done">Done.</Text>
+					) : null}
+
 					{testState.status === 'done' &&
 					testState.info.overallStatus === 'passed' ? (
 						<Text testID="all-tests-passed">All tests passed!</Text>
+					) : null}
+
+					{testState.status === 'done' &&
+					testState.info.overallStatus !== 'passed' ? (
+						<Text testID="all-tests-failed">
+							{`Tests failed (${testState.info.overallStatus}).`}
+						</Text>
 					) : null}
 				</View>
 			) : null}

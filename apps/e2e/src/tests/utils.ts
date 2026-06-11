@@ -3,7 +3,13 @@ import { JasmineInterface } from 'jasmine-core/lib/jasmine-core/jasmine'
 
 export type TestContext = Pick<
 	JasmineInterface,
-	'describe' | 'it' | 'expect' | 'expectAsync' | 'jasmine'
+	| 'describe'
+	| 'it'
+	| 'expect'
+	| 'expectAsync'
+	| 'jasmine'
+	| 'beforeEach'
+	| 'afterEach'
 >
 
 export function sortBy<T>(arr: Array<T>, key: keyof T) {

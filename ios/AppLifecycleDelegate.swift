@@ -117,6 +117,13 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         // runs later with `autoInitializeNativeSdk: false`.
         if let cfg = Self.resolveEffectiveSentryConfig() {
             SentryNativeBridge.initFromConfig(cfg)
+            // MXAppExitMetric needs iOS 14+; the podspec floor (15.1)
+            // guarantees it, so no availability guard.
+            #if canImport(MetricKit)
+            AppExitMetricsCollector.subscribeOnce(
+                captureApplicationData: ComapeoPrefs.open().readCaptureApplicationData()
+            )
+            #endif
         }
         return true
     }
@@ -137,6 +144,9 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     }
 
     public func applicationWillTerminate(_ application: UIApplication) {
+        #if canImport(MetricKit)
+        AppExitMetricsCollector.unsubscribe()
+        #endif
         log("applicationWillTerminate — stopping Node.js")
         // iOS grants ~5s; 5 leaves no margin but Node typically exits in
         // ~1s. On timeout, NodeJSService lands in .error (process is

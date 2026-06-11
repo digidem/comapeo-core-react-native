@@ -11,6 +11,14 @@ enum SentryTags {
     static let source = "source"
     static let timeout = "timeout"
 
+    // App-exit events from MetricKit's MXAppExitMetric
+    // (AppExitMetricsCollector). Taxonomy in docs/sentry-integration.md.
+    static let exitCohort = "exit.cohort"
+    static let exitBucket = "exit.bucket"
+    static let exitIntentional = "exit.intentional"
+    static let exitCauseClass = "exit.cause_class"
+    static let windowId = "window_id"
+
     // proc values — iOS is single-process, so always "main"
     static let procMain = "main"
 
@@ -32,4 +40,6 @@ enum SentryCategories {
     static let ipc = "comapeo.ipc"
     /// Boot phases (start, asset copy, rootkey load, init frame, ready).
     static let boot = "comapeo.boot"
+    /// App-exit reporting (AppExitMetricsCollector).
+    static let exit = "comapeo.exit"
 }
