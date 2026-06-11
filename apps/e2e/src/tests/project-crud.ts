@@ -38,8 +38,27 @@ export function test({
 	expectAsync,
 	it,
 	jasmine,
+	afterEach,
 }: TestContext) {
 	const CREATE_COUNT = 100
+
+	const openProjects = new Set<MapeoProjectApi>()
+
+	async function openProject(projectId: string): Promise<MapeoProjectApi> {
+		const project = await comapeo.getProject(projectId)
+		openProjects.add(project)
+		return project
+	}
+
+	afterEach(async () => {
+		const projects = [...openProjects]
+		openProjects.clear()
+		// Close in afterEach to avoid leaking listeners across tests (otherwise
+		// EventEmitter MaxListenersExceeded fires and later tests slow down).
+		await Promise.all(
+			projects.map((p) => p.close().catch(() => undefined)),
+		)
+	})
 
 	const FIXTURES: Array<
 		| FieldValue
@@ -105,7 +124,7 @@ export function test({
 
 			it(`create and read (${schemaName})`, async () => {
 				const projectId = await comapeo.createProject()
-				const project = await comapeo.getProject(projectId)
+				const project = await openProject(projectId)
 				const updates: Array<ComapeoDoc> = []
 				project[schemaName].on('updated-docs', (docs) => updates.push(...docs))
 				const written = await createWithMockData(
@@ -132,7 +151,7 @@ export function test({
 
 			it(`update (${schemaName})`, async () => {
 				const projectId = await comapeo.createProject()
-				const project = await comapeo.getProject(projectId)
+				const project = await openProject(projectId)
 				const written = await create(project, value)
 				const updateValue = getUpdateFixture(value)
 
@@ -163,7 +182,7 @@ export function test({
 
 			it(`getMany (${schemaName})`, async () => {
 				const projectId = await comapeo.createProject()
-				const project = await comapeo.getProject(projectId)
+				const project = await openProject(projectId)
 				const written = await createWithMockData(
 					project,
 					schemaName,
@@ -198,7 +217,7 @@ export function test({
 
 			it(`create, close and then create, update (${schemaName})`, async () => {
 				const projectId = await comapeo.createProject()
-				const project = await comapeo.getProject(projectId)
+				const project = await openProject(projectId)
 				const values = new Array(5).fill(null).map(() => {
 					return getUpdateFixture(value)
 				})
@@ -237,7 +256,7 @@ export function test({
 			it(`create, read, close, re-open, read (${schemaName})`, async () => {
 				const projectId = await comapeo.createProject()
 
-				let project = await comapeo.getProject(projectId)
+				let project = await openProject(projectId)
 
 				const values = new Array(5).fill(null).map(() => {
 					return getUpdateFixture(value)
@@ -254,7 +273,7 @@ export function test({
 				await project.close()
 
 				// re-open project
-				project = await comapeo.getProject(projectId)
+				project = await openProject(projectId)
 
 				const many2 = await project[schemaName].getMany()
 				const manyValues2 = many2.map((doc) => valueOf(doc))
@@ -267,7 +286,7 @@ export function test({
 
 			it(`create and delete (${schemaName})`, async () => {
 				const projectId = await comapeo.createProject()
-				const project = await comapeo.getProject(projectId)
+				const project = await openProject(projectId)
 				const written = await createWithMockData(
 					project,
 					schemaName,
@@ -289,7 +308,7 @@ export function test({
 
 			it(`delete forks ${schemaName}`, async () => {
 				const projectId = await comapeo.createProject()
-				const project = await comapeo.getProject(projectId)
+				const project = await openProject(projectId)
 				const written = await create(project, value)
 				const updateValue = getUpdateFixture(value)
 				const updatedFork1 = await update(
