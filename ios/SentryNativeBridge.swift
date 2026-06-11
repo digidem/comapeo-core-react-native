@@ -1,7 +1,7 @@
 import Foundation
 // `@_spi(Private)` opts in to `SentryEventDecoder.decodeEvent(jsonData:)` —
 // the JSON → SentryEvent path sentry-cocoa exposes for hybrid SDKs. Stability
-// is gated by the `Sentry/HybridSDK` pin in `ComapeoCore.podspec` and the
+// is gated by the exact `Sentry` pin in `ComapeoCore.podspec` and the
 // matching SPM pin in `Package.swift`; re-validate when bumping.
 @_spi(Private) import Sentry
 
@@ -59,10 +59,9 @@ enum SentryNativeBridge {
     }
 
     static func captureException(_ error: Error, tags: [String: String] = [:]) {
-        // `Sentry/HybridSDK` only exposes single-arg `SentrySDK.capture(...)`
-        // to Swift consumers — the scope/block overloads aren't reachable.
         // Build an Event explicitly so per-call tags ride on the event,
-        // not on the (leaky) global scope.
+        // not on the (leaky) global scope — the scope/block capture
+        // overloads aren't reachable from Swift consumers.
         let event = Event(error: error as NSError)
         event.tags = mergedTags(tags)
         SentrySDK.capture(event: event)
@@ -81,6 +80,28 @@ enum SentryNativeBridge {
             event.extra = extras
         }
         SentrySDK.capture(event: event)
+    }
+
+    /// `comapeo.app.exit` — one count per MetricKit exit bucket. Named here
+    /// (not at the call site) so it stays in lock-step with the Android
+    /// `ExitReasonsCollector.METRIC_NAME` spelling.
+    static let appExitMetricName = "comapeo.app.exit"
+
+    /// Forward a count to Sentry's metrics pipeline. The SDK no-ops when
+    /// not started, and drops with a log when `options.enableMetrics` is
+    /// false (it defaults to true).
+    static func countMetric(_ key: String, value: UInt, attributes: [String: Any]) {
+        var converted: [String: SentryAttributeValue] = [:]
+        for (k, v) in attributes {
+            switch v {
+            case let s as String: converted[k] = s
+            case let b as Bool: converted[k] = b
+            case let i as Int: converted[k] = i
+            case let d as Double: converted[k] = d
+            default: converted[k] = String(describing: v)
+            }
+        }
+        SentrySDK.metrics.count(key: key, value: value, attributes: converted)
     }
 
     /// Forward to Sentry's structured-log pipeline. The Cocoa SDK drops
@@ -105,11 +126,14 @@ enum SentryNativeBridge {
     /// `Any?` keeps Sentry types out of caller signatures.
     static func startBootTransaction() -> Any? {
         // `sampled: .yes` overrides global `tracesSampleRate` so the boot
-        // transaction always reaches the wire.
+        // transaction always reaches the wire. `sampleRate: 1.0` matches —
+        // it feeds the dynamic-sampling context, not the decision.
         let context = TransactionContext(
             name: "comapeo.boot",
             operation: "boot",
-            sampled: .yes
+            sampled: .yes,
+            sampleRate: 1.0,
+            sampleRand: nil
         )
         let tx = SentrySDK.startTransaction(
             transactionContext: context,

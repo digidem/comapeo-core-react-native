@@ -5,12 +5,12 @@ let package = Package(
     name: "ComapeoCore",
     platforms: [.macOS(.v13), .iOS(.v15)],
     dependencies: [
-        // Pinned to match `Sentry/HybridSDK` in ComapeoCore.podspec (and
+        // Pinned to match the `Sentry` dep in ComapeoCore.podspec (and
         // the `scripts/check-sentry-cocoa-pin.mjs` invariant). The bridge
         // uses `@_spi(Private)` symbols — drift is a manual-review event.
         .package(
             url: "https://github.com/getsentry/sentry-cocoa",
-            exact: "8.58.0"
+            exact: "9.15.0"
         ),
     ],
     targets: [

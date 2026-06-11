@@ -16,52 +16,29 @@ struct AppExitPayloadData {
     var background: [String: Int]
 }
 
-/// Decodes `MXAppExitMetric` buckets into Sentry events. Pure logic, no
-/// MetricKit import, so the whole taxonomy is unit-testable on macOS.
-///
-/// Emission: at the app-usage tier, one event **per individual exit** — a
-/// bucket count of 3 emits three identical events so dashboard queries are a
-/// trivial `count(*)` — capped at [maxEventsPerBucket] per window+bucket
-/// (counts are 24h cumulative totals; benign buckets like background
-/// `normal_app_exit` reach the hundreds and would burn Sentry quota in a
-/// burst). At the diagnostic tier the duplication is collapsed to one event
-/// per window+bucket (frequency is session-shape data). The true count
-/// always rides in the `window_count` extra — use `sum(window_count)` over
-/// one event per window when exactness matters.
+/// Decodes `MXAppExitMetric` buckets into `comapeo.app.exit` count metrics —
+/// metrics, not events, because the goal is aggregate statistics, not
+/// per-incident triage in the Issues UI. One count per non-zero
+/// window+bucket, with the bucket's cumulative value as the metric value.
+/// Pure logic, no MetricKit or Sentry import, so the whole taxonomy is
+/// unit-testable on macOS.
 enum AppExitDecoder {
-    /// Mirrors Android's per-process record cap (`MAX_RECORDS`).
-    static let maxEventsPerBucket = 10
-
-    struct Event {
-        let message: String
-        let level: LogLevel
-        let tags: [String: String]
-        let extras: [String: Any]
+    /// One `comapeo.app.exit` count emission. `value` is the bucket's
+    /// cumulative exit count for the 24h window.
+    struct Metric {
+        let value: Int
+        let attributes: [String: Any]
     }
 
-    static func events(
-        from payload: AppExitPayloadData,
-        captureApplicationData: Bool
-    ) -> [Event] {
-        var out: [Event] = []
+    static func metrics(from payload: AppExitPayloadData) -> [Metric] {
+        var out: [Metric] = []
         for (cohort, counts) in [
             ("foreground", payload.foreground),
             ("background", payload.background),
         ] {
             for (bucket, count) in counts.sorted(by: { $0.key < $1.key }) {
                 guard count > 0 else { continue }
-                let event = decode(
-                    cohort: cohort,
-                    bucket: bucket,
-                    count: count,
-                    payload: payload
-                )
-                out.append(
-                    contentsOf: Array(
-                        repeating: event,
-                        count: captureApplicationData ? min(count, maxEventsPerBucket) : 1
-                    )
-                )
+                out.append(decode(cohort: cohort, bucket: bucket, count: count, payload: payload))
             }
         }
         return out
@@ -72,35 +49,24 @@ enum AppExitDecoder {
         bucket: String,
         count: Int,
         payload: AppExitPayloadData
-    ) -> Event {
-        // `background_task_assertion_timeout` already carries its cohort.
-        let fullName = bucket.hasPrefix("\(cohort)_") ? bucket : "\(cohort)_\(bucket)"
-        // Stable across the duplicate events for one window+bucket, so
-        // analyses can collapse back to distinct windows via
-        // `count_unique(window_id)`.
-        let windowId =
-            "\(Int64(payload.windowStart.timeIntervalSince1970 * 1000))-\(fullName)"
-        var extras: [String: Any] = [
-            "window_count": count,
+    ) -> Metric {
+        var attributes: [String: Any] = [
+            // Explicit: scope tags (where proc usually lives) don't flow
+            // into metric attributes, and Android sets it per metric.
+            SentryTags.proc: SentryTags.procMain,
+            SentryTags.exitCohort: cohort,
+            SentryTags.exitBucket: bucket,
+            SentryTags.exitIntentional: bucket == "normal_app_exit",
+            SentryTags.exitCauseClass: causeClass(forBucket: bucket),
+            SentryTags.exitSeverity: severity(forBucket: bucket, cohort: cohort),
             "window_start_iso": iso(payload.windowStart),
             "window_end_iso": iso(payload.windowEnd),
             "window_duration_seconds":
                 Int(payload.windowEnd.timeIntervalSince(payload.windowStart)),
         ]
-        if let appVersion = payload.appVersion { extras["app_version"] = appVersion }
-        if let osVersion = payload.osVersion { extras["os_version"] = osVersion }
-        return Event(
-            message: "ios exit: \(fullName)",
-            level: level(forBucket: bucket, cohort: cohort),
-            tags: [
-                SentryTags.exitCohort: cohort,
-                SentryTags.exitBucket: bucket,
-                SentryTags.exitIntentional: bucket == "normal_app_exit" ? "true" : "false",
-                SentryTags.exitCauseClass: causeClass(forBucket: bucket),
-                SentryTags.windowId: windowId,
-            ],
-            extras: extras
-        )
+        if let appVersion = payload.appVersion { attributes["app_version"] = appVersion }
+        if let osVersion = payload.osVersion { attributes["os_version"] = osVersion }
+        return Metric(value: count, attributes: attributes)
     }
 
     /// Higher-level grouping for dashboards. Unknown buckets (future iOS
@@ -122,24 +88,25 @@ enum AppExitDecoder {
         }
     }
 
-    /// `error` for the background/battery-kill and user-visible-quality
-    /// cohorts; `warning` where another sentry-cocoa integration captured
-    /// the death itself, so kill-rate dashboards don't double-count it
-    /// (the crash reporter owns crash buckets; watchdog-termination
-    /// tracking owns *foreground* OOM/watchdog deaths — this is just the
-    /// matching post-mortem count); `info` for intentional or benign
-    /// exits — and for unknown buckets.
-    static func level(forBucket bucket: String, cohort: String) -> LogLevel {
+    /// `exit.severity` attribute (metrics have no event level): `error` for
+    /// the background/battery-kill and user-visible-quality buckets;
+    /// `warning` where another sentry-cocoa integration captured the death
+    /// itself, so kill-rate dashboards don't double-count it (the crash
+    /// reporter owns crash buckets; watchdog-termination tracking, enabled
+    /// by default, owns *foreground* OOM/watchdog deaths — this is just the
+    /// matching post-mortem count); `info` for intentional or benign exits —
+    /// and for unknown buckets.
+    static func severity(forBucket bucket: String, cohort: String) -> String {
         switch bucket {
         case "memory_resource_limit", "app_watchdog":
-            return cohort == "foreground" ? .warning : .error
+            return cohort == "foreground" ? "warning" : "error"
         case "memory_pressure", "cpu_resource_limit",
              "background_task_assertion_timeout":
-            return .error
+            return "error"
         case "bad_access", "illegal_instruction", "abnormal":
-            return .warning
+            return "warning"
         default:
-            return .info
+            return "info"
         }
     }
 
@@ -158,28 +125,23 @@ enum AppExitDecoder {
 import MetricKit
 
 /// Subscribes to `MXMetricPayload` deliveries and forwards `MXAppExitMetric`
-/// buckets as Sentry events. sentry-cocoa only subscribes to MetricKit's
-/// *diagnostic* side (`MXHangDiagnostic` etc.) — the metric side, where
-/// `MXAppExitMetric` lives, is an explicit gap we close here.
+/// buckets as `comapeo.app.exit` count metrics. sentry-cocoa only subscribes
+/// to MetricKit's *diagnostic* side (`MXHangDiagnostic` etc.) — the metric
+/// side, where `MXAppExitMetric` lives, is an explicit gap we close here.
 ///
 /// Deliveries are 24h aggregates arriving at unpredictable times (often ~24h
 /// after launch, possibly mid-session), so the collector must stay alive for
 /// the whole process — [subscribeOnce] retains it statically. There is no
-/// back-fill: the first day after a fresh install reports nothing.
+/// back-fill: the first day of data after a fresh install is lost.
 final class AppExitMetricsCollector: NSObject, MXMetricManagerSubscriber {
-    private let captureApplicationData: Bool
-
-    init(captureApplicationData: Bool) {
-        self.captureApplicationData = captureApplicationData
-    }
 
     /// Subscribing more than once produces duplicate deliveries; the static
     /// slot is both the once-guard and the lifetime retain.
     private static var shared: AppExitMetricsCollector?
 
-    static func subscribeOnce(captureApplicationData: Bool) {
+    static func subscribeOnce() {
         guard shared == nil else { return }
-        let collector = AppExitMetricsCollector(captureApplicationData: captureApplicationData)
+        let collector = AppExitMetricsCollector()
         shared = collector
         // `MXMetricManager.shared.add` requires the main actor on iOS 17+.
         DispatchQueue.main.async {
@@ -229,23 +191,19 @@ final class AppExitMetricsCollector: NSObject, MXMetricManagerSubscriber {
                     "cpu_resource_limit": background.cumulativeCPUResourceLimitExitCount,
                 ]
             )
-            let events = AppExitDecoder.events(
-                from: data,
-                captureApplicationData: captureApplicationData
-            )
-            guard !events.isEmpty else { continue }
+            let metrics = AppExitDecoder.metrics(from: data)
+            guard !metrics.isEmpty else { continue }
             logCrumb(
                 category: SentryCategories.exit,
-                message: "reporting \(events.count) app-exit event(s) from MetricKit window"
+                message: "reporting \(metrics.count) app-exit bucket(s) from MetricKit window"
             )
             // Capture from MetricKit's delivery queue is fine — sentry-cocoa
             // is thread-safe.
-            for event in events {
-                SentryNativeBridge.captureMessage(
-                    event.message,
-                    level: event.level,
-                    tags: event.tags,
-                    extras: event.extras
+            for metric in metrics {
+                SentryNativeBridge.countMetric(
+                    SentryNativeBridge.appExitMetricName,
+                    value: UInt(metric.value),
+                    attributes: metric.attributes
                 )
             }
         }

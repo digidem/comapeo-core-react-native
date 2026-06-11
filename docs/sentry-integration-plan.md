@@ -39,12 +39,28 @@ data Sentry's performance tab is designed to surface.
 
 The toggle infrastructure (prefs store, JS API, native readers, argv
 plumbing) already shipped in Phase 9a. What's still pending is the
-**captures the toggle gates**:
+**captures the toggle gates**.
 
-- **Per-RPC client + server spans.** `tracesSampleRate` effectively goes
-  from 0 → its configured value (default 0.1). Method names only; never
-  args. Span attributes include `rpc.method`, `rpc.status`,
-  `rpc.duration_ms`.
+Several items originally specced here have been re-tiered to
+**metrics at diagnostic** (Phase 11) since the SDK v8 migration made
+Application Metrics available on every layer. The privacy rationale:
+metrics are aggregate, low-cardinality, and carry no per-user timeline
+or free-text payloads, so they don't need the usage opt-in that
+per-event captures do. Specifically:
+
+- ~~Per-RPC client + server spans~~ — superseded by §11.3: RPC *timing*
+  is a `comapeo.rpc.*.duration_ms` distribution metric at diagnostic;
+  per-RPC *traces* move behind the `debug` toggle.
+- ~~Backend memory checkpoint~~ — superseded by §11.2's
+  `comapeo.backend.memory_rss_bytes` / `heap_used_bytes` gauges at
+  diagnostic (device-health, not user behaviour).
+- ~~`privateStorageDir` size sample~~ — superseded by a bucketed
+  diagnostic-tier counter in §11.2's inventory; the bucketing
+  (`<10MB`, `10–100MB`, `100MB–1GB`, `>1GB`) that made it safe as an
+  event makes it safe as a metric tag.
+
+What genuinely remains usage-tier (per-event, session-shape data):
+
 - **Sync session lifecycle transaction.** A `comapeo.sync.session`
   transaction from `connectPeers` (or first peer-connected event) through
   to `syncFinished`/`disconnect`. Spans inside for `discover`, `handshake`,
@@ -54,19 +70,11 @@ plumbing) already shipped in Phase 9a. What's still pending is the
   events become `comapeo.app.background` / `comapeo.app.foreground`
   breadcrumbs that ride on subsequent events, helping correlate timing
   ("error fired 3s after app backgrounded").
-- **Backend memory checkpoint.** Once at `STARTED` and every 60s
-  thereafter, a custom context entry on the next event with
-  `process.memoryUsage()` snapshot (rss, heapTotal, heapUsed). No event
-  capture by itself — context only.
-- **`privateStorageDir` size sample.** Once at `STARTED`, the on-disk size
-  of dbFolder + indexFolder + customMaps as a numeric `du`-style integer.
-  Bucketed (`<10MB`, `10–100MB`, `100MB–1GB`, `>1GB`) before sending to
-  avoid leaking the exact size of a sensitive dataset.
 - **`before_send` privacy processor** — see Phase 9b for the full design;
   Phase 5 lands the wiring in `backend/before-send.js` so the captures
   above are scrubbed before they leave Node.
 
-Cost: ~150 LOC native + JS + backend.
+Cost: ~100 LOC native + JS + backend.
 
 ---
 
@@ -136,15 +144,12 @@ Cost: ~80 LOC Swift + ~50 LOC tests.
 ## Phase 8 — refinements
 
 - Tune sample rates from production data.
-- Migrate exit telemetry (Phases 6/7a) from events to Sentry Application
-  Metrics (`Sentry.metrics.count` with the same tags as attributes) once
-  the native pins reach the metrics floors: sentry-android ≥ 8.34 (a
-  minor bump from our 8.32) and sentry-cocoa ≥ 9.12 (arrives whenever
-  `@sentry/react-native` moves to cocoa 9 — the HybridSDK pin is
-  lock-stepped). Kills the Issues-UI noise (no issue lifecycle for
-  metrics) and the iOS per-exit event duplication (a count carries N
-  natively). Until then: archive the dozen exit issues in the Sentry UI;
-  Discover queries don't care about issue state.
+- ~~Migrate exit telemetry (Phases 6/7a) from events to Sentry
+  Application Metrics~~ — **landed** with the @sentry/react-native v8
+  migration (sentry-android 8.43, sentry-cocoa 9.15): both platforms now
+  emit `comapeo.app.exit` counts, see `docs/sentry-integration.md` §7.5.
+  Archive any exit-event issues left over from the events era in the
+  Sentry UI.
 - Optional: dual backend bundles for Sentry-free consumers if bundle
   size becomes a concern.
 
@@ -323,11 +328,25 @@ duration-anchor keys. Simple per-toggle hook on the setter path.
 ## Phase 11 — Metrics-first observability + `debug` tier
 
 Shift day-to-day performance signal from per-RPC tracing to **Sentry
-metrics** ([product docs](https://docs.sentry.io/product/explore/metrics/)),
+Application Metrics** ([product docs](https://docs.sentry.io/product/explore/metrics/)),
 keeping tracing as an investigation-only mode behind a new user-facing
 `debug` toggle. Rename `captureApplicationData` → `applicationUsageData`
 with refined semantics (stable `user.id` + usage events, no longer perf
 tracing).
+
+**Unblocked.** The SDK v8 migration brought the metrics API to every
+layer: `@sentry/react-native` 8.x (JS), sentry-android 8.43 (Kotlin),
+sentry-cocoa 9.15 (Swift), `@sentry/node-core` 10.53 (backend). The
+first metrics consumer — `comapeo.app.exit` from the Phase 6/7a exit
+collectors — already emits from the native layers, so the pipeline is
+proven; this phase is "more of the same" plus the toggle rework.
+
+The tier rationale, stated once: metrics are **aggregate and
+low-cardinality** — pre-bucketed tags, no per-user timeline, no
+free-text payloads — so they sit at the always-on diagnostic tier
+where per-event equivalents would have needed the usage opt-in.
+Traces (a precise per-operation timeline) are the privacy-expensive
+shape, which is why they move behind `debug`.
 
 Motivation: Platformatic's [Hidden Cost of Async Context](https://blog.platformatic.dev/the-hidden-cost-of-context)
 benchmarks show full OTel auto-instrumentation removes ~80% of throughput
@@ -375,12 +394,15 @@ Effective combinations:
 ### 11.2 Metrics inventory (always-on at diagnostic)
 
 All recordings use `Sentry.metrics.distribution(...)` /
-`Sentry.metrics.increment(...)` /
-`Sentry.metrics.gauge(...)` from `@sentry/node-core` v10 (Node) and
-`@sentry/react-native` v7+ (RN). Envelopes ride the existing forwarding
-transport (`backend/lib/sentry.js` `forwardingTransport`) — same DSN,
-same control-socket → native sink, same offline-aware native queue. No
-new pipeline.
+`Sentry.metrics.count(...)` / `Sentry.metrics.gauge(...)` from
+`@sentry/node-core` v10 (Node) and `@sentry/react-native` v8 (RN);
+native call sites use `Sentry.metrics()` (Kotlin) and
+`SentrySDK.metrics` (Swift) — see `ExitReasonsCollector.kt` /
+`SentryNativeBridge.countMetric` for the landed pattern. Backend
+envelopes ride the existing forwarding transport
+(`backend/lib/sentry.js` `forwardingTransport`) — same DSN, same
+control-socket → native sink, same offline-aware native queue. No new
+pipeline.
 
 Tags follow strict low-cardinality rules (see §11.8). One **default
 tag** is attached by `metrics.js` to every emission so we can never
@@ -421,6 +443,8 @@ metric. Same call site emits both with one helper call.
 | `comapeo.backend.heap_used_bytes`            | gauge        | `platform`                                                                                                 | same timer                          |
 | `comapeo.fgs.uptime_s`                       | gauge        | `platform`                                                                                                 | same timer                          |
 | `comapeo.state.transitions`                  | counter      | `from`, `to`, `platform`                                                                                   | every `stateChange`                 |
+| `comapeo.storage.size_bucket`                | counter      | `bucket` (`<10MB` / `10-100MB` / `100MB-1GB` / `>1GB`), `platform`                                         | once at `STARTED` (ex-Phase 5 item) |
+| `comapeo.app.exit` *(landed)*                | counter      | see `sentry-integration.md` §7.5 — reason/bucket/severity/cohort attributes                                 | exit collectors (Phases 6/7a)       |
 
 #### 11.2.b Device classification
 

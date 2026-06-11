@@ -2,7 +2,6 @@ package com.comapeo.core
 
 import android.app.ActivityManager.RunningAppProcessInfo
 import android.app.ApplicationExitInfo
-import io.sentry.SentryLevel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -71,7 +70,7 @@ class ExitReasonTagsTest {
     }
 
     @Test
-    fun levelMapping() {
+    fun severityMapping() {
         val errors = listOf(
             ApplicationExitInfo.REASON_LOW_MEMORY,
             ApplicationExitInfo.REASON_SIGNALED,
@@ -96,9 +95,9 @@ class ExitReasonTagsTest {
             ApplicationExitInfo.REASON_UNKNOWN,
             99, // unknown int
         )
-        errors.forEach { assertEquals("reason $it", SentryLevel.ERROR, ExitReasonTags.levelFor(it)) }
-        warnings.forEach { assertEquals("reason $it", SentryLevel.WARNING, ExitReasonTags.levelFor(it)) }
-        infos.forEach { assertEquals("reason $it", SentryLevel.INFO, ExitReasonTags.levelFor(it)) }
+        errors.forEach { assertEquals("reason $it", "error", ExitReasonTags.severityFor(it)) }
+        warnings.forEach { assertEquals("reason $it", "warning", ExitReasonTags.severityFor(it)) }
+        infos.forEach { assertEquals("reason $it", "info", ExitReasonTags.severityFor(it)) }
     }
 
     @Test

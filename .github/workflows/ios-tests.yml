@@ -13,14 +13,17 @@ concurrency:
 jobs:
   package-tests:
     name: Swift Package Tests (macOS)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
 
+      # sentry-cocoa 9.15.0 (pulled in by @sentry/react-native v8) ships a
+      # swift-tools-version:6.0 manifest; Swift 5.10 (Xcode 15.4) can't parse
+      # it and dependency resolution fails. Needs a Swift 6 toolchain.
       - name: Select Xcode version
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
 
       # The Swift Package test target (`ComapeoCore-Package`) builds only
       # platform-portable files (NodeJSIPC, NodeJSService, Log) and runs

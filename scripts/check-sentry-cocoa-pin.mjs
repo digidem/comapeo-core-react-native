@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Invariant check: the Sentry-Cocoa pin we declare in
-// `ios/ComapeoCore.podspec` must satisfy whatever `@sentry/react-native@7.x`'s
+// `ios/ComapeoCore.podspec` must satisfy whatever `@sentry/react-native@8.x`'s
 // `RNSentry.podspec` resolves to. If they diverge, CocoaPods picks two
 // versions and `pod install` fails on the consumer with a useless
-// "two versions of Sentry/HybridSDK" error — surface that here, at
-// install time on this module, so a bump on either side is caught
-// before downstream CI runs.
+// "two versions of Sentry" error — surface that here, at install
+// time on this module, so a bump on either side is caught before
+// downstream CI runs.
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -13,17 +13,27 @@ import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
-// Match the `s.dependency 'Sentry/HybridSDK', '<version-spec>'` line
-// in a CocoaPods spec. The spec source is Ruby; we don't try to
-// parse it fully — just pluck the one declaration that matters.
-const SENTRY_HYBRID_DEP_RE =
-  /s\.dependency\s+['"]Sentry\/HybridSDK['"]\s*,\s*['"]([^'"]+)['"]/;
+// Match the `s.dependency 'Sentry', '<version-spec>'` line in a
+// CocoaPods spec (sentry-cocoa 9 dropped the `HybridSDK` subspec, so
+// both our podspec and RNSentry's depend on the plain pod; the
+// subspec form is still matched for older layouts). The spec source
+// is Ruby; we don't try to parse it fully — just pluck the one
+// declaration that matters.
+const SENTRY_DEP_RE =
+  /s\.dependency\s+['"]Sentry(?:\/HybridSDK)?['"]\s*,\s*['"]([^'"]+)['"]/;
+// `@sentry/react-native@8.x` declares the version once as a Ruby
+// variable (`sentry_cocoa_version = '9.15.0'`) and references it from
+// the dependency line, so the literal-dependency regex finds nothing
+// there — fall back to the variable assignment.
+const SENTRY_COCOA_VERSION_VAR_RE =
+  /sentry_cocoa_version\s*=\s*['"]([^'"]+)['"]/;
 
 /** @param {string} podspecPath */
 function extractPin(podspecPath) {
   if (!existsSync(podspecPath)) return null;
   const src = readFileSync(podspecPath, "utf8");
-  const match = src.match(SENTRY_HYBRID_DEP_RE);
+  const match =
+    src.match(SENTRY_DEP_RE) ?? src.match(SENTRY_COCOA_VERSION_VAR_RE);
   return match ? match[1] : null;
 }
 
@@ -100,7 +110,7 @@ if (!ourPin) {
   // The Sentry dep was removed from our podspec — that's an explicit
   // intent change, surface it loudly.
   console.error(
-    "check-sentry-cocoa-pin: no 'Sentry/HybridSDK' dependency in " +
+    "check-sentry-cocoa-pin: no 'Sentry' dependency in " +
       `${ourPodspec}. Sentry-Cocoa is required.`,
   );
   process.exit(1);

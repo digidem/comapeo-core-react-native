@@ -31,6 +31,9 @@ object SentryTags {
     const val EXIT_PROCESS_STATE = "exit.process_state"
     const val EXIT_SIGNAL = "exit.signal"
     const val EXIT_INTENTIONAL = "exit.intentional"
+    /** `error` / `warning` / `info` — kill-class severity as a queryable
+     *  attribute (metrics have no event level). */
+    const val EXIT_SEVERITY = "exit.severity"
     const val OEM_KILLER_SUSPECTED = "oem.killer.suspected"
     const val FGS_KILLED_IN_BACKGROUND = "comapeo.fgs.killed_in_background"
     const val BG_DURATION_BUCKET = "bg_duration_bucket"
