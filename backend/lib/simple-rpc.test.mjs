@@ -1,0 +1,114 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
+import FramedStream from "framed-stream";
+
+import { SimpleRpcServer } from "./simple-rpc.js";
+import { SocketMessagePort } from "./message-port.js";
+import { connectSocket, socketPath, waitFor } from "./test-helpers.mjs";
+
+/**
+ * @param {import('node:test').TestContext} t
+ * @param {Record<string, (message: any) => void>} methods
+ */
+async function startServer(t, methods) {
+  const server = new SimpleRpcServer(methods);
+  const path = socketPath();
+  await server.listen(path);
+  t.after(() => server.close());
+  return { server, path };
+}
+
+// Regression test for the control-socket boot break: the message-port rewrite
+// dropped the EventEmitter `.on()` API, but #onConnection still called
+// `messagePort.on(...)`, throwing "messagePort.on is not a function" on the
+// first connection — the connection that carries `init`/`rootKey` from native.
+test("a connecting client's message reaches the matching method handler", async (t) => {
+  /** @type {unknown[]} */
+  const received = [];
+  const { path } = await startServer(t, {
+    init: (message) => received.push(message),
+  });
+
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  client.start();
+  client.postMessage({ type: "init", rootKey: "deadbeef" });
+
+  await waitFor(() => received.length === 1, { message: "init handled" });
+  assert.deepEqual(received[0], { type: "init", rootKey: "deadbeef" });
+});
+
+test("replays readiness phases to a late-connecting client", async (t) => {
+  const { server, path } = await startServer(t, {});
+  server.setReadinessPhase("started");
+  server.setReadinessPhase("ready");
+
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  /** @type {Array<{ type?: string }>} */
+  const frames = [];
+  client.addEventListener("message", (event) => frames.push(event.data));
+  client.start();
+
+  await waitFor(() => frames.some((f) => f && f.type === "ready"), {
+    message: "ready replayed",
+  });
+  const types = frames.map((f) => f.type);
+  assert.ok(types.includes("started"), "should replay 'started'");
+  assert.ok(types.includes("ready"), "should replay 'ready'");
+});
+
+test("broadcast delivers a frame to a connected client", async (t) => {
+  const { server, path } = await startServer(t, {});
+
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  /** @type {Array<{ type?: string }>} */
+  const frames = [];
+  client.addEventListener("message", (event) => frames.push(event.data));
+  client.start();
+
+  server.broadcast({ type: "stopping" });
+
+  await waitFor(() => frames.some((f) => f && f.type === "stopping"), {
+    message: "broadcast delivered",
+  });
+});
+
+test("an unknown message type is ignored without throwing", async (t) => {
+  let called = false;
+  const { path } = await startServer(t, {
+    init: () => {
+      called = true;
+    },
+  });
+
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  client.start();
+  client.postMessage({ type: "does-not-exist" });
+  client.postMessage({ type: "init" });
+
+  await waitFor(() => called, { message: "valid message still handled" });
+  assert.ok(called, "later valid message must still be handled");
+});
+
+test("a malformed frame does not crash the server", async (t) => {
+  /** @type {unknown[]} */
+  const received = [];
+  const { path } = await startServer(t, {
+    init: (message) => received.push(message),
+  });
+
+  const socket = await connectSocket(t, path);
+  const raw = new FramedStream(socket);
+  raw.write(Buffer.from("garbage not json"));
+
+  // After the bad frame, a well-formed message must still be processed,
+  // proving the connection survived the messageerror.
+  raw.write(Buffer.from(JSON.stringify({ type: "init", ok: true })));
+
+  await waitFor(() => received.length === 1, { message: "survived bad frame" });
+  assert.deepEqual(received[0], { type: "init", ok: true });
+});

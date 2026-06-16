@@ -31,9 +31,14 @@ export default function App() {
   );
 
   useEffect(() => {
-    mapServerApi.getBaseUrl().then((url) => {
-      setMapServerUrl(url.href);
-    });
+    mapServerApi
+      .getBaseUrl()
+      .then((url) => {
+        setMapServerUrl(url.href);
+      })
+      .catch((err) => {
+        console.error("Failed to get map server URL:", err);
+      });
   }, []);
 
   return (

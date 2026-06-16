@@ -33,6 +33,7 @@
     "fastify": "4.29.1",
     "framed-stream": "1.0.1",
     "polywasm": "0.2.0",
+    "start-stop-state-machine": "^2.0.0",
     "tiny-typed-emitter": "2.1.0"
   },
   "devDependencies": {

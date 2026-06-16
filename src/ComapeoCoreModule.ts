@@ -8,6 +8,7 @@ import {
   type MessageEventPayload,
   type StateChangeEventPayload,
 } from "./ComapeoCore.types";
+import type { MessagePortLike } from "rpc-reflector";
 import {
   AppRpcApi,
   createAppRpcClient,
@@ -118,10 +119,12 @@ export function setCaptureApplicationDataNative(value: boolean): Promise<void> {
 }
 
 type MessagePortEvents = {
-  message: (message: JsonValue) => void;
+  message: (event: { data: JsonValue }) => void;
 };
 
-class CoreMessagePort extends EventEmitter<MessagePortEvents> {
+class CoreMessagePort implements MessagePortLike {
+  #emitter = new EventEmitter<MessagePortEvents>();
+
   postMessage(value: JsonValue) {
     nativeModule.postMessage(JSON.stringify(value));
   }
@@ -145,7 +148,7 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
   #handleMessageEvent = (event: MessageEventPayload) => {
     try {
       const message = JSON.parse(event.data);
-      this.emit("message", message);
+      this.#emitter.emit("message", { data: message });
     } catch {
       console.error("Failed to parse message event data", event.data);
     }
@@ -155,18 +158,18 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
     eventName: EventName,
     listener: MessagePortEvents[EventName],
   ) {
-    this.addListener(eventName, listener);
+    this.#emitter.addListener(eventName, listener);
   }
 
   removeEventListener<EventName extends keyof MessagePortEvents>(
     eventName: EventName,
     listener: MessagePortEvents[EventName],
   ) {
-    this.removeListener(eventName, listener);
+    this.#emitter.removeListener(eventName, listener);
   }
 }
 
-const messagePort = new CoreMessagePort() as unknown as MessagePort;
+const messagePort = new CoreMessagePort();
 
 const noop = () => {};
 
@@ -368,4 +371,6 @@ class State extends EventEmitter<StateEvents> {
 
 export const state = new State();
 
-export const appRpcClient: AppRpcApi = createAppRpcClient(messagePort);
+export const appRpcClient: AppRpcApi = createAppRpcClient(messagePort, {
+  timeout: RPC_TIMEOUT_MS,
+});

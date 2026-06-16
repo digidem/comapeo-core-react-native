@@ -45,17 +45,20 @@ export class SimpleRpcServer extends ServerHelper {
   /** @param {import('node:net').Socket} socket */
   #onConnection(socket) {
     const messagePort = new SocketMessagePort(socket);
-    messagePort.on("message", (msg) => this.#handleMessage(msg));
-    messagePort.on("messageerror", (error) => {
-      console.error("Client sent invalid message", error);
+    messagePort.addEventListener("message", this.#handleMessageEvent);
+    messagePort.addEventListener("messageerror", (event) => {
+      console.error("Client sent invalid message", event.data);
     });
-    messagePort.on("close", () => {
+    messagePort.addEventListener("close", () => {
       this.#clients.delete(messagePort);
     });
     this.#clients.add(messagePort);
     messagePort.start();
 
-    if (this.#readinessPhase === "started" || this.#readinessPhase === "ready") {
+    if (
+      this.#readinessPhase === "started" ||
+      this.#readinessPhase === "ready"
+    ) {
       messagePort.postMessage({ type: "started" });
     }
     if (this.#readinessPhase === "ready") {
@@ -70,9 +73,9 @@ export class SimpleRpcServer extends ServerHelper {
   }
 
   /**
-   * @param {import("type-fest").JsonValue} message
+   * @param {MessageEvent} event
    */
-  #handleMessage(message) {
+  #handleMessageEvent = ({ data: message }) => {
     if (
       !message ||
       typeof message !== "object" ||
@@ -83,8 +86,13 @@ export class SimpleRpcServer extends ServerHelper {
       console.warn("Received invalid message", message);
       return;
     }
-    this.#methods[message.type](message);
-  }
+    const method = this.#methods[message.type];
+    if (typeof method !== "function") {
+      console.warn("Received message with unhandled type", message.type);
+      return;
+    }
+    method(message);
+  };
 
   /**
    * Idempotent. Throws on out-of-order `ready` so late clients don't
@@ -114,10 +122,7 @@ export class SimpleRpcServer extends ServerHelper {
     if (message.type === "stopping" || message.type === "error") {
       this.#terminalFrame = /** @type {TerminalFrame} */ (message);
     }
-    if (
-      message.type === "sentry-event" ||
-      message.type === "sentry-envelope"
-    ) {
+    if (message.type === "sentry-event" || message.type === "sentry-envelope") {
       if (
         this.#recentSentryFrames.length >=
         SimpleRpcServer.#MAX_RECENT_SENTRY_FRAMES

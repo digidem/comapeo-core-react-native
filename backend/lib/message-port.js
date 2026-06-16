@@ -27,20 +27,12 @@ class MessagePortCloseEvent extends Event {
 /**
  * @implements {MessagePortLike}
  */
-export class SocketMessagePort {
+export class SocketMessagePort extends EventTarget {
   /** @type {'idle' | 'active' | 'closed'} */
   #state = "idle";
   #framedStream;
   /** @type {JsonValue[]} */
   #queue = [];
-  #listeners = {
-    /** @type {Set<(event: MessagePortCloseEvent) => void>} */
-    close: new Set(),
-    /** @type {Set<(event: MessageEvent) => void>} */
-    message: new Set(),
-    /** @type {Set<(event: MessageEvent) => void>} */
-    messageerror: new Set(),
-  };
 
   /** @param {Buffer} buf */
   #handleData = (buf) => {
@@ -62,6 +54,7 @@ export class SocketMessagePort {
    * @param {NodeJS.ReadWriteStream} socket
    */
   constructor(socket) {
+    super();
     this.#framedStream = new FramedStream(socket);
     this.#framedStream.on("data", this.#handleData);
     this.#framedStream.on("close", () => {
@@ -104,15 +97,13 @@ export class SocketMessagePort {
    * @returns {void}
    */
   /**
+   * @override
    * @param {MessagePortEventType} type
    * @param {(event: MessageEvent & MessagePortCloseEvent) => void} listener
    */
   addEventListener(type, listener) {
     assertValidMessagePortEventType(type);
-    this.#listeners[type].add(
-      // @ts-expect-error TS can't infer the listener type based on event type
-      listener,
-    );
+    super.addEventListener(type, /** @type {EventListener} */ (listener));
   }
 
   /**
@@ -128,31 +119,13 @@ export class SocketMessagePort {
    * @returns {void}
    */
   /**
+   * @override
    * @param {MessagePortEventType} type
    * @param {(event: MessageEvent & MessagePortCloseEvent) => void} listener
    */
   removeEventListener(type, listener) {
     assertValidMessagePortEventType(type);
-    this.#listeners[type].delete(
-      // @ts-expect-error TS can't infer the listener type based on event type
-      listener,
-    );
-  }
-
-  /**
-   * @param {MessageEvent | MessagePortCloseEvent} event
-   */
-  dispatchEvent(event) {
-    assertValidMessagePortEventType(event.type);
-    const listeners = this.#listeners[event.type];
-    if (listeners) {
-      for (const listener of listeners) {
-        listener(
-          // @ts-expect-error TS can't infer the listener type based on event type
-          event,
-        );
-      }
-    }
+    super.removeEventListener(type, /** @type {EventListener} */ (listener));
   }
 
   close() {

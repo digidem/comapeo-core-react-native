@@ -5,6 +5,7 @@ import jasmineRequire, {
 import { Button, ScrollView, Text, View } from 'react-native'
 
 import { test as basicTest } from './tests/basic'
+import { test as mapServerTest } from './tests/map-server'
 import { test as projectCrudTest } from './tests/project-crud'
 
 type TestResult = {
@@ -120,6 +121,7 @@ export function TestRunner() {
 
 		// 👇 Register tests here!
 		basicTest(ctx)
+		mapServerTest(ctx)
 		projectCrudTest(ctx)
 
 		await jasmineEnv.execute()
