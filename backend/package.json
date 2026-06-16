@@ -17,7 +17,7 @@
     "@comapeo/core": "7.1.0",
     "@comapeo/default-categories": "1.0.1",
     "@comapeo/fallback-smp": "1.0.0",
-    "@comapeo/ipc": "8.0.0",
+    "@comapeo/ipc": "^9.0.0-pre.0",
     "@comapeo/map-server": "1.1.3",
     "@mapeo/crypto": "1.0.0-alpha.10",
     "@opentelemetry/api": "^1.9.0",

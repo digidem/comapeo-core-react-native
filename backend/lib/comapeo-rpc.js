@@ -14,24 +14,17 @@ export class ComapeoRpc extends ServerHelper {
     super((socket) => {
       const messagePort = new SocketMessagePort(socket);
 
-      messagePort.start();
-
       const comapeoRpcServer = createMapeoServer(
         comapeoManager,
-        /** @type {Pick<MessagePort, 'postMessage' | 'addEventListener' | 'removeEventListener'>} */ (
-          messagePort
-        ),
+        messagePort,
         onRequestHook ? { onRequestHook } : undefined,
       );
 
-      const mapRpcServer = createAppRpcServer(
-        { mapServer },
-        /** @type {Pick<MessagePort, 'postMessage' | 'addEventListener' | 'removeEventListener'>} */ (
-          messagePort
-        ),
-      );
+      const mapRpcServer = createAppRpcServer({ mapServer }, messagePort);
 
-      messagePort.on("close", () => {
+      messagePort.start();
+
+      messagePort.addEventListener("close", () => {
         comapeoRpcServer.close();
         mapRpcServer.close();
       });
