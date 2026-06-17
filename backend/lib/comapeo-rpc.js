@@ -5,18 +5,16 @@ import StartStopStateMachine from "start-stop-state-machine";
 
 /** @import {MapeoManager} from '@comapeo/core' */
 /** @import {ListenOptions, MapServer} from '@comapeo/map-server' */
+/** @import {AppRpcApi} from '@comapeo/ipc/client.js' */
 
 export class ComapeoRpc extends ServerHelper {
   /**
-   * @param {{comapeoManager: MapeoManager, mapServer: MapServer}} options
+   * @param {object} params
+   * @param {MapeoManager} params.comapeoManager - The ComapeoManager instance to be used by the Comapeo RPC server.
+   * @param {AppRpcApi} params.appRpcApi - The AppRpcApi instance to be used by the Map RPC server.
    * @param {{ onRequestHook?: NonNullable<Parameters<typeof createMapeoServer>[2]>['onRequestHook'] }} [options]
    */
-  constructor({ comapeoManager, mapServer }, { onRequestHook } = {}) {
-    // One wrapper shared across all connections: the underlying mapServer is a
-    // single process-wide HTTP server, so its idempotent start/stop state must
-    // be shared too. A per-connection wrapper would call mapServer.listen()
-    // again on a reconnect and hit ERR_SERVER_ALREADY_LISTEN.
-    const mapServerApi = new MapServerApi(mapServer);
+  constructor({ comapeoManager, appRpcApi }, { onRequestHook } = {}) {
     super((socket) => {
       const messagePort = new SocketMessagePort(socket);
 
@@ -26,7 +24,11 @@ export class ComapeoRpc extends ServerHelper {
         onRequestHook ? { onRequestHook } : undefined,
       );
 
-      const mapRpcServer = createAppRpcServer({ mapServer: mapServerApi }, messagePort);
+      const mapRpcServer = createAppRpcServer(
+        appRpcApi,
+        messagePort,
+        onRequestHook ? { onRequestHook } : undefined,
+      );
 
       messagePort.start();
 

@@ -2,31 +2,20 @@ import { appRpcClient } from '@comapeo/core-react-native'
 
 import type { TestContext } from './utils'
 
-export function test({ describe, expect, expectAsync, it }: TestContext) {
+export function test({ describe, expect, it }: TestContext) {
 	describe('map server', () => {
-		it('listen() returns a usable local port', async () => {
-			const { localPort, remotePort } = await appRpcClient.mapServer.listen()
-
+		it('getBaseUrl() returns a valid URL', async () => {
+			const href = await appRpcClient.mapServer.getBaseUrl()
+			const url = new URL(href)
+			expect(url.protocol).toBe('http:')
+			expect(url.hostname).toBe('127.0.0.1')
+			const localPort = parseInt(url.port, 10)
 			expect(typeof localPort).toBe('number')
 			expect(localPort).toBeGreaterThan(0)
-			expect(typeof remotePort).toBe('number')
-			expect(remotePort).toBeGreaterThan(0)
 		})
 
-		it('listen() is idempotent across calls', async () => {
-			const first = await appRpcClient.mapServer.listen()
-			const second = await appRpcClient.mapServer.listen()
-
-			// A second listen() must not rebind the shared HTTP server; it
-			// returns the already-bound ports rather than throwing
-			// ERR_SERVER_ALREADY_LISTEN.
-			expect(second.localPort).toBe(first.localPort)
-			expect(second.remotePort).toBe(first.remotePort)
-		})
-
-		it('serves HTTP on the local port', async () => {
-			const { localPort } = await appRpcClient.mapServer.listen()
-			const baseUrl = `http://127.0.0.1:${localPort}`
+		it('serves HTTP on the given URL', async () => {
+			const baseUrl = await appRpcClient.mapServer.getBaseUrl()
 
 			// We only assert the server accepts the connection and responds —
 			// any HTTP status proves the socket is bound and the request

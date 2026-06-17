@@ -100,6 +100,6 @@
     "react-native": "*"
   },
   "dependencies": {
-    "@comapeo/ipc": "^9.0.0-pre.0"
+    "@comapeo/ipc": "^9.0.0-pre.1"
   }
 }

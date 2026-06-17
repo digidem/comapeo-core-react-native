@@ -10,15 +10,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 let renderCount = 0;
 
-const mapServerListenPromise = appRpcClient.mapServer.listen();
-
-const mapServerApi = {
-  async getBaseUrl() {
-    const { localPort } = await mapServerListenPromise;
-    return new URL(`http://127.0.0.1:${localPort}`);
-  },
-};
-
 export default function App() {
   const [projects, setProjects] = useState<unknown[]>([]);
 
@@ -31,10 +22,10 @@ export default function App() {
   );
 
   useEffect(() => {
-    mapServerApi
+    appRpcClient.mapServer
       .getBaseUrl()
       .then((url) => {
-        setMapServerUrl(url.href);
+        setMapServerUrl(url);
       })
       .catch((err) => {
         console.error("Failed to get map server URL:", err);

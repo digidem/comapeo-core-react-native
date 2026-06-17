@@ -122,14 +122,17 @@ type MessagePortEvents = {
   message: (event: { data: JsonValue }) => void;
 };
 
-class CoreMessagePort implements MessagePortLike {
-  #emitter = new EventEmitter<MessagePortEvents>();
-
+// The expo EventEmitter calls startObserving/stopObserving when the first
+// listener is added and the last listener is removed.
+class CoreMessagePort
+  extends EventEmitter<MessagePortEvents>
+  implements MessagePortLike
+{
   postMessage(value: JsonValue) {
     nativeModule.postMessage(JSON.stringify(value));
   }
 
-  startObserving<EventName extends keyof ComapeoCoreModuleEvents>(
+  startObserving<EventName extends keyof MessagePortEvents>(
     eventName: EventName,
   ): void {
     if (eventName === "message") {
@@ -137,7 +140,7 @@ class CoreMessagePort implements MessagePortLike {
     }
   }
 
-  stopObserving<EventName extends keyof ComapeoCoreModuleEvents>(
+  stopObserving<EventName extends keyof MessagePortEvents>(
     eventName: EventName,
   ): void {
     if (eventName === "message") {
@@ -148,7 +151,7 @@ class CoreMessagePort implements MessagePortLike {
   #handleMessageEvent = (event: MessageEventPayload) => {
     try {
       const message = JSON.parse(event.data);
-      this.#emitter.emit("message", { data: message });
+      this.emit("message", { data: message });
     } catch {
       console.error("Failed to parse message event data", event.data);
     }
@@ -158,14 +161,14 @@ class CoreMessagePort implements MessagePortLike {
     eventName: EventName,
     listener: MessagePortEvents[EventName],
   ) {
-    this.#emitter.addListener(eventName, listener);
+    this.addListener(eventName, listener);
   }
 
   removeEventListener<EventName extends keyof MessagePortEvents>(
     eventName: EventName,
     listener: MessagePortEvents[EventName],
   ) {
-    this.#emitter.removeListener(eventName, listener);
+    this.removeListener(eventName, listener);
   }
 }
 
