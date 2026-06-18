@@ -75,14 +75,30 @@ runs:
           }'
         )
 
-        BUILD_ID=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+        # Capture body and status separately: BrowserStack returns a
+        # JSON `message` (e.g. queue/parallel-limit errors) that
+        # `--fail` would discard, leaving only an opaque exit code.
+        RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
+          -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
           -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/$PLATFORM/build" \
           -H "Content-Type: application/json" \
-          -d "$PAYLOAD" \
-          | jq -r '.build_id')
+          -d "$PAYLOAD")
+        HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+        BODY=$(printf '%s' "$RESPONSE" | sed '$d')
+
+        if [ "$HTTP_CODE" -ge 400 ]; then
+          echo "BrowserStack build trigger failed (HTTP $HTTP_CODE): $BODY" >&2
+          exit 1
+        fi
+
+        BUILD_ID=$(printf '%s' "$BODY" | jq -r '.build_id // empty')
+        if [ -z "$BUILD_ID" ]; then
+          echo "BrowserStack build trigger returned no build_id (HTTP $HTTP_CODE): $BODY" >&2
+          exit 1
+        fi
 
         echo "Triggered build: $BUILD_ID"
-        echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+        echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
 
     - name: Poll for result
       env:

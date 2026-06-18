@@ -83,11 +83,25 @@ jobs:
         run: |
           APK_RELATIVE_PATH="./apps/e2e/android/app/build/outputs/apk/release/app-release.apk"
 
-          APP_URL=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+          RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
+            -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
-            -F "file=@$APK_RELATIVE_PATH" | jq -r '.app_url')
+            -F "file=@$APK_RELATIVE_PATH")
+          HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
 
-          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "BrowserStack APK upload failed (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          APP_URL=$(printf '%s' "$BODY" | jq -r '.app_url // empty')
+          if [ -z "$APP_URL" ]; then
+            echo "BrowserStack APK upload returned no app_url (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
 
   build-ios:
     if: ${{ github.event.pull_request.draft == false }}
@@ -167,11 +181,25 @@ jobs:
         run: |
           IPA_RELATIVE_PATH="./apps/e2e/ios/corereactnativee2e.ipa"
 
-          APP_URL=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+          RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
+            -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
-            -F "file=@$IPA_RELATIVE_PATH" | jq -r '.app_url')
+            -F "file=@$IPA_RELATIVE_PATH")
+          HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
 
-          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "BrowserStack IPA upload failed (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          APP_URL=$(printf '%s' "$BODY" | jq -r '.app_url // empty')
+          if [ -z "$APP_URL" ]; then
+            echo "BrowserStack IPA upload returned no app_url (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
 
   upload-test-suite:
     if: ${{ github.event.pull_request.draft == false }}
@@ -199,11 +227,25 @@ jobs:
 
           zip -r "$ZIP_NAME" maestro/e2e.yaml
 
-          TEST_SUITE_URL=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+          RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
+            -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/test-suite" \
-            -F "file=@$ZIP_NAME" | jq -r '.test_suite_url')
+            -F "file=@$ZIP_NAME")
+          HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
 
-          echo "test_suite_url=$TEST_SUITE_URL" >> $GITHUB_OUTPUT
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "BrowserStack test-suite upload failed (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          TEST_SUITE_URL=$(printf '%s' "$BODY" | jq -r '.test_suite_url // empty')
+          if [ -z "$TEST_SUITE_URL" ]; then
+            echo "BrowserStack test-suite upload returned no test_suite_url (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          echo "test_suite_url=$TEST_SUITE_URL" >> "$GITHUB_OUTPUT"
 
   test-android:
     name: Run tests (Android)
@@ -227,15 +269,15 @@ jobs:
           browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
           browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           timeout: 1200
-          # A spread across the supported OS range (8.1 → 16) rather than
-          # every device: BrowserStack serialises sessions when the
-          # parallel quota is small, and the ~240 MB app installs slowly
-          # on real devices, so seven devices overran the poll timeout.
+          # Keep the device count low: BrowserStack queues sessions past
+          # the parallel quota (5 here), and older/scarcer devices (the
+          # 2018 Galaxy Note 9 on 8.1) can sit queued long enough to
+          # overrun the poll. These two passed quickly; re-add a faster
+          # low-API device for older-OS coverage once timing is known.
           devices: >-
             [
             "Google Pixel 9-16.0",
-            "Xiaomi Redmi Note 11-11.0",
-            "Samsung Galaxy Note 9-8.1"
+            "Xiaomi Redmi Note 11-11.0"
             ]
 
   test-ios:
