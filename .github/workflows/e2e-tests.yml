@@ -209,8 +209,7 @@ jobs:
     name: Run tests (Android)
     needs: [build-android, upload-test-suite]
     runs-on: ubuntu-latest
-    # TODO: Adjust based on actual timing
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -227,25 +226,23 @@ jobs:
           browserstack_project: ${{ vars.BROWSERSTACK_PROJECT_TESTS }}
           browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
           browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
-          # TODO: Adjust based on actual timing
-          timeout: 1800
+          timeout: 1200
+          # A spread across the supported OS range (8.1 → 16) rather than
+          # every device: BrowserStack serialises sessions when the
+          # parallel quota is small, and the ~240 MB app installs slowly
+          # on real devices, so seven devices overran the poll timeout.
           devices: >-
             [
             "Google Pixel 9-16.0",
-            "Huawei Nova 11 SE-12.0",
-            "Motorola Moto G71 5G-11.0",
-            "OnePlus 13R-15.0",
-            "Samsung Galaxy Note 9-8.1",
-            "Vivo Y21-11.0",
-            "Xiaomi Redmi Note 11-11.0"
+            "Xiaomi Redmi Note 11-11.0",
+            "Samsung Galaxy Note 9-8.1"
             ]
 
   test-ios:
     name: Run tests (iOS)
     needs: [build-ios, upload-test-suite]
     runs-on: ubuntu-latest
-    # TODO: Adjust based on actual timing
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -262,8 +259,7 @@ jobs:
           browserstack_project: ${{ vars.BROWSERSTACK_PROJECT_TESTS }}
           browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
           browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
-          # TODO: Adjust based on actual timing
-          timeout: 1800
+          timeout: 1200
           devices: >-
             [
             "iPhone 15-17",
