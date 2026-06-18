@@ -11,13 +11,15 @@ enum SentryTags {
     static let source = "source"
     static let timeout = "timeout"
 
-    // App-exit events from MetricKit's MXAppExitMetric
+    // `comapeo.app.exit` metric attributes from MetricKit's MXAppExitMetric
     // (AppExitMetricsCollector). Taxonomy in docs/sentry-integration.md.
     static let exitCohort = "exit.cohort"
     static let exitBucket = "exit.bucket"
     static let exitIntentional = "exit.intentional"
     static let exitCauseClass = "exit.cause_class"
-    static let windowId = "window_id"
+    /// `error` / `warning` / `info` — kill-class severity as a queryable
+    /// attribute (metrics have no event level).
+    static let exitSeverity = "exit.severity"
 
     // proc values — iOS is single-process, so always "main"
     static let procMain = "main"

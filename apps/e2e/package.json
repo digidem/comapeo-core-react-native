@@ -9,7 +9,7 @@
 		"ios": "expo run:ios"
 	},
 	"dependencies": {
-		"@sentry/react-native": "^7.13.0",
+		"@sentry/react-native": "^8.13.0",
 		"expo": "55.0.19",
 		"expo-crypto": "55.0.14",
 		"react": "19.2.5",
