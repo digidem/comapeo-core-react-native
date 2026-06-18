@@ -1,31 +1,34 @@
 import { SocketMessagePort } from "./message-port.js";
 import { ServerHelper } from "./server-helper.js";
-import { createAppRpcServer, createMapeoServer } from "@comapeo/ipc/server.js";
+import {
+  createComapeoCoreServer,
+  createComapeoServicesServer,
+} from "@comapeo/ipc/server.js";
 import StartStopStateMachine from "start-stop-state-machine";
 
 /** @import {MapeoManager} from '@comapeo/core' */
 /** @import {ListenOptions, MapServer} from '@comapeo/map-server' */
-/** @import {AppRpcApi} from '@comapeo/ipc/client.js' */
+/** @import {ComapeoServicesApi} from '@comapeo/ipc/server.js' */
 
 export class ComapeoRpc extends ServerHelper {
   /**
    * @param {object} params
-   * @param {MapeoManager} params.comapeoManager - The ComapeoManager instance to be used by the Comapeo RPC server.
-   * @param {AppRpcApi} params.appRpcApi - The AppRpcApi instance to be used by the Map RPC server.
-   * @param {{ onRequestHook?: NonNullable<Parameters<typeof createMapeoServer>[2]>['onRequestHook'] }} [options]
+   * @param {MapeoManager} params.comapeoManager - The ComapeoManager instance to be used by the Comapeo Core RPC server.
+   * @param {ComapeoServicesApi} params.comapeoServices - The app-provided services (e.g. map server) served alongside core.
+   * @param {{ onRequestHook?: NonNullable<Parameters<typeof createComapeoCoreServer>[2]>['onRequestHook'] }} [options]
    */
-  constructor({ comapeoManager, appRpcApi }, { onRequestHook } = {}) {
+  constructor({ comapeoManager, comapeoServices }, { onRequestHook } = {}) {
     super((socket) => {
       const messagePort = new SocketMessagePort(socket);
 
-      const comapeoRpcServer = createMapeoServer(
+      const coreServer = createComapeoCoreServer(
         comapeoManager,
         messagePort,
         onRequestHook ? { onRequestHook } : undefined,
       );
 
-      const mapRpcServer = createAppRpcServer(
-        appRpcApi,
+      const servicesServer = createComapeoServicesServer(
+        comapeoServices,
         messagePort,
         onRequestHook ? { onRequestHook } : undefined,
       );
@@ -37,8 +40,8 @@ export class ComapeoRpc extends ServerHelper {
       });
 
       messagePort.addEventListener("close", () => {
-        comapeoRpcServer.close();
-        mapRpcServer.close();
+        coreServer.close();
+        servicesServer.close();
       });
     });
   }

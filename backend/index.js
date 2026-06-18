@@ -213,8 +213,8 @@ async function withPhase(phase, fn) {
 
         mapServer = createMapServer({ privateStorageDir, rootKey });
         const mapServerListenPromise = mapServer.listen();
-        /** @type {import("@comapeo/ipc/client.js").AppRpcApi} */
-        const appRpcApi = {
+        /** @type {import("@comapeo/ipc/server.js").ComapeoServicesApi} */
+        const comapeoServices = {
           mapServer: {
             async getBaseUrl() {
               const { localPort } = await mapServerListenPromise;
@@ -224,7 +224,7 @@ async function withPhase(phase, fn) {
         };
 
         comapeoRpcServer = new ComapeoRpc(
-          { comapeoManager, appRpcApi },
+          { comapeoManager, comapeoServices },
           { onRequestHook: sentry.rpcHook() },
         );
 

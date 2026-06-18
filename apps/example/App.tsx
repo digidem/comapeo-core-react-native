@@ -1,4 +1,4 @@
-import { comapeo, appRpcClient } from "@comapeo/core-react-native";
+import { comapeo, comapeoServicesClient } from "@comapeo/core-react-native";
 import * as Sentry from "@sentry/react-native";
 import React, { useEffect, useState } from "react";
 import { Button, ScrollView, Text, View } from "react-native";
@@ -22,7 +22,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    appRpcClient.mapServer
+    comapeoServicesClient.mapServer
       .getBaseUrl()
       .then((url) => {
         setMapServerUrl(url);

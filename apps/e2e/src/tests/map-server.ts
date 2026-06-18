@@ -1,11 +1,11 @@
-import { appRpcClient } from '@comapeo/core-react-native'
+import { comapeoServicesClient } from '@comapeo/core-react-native'
 
 import type { TestContext } from './utils'
 
 export function test({ describe, expect, it }: TestContext) {
 	describe('map server', () => {
 		it('getBaseUrl() returns a valid URL', async () => {
-			const href = await appRpcClient.mapServer.getBaseUrl()
+			const href = await comapeoServicesClient.mapServer.getBaseUrl()
 			const url = new URL(href)
 			expect(url.protocol).toBe('http:')
 			expect(url.hostname).toBe('127.0.0.1')
@@ -15,7 +15,7 @@ export function test({ describe, expect, it }: TestContext) {
 		})
 
 		it('serves HTTP on the given URL', async () => {
-			const baseUrl = await appRpcClient.mapServer.getBaseUrl()
+			const baseUrl = await comapeoServicesClient.mapServer.getBaseUrl()
 
 			// We only assert the server accepts the connection and responds —
 			// any HTTP status proves the socket is bound and the request

@@ -10,10 +10,10 @@ import {
 } from "./ComapeoCore.types";
 import type { MessagePortLike } from "rpc-reflector";
 import {
-  AppRpcApi,
-  createAppRpcClient,
-  createMapeoClient,
-  type MapeoClientApi,
+  createComapeoCoreClient,
+  createComapeoServicesClient,
+  type ComapeoCoreClientApi,
+  type ComapeoServicesClientApi,
 } from "@comapeo/ipc/client.js";
 import * as Sentry from "@sentry/react-native";
 // `getTraceData` / `startNewTrace` aren't re-exported from
@@ -22,12 +22,12 @@ import * as Sentry from "@sentry/react-native";
 import { getTraceData, startNewTrace } from "@sentry/core";
 import type { SentryInitConfig } from "./sentry";
 
-// `onRequestHook` request type derived from `createMapeoClient` so
+// `onRequestHook` request type derived from `createComapeoCoreClient` so
 // any hook-signature change up-stream is a compile error here. The
 // hook input omits `metadata`; we re-add it to write into `next(...)`.
 type IpcHookRequest = Parameters<
   NonNullable<
-    NonNullable<Parameters<typeof createMapeoClient>[1]>["onRequestHook"]
+    NonNullable<Parameters<typeof createComapeoCoreClient>[1]>["onRequestHook"]
   >
 >[0];
 type IpcRequestWithMetadata = IpcHookRequest & {
@@ -213,7 +213,7 @@ function hasInheritableActiveSpan(): boolean {
   return rootOp !== "ui.load" && !rootOp.startsWith("app.start.");
 }
 
-export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
+export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort, {
   timeout: RPC_TIMEOUT_MS,
   onRequestHook: (request, next) => {
     // Sentry-not-initialised guard. `isInitialized` lives in `@sentry/core`
@@ -374,6 +374,7 @@ class State extends EventEmitter<StateEvents> {
 
 export const state = new State();
 
-export const appRpcClient: AppRpcApi = createAppRpcClient(messagePort, {
-  timeout: RPC_TIMEOUT_MS,
-});
+export const comapeoServicesClient: ComapeoServicesClientApi =
+  createComapeoServicesClient(messagePort, {
+    timeout: RPC_TIMEOUT_MS,
+  });
