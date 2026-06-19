@@ -1,37 +1,44 @@
 {
-	"name": "core-react-native-e2e",
-	"version": "1.0.0",
-	"main": "index.ts",
-	"scripts": {
-		"postinstall": "patch-package",
-		"start": "expo start",
-		"android": "expo run:android",
-		"ios": "expo run:ios"
-	},
-	"dependencies": {
-		"@sentry/react-native": "^8.13.0",
-		"expo": "55.0.19",
-		"expo-crypto": "55.0.14",
-		"react": "19.2.5",
-		"react-native": "0.83.6",
-		"react-native-safe-area-context": "5.6.2",
-		"uint8array-extras": "1.5.0"
-	},
-	"devDependencies": {
-		"@babel/core": "7.29.0",
-		"@comapeo/core": "7.1.0",
-		"@mapeo/mock-data": "5.0.0",
-		"@types/jasmine": "5.1.15",
-		"@types/react": "19.2.14",
-		"expo-dev-client": "55.0.30",
-		"jasmine-core": "5.13.0",
-		"patch-package": "8.0.1",
-		"typescript": "5.9.3"
-	},
-	"private": true,
-	"expo": {
-		"autolinking": {
-			"nativeModulesDir": "../../"
-		}
-	}
+  "name": "core-react-native-e2e",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "scripts": {
+    "postinstall": "patch-package",
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
+  },
+  "dependencies": {
+    "@sentry/react-native": "^8.13.0",
+    "babel-preset-expo": "~56.0.0",
+    "expo": "56.0.12",
+    "expo-crypto": "56.0.4",
+    "react": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-safe-area-context": "5.7.0",
+    "uint8array-extras": "1.5.0"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.0",
+    "@comapeo/core": "7.1.0",
+    "@mapeo/mock-data": "5.0.0",
+    "@types/jasmine": "5.1.15",
+    "@types/react": "19.2.14",
+    "expo-dev-client": "56.0.20",
+    "jasmine-core": "5.13.0",
+    "patch-package": "8.0.1",
+    "typescript": "5.9.3"
+  },
+  "private": true,
+  "expo": {
+    "autolinking": {
+      "nativeModulesDir": "../../"
+    },
+    "install": {
+      "exclude": [
+        "@sentry/react-native",
+        "typescript"
+      ]
+    }
+  }
 }

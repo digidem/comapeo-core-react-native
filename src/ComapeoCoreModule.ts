@@ -1,7 +1,7 @@
 import { NativeModule, requireNativeModule, EventEmitter } from "expo";
-import { type JsonValue } from "type-fest";
+import type { JsonValue } from "type-fest";
 import {
-  ComapeoCoreModuleEvents,
+  type ComapeoCoreModuleEvents,
   type ComapeoErrorInfo,
   type ComapeoState,
   type MessageErrorEventPayload,

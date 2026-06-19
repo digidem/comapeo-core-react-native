@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { ServerHelper } from "./server-helper.js";
 import { connectSocket, socketPath, waitFor } from "./test-helpers.mjs";
 
-test("listen() resolves and reports 'started', close() reports 'closed'", async (t) => {
+test("listen() resolves and reports 'started', close() reports 'closed'", async () => {
   const server = new ServerHelper(() => {});
   const path = socketPath();
 
@@ -36,7 +36,7 @@ test("close() destroys open connections and resolves", async (t) => {
   await clientClosed; // the client end observes the server-side teardown
 });
 
-test("close() is a no-op when already closed", async (t) => {
+test("close() is a no-op when already closed", async () => {
   const server = new ServerHelper(() => {});
   const path = socketPath();
   await server.listen(path);

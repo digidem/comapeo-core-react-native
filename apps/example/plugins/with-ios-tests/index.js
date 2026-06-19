@@ -21,7 +21,7 @@ const {
 const APP_TARGET_NAME = 'corereactnativeexample';
 const TEST_TARGET_NAME = 'corereactnativeexampleTests';
 const TEST_BUNDLE_ID = 'com.comapeo.core.example.tests';
-const IPHONEOS_DEPLOYMENT_TARGET = '15.1';
+const IPHONEOS_DEPLOYMENT_TARGET = '16.4';
 
 // Source of truth for the iOS XCTest sources. Kept under example/tests/ios/
 // (rather than bundled with the plugin) to mirror with-android-tests —

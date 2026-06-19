@@ -13,17 +13,17 @@ concurrency:
 jobs:
   package-tests:
     name: Swift Package Tests (macOS)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
 
-      # sentry-cocoa 9.15.0 (pulled in by @sentry/react-native v8) ships a
+      # sentry-cocoa 9.18.0 (pulled in by @sentry/react-native v8) ships a
       # swift-tools-version:6.0 manifest; Swift 5.10 (Xcode 15.4) can't parse
       # it and dependency resolution fails. Needs a Swift 6 toolchain.
       - name: Select Xcode version
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+        run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
 
       # The Swift Package test target (`ComapeoCore-Package`) builds only
       # platform-portable files (NodeJSIPC, NodeJSService, Log) and runs
@@ -37,20 +37,20 @@ jobs:
 
   integration-tests:
     name: Integration Tests (Example App)
-    # Xcode 26 minimum: Expo SDK 55's ExpoModulesCore source uses
+    # Xcode 26 minimum: Expo SDK 56's ExpoModulesCore source uses
     # `@MainActor` on protocol conformances and other Swift Concurrency
     # constructs that fail to compile on Xcode 16.x (Swift 6.0/6.1) under
     # strict-isolation checking — see https://github.com/expo/expo/issues/42525.
     # Xcode 26.x (Swift 6.2+) is the first release that compiles these
-    # cleanly. macos-15 runners ship Xcode 26.0.1 through 26.3.
-    runs-on: macos-15
+    # cleanly. SDK 56 needs Xcode >= 26.4, which only the macos-26 runner image provides (26.0.1 through 26.5; macos-15 tops out at 26.3).
+    runs-on: macos-26
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+        run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -89,7 +89,7 @@ jobs:
         run: cd apps/example/ios && pod install
 
       # Don't pin a specific device name (e.g. "iPhone 16"). GitHub-hosted
-      # macos-15 runners *should* have iPhone 16 pre-installed for iOS 26 per
+      # macos-26 runners *should* have iPhone 16 pre-installed for iOS 26 per
       # the runner image readme, but in practice some runner instances boot
       # with no simulator devices registered (only the placeholder destination
       # is listed by xcodebuild) — looks like a transient provisioning state.
@@ -99,7 +99,7 @@ jobs:
         id: simulator
         run: |
           set -euo pipefail
-          # Prefer iOS 26.x to match the SDK Xcode 26.3 builds against.
+          # Prefer iOS 26.x to match the SDK Xcode 26.4 builds against.
           # Fall back to whatever iPhone simulator is available.
           UDID=$(xcrun simctl list devices available --json | python3 -c '
           import json, sys, re
@@ -174,14 +174,14 @@ jobs:
     # isn't needed, but keeping the job separate gives a focused
     # failure signal when the device slice breaks while the simulator
     # slice is still fine.
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+        run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
