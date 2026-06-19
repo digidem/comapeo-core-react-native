@@ -1,0 +1,81 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      semver:
+        description: 'The semver to use'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+          - prerelease
+          - prepatch
+          - preminor
+          - premajor
+  pull_request:
+    types: [closed]
+
+jobs:
+  release:
+    # Phase 1 (workflow_dispatch): bump the version and open the release PR.
+    # Phase 2 (pull_request closed): when the optic bot's release PR merges
+    # into main (or a `-pre.` prerelease branch), actually build + publish.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.user.login == 'optic-release-automation[bot]'
+        && startsWith(github.event.pull_request.title, '[OPTIC-RELEASE-AUTOMATION]')
+        && (!github.event.pull_request.merged
+          || github.event.pull_request.base.ref == 'main'
+          || contains(github.event.pull_request.head.ref, '-pre.')))
+    # macOS, NOT ubuntu (unlike comapeo-ipc): the published tarball ships the
+    # per-addon iOS xcframeworks built by `npm run backend:build`, and the
+    # `xcodebuild -create-xcframework` wrapping pass is darwin-gated
+    # (scripts/build-backend.ts skips it on non-darwin). Publishing from Linux
+    # would silently produce a tarball with an empty `ios/Frameworks/`, so iOS
+    # consumers would fail to dlopen the native addons at runtime. The same
+    # macOS run also produces the Android jniLibs (pure file copy of downloaded
+    # prebuilds — no Android toolchain needed), so one runner ships both.
+    runs-on: macos-15
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write # npm OIDC trusted publishing
+    steps:
+      # The optic action does its own checkout + setup-node (lts/*, currently
+      # Node 24) + npm upgrade for OIDC, but it does NOT set up Xcode. Select
+      # it here: `sudo xcode-select` sets a system-wide DEVELOPER_DIR that
+      # persists through the action's internal checkout into its build-command,
+      # where `xcodebuild`/`lipo` wrap the addon xcframeworks. Matches the Xcode
+      # pinned by the iOS test workflow.
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - uses: nearform-actions/optic-release-automation-action@9e3518763346efacba15d729d0faaa4cbd8fdd52 # v4.12.3
+        with:
+          commit-message: 'Release {version}'
+          sync-semver-tags: false
+          access: 'public'
+          prerelease-prefix: 'pre'
+          semver: ${{ github.event.inputs.semver }}
+          npm-tag: ${{ startsWith(github.event.inputs.semver, 'pre') && 'pre' || 'latest' }}
+          notify-linked-issues: false
+          publish-mode: oidc
+          # Runs after the version bump, before publish. We only need to lay
+          # down the one prerequisite the npm lifecycle can't: the nodejs-mobile
+          # binaries + headers (`build-backend.ts` reads the libnode header to
+          # derive the Node ABI for non-NAPI prebuild URLs). `npm run
+          # backend:build` here populates the native asset trees (Android
+          # jniLibs/assets + iOS Frameworks/nodejs-project) in the working tree
+          # post-bump, so the tarball is complete regardless of whether the
+          # publish step re-runs the `prepack` hook. `npm ci` already triggers
+          # `prepare` (write-version + expo-module TS build).
+          build-command: |
+            npm ci
+            npm run download:nodejs-mobile
+            npm run backend:build
