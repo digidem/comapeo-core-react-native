@@ -8,7 +8,13 @@ import {
   type MessageEventPayload,
   type StateChangeEventPayload,
 } from "./ComapeoCore.types";
-import { createMapeoClient, type MapeoClientApi } from "@comapeo/ipc/client.js";
+import type { MessagePortLike } from "rpc-reflector";
+import {
+  createComapeoCoreClient,
+  createComapeoServicesClient,
+  type ComapeoCoreClientApi,
+  type ComapeoServicesClientApi,
+} from "@comapeo/ipc/client.js";
 import * as Sentry from "@sentry/react-native";
 // `getTraceData` / `startNewTrace` aren't re-exported from
 // `@sentry/react-native@7`; `@sentry/core` is a direct dep of RN so
@@ -16,11 +22,13 @@ import * as Sentry from "@sentry/react-native";
 import { getTraceData, startNewTrace } from "@sentry/core";
 import type { SentryInitConfig } from "./sentry";
 
-// `onRequestHook` request type derived from `createMapeoClient` so
+// `onRequestHook` request type derived from `createComapeoCoreClient` so
 // any hook-signature change up-stream is a compile error here. The
 // hook input omits `metadata`; we re-add it to write into `next(...)`.
 type IpcHookRequest = Parameters<
-  NonNullable<NonNullable<Parameters<typeof createMapeoClient>[1]>["onRequestHook"]>
+  NonNullable<
+    NonNullable<Parameters<typeof createComapeoCoreClient>[1]>["onRequestHook"]
+  >
 >[0];
 type IpcRequestWithMetadata = IpcHookRequest & {
   metadata?: Record<string, string>;
@@ -106,22 +114,25 @@ export function setDiagnosticsEnabledNative(value: boolean): Promise<void> {
 }
 
 /** Persist `captureApplicationData`. See `setCaptureApplicationData` JSDoc. */
-export function setCaptureApplicationDataNative(
-  value: boolean,
-): Promise<void> {
+export function setCaptureApplicationDataNative(value: boolean): Promise<void> {
   return nativeModule.setCaptureApplicationData(value);
 }
 
 type MessagePortEvents = {
-  message: (message: JsonValue) => void;
+  message: (event: { data: JsonValue }) => void;
 };
 
-class CoreMessagePort extends EventEmitter<MessagePortEvents> {
+// The expo EventEmitter calls startObserving/stopObserving when the first
+// listener is added and the last listener is removed.
+class CoreMessagePort
+  extends EventEmitter<MessagePortEvents>
+  implements MessagePortLike
+{
   postMessage(value: JsonValue) {
     nativeModule.postMessage(JSON.stringify(value));
   }
 
-  startObserving<EventName extends keyof ComapeoCoreModuleEvents>(
+  startObserving<EventName extends keyof MessagePortEvents>(
     eventName: EventName,
   ): void {
     if (eventName === "message") {
@@ -129,7 +140,7 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
     }
   }
 
-  stopObserving<EventName extends keyof ComapeoCoreModuleEvents>(
+  stopObserving<EventName extends keyof MessagePortEvents>(
     eventName: EventName,
   ): void {
     if (eventName === "message") {
@@ -140,7 +151,7 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
   #handleMessageEvent = (event: MessageEventPayload) => {
     try {
       const message = JSON.parse(event.data);
-      this.emit("message", message);
+      this.emit("message", { data: message });
     } catch {
       console.error("Failed to parse message event data", event.data);
     }
@@ -161,7 +172,7 @@ class CoreMessagePort extends EventEmitter<MessagePortEvents> {
   }
 }
 
-const messagePort = new CoreMessagePort() as unknown as MessagePort;
+const messagePort = new CoreMessagePort();
 
 const noop = () => {};
 
@@ -202,7 +213,7 @@ function hasInheritableActiveSpan(): boolean {
   return rootOp !== "ui.load" && !rootOp.startsWith("app.start.");
 }
 
-export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
+export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort, {
   timeout: RPC_TIMEOUT_MS,
   onRequestHook: (request, next) => {
     // Sentry-not-initialised guard. `isInitialized` lives in `@sentry/core`
@@ -212,9 +223,11 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
     // it's undefined whenever no transaction is in progress (e.g. after
     // App Start ends), which is exactly when we still want to create the
     // span and propagate the trace to the backend.
-    const isInitialized = (Sentry as unknown as {
-      isInitialized?: () => boolean;
-    }).isInitialized;
+    const isInitialized = (
+      Sentry as unknown as {
+        isInitialized?: () => boolean;
+      }
+    ).isInitialized;
     if (typeof isInitialized === "function" && !isInitialized()) {
       next(request).catch(noop);
       return;
@@ -232,7 +245,9 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
           },
         },
         async (span) => {
-          const { "sentry-trace": sentryTrace, baggage } = getTraceData({ span });
+          const { "sentry-trace": sentryTrace, baggage } = getTraceData({
+            span,
+          });
           const tracedRequest: IpcRequestWithMetadata = sentryTrace
             ? {
                 ...request,
@@ -250,7 +265,10 @@ export const comapeo: MapeoClientApi = createMapeoClient(messagePort, {
             // cold boot, `rn.send.syncMs` stays small while total stays high.
             const sendStart = performance.now();
             const responsePromise = next(tracedRequest);
-            span.setAttribute?.("rn.send.syncMs", performance.now() - sendStart);
+            span.setAttribute?.(
+              "rn.send.syncMs",
+              performance.now() - sendStart,
+            );
             await responsePromise;
             span.setStatus?.({ code: 1, message: "ok" });
           } catch (error) {
@@ -318,7 +336,9 @@ class State extends EventEmitter<StateEvents> {
     return nativeModule.getLastError();
   }
 
-  startObserving<EventName extends keyof StateEvents>(eventName: EventName): void {
+  startObserving<EventName extends keyof StateEvents>(
+    eventName: EventName,
+  ): void {
     if (eventName === "stateChange") {
       nativeModule.addListener("stateChange", this.#handleStateChangeEvent);
     } else if (eventName === "messageerror") {
@@ -326,11 +346,16 @@ class State extends EventEmitter<StateEvents> {
     }
   }
 
-  stopObserving<EventName extends keyof StateEvents>(eventName: EventName): void {
+  stopObserving<EventName extends keyof StateEvents>(
+    eventName: EventName,
+  ): void {
     if (eventName === "stateChange") {
       nativeModule.removeListener("stateChange", this.#handleStateChangeEvent);
     } else if (eventName === "messageerror") {
-      nativeModule.removeListener("messageerror", this.#handleMessageErrorEvent);
+      nativeModule.removeListener(
+        "messageerror",
+        this.#handleMessageErrorEvent,
+      );
     }
   }
 
@@ -348,3 +373,8 @@ class State extends EventEmitter<StateEvents> {
 }
 
 export const state = new State();
+
+export const comapeoServicesClient: ComapeoServicesClientApi =
+  createComapeoServicesClient(messagePort, {
+    timeout: RPC_TIMEOUT_MS,
+  });

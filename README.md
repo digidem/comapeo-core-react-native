@@ -77,6 +77,47 @@ is a confusing state to end up in).
 
 Run `npx pod-install` after installing the npm package.
 
+# Map server
+
+The module runs an offline-capable map server (`@comapeo/map-server`)
+inside the embedded Node backend, served over loopback HTTP. Point a map
+renderer such as [MapLibre](https://maplibre.org/) at the local URL to
+draw background maps — including offline.
+
+```ts
+import { comapeoServicesClient } from "@comapeo/core-react-native";
+
+// Available once the backend has started.
+const baseUrl = await comapeoServicesClient.mapServer.getBaseUrl();
+// → http://127.0.0.1:<port>
+
+// Hand a style URL to your map renderer:
+const styleUrl = `${baseUrl}/maps/fallback/style.json`;
+```
+
+Three built-in map IDs are served under `/maps/<id>/…`:
+
+- **`fallback`** — a small offline map bundled with the module
+  (`@comapeo/fallback-smp`); always available, used as the last resort.
+- **`default`** — redirects to a hardcoded online style
+  (`demotiles.maplibre.org`), so it needs a network connection.
+- **`custom`** — an offline `.smp` the user has imported through the
+  app; returns 404 until one is added.
+
+`comapeoServicesClient` is the client for the app-provided services RPC
+(renamed from `appRpcClient` in `@comapeo/ipc@9`); `mapServer` is its
+only member today.
+
+### Cleartext-to-localhost
+
+The map server is plain HTTP on `127.0.0.1`, which release builds block
+by default. The Expo config plugin adds a **loopback-scoped** exception
+so the server is reachable: an Android `network-security-config` limited
+to `127.0.0.1`/`localhost`, and the iOS `NSAllowsLocalNetworking` ATS
+key. Traffic to the public internet keeps the secure default. If your
+app manages its own `networkSecurityConfig` or App Transport Security
+settings, make sure cleartext to loopback stays allowed.
+
 # Optional: Sentry integration
 
 This module can forward its native-side and JS-side lifecycle events

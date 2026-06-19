@@ -75,14 +75,30 @@ runs:
           }'
         )
 
-        BUILD_ID=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+        # Capture body and status separately: BrowserStack returns a
+        # JSON `message` (e.g. queue/parallel-limit errors) that
+        # `--fail` would discard, leaving only an opaque exit code.
+        RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
+          -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
           -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/$PLATFORM/build" \
           -H "Content-Type: application/json" \
-          -d "$PAYLOAD" \
-          | jq -r '.build_id')
+          -d "$PAYLOAD")
+        HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+        BODY=$(printf '%s' "$RESPONSE" | sed '$d')
+
+        if [ "$HTTP_CODE" -ge 400 ]; then
+          echo "BrowserStack build trigger failed (HTTP $HTTP_CODE): $BODY" >&2
+          exit 1
+        fi
+
+        BUILD_ID=$(printf '%s' "$BODY" | jq -r '.build_id // empty')
+        if [ -z "$BUILD_ID" ]; then
+          echo "BrowserStack build trigger returned no build_id (HTTP $HTTP_CODE): $BODY" >&2
+          exit 1
+        fi
 
         echo "Triggered build: $BUILD_ID"
-        echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+        echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
 
     - name: Poll for result
       env:
@@ -96,6 +112,27 @@ runs:
         POLL_INTERVAL=30
         ELAPSED=0
 
+        # On a non-pass terminal state, dump the per-device/session report
+        # so the actual Maestro failure is visible in the CI log instead of
+        # a bare "Tests failed". The poll response (v2 build) carries
+        # per-device sessions; the v1 sessions endpoint adds the Maestro
+        # logs + dashboard link for each one.
+        report_failure() {
+          echo "::group::BrowserStack build report ($BUILD_ID)"
+          printf '%s\n' "$RESPONSE" | jq '.' || printf '%s\n' "$RESPONSE"
+          printf '%s\n' "$RESPONSE" \
+            | jq -r '.devices[]? | "device=\(.device // .os) status=\(.status) session=\(.sessions[]?.id // "?")"' \
+            || true
+          echo "::endgroup::"
+          for SESSION_ID in $(printf '%s\n' "$RESPONSE" | jq -r '.devices[]?.sessions[]?.id // empty'); do
+            echo "::group::Session $SESSION_ID"
+            curl --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+              "https://api-cloud.browserstack.com/app-automate/maestro/v2/builds/$BUILD_ID/sessions/$SESSION_ID" \
+              | jq '.' || true
+            echo "::endgroup::"
+          done
+        }
+
         while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
           RESPONSE=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             "https://api-cloud.browserstack.com/app-automate/maestro/v2/builds/$BUILD_ID")
@@ -105,7 +142,10 @@ runs:
 
           case "$STATUS" in
             passed|completed) echo "Tests passed"; exit 0 ;;
-            failed)           echo "Tests failed"; exit 1 ;;
+            failed|error|timedout)
+              echo "Tests failed (status: $STATUS)"
+              report_failure
+              exit 1 ;;
           esac
 
           sleep "$POLL_INTERVAL"
@@ -113,6 +153,7 @@ runs:
         done
 
         echo "Timed out after ${MAX_WAIT}s waiting for build $BUILD_ID"
+        report_failure
         exit 1
 
     - name: Stop BrowserStack build on cancel

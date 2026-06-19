@@ -1,4 +1,4 @@
-import { comapeo } from "@comapeo/core-react-native";
+import { comapeo, comapeoServicesClient } from "@comapeo/core-react-native";
 import * as Sentry from "@sentry/react-native";
 import React, { useEffect, useState } from "react";
 import { Button, ScrollView, Text, View } from "react-native";
@@ -15,6 +15,21 @@ export default function App() {
 
   useEffect(() => {
     comapeo.listProjects().then(setProjects);
+  }, []);
+
+  const [mapServerUrl, setMapServerUrl] = useState<string | undefined>(
+    undefined,
+  );
+
+  useEffect(() => {
+    comapeoServicesClient.mapServer
+      .getBaseUrl()
+      .then((url) => {
+        setMapServerUrl(url);
+      })
+      .catch((err) => {
+        console.error("Failed to get map server URL:", err);
+      });
   }, []);
 
   return (
@@ -45,6 +60,10 @@ export default function App() {
               comapeo.listProjects().then(setProjects);
             }}
           />
+        </Group>
+
+        <Group name="Map server">
+          <Text>{mapServerUrl}</Text>
         </Group>
       </ScrollView>
     </SafeAreaView>

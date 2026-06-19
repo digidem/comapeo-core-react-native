@@ -1,27 +1,33 @@
 import { Buffer } from "node:buffer";
 import FramedStream from "framed-stream";
-import { TypedEmitter } from "tiny-typed-emitter";
 import ensureError from "ensure-error";
 
 /**
  * @import {JsonValue} from "type-fest"
+ * @import {MessagePortLike} from "rpc-reflector"
  */
+
+const MESSAGE_PORT_EVENTS = /** @type {const} */ ([
+  "message",
+  "messageerror",
+  "close",
+]);
 
 /**
- * @typedef {Object} Events
- * @property {(message: JsonValue) => void} message
- * @property {(error: Error) => void} messageerror
- * @property {() => void} close
+ * @typedef {typeof MESSAGE_PORT_EVENTS[number]} MessagePortEventType
  */
 
-// Narrower than Node's `MessagePort`, which has misleading types and
-// doesn't match browser usage.
-/** @typedef {Pick<import('node:events').EventEmitter, 'addListener' | 'removeListener'> & { postMessage: (message: any) => void }} MessagePortLike */
+/** @type {Event & { type: 'close' }} */
+class MessagePortCloseEvent extends Event {
+  constructor() {
+    super("close");
+  }
+}
 
 /**
- * @extends {TypedEmitter<Events>}
+ * @implements {MessagePortLike}
  */
-export class SocketMessagePort extends TypedEmitter {
+export class SocketMessagePort extends EventTarget {
   /** @type {'idle' | 'active' | 'closed'} */
   #state = "idle";
   #framedStream;
@@ -33,13 +39,14 @@ export class SocketMessagePort extends TypedEmitter {
     try {
       const message = JSON.parse(buf.toString());
       if (this.#state === "active") {
-        this.emit("message", message);
+        this.dispatchEvent(new MessageEvent("message", { data: message }));
       } else if (this.#state === "idle") {
         this.#queue.push(message);
       }
     } catch (reason) {
-      console.error("Failed to parse message", reason);
-      this.emit("messageerror", ensureError(reason));
+      this.dispatchEvent(
+        new MessageEvent("messageerror", { data: ensureError(reason) }),
+      );
     }
   };
 
@@ -55,8 +62,9 @@ export class SocketMessagePort extends TypedEmitter {
       this.close();
     });
     this.#framedStream.on("error", (error) => {
-      // TODO: Emit error, handle in consumer
-      console.error("FramedStream error", error);
+      this.dispatchEvent(
+        new MessageEvent("messageerror", { data: ensureError(error) }),
+      );
     });
   }
 
@@ -71,26 +79,53 @@ export class SocketMessagePort extends TypedEmitter {
     if (this.#state !== "idle") return;
     this.#state = "active";
     for (const message of this.#queue) {
-      this.emit("message", message);
+      this.dispatchEvent(new MessageEvent("message", { data: message }));
     }
     this.#queue.length = 0;
   }
 
   /**
-   * @template {keyof Events} TEvent
-   * @param {TEvent} event
-   * @param {Events[TEvent]} listener
+   * @overload
+   * @param {'close'} event
+   * @param {(event: MessagePortCloseEvent) => void} listener
+   * @returns {void}
    */
-  addEventListener(event, listener) {
-    this.addListener(event, listener);
-  }
   /**
-   * @template {keyof Events} TEvent
-   * @param {TEvent} event
-   * @param {Events[TEvent]} listener
+   * @overload
+   * @param {'message' | 'messageerror'} event
+   * @param {(event: MessageEvent) => void} listener
+   * @returns {void}
    */
-  removeEventListener(event, listener) {
-    this.removeListener(event, listener);
+  /**
+   * @override
+   * @param {MessagePortEventType} type
+   * @param {(event: MessageEvent & MessagePortCloseEvent) => void} listener
+   */
+  addEventListener(type, listener) {
+    assertValidMessagePortEventType(type);
+    super.addEventListener(type, /** @type {EventListener} */ (listener));
+  }
+
+  /**
+   * @overload
+   * @param {'close'} type
+   * @param {(event: MessagePortCloseEvent) => void} listener
+   * @returns {void}
+   */
+  /**
+   * @overload
+   * @param {'message' | 'messageerror'} type
+   * @param {(event: MessageEvent) => void} listener
+   * @returns {void}
+   */
+  /**
+   * @override
+   * @param {MessagePortEventType} type
+   * @param {(event: MessageEvent & MessagePortCloseEvent) => void} listener
+   */
+  removeEventListener(type, listener) {
+    assertValidMessagePortEventType(type);
+    super.removeEventListener(type, /** @type {EventListener} */ (listener));
   }
 
   close() {
@@ -98,5 +133,18 @@ export class SocketMessagePort extends TypedEmitter {
     this.#state = "closed";
     this.#queue.length = 0;
     this.#framedStream.destroy();
+    this.dispatchEvent(new MessagePortCloseEvent());
   }
 }
+
+/**
+ * @param {string} type
+ * @returns {asserts type is MessagePortEventType}
+ */
+const assertValidMessagePortEventType = (type) => {
+  if (
+    !MESSAGE_PORT_EVENTS.includes(/** @type {MessagePortEventType} */ (type))
+  ) {
+    throw new Error(`Invalid MessagePort event type: ${type}`);
+  }
+};

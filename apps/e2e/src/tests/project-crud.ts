@@ -9,7 +9,7 @@ import {
 	type RemoteDetectionAlertValue,
 	type TrackValue,
 } from '@comapeo/core/schema.js'
-import type { MapeoProjectApi } from '@comapeo/ipc'
+import type { ComapeoProjectClientApi } from '@comapeo/ipc'
 import { generate } from '@mapeo/mock-data'
 import { getRandomBytes } from 'expo-crypto'
 import { uint8ArrayToHex } from 'uint8array-extras'
@@ -42,9 +42,9 @@ export function test({
 }: TestContext) {
 	const CREATE_COUNT = 100
 
-	const openProjects = new Set<MapeoProjectApi>()
+	const openProjects = new Set<ComapeoProjectClientApi>()
 
-	async function openProject(projectId: string): Promise<MapeoProjectApi> {
+	async function openProject(projectId: string): Promise<ComapeoProjectClientApi> {
 		const project = await comapeo.getProject(projectId)
 		openProjects.add(project)
 		return project
@@ -354,7 +354,7 @@ export function test({
 }
 
 function createWithMockData(
-	project: MapeoProjectApi,
+	project: ComapeoProjectClientApi,
 	schemaName:
 		| 'field'
 		| 'observation'
@@ -467,7 +467,7 @@ function getUpdateFixture<T extends ComapeoValue>(value: T): T {
  * [0]: https://www.typescriptlang.org/play/?#code/JYOwLgpgTgZghgYwgAgGIHt3IN4ChnIyYBcyIArgLYBG0A3LgL666iSyIoBCcUO+yar1IUa9JiwToQAZzDIANugDmy6MgC8-AkXSkAPABVkEAB6QQAExlpMAPgAUANzgLyEUoYCUmu8imy6AoQAHRKys6u7iG6XgA0AkJQBsZmFtbIPFCOLm4eyN6+-tIyQaHhkXkhSfFMDLgBcsjoAA5gwCWayADaAES6vXHIvUm9ALrIcDaNYAxEfA4zzW0dIM0wy+0lPngES+jUAFakGFgAPpm8Xa1baxr3wwPIAPw4hCTIAIzIjMik2IJhMgAEw-BgEcJqKDdG6rMYOA6HLwMRhAA
  */
 function create(
-	project: MapeoProjectApi,
+	project: ComapeoProjectClientApi,
 	value:
 		| FieldValue
 		| ObservationValue
@@ -495,7 +495,7 @@ function create(
  * Update a doc. See above for why this function exists.
  */
 function update(
-	project: MapeoProjectApi,
+	project: ComapeoProjectClientApi,
 	versionId: string,
 	value:
 		| FieldValue
