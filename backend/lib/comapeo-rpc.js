@@ -4,10 +4,8 @@ import {
   createComapeoCoreServer,
   createComapeoServicesServer,
 } from "@comapeo/ipc/server.js";
-import StartStopStateMachine from "start-stop-state-machine";
 
 /** @import {MapeoManager} from '@comapeo/core' */
-/** @import {ListenOptions, MapServer} from '@comapeo/map-server' */
 /** @import {ComapeoServicesApi} from '@comapeo/ipc/server.js' */
 
 export class ComapeoRpc extends ServerHelper {
@@ -33,50 +31,18 @@ export class ComapeoRpc extends ServerHelper {
         onRequestHook ? { onRequestHook } : undefined,
       );
 
-      messagePort.start();
-
       messagePort.addEventListener("messageerror", (event) => {
         console.error("Client sent invalid message", event.data);
       });
 
+      // Registered before start() flushes queued messages: a socket that
+      // closes during the flush would otherwise leak both servers.
       messagePort.addEventListener("close", () => {
         coreServer.close();
         servicesServer.close();
       });
+
+      messagePort.start();
     });
-  }
-}
-
-/**
- * Wrap the MapServer to make listen() idempotent and handle race conditions
- * with start/stop calls.
- *
- * @implements {MapServer}
- */
-class MapServerApi {
-  /** @param {ListenOptions} [opts] */
-  #start = async (opts) => {
-    return this.#mapServer.listen(opts);
-  };
-
-  #stop = async () => {
-    return this.#mapServer.close();
-  };
-
-  #sm = new StartStopStateMachine({ start: this.#start, stop: this.#stop });
-  #mapServer;
-
-  /** @param {MapServer} mapServer */
-  constructor(mapServer) {
-    this.#mapServer = mapServer;
-  }
-
-  /** @param {ListenOptions} [opts] */
-  async listen(opts) {
-    return this.#sm.start(opts);
-  }
-
-  async close() {
-    return this.#sm.stop();
   }
 }

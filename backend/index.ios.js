@@ -7,5 +7,6 @@
 // loads undici and installs the globals the map server needs.
 
 import "./lib/install-polywasm.js";
+import "./lib/assert-webassembly.js";
 import "./lib/install-fetch.js";
 import "./index.js";

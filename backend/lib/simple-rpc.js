@@ -88,7 +88,7 @@ export class SimpleRpcServer extends ServerHelper {
     }
     const method = this.#methods[message.type];
     if (typeof method !== "function") {
-      console.warn("Received message with unhandled type", message.type);
+      console.warn("Handler for message type is not a function", message.type);
       return;
     }
     method(message);

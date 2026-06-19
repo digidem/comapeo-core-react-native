@@ -94,6 +94,52 @@ test("an unknown message type is ignored without throwing", async (t) => {
   assert.ok(called, "later valid message must still be handled");
 });
 
+test("a non-string or missing type is ignored without throwing", async (t) => {
+  let called = false;
+  const { path } = await startServer(t, {
+    init: () => {
+      called = true;
+    },
+  });
+
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  client.start();
+  client.postMessage(/** @type {any} */ ({ type: 42 }));
+  client.postMessage(/** @type {any} */ ({ type: null }));
+  client.postMessage(/** @type {any} */ ({ noType: true }));
+  client.postMessage("just a string");
+  client.postMessage({ type: "init" });
+
+  await waitFor(() => called, { message: "valid message still handled" });
+  assert.ok(called, "a later well-formed message must still be handled");
+});
+
+test("a registered handler that is not a function is warned and skipped", async (t) => {
+  /** @type {unknown[][]} */
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+
+  const { path } = await startServer(
+    t,
+    /** @type {any} */ ({ broken: "not a function" }),
+  );
+
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  client.start();
+  client.postMessage({ type: "broken" });
+
+  await waitFor(
+    () => warnings.some((w) => String(w[0]).includes("not a function")),
+    { message: "non-function handler warned" },
+  );
+});
+
 test("a malformed frame does not crash the server", async (t) => {
   /** @type {unknown[]} */
   const received = [];

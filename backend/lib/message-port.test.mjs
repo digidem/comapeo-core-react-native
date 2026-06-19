@@ -93,6 +93,32 @@ test("the underlying socket closing triggers a 'close' event", async (t) => {
   await closed; // hangs (and times out the test) if close is never dispatched
 });
 
+test("postMessage after close() does not throw", async (t) => {
+  const { serverSocket } = await connectedSocketPair(t);
+  const port = new SocketMessagePort(serverSocket);
+  port.close();
+
+  // Writing to the destroyed framed stream must be a safe no-op so a
+  // late send racing a disconnect can't crash the backend.
+  assert.doesNotThrow(() => port.postMessage({ late: true }));
+});
+
+test("no 'message' is delivered after close()", async (t) => {
+  const { serverSocket, clientSocket } = await connectedSocketPair(t);
+  const sender = new SocketMessagePort(clientSocket);
+  const receiver = new SocketMessagePort(serverSocket);
+  receiver.start();
+
+  let count = 0;
+  receiver.addEventListener("message", () => count++);
+
+  receiver.close();
+  sender.postMessage({ a: 1 });
+  await delay(50);
+
+  assert.equal(count, 0, "a closed port must not deliver further messages");
+});
+
 test("removeEventListener stops further delivery", async (t) => {
   const { serverSocket, clientSocket } = await connectedSocketPair(t);
   const sender = new SocketMessagePort(clientSocket);

@@ -112,6 +112,27 @@ runs:
         POLL_INTERVAL=30
         ELAPSED=0
 
+        # On a non-pass terminal state, dump the per-device/session report
+        # so the actual Maestro failure is visible in the CI log instead of
+        # a bare "Tests failed". The poll response (v2 build) carries
+        # per-device sessions; the v1 sessions endpoint adds the Maestro
+        # logs + dashboard link for each one.
+        report_failure() {
+          echo "::group::BrowserStack build report ($BUILD_ID)"
+          printf '%s\n' "$RESPONSE" | jq '.' || printf '%s\n' "$RESPONSE"
+          printf '%s\n' "$RESPONSE" \
+            | jq -r '.devices[]? | "device=\(.device // .os) status=\(.status) session=\(.sessions[]?.id // "?")"' \
+            || true
+          echo "::endgroup::"
+          for SESSION_ID in $(printf '%s\n' "$RESPONSE" | jq -r '.devices[]?.sessions[]?.id // empty'); do
+            echo "::group::Session $SESSION_ID"
+            curl --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+              "https://api-cloud.browserstack.com/app-automate/maestro/v2/builds/$BUILD_ID/sessions/$SESSION_ID" \
+              | jq '.' || true
+            echo "::endgroup::"
+          done
+        }
+
         while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
           RESPONSE=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             "https://api-cloud.browserstack.com/app-automate/maestro/v2/builds/$BUILD_ID")
@@ -121,7 +142,10 @@ runs:
 
           case "$STATUS" in
             passed|completed) echo "Tests passed"; exit 0 ;;
-            failed)           echo "Tests failed"; exit 1 ;;
+            failed|error|timedout)
+              echo "Tests failed (status: $STATUS)"
+              report_failure
+              exit 1 ;;
           esac
 
           sleep "$POLL_INTERVAL"
@@ -129,6 +153,7 @@ runs:
         done
 
         echo "Timed out after ${MAX_WAIT}s waiting for build $BUILD_ID"
+        report_failure
         exit 1
 
     - name: Stop BrowserStack build on cancel

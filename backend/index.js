@@ -8,6 +8,10 @@ import { createMapServer } from "./lib/create-map-server.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 import * as sentry from "./lib/sentry.js";
 
+// Shared/Android entry. Android's nodejs-mobile build ships the
+// undici-backed `fetch`/`Response`/`Request` globals the map server needs;
+// iOS lacks them and installs them first via `index.ios.js` → `install-fetch.js`.
+
 // `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` mirrors this
 // directory into the on-device bundle.
 const MIGRATIONS_FOLDER_PATH = fileURLToPath(
@@ -93,11 +97,22 @@ const controlIpcServer = new SimpleRpcServer({
     // Broadcast BEFORE close: AF_UNIX guarantees this frame reaches
     // peers before EOF, so they can tell graceful shutdown from a crash.
     controlIpcServer.broadcast({ type: "stopping" });
-    const closePromises = [controlIpcServer.close(), fastify.close()];
-    if (comapeoRpcServer) closePromises.push(comapeoRpcServer.close());
-    await Promise.all(closePromises);
-    if (comapeoManager) await comapeoManager.close();
-    if (mapServer) await mapServer.close();
+    // Each close is isolated so one failure can't leak the others.
+    /**
+     * @param {string} label
+     * @param {Promise<unknown>} p
+     */
+    const settle = (label, p) =>
+      Promise.resolve(p).catch((e) =>
+        console.error(`shutdown: ${label} close failed`, e),
+      );
+    await Promise.all([
+      settle("control", controlIpcServer.close()),
+      settle("fastify", fastify.close()),
+      ...(comapeoRpcServer ? [settle("rpc", comapeoRpcServer.close())] : []),
+    ]);
+    if (comapeoManager) await settle("manager", comapeoManager.close());
+    if (mapServer) await settle("map-server", mapServer.close());
   },
   /**
    * Android-only attribution channel: FGS-local failures (rootkey load,
@@ -212,7 +227,12 @@ async function withPhase(phase, fn) {
         });
 
         mapServer = createMapServer({ privateStorageDir, rootKey });
+        // Map server is non-critical: boot still reaches "ready" if it fails.
+        // Attach a no-op catch so a listen() rejection surfaces only to
+        // getBaseUrl() callers and never trips the global unhandledRejection
+        // handler (which exits the process).
         const mapServerListenPromise = mapServer.listen();
+        mapServerListenPromise.catch(() => {});
         /** @type {import("@comapeo/ipc/server.js").ComapeoServicesApi} */
         const comapeoServices = {
           mapServer: {
