@@ -25,9 +25,23 @@ config.resolver.nodeModulesPaths = [
   path.resolve(__dirname, '../../node_modules'),
 ];
 
-config.resolver.extraNodeModules = {
-  '@comapeo/core-react-native': '../..',
-};
+// RN 0.85's Metro resolver no longer honours `extraNodeModules` for a
+// package that defines an `exports` map: it resolves to an empty module,
+// so every export reads back `undefined`. Symlink the workspace package
+// into node_modules so Metro resolves it through the normal node_modules
+// path (which honours `exports` correctly). Idempotent — runs whenever
+// Metro loads its config, including the CI release-bundle step.
+const fs = require('fs');
+const moduleLink = path.resolve(
+  __dirname,
+  'node_modules',
+  '@comapeo',
+  'core-react-native',
+);
+if (!fs.existsSync(moduleLink)) {
+  fs.mkdirSync(path.dirname(moduleLink), { recursive: true });
+  fs.symlinkSync(path.resolve(__dirname, '../..'), moduleLink, 'dir');
+}
 
 config.watchFolders = [path.resolve(__dirname, '../..')];
 
