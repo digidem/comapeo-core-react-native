@@ -106,7 +106,7 @@ jobs:
   build-ios:
     if: ${{ github.event.pull_request.draft == false }}
     name: Build (iOS)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 15
     permissions:
       contents: read
@@ -118,7 +118,7 @@ jobs:
           persist-credentials: false
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.4.app/Contents/Developer
+        run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
 
       - uses: actions/setup-node@v6
         with:
