@@ -35,8 +35,6 @@ export class ComapeoRpc extends ServerHelper {
         console.error("Client sent invalid message", event.data);
       });
 
-      // Registered before start() flushes queued messages: a socket that
-      // closes during the flush would otherwise leak both servers.
       messagePort.addEventListener("close", () => {
         coreServer.close();
         servicesServer.close();
