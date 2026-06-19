@@ -51,7 +51,7 @@
     "clean": "expo-module clean",
     "lint": "expo-module lint --cache .",
     "test": "expo-module test",
-    "prepare": "node scripts/write-version.mjs && node scripts/check-sentry-cocoa-pin.mjs && expo-module build",
+    "prepare": "node scripts/write-version.mjs && node scripts/check-sentry-cocoa-pin.mjs && expo-module build --watch false",
     "prepublishOnly": "expo-module prepublishOnly",
     "prepack": "node scripts/write-version.mjs && npm run backend:build",
     "postinstall": "patch-package",
