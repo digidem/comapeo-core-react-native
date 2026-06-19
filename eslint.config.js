@@ -1,5 +1,6 @@
 // @ts-check
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { includeIgnoreFile } from "@eslint/compat";
 import js from "@eslint/js";
 import { defineConfig } from "eslint/config";
@@ -12,11 +13,14 @@ const expo = require("expo-module-scripts/eslint.config.base");
 
 const gitignorePath = path.join(import.meta.dirname, ".gitignore");
 
-const gitExcludePath = path.join(
+// Resolve via git rather than hardcoding `.git/info/exclude`: in a worktree
+// `.git` is a file (gitdir pointer), so that literal path is ENOTDIR.
+const gitExcludePath = path.resolve(
   import.meta.dirname,
-  ".git",
-  "info",
-  "exclude",
+  execFileSync("git", ["rev-parse", "--git-path", "info/exclude"], {
+    cwd: import.meta.dirname,
+    encoding: "utf8",
+  }).trim(),
 );
 
 export default defineConfig([

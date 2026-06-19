@@ -62,10 +62,10 @@ if (useManagedAndroidSdkVersions) {
         }
     }
     project.android {
-        compileSdkVersion safeExtGet("compileSdkVersion", 34)
+        compileSdkVersion safeExtGet("compileSdkVersion", 35)
         defaultConfig {
-            minSdkVersion safeExtGet("minSdkVersion", 21)
-            targetSdkVersion safeExtGet("targetSdkVersion", 34)
+            minSdkVersion safeExtGet("minSdkVersion", 24)
+            targetSdkVersion safeExtGet("targetSdkVersion", 35)
         }
     }
 }
@@ -180,15 +180,15 @@ dependencies {
     // pulls in.
     //
     // Pin matches what @sentry/react-native@8.x ships
-    // (sentry-android 8.43.x — has the structured-log API used by
+    // (sentry-android 8.44.x — has the structured-log API used by
     // `SentryFgsBridge.log` and the Application Metrics API used by
     // `ExitReasonsCollector`). Bump in lock-step with the
     // @sentry/react-native peer-dep range.
-    implementation "io.sentry:sentry-android-core:8.43.0"
+    implementation "io.sentry:sentry-android-core:8.44.0"
     // Test classpath needs the runtime classes so JVM unit tests
     // can exercise the bridge directly. Robolectric isn't on the
     // test classpath, so tests that need a real Context use a fake.
-    testImplementation "io.sentry:sentry-android-core:8.43.0"
+    testImplementation "io.sentry:sentry-android-core:8.44.0"
 
     // JVM unit test dependencies
     testImplementation 'junit:junit:4.13.2'
