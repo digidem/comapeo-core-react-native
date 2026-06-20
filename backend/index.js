@@ -226,6 +226,12 @@ async function withPhase(phase, fn) {
           rootKey,
         });
 
+        // Start the MapeoManager's Fastify so its blob/icon server is
+        // reachable. `$blobs.getUrl()` / `$icons.getUrl()` await the server's
+        // address (5s timeout, else AbortError). Non-fatal: surface listen
+        // failures to getUrl() callers only.
+        fastify.listen({ host: "127.0.0.1", port: 0 }).catch(() => {});
+
         mapServer = createMapServer({ privateStorageDir, rootKey });
         // Map server is non-critical: boot still reaches "ready" if it fails.
         // Attach a no-op catch so a listen() rejection surfaces only to
