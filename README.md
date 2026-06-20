@@ -118,7 +118,7 @@ key. Traffic to the public internet keeps the secure default. If your
 app manages its own `networkSecurityConfig` or App Transport Security
 settings, make sure cleartext to loopback stays allowed.
 
-### Default project config
+# Default project config
 
 New projects are created with no presets/categories unless you supply a
 default config. Pass a `.comapeocat` file to the Expo config plugin; it
