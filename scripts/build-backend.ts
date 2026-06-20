@@ -18,8 +18,8 @@ const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BACKEND_SRC_DIR = join(PROJECT_ROOT, "backend");
 
 // Final destinations consumed by the React Native module's native
-// targets. Rollup writes the bundled JS + static assets directly here
-// (see `backend/rollup.config.js`); the per-platform packagers below
+// targets. Rolldown writes the bundled JS + static assets directly here
+// (see `backend/rolldown.config.ts`); the per-platform packagers below
 // fill in the native-binary side.
 const ANDROID_DEBUG_NODEJS_PROJECT_DIR = join(
   PROJECT_ROOT,
@@ -35,7 +35,7 @@ const IOS_NODEJS_PROJECT_DIR = join(PROJECT_ROOT, "ios/nodejs-project");
 
 // Sourcemap relocation targets — sibling of the per-platform asset/
 // resource trees so they ship in the npm tarball but stay out of the
-// APK/IPA. The relocate-sourcemaps rollup plugin moves `*.map` here
+// APK/IPA. The relocate-sourcemaps rolldown plugin moves `*.map` here
 // after writeBundle. Consumed by `comapeo-rn-upload-sourcemaps` at
 // the consumer's CI step.
 const ANDROID_DEBUG_SOURCEMAPS_DIR = join(
@@ -76,12 +76,12 @@ const { abi: NODE_ABI } = readNodeJsMobileVersions();
 //    hook, so node_modules is current.
 const nativePairs = await collectNativePairs(BACKEND_SRC_DIR, NATIVE_MODULES);
 
-// 3. Rollup bundles backend/index.js into both per-platform output
-//    dirs in one pass. The `OUTPUT_DIR_*` env vars point rollup at
+// 3. Rolldown bundles backend/index.js into both per-platform output
+//    dirs in one pass. The `OUTPUT_DIR_*` env vars point rolldown at
 //    the final native-asset trees, so there's no intermediate
 //    staging. Static runtime assets (drizzle SQL, default config,
 //    fallback map) are copied alongside the bundle by a plugin in
-//    rollup.config.js.
+//    rolldown.config.ts.
 await $({
   cwd: BACKEND_SRC_DIR,
   stdio: "inherit",

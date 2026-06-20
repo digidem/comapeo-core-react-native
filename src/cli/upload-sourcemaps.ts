@@ -15,7 +15,7 @@
 //
 // Each (bundle, map) pair is keyed by a deterministic debug ID embedded
 // at build time (`stringToUUID(chunk.code)`); see
-// `backend/rollup.config.ts` and `relocateSourcemapsPlugin`. sentry-cli
+// `backend/rolldown.config.ts` and `relocateSourcemapsPlugin`. sentry-cli
 // 2.x+ does debug-ID-based upload by default — symbolication keys off
 // the embedded ID, so the consumer's app `release` does not have to
 // match.

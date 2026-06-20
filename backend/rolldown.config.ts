@@ -2,14 +2,8 @@ import { rmSync } from "node:fs";
 import { cp } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { nodeResolve } from "@rollup/plugin-node-resolve";
-import alias from "@rollup/plugin-alias";
-import commonjs from "@rollup/plugin-commonjs";
-import { default as esmShim } from "@rollup/plugin-esm-shim";
-import json from "@rollup/plugin-json";
 import { sentryRollupPlugin } from "@sentry/rollup-plugin";
-import type { OutputOptions, Plugin, RollupOptions } from "rollup";
-import { minify } from "rollup-plugin-esbuild";
+import type { InputOptions, OutputOptions, Plugin, RolldownOptions } from "rolldown";
 
 import addonLoaderPlugin, {
   androidAddonLoaderBanner,
@@ -42,7 +36,7 @@ const ANDROID_OUT_MAIN =
 const IOS_OUT = process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
 
 /**
- * Per-platform sourcemap relocation targets. The `.mjs.map` file rollup
+ * Per-platform sourcemap relocation targets. The `.mjs.map` file rolldown
  * writes alongside the bundle is moved here after `writeBundle` so it
  * never enters the per-platform asset/resource tree consumed by the
  * APK / IPA builds. The maps still ship in the npm tarball (the parent
@@ -91,7 +85,7 @@ function aliasUndiciSimdWasmPlugin(): Plugin {
 /**
  * iOS only: redirect `loader.mjs`'s dynamic `import("./index.js")` to
  * `index.ios.js` (the polywasm-installing wrapper that re-imports
- * `index.js`). Without this, rollup resolves the literal `./index.js`
+ * `index.js`). Without this, rolldown resolves the literal `./index.js`
  * specifier from loader.mjs to the source `index.js` and emits a
  * second chunk that bypasses the polywasm install — undici then
  * throws `ReferenceError: WebAssembly is not defined` at module-init
@@ -115,7 +109,7 @@ function redirectLoaderIndexToPolywasmEntryPlugin(): Plugin {
 }
 
 /**
- * Runtime data files copied alongside the rollup output into the per-
+ * Runtime data files copied alongside the rolldown output into the per-
  * platform output dir. Identical for Android and iOS: only the bundled
  * JS differs (iOS prefixes a polywasm bootstrap and aliases undici's
  * SIMD wasm — see `aliasUndiciSimdWasmPlugin` above).
@@ -144,7 +138,7 @@ const STATIC_ASSET_PATHS = [
 
 /**
  * Copies the static asset paths from `backend/` into `outDir` after the
- * rollup write completes. Replaces the per-platform staging copy that
+ * rolldown write completes. Replaces the per-platform staging copy that
  * `scripts/build-backend.ts` used to do.
  */
 function copyStaticAssetsPlugin(outDir: string): Plugin {
@@ -162,28 +156,42 @@ function copyStaticAssetsPlugin(outDir: string): Plugin {
   };
 }
 
+/**
+ * Shared resolver config. Replaces `@rollup/plugin-node-resolve` and
+ * `@rollup/plugin-alias` with rolldown's built-in resolver:
+ *
+ *   - `platform: "node"` is rolldown's equivalent of node-resolve's
+ *     `preferBuiltins: true` — `node:`-prefixed and bare builtin
+ *     specifiers resolve to the runtime builtin rather than a polyfill.
+ *   - `resolve.alias` swaps `@node-rs/crc32` (a native addon that can't
+ *     be rolled up) for a pure-JS shim. `@comapeo/core` pulls it in
+ *     indirectly.
+ *
+ * CommonJS and JSON inputs are handled by rolldown natively, so the
+ * former `@rollup/plugin-commonjs`, `@rollup/plugin-json`, and
+ * `@rollup/plugin-esm-shim` plugins are gone. Unresolvable dynamic
+ * `require()` calls are left intact (the old `ignoreDynamicRequires`
+ * behaviour) and serviced at runtime by rolldown's `require` polyfill.
+ */
+const sharedInput: Pick<InputOptions, "platform" | "resolve"> = {
+  platform: "node",
+  resolve: {
+    alias: {
+      "@node-rs/crc32": path.join(__dirname, "lib", "node-rs-crc32-shim.js"),
+    },
+  },
+};
+
 function buildPlugins({
   platform,
   outDir,
-  shouldMinify,
   debugIdMap,
 }: {
   platform: "android" | "ios";
   outDir: string;
-  shouldMinify: boolean;
   debugIdMap: Map<string, string>;
 }): Plugin[] {
   return [
-    alias({
-      entries: [
-        // @comapeo/core (indirectly) depends on @node-rs/crc32, which can't be rolled up.
-        // Replace it with a pure JavaScript implementation.
-        {
-          find: "@node-rs/crc32",
-          replacement: path.join(__dirname, "lib", "node-rs-crc32-shim.js"),
-        },
-      ],
-    }),
     // iOS-only: redirect undici's SIMD llhttp wasm to the non-SIMD
     // module so polywasm doesn't trip on opcode 0xfd at runtime. See
     // aliasUndiciSimdWasmPlugin above.
@@ -201,14 +209,6 @@ function buildPlugins({
     // per output via the platform-specific banner — see `output.banner`
     // entries below.
     addonLoaderPlugin(),
-    // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
-    commonjs({ ignoreDynamicRequires: true }),
-    // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
-    esmShim(),
-    nodeResolve({ preferBuiltins: true }),
-    // @ts-expect-error Types for these rollup plugins are misconfigured: https://github.com/rollup/plugins/issues/1860
-    json(),
-    shouldMinify ? minify() : undefined,
     copyStaticAssetsPlugin(outDir),
     // Capture the debug ID sentry-rollup-plugin will compute for this
     // chunk so `relocateSourcemapsPlugin` can read it directly at
@@ -230,8 +230,8 @@ function buildPlugins({
 }
 
 /**
- * Wipes `dir` before rollup writes — keeps successive builds idempotent
- * (rollup overwrites bundle files but `copyStaticAssetsPlugin` is purely
+ * Wipes `dir` before rolldown writes — keeps successive builds idempotent
+ * (rolldown overwrites bundle files but `copyStaticAssetsPlugin` is purely
  * additive, so a stale entry from a previous run could otherwise leak
  * into the output tree).
  */
@@ -290,27 +290,28 @@ const sharedOutput: OutputOptions = {
 // One Map per output config. Populated by `captureDebugIdsPlugin` in
 // `renderChunk` and read by `relocateSourcemapsPlugin` in `writeBundle`.
 // Per-config (rather than one shared Map) so a stale entry from a
-// previous output can't bleed across — rollup runs the configs
+// previous output can't bleed across — rolldown runs the configs
 // sequentially.
 const androidDebugDebugIds = new Map<string, string>();
 const androidMainDebugIds = new Map<string, string>();
 const iosDebugIds = new Map<string, string>();
 
-const config: RollupOptions[] = [
+const config: RolldownOptions[] = [
   {
     input: ANDROID_INPUT,
+    ...sharedInput,
     output: {
       ...sharedOutput,
       dir: ANDROID_OUT_DEBUG,
       banner: androidAddonLoaderBanner,
+      // Android debug does not minify the bundle.
+      minify: false,
     },
     plugins: [
       cleanOutputDirPlugin(ANDROID_OUT_DEBUG),
       ...buildPlugins({
         platform: "android",
         outDir: ANDROID_OUT_DEBUG,
-        // Android debug does not minify the bundle.
-        shouldMinify: false,
         debugIdMap: androidDebugDebugIds,
       }),
       relocateSourcemapsPlugin(
@@ -322,17 +323,18 @@ const config: RollupOptions[] = [
   },
   {
     input: ANDROID_INPUT,
+    ...sharedInput,
     output: {
       ...sharedOutput,
       dir: ANDROID_OUT_MAIN,
       banner: androidAddonLoaderBanner,
+      minify: true,
     },
     plugins: [
       cleanOutputDirPlugin(ANDROID_OUT_MAIN),
       ...buildPlugins({
         platform: "android",
         outDir: ANDROID_OUT_MAIN,
-        shouldMinify: true,
         debugIdMap: androidMainDebugIds,
       }),
       relocateSourcemapsPlugin(
@@ -344,17 +346,18 @@ const config: RollupOptions[] = [
   },
   {
     input: IOS_INPUT,
+    ...sharedInput,
     output: {
       ...sharedOutput,
       dir: IOS_OUT,
       banner: iosAddonLoaderBanner,
+      minify: true,
     },
     plugins: [
       cleanOutputDirPlugin(IOS_OUT),
       ...buildPlugins({
         platform: "ios",
         outDir: IOS_OUT,
-        shouldMinify: true,
         debugIdMap: iosDebugIds,
       }),
       relocateSourcemapsPlugin(IOS_OUT, IOS_SOURCEMAPS, iosDebugIds),

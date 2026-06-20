@@ -4,7 +4,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "build": "rollup -c",
+    "build": "rolldown -c",
     "types": "tsc",
     "test": "node --test 'lib/**/*.test.mjs'",
     "postinstall": "patch-package"
@@ -36,19 +36,13 @@
     "tiny-typed-emitter": "2.1.0"
   },
   "devDependencies": {
-    "@rollup/plugin-alias": "6.0.0",
-    "@rollup/plugin-commonjs": "29.0.2",
-    "@rollup/plugin-esm-shim": "0.1.8",
-    "@rollup/plugin-json": "6.1.0",
-    "@rollup/plugin-node-resolve": "16.0.3",
     "@sentry/rollup-plugin": "5.2.1",
     "@types/node": "18.19.130",
     "@types/streamx": "2.9.5",
     "@types/tar-stream": "3.1.4",
     "magic-string": "0.30.21",
     "patch-package": "8.0.1",
-    "rollup": "4.60.2",
-    "rollup-plugin-esbuild": "6.2.1",
+    "rolldown": "1.1.2",
     "tar-stream": "3.1.8",
     "type-fest": "5.6.0",
     "typescript": "5.9.3"
