@@ -118,6 +118,33 @@ key. Traffic to the public internet keeps the secure default. If your
 app manages its own `networkSecurityConfig` or App Transport Security
 settings, make sure cleartext to loopback stays allowed.
 
+### Default project config
+
+New projects are created with no presets/categories unless you supply a
+default config. Pass a `.comapeocat` file to the Expo config plugin; it
+gets bundled into the app and applied to every project created without an
+explicit config:
+
+```js
+// app.config.js / app.json plugins
+[
+  "@comapeo/core-react-native",
+  {
+    defaultConfig: "./assets/my-categories.comapeocat",
+  },
+]
+```
+
+The path is resolved relative to your app's project root. Omit
+`defaultConfig` and new projects start empty. Use
+[`@comapeo/default-categories`](https://www.npmjs.com/package/@comapeo/default-categories)
+(or your own build) as the source `.comapeocat` — this module no longer
+ships one.
+
+If you later **remove** `defaultConfig` after having set it, run a clean
+prebuild (`expo prebuild --clean`) so the bundled file is dropped from the
+iOS Xcode project; a non-clean prebuild leaves the stale reference behind.
+
 # Optional: Sentry integration
 
 This module can forward its native-side and JS-side lifecycle events

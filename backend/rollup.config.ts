@@ -124,9 +124,12 @@ function redirectLoaderIndexToPolywasmEntryPlugin(): Plugin {
  *     unpacked nodejs-project tree's module type.
  *   - `@comapeo/core/drizzle/`: SQL migration files read at runtime by
  *     drizzle-orm.
- *   - `@comapeo/default-categories/.../*.comapeocat`: default project
- *     config zip read at runtime.
  *   - `@comapeo/fallback-smp/`: offline fallback map data.
+ *
+ * The default project config is NOT bundled here — the consuming app
+ * supplies it via the Expo plugin (`app.plugin.js`), which drops the
+ * `.comapeocat` into the on-device project tree; the backend resolves
+ * it from the `defaultConfigPath` argv positional.
  *
  * Native module `package.json`/`binding.gyp` are NOT copied. Every
  * loader callsite (`require('bindings')`, `require('node-gyp-build')`,
@@ -138,7 +141,6 @@ function redirectLoaderIndexToPolywasmEntryPlugin(): Plugin {
 const STATIC_ASSET_PATHS = [
   "package.json",
   "node_modules/@comapeo/core/drizzle",
-  "node_modules/@comapeo/default-categories/dist/comapeo-default-categories.comapeocat",
   "node_modules/@comapeo/fallback-smp",
 ] as const;
 

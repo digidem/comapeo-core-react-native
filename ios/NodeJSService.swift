@@ -99,6 +99,10 @@ class NodeJSService {
 
     private let nodeEntryPoint: NodeEntryPoint
     private let resolveJSEntryPoint: () -> String?
+    /// Resolves the optional default project config the consuming app
+    /// bundles via the Expo plugin. `nil` → new projects get no default
+    /// config (backend receives an empty positional).
+    private let resolveDefaultConfigPath: () -> String?
     private let rootKeyProvider: RootKeyProvider
 
     /// Maximum time in `.starting` before the watchdog forces `.error`.
@@ -158,6 +162,9 @@ class NodeJSService {
         privateStorageDir: String,
         nodeEntryPoint: @escaping NodeEntryPoint,
         resolveJSEntryPoint: @escaping () -> String?,
+        resolveDefaultConfigPath: @escaping () -> String? = {
+            Bundle.main.path(forResource: "comapeo-default-config", ofType: "comapeocat")
+        },
         rootKeyProvider: @escaping RootKeyProvider,
         sentryConfig: SentryConfig? = SentryConfig.loadFromMainBundle(),
         captureApplicationData: Bool = false,
@@ -183,6 +190,7 @@ class NodeJSService {
 
         self.nodeEntryPoint = nodeEntryPoint
         self.resolveJSEntryPoint = resolveJSEntryPoint
+        self.resolveDefaultConfigPath = resolveDefaultConfigPath
         self.rootKeyProvider = rootKeyProvider
         self.startupTimeout = startupTimeout
 
@@ -615,6 +623,9 @@ class NodeJSService {
         if let span = nodeSpawnSpan {
             bootSentryQueue.sync { bootSpans["node-spawn"] = span }
         }
+        // 4th positional: default config path, or "" when the app bundled
+        // none. Always present so the `--sentry*` flags can't slip into it.
+        let defaultConfigPath = resolveDefaultConfigPath() ?? ""
         var args: [String] = [
             "node",
             "--no-experimental-fetch",
@@ -622,6 +633,7 @@ class NodeJSService {
             comapeoSocketPath,
             controlSocketPath,
             privateStorageDir,
+            defaultConfigPath,
         ]
         args.append(contentsOf: buildSentryArgs())
         let exitCode = nodeEntryPoint(args)
