@@ -36,5 +36,8 @@
         "typescript"
       ]
     }
+  },
+  "allowScripts": {
+    "@sentry/cli": false
   }
 }

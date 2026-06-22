@@ -48,8 +48,13 @@ jobs:
         if: steps.cache-libnode.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
       - name: Install npm dependencies
-        run: npm install --ignore-scripts && cd apps/example && npm install --ignore-scripts
+        run: npm install && cd apps/example && npm install
 
       - name: Expo prebuild (generates apps/example/android)
         run: cd apps/example && npx expo prebuild --platform android --no-install
@@ -141,8 +146,13 @@ jobs:
         if: steps.cache-libnode.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
       - name: Install npm dependencies
-        run: npm install --ignore-scripts && cd apps/example && npm install --ignore-scripts
+        run: npm install && cd apps/example && npm install
 
       - name: Build backend
         run: npm run backend:build
