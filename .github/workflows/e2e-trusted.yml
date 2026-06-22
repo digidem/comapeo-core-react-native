@@ -31,6 +31,8 @@ jobs:
     uses: ./.github/workflows/e2e-reusable.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
+      # Isolate untrusted builds from the shared cache scope.
+      cache_key_prefix: untrusted-${{ github.event.pull_request.number }}-
     secrets:
       BROWSERSTACK_USERNAME_TESTS: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
       BROWSERSTACK_ACCESS_KEY_TESTS: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}

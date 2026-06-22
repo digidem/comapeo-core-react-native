@@ -4,18 +4,29 @@ name: E2E (reusable)
 # (e2e-tests.yml, on push / internal-branch PRs) and the label-gated trusted
 # trigger (e2e-trusted.yml, on Dependabot / fork PRs) share one definition.
 #
-# Security note: when called from e2e-trusted.yml (pull_request_target), this
-# file's body is read from the BASE branch — a PR cannot alter the job steps.
-# The build jobs check out `inputs.ref` (the PR head SHA) to build the proposed
-# code, but the test jobs deliberately check out the `run-browserstack-maestro`
-# composite action WITHOUT `inputs.ref` (i.e. from the base ref), so the action
-# that receives the BrowserStack secrets is never the PR's version.
+# Trust boundary (matters for the e2e-trusted.yml / pull_request_target path):
+#   * The build jobs check out `inputs.ref` (PR head) and EXECUTE untrusted code
+#     (npm install, gradle, expo prebuild, xcodebuild) but hold NO secrets. They
+#     hand off the built .apk/.ipa as an artifact.
+#   * The upload jobs hold the BrowserStack secrets but never check out or run PR
+#     code — they only download the artifact blob and curl it up.
+#   * The test jobs check out the `run-browserstack-maestro` composite action
+#     WITHOUT `inputs.ref` (from the base ref), so the action that receives the
+#     secrets is never the PR's version.
+# So untrusted code execution and the secrets never share a job. When called from
+# pull_request_target this file's body is also read from the base branch, so a PR
+# cannot alter the job steps. `cache_key_prefix` namespaces the build cache for
+# untrusted PRs so a labeled PR can't poison the shared (base-scope) cache.
 
 on:
   workflow_call:
     inputs:
       ref:
         description: Git ref/SHA to build. Empty = the ref that triggered the caller.
+        type: string
+        default: ""
+      cache_key_prefix:
+        description: Prefix for build cache keys. Set for untrusted PRs to isolate them from the shared cache.
         type: string
         default: ""
     secrets:
@@ -34,8 +45,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    outputs:
-      app_url: ${{ steps.upload.outputs.app_url }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -62,7 +71,7 @@ jobs:
           # hashFiles(...) folds the BASE_URL (defined inside the
           # download script) into the cache key, so any swap of the
           # source repo automatically invalidates stale caches.
-          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
+          key: ${{ inputs.cache_key_prefix }}nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
 
       - name: Download nodejs-mobile binaries
         if: steps.cache-libnode.outputs.cache-hit != 'true'
@@ -96,33 +105,13 @@ jobs:
         run: |
           ./gradlew assembleRelease --no-daemon
 
-      - name: Upload APK
-        id: upload
-        env:
-          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
-          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
-        run: |
-          APK_RELATIVE_PATH="./apps/e2e/android/app/build/outputs/apk/release/app-release.apk"
-
-          RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
-            -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
-            -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
-            -F "file=@$APK_RELATIVE_PATH")
-          HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
-          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
-
-          if [ "$HTTP_CODE" -ge 400 ]; then
-            echo "BrowserStack APK upload failed (HTTP $HTTP_CODE): $BODY" >&2
-            exit 1
-          fi
-
-          APP_URL=$(printf '%s' "$BODY" | jq -r '.app_url // empty')
-          if [ -z "$APP_URL" ]; then
-            echo "BrowserStack APK upload returned no app_url (HTTP $HTTP_CODE): $BODY" >&2
-            exit 1
-          fi
-
-          echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-apk
+          path: apps/e2e/android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 1
+          if-no-files-found: error
 
   build-ios:
     name: Build (iOS)
@@ -130,8 +119,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-    outputs:
-      app_url: ${{ steps.upload.outputs.app_url }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -161,7 +148,7 @@ jobs:
           # download script) into the cache key, so any swap of the
           # source repo automatically invalidates stale caches. The -v2
           # suffix invalidates older caches that lack android/libnode.
-          key: nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-ios-v2-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
+          key: ${{ inputs.cache_key_prefix }}nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-ios-v2-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
 
       - name: Download nodejs-mobile binaries
         if: steps.cache-ios-framework.outputs.cache-hit != 'true'
@@ -202,18 +189,79 @@ jobs:
           cp -r ./build/corereactnativee2e.xcarchive/Products/Applications/corereactnativee2e.app Payload/
           zip -r corereactnativee2e.ipa Payload/
 
-      - name: Upload
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-ipa
+          path: apps/e2e/ios/corereactnativee2e.ipa
+          retention-days: 1
+          if-no-files-found: error
+
+  # Secret-bearing, but downloads only the built artifact (a blob) — never checks
+  # out or runs PR code, so the BrowserStack creds never share a runner with
+  # untrusted code execution.
+  upload-android:
+    name: Upload Android app
+    needs: [build-android]
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      app_url: ${{ steps.upload.outputs.app_url }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: e2e-apk
+          path: artifact
+
+      - name: Upload APK to BrowserStack
         id: upload
         env:
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
         run: |
-          IPA_RELATIVE_PATH="./apps/e2e/ios/corereactnativee2e.ipa"
-
           RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
             -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
-            -F "file=@$IPA_RELATIVE_PATH")
+            -F "file=@artifact/app-release.apk")
+          HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "BrowserStack APK upload failed (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          APP_URL=$(printf '%s' "$BODY" | jq -r '.app_url // empty')
+          if [ -z "$APP_URL" ]; then
+            echo "BrowserStack APK upload returned no app_url (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
+
+  upload-ios:
+    name: Upload iOS app
+    needs: [build-ios]
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      app_url: ${{ steps.upload.outputs.app_url }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: e2e-ipa
+          path: artifact
+
+      - name: Upload IPA to BrowserStack
+        id: upload
+        env:
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
+        run: |
+          RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
+            -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+            -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
+            -F "file=@artifact/corereactnativee2e.ipa")
           HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
           BODY=$(printf '%s' "$RESPONSE" | sed '$d')
 
@@ -230,6 +278,9 @@ jobs:
 
           echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
 
+  # Packages a static YAML and uploads it — no PR code execution, so the secret
+  # is not exposed to untrusted code (the Maestro flow runs on the device farm,
+  # not the runner).
   upload-test-suite:
     name: Upload test suite
     runs-on: ubuntu-latest
@@ -276,7 +327,7 @@ jobs:
 
   test-android:
     name: Run tests (Android)
-    needs: [build-android, upload-test-suite]
+    needs: [upload-android, upload-test-suite]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -292,7 +343,7 @@ jobs:
       - uses: ./.github/actions/run-browserstack-maestro
         with:
           platform: android
-          app_url: ${{ needs.build-android.outputs.app_url }}
+          app_url: ${{ needs.upload-android.outputs.app_url }}
           test_suite_url: ${{ needs.upload-test-suite.outputs.test_suite_url }}
           browserstack_project: ${{ vars.BROWSERSTACK_PROJECT_TESTS }}
           browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
@@ -311,7 +362,7 @@ jobs:
 
   test-ios:
     name: Run tests (iOS)
-    needs: [build-ios, upload-test-suite]
+    needs: [upload-ios, upload-test-suite]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -327,7 +378,7 @@ jobs:
       - uses: ./.github/actions/run-browserstack-maestro
         with:
           platform: ios
-          app_url: ${{ needs.build-ios.outputs.app_url }}
+          app_url: ${{ needs.upload-ios.outputs.app_url }}
           test_suite_url: ${{ needs.upload-test-suite.outputs.test_suite_url }}
           browserstack_project: ${{ vars.BROWSERSTACK_PROJECT_TESTS }}
           browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
