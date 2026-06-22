@@ -1,9 +1,15 @@
 name: E2E Tests
 
-# Expensive native CI runs only in the merge queue, not on every PR push:
-# the merge_group run validates the actual merged result before it lands.
+# Expensive native CI. Runs in the merge queue (merge_group) before a PR
+# lands. Devs can also run it on a PR on demand: add the `ci:full` label
+# (re-runs on each push while the label is present) or use "Run workflow"
+# (workflow_dispatch).
 on:
   merge_group:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    types: [labeled, synchronize]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,6 +20,9 @@ env:
 
 jobs:
   build-android:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
     name: Build (Android)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -109,6 +118,9 @@ jobs:
           echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
 
   build-ios:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
     name: Build (iOS)
     runs-on: macos-26
     timeout-minutes: 15
@@ -214,6 +226,9 @@ jobs:
           echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
 
   upload-test-suite:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
     name: Upload test suite
     # TODO: Enable when we know this job works
     # needs: [build-android, build-ios]
