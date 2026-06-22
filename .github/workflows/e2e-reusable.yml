@@ -1,8 +1,9 @@
 name: E2E (reusable)
 
 # Build + BrowserStack e2e jobs, factored out so both the normal trigger
-# (e2e-tests.yml, on push / internal-branch PRs) and the label-gated trusted
-# trigger (e2e-trusted.yml, on Dependabot / fork PRs) share one definition.
+# (e2e-tests.yml, on internal-branch PRs and in the merge queue) and the
+# label-gated trusted trigger (e2e-trusted.yml, on Dependabot / fork PRs)
+# share one definition.
 #
 # Trust boundary (matters for the e2e-trusted.yml / pull_request_target path):
 #   * The build jobs check out `inputs.ref` (PR head) and EXECUTE untrusted code

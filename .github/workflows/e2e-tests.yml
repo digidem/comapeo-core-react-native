@@ -1,8 +1,12 @@
 name: E2E Tests
 
+# Internal/trusted e2e. Runs on internal-branch PRs for pre-merge feedback and
+# in the merge queue (merge_group) as the gate before a PR lands. Dependabot
+# and fork PRs get no secrets here — they run through e2e-trusted.yml once a
+# maintainer reviews the diff and adds `safe-to-test`.
 on:
-  push:
-    branches: [main]
+  merge_group:
+  workflow_dispatch:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
@@ -15,14 +19,17 @@ permissions: {}
 
 jobs:
   e2e:
-    # Pushes to main and PRs from internal branches get the BrowserStack secrets
-    # automatically. Dependabot and fork PRs don't — they run via e2e-trusted.yml
-    # once a maintainer reviews the diff and adds the `safe-to-test` label.
+    # merge_group / manual dispatch always run. On a PR, only internal,
+    # non-draft branches run here (secrets available); Dependabot and forks are
+    # routed to e2e-trusted.yml. This PR-trust check must stay the logical
+    # complement of e2e-trusted.yml's untrusted gate — keep the two in sync, or
+    # e2e runs twice (or not at all) for some PR class. `||` short-circuits, so
+    # the PR-payload lookups are skipped on merge_group/dispatch (pull_request null).
     if: >-
-      github.event_name == 'push' ||
+      github.event_name != 'pull_request' ||
       (github.event.pull_request.draft == false &&
-       github.event.pull_request.head.repo.full_name == github.repository &&
-       github.actor != 'dependabot[bot]')
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
     uses: ./.github/workflows/e2e-reusable.yml

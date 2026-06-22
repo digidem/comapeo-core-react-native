@@ -5,6 +5,9 @@ name: E2E Tests (trusted)
 # Socket.dev supply-chain report — and adding the `safe-to-test` label. The
 # label is removed after each run, and also whenever new commits are pushed
 # (synchronize), so an approval can never outlive the exact diff it covered.
+# Internal-branch PRs use the same `safe-to-test` label but run via
+# e2e-tests.yml (secrets are available there); they're gated out of this
+# workflow so the label persists for them and e2e doesn't run twice.
 #
 # This builds the PR head SHA with secrets available, so the `safe-to-test`
 # review MUST confirm the PR doesn't touch build/CI machinery (`.github/`,
@@ -25,7 +28,15 @@ permissions: {}
 
 jobs:
   e2e:
-    if: github.event.action == 'labeled' && github.event.label.name == 'safe-to-test'
+    # Untrusted PRs only (Dependabot / forks). Internal-branch PRs run e2e via
+    # e2e-tests.yml on every PR; gating them out here avoids a double run. This
+    # untrusted gate must stay the logical complement of e2e-tests.yml's trust
+    # check — keep the two in sync.
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'safe-to-test' &&
+      (github.event.pull_request.user.login == 'dependabot[bot]' ||
+      github.event.pull_request.head.repo.full_name != github.repository)
     permissions:
       contents: read
     uses: ./.github/workflows/e2e-reusable.yml
@@ -39,7 +50,11 @@ jobs:
 
   remove-label:
     needs: [e2e]
-    if: always() && github.event.action == 'labeled' && github.event.label.name == 'safe-to-test'
+    if: >-
+      always() && github.event.action == 'labeled' &&
+      github.event.label.name == 'safe-to-test' &&
+      (github.event.pull_request.user.login == 'dependabot[bot]' ||
+      github.event.pull_request.head.repo.full_name != github.repository)
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -55,7 +70,11 @@ jobs:
   # New commits invalidate a prior approval: drop the label so the next run
   # needs a fresh review of the new code.
   reset-on-push:
-    if: github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'safe-to-test')
+    if: >-
+      github.event.action == 'synchronize' &&
+      contains(github.event.pull_request.labels.*.name, 'safe-to-test') &&
+      (github.event.pull_request.user.login == 'dependabot[bot]' ||
+      github.event.pull_request.head.repo.full_name != github.repository)
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write

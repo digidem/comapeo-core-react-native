@@ -1,14 +1,20 @@
 name: Android Tests
 
+# Runs on PRs (pre-merge feedback) and in the merge queue (merge_group),
+# which is the gate before a PR lands. No secrets here, so it's safe on
+# fork/Dependabot PRs too.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   NODEJS_MOBILE_VERSION: v18.20.4
