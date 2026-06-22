@@ -40,19 +40,21 @@ final class RootKeyStoreTests: XCTestCase {
         let store = RootKeyStore(service: service)
         let first = try store.loadOrInitialize()
         XCTAssertEqual(
-            first.count,
+            first.key.count,
             RootKeyStore.rootKeyByteLength,
             "rootkey must be 16 bytes"
         )
+        XCTAssertTrue(first.generated, "first call must generate a fresh rootkey")
 
         // Fresh instance proves persistence — anything that returns
         // different bytes here is identity loss.
         let second = try RootKeyStore(service: service).loadOrInitialize()
         XCTAssertEqual(
-            first,
-            second,
+            first.key,
+            second.key,
             "second call must return identical bytes (else identity rotation)"
         )
+        XCTAssertFalse(second.generated, "second call must load the stored rootkey, not regenerate")
     }
 
     func testWrongLengthStoredValueThrows() {
