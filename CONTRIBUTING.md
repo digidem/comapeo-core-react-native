@@ -62,9 +62,10 @@ iOS e2e cannot run on a local simulator; it goes through BrowserStack.
 
 ## Pull requests and commit conventions
 
-PRs are squash-merged, so the **PR title** becomes the commit on `main` and
-drives the changelog. Titles must follow
-[Conventional Commits](https://www.conventionalcommits.org/) and are linted by
+PRs are merged with a merge commit. The release notes are generated from merged
+PRs, so the **PR title** drives the changelog (not the individual commits).
+Titles must follow [Conventional Commits](https://www.conventionalcommits.org/)
+and are linted by
 [.github/workflows/pr-title.yml](.github/workflows/pr-title.yml):
 
 ```
