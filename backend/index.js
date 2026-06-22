@@ -22,8 +22,14 @@ const MIGRATIONS_FOLDER_PATH = fileURLToPath(
 
 console.log("Starting Comapeo Node server...");
 
-const [comapeoSocketPath, controlSocketPath, privateStorageDir] =
+// 4th positional is an optional path to the default project config
+// (presets/categories) the consuming app bundles via the Expo plugin.
+// Native always passes the slot (empty string when none) so the
+// `--sentry*` flags that follow can't land in it. Empty → undefined →
+// MapeoManager applies no default config to new projects.
+const [comapeoSocketPath, controlSocketPath, privateStorageDir, configArg] =
   process.argv.slice(2);
+const defaultConfigPath = configArg || undefined;
 
 const fastify = Fastify();
 
@@ -211,6 +217,7 @@ async function withPhase(phase, fn) {
           privateStorageDir,
           fastify,
           migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
+          defaultConfigPath,
           rootKey,
         });
 
