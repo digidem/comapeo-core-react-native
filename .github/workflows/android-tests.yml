@@ -1,9 +1,9 @@
 name: Android Tests
 
 # Expensive native CI. Runs in the merge queue (merge_group) before a PR
-# lands. Devs can also run it on a PR on demand: add the `ci:full` label
-# (re-runs on each push while the label is present) or use "Run workflow"
-# (workflow_dispatch).
+# lands. Devs can also run it on a PR on demand: add the `safe-to-test`
+# label (re-runs on each push while present) or use "Run workflow"
+# (workflow_dispatch). No secrets here, so it's safe on fork/Dependabot PRs.
 on:
   merge_group:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
   unit-tests:
     if: >-
       github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full')
+      contains(github.event.pull_request.labels.*.name, 'safe-to-test')
     name: JVM Unit Tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -87,7 +87,7 @@ jobs:
   instrumented-tests:
     if: >-
       github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full')
+      contains(github.event.pull_request.labels.*.name, 'safe-to-test')
     name: Instrumented Tests
     runs-on: ubuntu-latest
     timeout-minutes: 60

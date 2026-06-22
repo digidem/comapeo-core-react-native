@@ -27,6 +27,20 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # Majors are done by hand. We target Node 18 to match nodejs-mobile, so
+      # several deps can't move to their latest major (e.g. @types/node stays
+      # on 18.x); and a batched major PR we're not ready for is just noise.
+      # Security updates still come through regardless of this rule.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # React Native and Expo are version-coupled and gate the whole toolchain;
+      # a RN 0.85 -> 0.86 bump is a "minor" in semver but effectively a major
+      # upgrade. Take patch fixes only and do minor/SDK bumps deliberately.
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "expo"
+        update-types: ["version-update:semver-minor"]
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -39,7 +53,8 @@ updates:
       prefix: ci
       include: scope
     groups:
+      # All action bumps (incl. majors) in one PR — action majors are low-risk
+      # and reviewed together, so there's no reason to split them.
       actions:
-        update-types:
-          - minor
-          - patch
+        patterns:
+          - "*"

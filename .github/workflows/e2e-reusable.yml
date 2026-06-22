@@ -1,0 +1,391 @@
+name: E2E (reusable)
+
+# Build + BrowserStack e2e jobs, factored out so both the normal trigger
+# (e2e-tests.yml, on push / internal-branch PRs) and the label-gated trusted
+# trigger (e2e-trusted.yml, on Dependabot / fork PRs) share one definition.
+#
+# Trust boundary (matters for the e2e-trusted.yml / pull_request_target path):
+#   * The build jobs check out `inputs.ref` (PR head) and EXECUTE untrusted code
+#     (npm install, gradle, expo prebuild, xcodebuild) but hold NO secrets. They
+#     hand off the built .apk/.ipa as an artifact.
+#   * The upload jobs hold the BrowserStack secrets but never check out or run PR
+#     code — they only download the artifact blob and curl it up.
+#   * The test jobs check out the `run-browserstack-maestro` composite action
+#     WITHOUT `inputs.ref` (from the base ref), so the action that receives the
+#     secrets is never the PR's version.
+# So untrusted code execution and the secrets never share a job. When called from
+# pull_request_target this file's body is also read from the base branch, so a PR
+# cannot alter the job steps. `cache_key_prefix` namespaces the build cache for
+# untrusted PRs so a labeled PR can't poison the shared (base-scope) cache.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref/SHA to build. Empty = the ref that triggered the caller.
+        type: string
+        default: ""
+      cache_key_prefix:
+        description: Prefix for build cache keys. Set for untrusted PRs to isolate them from the shared cache.
+        type: string
+        default: ""
+    secrets:
+      BROWSERSTACK_USERNAME_TESTS:
+        required: true
+      BROWSERSTACK_ACCESS_KEY_TESTS:
+        required: true
+
+env:
+  NODEJS_MOBILE_VERSION: v18.20.4
+
+jobs:
+  build-android:
+    name: Build (Android)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: package.json
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Cache nodejs-mobile binaries
+        id: cache-libnode
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: android/libnode
+          # hashFiles(...) folds the BASE_URL (defined inside the
+          # download script) into the cache key, so any swap of the
+          # source repo automatically invalidates stale caches.
+          key: ${{ inputs.cache_key_prefix }}nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-android-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
+
+      - name: Download nodejs-mobile binaries
+        if: steps.cache-libnode.outputs.cache-hit != 'true'
+        run: ./scripts/download-nodejs-mobile.sh
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
+
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      # No --ignore-scripts: the committed allowlists deny every dependency's
+      # install script, while this package's own `prepare` still runs and builds
+      # `build/` (the `main` the e2e app imports via the metro symlink).
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Build backend bundle
+        run: npm run backend:build
+
+      - name: Set up E2E app
+        working-directory: apps/e2e
+        run: |
+          npm install
+          npx expo prebuild --platform android --no-install
+
+      - name: Build APK
+        working-directory: apps/e2e/android
+        run: |
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-apk
+          path: apps/e2e/android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 1
+          if-no-files-found: error
+
+  build-ios:
+    name: Build (iOS)
+    runs-on: macos-26
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: package.json
+
+      - name: Cache nodejs-mobile binaries
+        id: cache-ios-framework
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # android/libnode is needed even on iOS builds:
+          # `readNodeJsMobileVersions()` in scripts/lib/node-versions.ts
+          # reads the Node ABI from the android libnode headers. The
+          # download script fetches both platforms, but a cache hit used
+          # to restore only the xcframework, breaking rerun builds.
+          path: |
+            ios/NodeMobile.xcframework
+            android/libnode
+          # hashFiles(...) folds the BASE_URL (defined inside the
+          # download script) into the cache key, so any swap of the
+          # source repo automatically invalidates stale caches. The -v2
+          # suffix invalidates older caches that lack android/libnode.
+          key: ${{ inputs.cache_key_prefix }}nodejs-mobile-${{ env.NODEJS_MOBILE_VERSION }}-ios-v2-${{ hashFiles('scripts/download-nodejs-mobile.sh') }}
+
+      - name: Download nodejs-mobile binaries
+        if: steps.cache-ios-framework.outputs.cache-hit != 'true'
+        run: ./scripts/download-nodejs-mobile.sh
+
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      # No --ignore-scripts: the committed allowlists deny every dependency's
+      # install script, while this package's own `prepare` still runs and builds
+      # `build/` (the `main` the e2e app imports via the metro symlink).
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Build backend bundle
+        run: npm run backend:build
+
+      - name: Set up E2E app
+        working-directory: apps/e2e
+        run: |
+          npm install
+          npx expo prebuild --platform ios
+
+      - name: Build .ipa
+        working-directory: apps/e2e/ios
+        run: |
+          xcodebuild archive \
+            -workspace corereactnativee2e.xcworkspace \
+            -scheme corereactnativee2e \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath ./build/corereactnativee2e.xcarchive \
+            CODE_SIGNING_ALLOWED='NO'
+
+          mkdir -p Payload
+          cp -r ./build/corereactnativee2e.xcarchive/Products/Applications/corereactnativee2e.app Payload/
+          zip -r corereactnativee2e.ipa Payload/
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-ipa
+          path: apps/e2e/ios/corereactnativee2e.ipa
+          retention-days: 1
+          if-no-files-found: error
+
+  # Secret-bearing, but downloads only the built artifact (a blob) — never checks
+  # out or runs PR code, so the BrowserStack creds never share a runner with
+  # untrusted code execution.
+  upload-android:
+    name: Upload Android app
+    needs: [build-android]
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      app_url: ${{ steps.upload.outputs.app_url }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: e2e-apk
+          path: artifact
+
+      - name: Upload APK to BrowserStack
+        id: upload
+        env:
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
+        run: |
+          RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
+            -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+            -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
+            -F "file=@artifact/app-release.apk")
+          HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "BrowserStack APK upload failed (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          APP_URL=$(printf '%s' "$BODY" | jq -r '.app_url // empty')
+          if [ -z "$APP_URL" ]; then
+            echo "BrowserStack APK upload returned no app_url (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
+
+  upload-ios:
+    name: Upload iOS app
+    needs: [build-ios]
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      app_url: ${{ steps.upload.outputs.app_url }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: e2e-ipa
+          path: artifact
+
+      - name: Upload IPA to BrowserStack
+        id: upload
+        env:
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
+        run: |
+          RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
+            -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+            -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
+            -F "file=@artifact/corereactnativee2e.ipa")
+          HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "BrowserStack IPA upload failed (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          APP_URL=$(printf '%s' "$BODY" | jq -r '.app_url // empty')
+          if [ -z "$APP_URL" ]; then
+            echo "BrowserStack IPA upload returned no app_url (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
+
+  # Packages a static YAML and uploads it — no PR code execution, so the secret
+  # is not exposed to untrusted code (the Maestro flow runs on the device farm,
+  # not the runner).
+  upload-test-suite:
+    name: Upload test suite
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      test_suite_url: ${{ steps.upload.outputs.test_suite_url }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+          sparse-checkout: maestro
+
+      - name: Upload test suite to Browserstack
+        id: upload
+        env:
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
+        run: |
+          ZIP_NAME="flows.zip"
+
+          zip -r "$ZIP_NAME" maestro/e2e.yaml
+
+          RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
+            -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
+            -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/test-suite" \
+            -F "file=@$ZIP_NAME")
+          HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "BrowserStack test-suite upload failed (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          TEST_SUITE_URL=$(printf '%s' "$BODY" | jq -r '.test_suite_url // empty')
+          if [ -z "$TEST_SUITE_URL" ]; then
+            echo "BrowserStack test-suite upload returned no test_suite_url (HTTP $HTTP_CODE): $BODY" >&2
+            exit 1
+          fi
+
+          echo "test_suite_url=$TEST_SUITE_URL" >> "$GITHUB_OUTPUT"
+
+  test-android:
+    name: Run tests (Android)
+    needs: [upload-android, upload-test-suite]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # No `ref`: the composite action receives the BrowserStack secrets, so it
+      # must always come from the base ref, never the PR head.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions
+
+      - uses: ./.github/actions/run-browserstack-maestro
+        with:
+          platform: android
+          app_url: ${{ needs.upload-android.outputs.app_url }}
+          test_suite_url: ${{ needs.upload-test-suite.outputs.test_suite_url }}
+          browserstack_project: ${{ vars.BROWSERSTACK_PROJECT_TESTS }}
+          browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
+          browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
+          timeout: 1200
+          # Keep the device count low: BrowserStack queues sessions past
+          # the parallel quota (5 here), and older/scarcer devices (the
+          # 2018 Galaxy Note 9 on 8.1) can sit queued long enough to
+          # overrun the poll. These two passed quickly; re-add a faster
+          # low-API device for older-OS coverage once timing is known.
+          devices: >-
+            [
+            "Google Pixel 9-16.0",
+            "Xiaomi Redmi Note 11-11.0"
+            ]
+
+  test-ios:
+    name: Run tests (iOS)
+    needs: [upload-ios, upload-test-suite]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # No `ref`: the composite action receives the BrowserStack secrets, so it
+      # must always come from the base ref, never the PR head.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions
+
+      - uses: ./.github/actions/run-browserstack-maestro
+        with:
+          platform: ios
+          app_url: ${{ needs.upload-ios.outputs.app_url }}
+          test_suite_url: ${{ needs.upload-test-suite.outputs.test_suite_url }}
+          browserstack_project: ${{ vars.BROWSERSTACK_PROJECT_TESTS }}
+          browserstack_username: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
+          browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
+          timeout: 1200
+          devices: >-
+            [
+            "iPhone 15-17",
+            "iPhone 17-26"
+            ]

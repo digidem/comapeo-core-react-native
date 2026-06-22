@@ -60,6 +60,22 @@ invocations live in the CI workflows, which are the source of truth:
 
 iOS e2e cannot run on a local simulator; it goes through BrowserStack.
 
+### Running the native suites on a PR
+
+The expensive native suites (Android, iOS, e2e) don't run on every PR push.
+They run in the **merge queue** before a PR lands, so the merged result is what
+gets tested. To run them on a PR before then, add the **`safe-to-test`** label
+(or trigger a workflow manually from the Actions tab). On internal-branch PRs
+the label persists and re-runs the suites on each push; remove it to stop.
+
+The BrowserStack e2e needs secrets, which GitHub withholds from Dependabot and
+fork PRs (so an untrusted dependency can't read them). For those PRs the same
+`safe-to-test` label triggers the isolated
+[.github/workflows/e2e-trusted.yml](.github/workflows/e2e-trusted.yml) — gated on
+a maintainer reviewing the diff, including the Socket.dev supply-chain report.
+There the label is removed after the run and on every new commit, so a
+Dependabot bump can never re-run secret-bearing CI without a fresh review.
+
 ## Pull requests and commit conventions
 
 PRs are merged with a merge commit. The release notes are generated from merged
