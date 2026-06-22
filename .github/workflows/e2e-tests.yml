@@ -1,16 +1,15 @@
 name: E2E Tests
 
-# Internal/trusted e2e. The merge queue (merge_group) is the real gate; on a
-# PR it runs on demand for internal branches via the `safe-to-test` label
-# (persists, re-runs on each push) or "Run workflow" (workflow_dispatch).
-# Dependabot and fork PRs get no secrets here — they run through
-# e2e-trusted.yml once a maintainer reviews the diff and adds `safe-to-test`.
+# Internal/trusted e2e. Runs on internal-branch PRs for pre-merge feedback and
+# in the merge queue (merge_group) as the gate before a PR lands. Dependabot
+# and fork PRs get no secrets here — they run through e2e-trusted.yml once a
+# maintainer reviews the diff and adds `safe-to-test`.
 on:
   merge_group:
   workflow_dispatch:
   pull_request:
     branches: [main]
-    types: [labeled, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,15 +19,15 @@ permissions: {}
 
 jobs:
   e2e:
-    # merge_group / manual dispatch always run. On a PR, only internal branches
-    # (secrets available) run here, and only when `safe-to-test` is present.
-    # `||` short-circuits, so the PR-payload lookups are skipped on
-    # merge_group/dispatch (where github.event.pull_request is null).
+    # merge_group / manual dispatch always run. On a PR, only internal,
+    # non-draft branches run here (secrets available); Dependabot and forks are
+    # routed to e2e-trusted.yml. `||` short-circuits, so the PR-payload lookups
+    # are skipped on merge_group/dispatch (where github.event.pull_request is null).
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.pull_request.user.login != 'dependabot[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(github.event.pull_request.labels.*.name, 'safe-to-test'))
+      (github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
     uses: ./.github/workflows/e2e-reusable.yml

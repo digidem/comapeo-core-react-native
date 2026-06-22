@@ -60,21 +60,20 @@ invocations live in the CI workflows, which are the source of truth:
 
 iOS e2e cannot run on a local simulator; it goes through BrowserStack.
 
-### Running the native suites on a PR
+### The native suites and the merge queue
 
-The expensive native suites (Android, iOS, e2e) don't run on every PR push.
-They run in the **merge queue** before a PR lands, so the merged result is what
-gets tested. To run them on a PR before then, add the **`safe-to-test`** label
-(or trigger a workflow manually from the Actions tab). On internal-branch PRs
-the label persists and re-runs the suites on each push; remove it to stop.
+The expensive native suites (Android, iOS, e2e) run on internal-branch PRs for
+pre-merge feedback and again in the **merge queue** before a PR lands, so the
+actual merged result is what gates the merge. The queue is what lets several PRs
+land without each one re-running CI every time another merges.
 
 The BrowserStack e2e needs secrets, which GitHub withholds from Dependabot and
-fork PRs (so an untrusted dependency can't read them). For those PRs the same
-`safe-to-test` label triggers the isolated
-[.github/workflows/e2e-trusted.yml](.github/workflows/e2e-trusted.yml) — gated on
-a maintainer reviewing the diff, including the Socket.dev supply-chain report.
-There the label is removed after the run and on every new commit, so a
-Dependabot bump can never re-run secret-bearing CI without a fresh review.
+fork PRs (so an untrusted dependency can't read them). Those PRs build but skip
+the device run until a maintainer reviews the diff — including the Socket.dev
+supply-chain report — and adds the **`safe-to-test`** label, which triggers the
+isolated [.github/workflows/e2e-trusted.yml](.github/workflows/e2e-trusted.yml).
+The label is removed after the run and on every new commit, so a Dependabot bump
+can never re-run secret-bearing CI without a fresh review.
 
 ## Pull requests and commit conventions
 

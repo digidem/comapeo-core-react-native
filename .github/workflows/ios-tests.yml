@@ -1,15 +1,13 @@
 name: iOS Tests
 
-# Expensive native CI. Runs in the merge queue (merge_group) before a PR
-# lands. Devs can also run it on a PR on demand: add the `safe-to-test`
-# label (re-runs on each push while present) or use "Run workflow"
-# (workflow_dispatch). No secrets here, so it's safe on fork/Dependabot PRs.
+# Runs on PRs (pre-merge feedback) and in the merge queue (merge_group),
+# which is the gate before a PR lands. No secrets here, so it's safe on
+# fork/Dependabot PRs too.
 on:
-  merge_group:
-  workflow_dispatch:
   pull_request:
     branches: [main]
-    types: [labeled, synchronize]
+  merge_group:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,9 +15,6 @@ concurrency:
 
 jobs:
   package-tests:
-    if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'safe-to-test')
     name: Swift Package Tests (macOS)
     runs-on: macos-26
     timeout-minutes: 15
@@ -44,9 +39,6 @@ jobs:
           swift test
 
   integration-tests:
-    if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'safe-to-test')
     name: Integration Tests (Example App)
     # Xcode 26 minimum: Expo SDK 56's ExpoModulesCore source uses
     # `@MainActor` on protocol conformances and other Swift Concurrency
@@ -176,9 +168,6 @@ jobs:
           tail -300 example/ios/xcodebuild-test.log || true
 
   device-build:
-    if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'safe-to-test')
     name: iOS Device Build (xcframework codesign verification)
     # Phase 2 ships device + simulator slices in one xcframework per
     # addon. The simulator integration tests above exercise the runtime
