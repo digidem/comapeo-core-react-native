@@ -33,7 +33,7 @@ import path from "node:path";
  * vs. `better-sqlite3` package name) becomes moot because the rewrite
  * replaces the call entirely.
  *
- * @returns {import('rollup').Plugin}
+ * @returns {import('rolldown').Plugin}
  */
 export default function addonLoaderPlugin() {
   /** @type {Array<{ pattern: RegExp, replacement: (packageName: string, packageVersion: string) => string }>} */
