@@ -25,12 +25,14 @@
 // default-import-then-destructure (this package is ESM).
 import configPlugins from "@expo/config-plugins";
 import { createRequire } from "node:module";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 const { withAndroidManifest } = configPlugins;
 const { withInfoPlist } = configPlugins;
 const { withPodfile } = configPlugins;
 const { withDangerousMod } = configPlugins;
+const { withXcodeProject, IOSConfig } = configPlugins;
 const require = createRequire(import.meta.url);
 const {
   mergeContents,
@@ -95,6 +97,11 @@ function withComapeoCore(config, props) {
   config = withSentryAndroid(config, sentry, moduleIdent);
   config = withSentryIos(config, sentry);
   config = withSentryLibraryEvolution(config);
+  // Optional default project config (presets/categories) supplied by the
+  // consuming app. The module no longer ships @comapeo/default-categories;
+  // when this prop is absent, new projects get no default config.
+  config = withDefaultConfigAndroid(config, props?.defaultConfig);
+  config = withDefaultConfigIos(config, props?.defaultConfig);
   // The embedded map server serves tiles over cleartext HTTP on
   // loopback; release builds block cleartext by default. Permit it
   // for localhost only, on both platforms.
@@ -156,6 +163,98 @@ function withMapServerCleartextIos(config) {
     const ats = cfg.modResults.NSAppTransportSecurity || {};
     ats.NSAllowsLocalNetworking = true;
     cfg.modResults.NSAppTransportSecurity = ats;
+    return cfg;
+  });
+}
+
+// Fixed on-device filename the native readers look for: Android extracts
+// it from `assets/nodejs-project/` into the node project dir; iOS resolves
+// it as a bundle resource. Native passes its resolved path to the backend
+// as the `defaultConfigPath` argv positional.
+const DEFAULT_CONFIG_FILENAME = "comapeo-default-config.comapeocat";
+
+// Resolve the consumer's `defaultConfig` path (absolute, or relative to
+// the app project root) and assert it exists — a typo'd path should fail
+// prebuild loudly rather than silently ship no config.
+function resolveDefaultConfigSource(modRequest, defaultConfig) {
+  if (typeof defaultConfig !== "string" || defaultConfig.length === 0) {
+    throw new Error(
+      "@comapeo/core-react-native plugin: `defaultConfig` must be a path to a .comapeocat file",
+    );
+  }
+  const abs = isAbsolute(defaultConfig)
+    ? defaultConfig
+    : join(modRequest.projectRoot, defaultConfig);
+  if (!existsSync(abs)) {
+    throw new Error(
+      `@comapeo/core-react-native plugin: \`defaultConfig\` file not found: ${abs}`,
+    );
+  }
+  return abs;
+}
+
+// Android: merge the config into the app's `assets/nodejs-project/` so it
+// rides the existing asset→filesDir extraction the backend bundle already
+// uses (assets have no fs path; the file needs one at runtime).
+function withDefaultConfigAndroid(config, defaultConfig) {
+  return withDangerousMod(config, [
+    "android",
+    async (cfg) => {
+      const destDir = join(
+        cfg.modRequest.platformProjectRoot,
+        "app/src/main/assets/nodejs-project",
+      );
+      const dest = join(destDir, DEFAULT_CONFIG_FILENAME);
+      if (defaultConfig == null) {
+        // --no-clean re-prebuild after removing the prop: drop a stale copy.
+        await rm(dest, { force: true });
+        return cfg;
+      }
+      const src = resolveDefaultConfigSource(cfg.modRequest, defaultConfig);
+      await mkdir(destDir, { recursive: true });
+      await copyFile(src, dest);
+      return cfg;
+    },
+  ]);
+}
+
+// iOS: copy the file into the app target's project directory and register
+// it in Copy Bundle Resources so `Bundle.main` resolves it at runtime.
+function withDefaultConfigIos(config, defaultConfig) {
+  config = withDangerousMod(config, [
+    "ios",
+    async (cfg) => {
+      const dest = join(
+        cfg.modRequest.platformProjectRoot,
+        cfg.modRequest.projectName,
+        DEFAULT_CONFIG_FILENAME,
+      );
+      if (defaultConfig == null) {
+        await rm(dest, { force: true });
+        return cfg;
+      }
+      const src = resolveDefaultConfigSource(cfg.modRequest, defaultConfig);
+      await copyFile(src, dest);
+      return cfg;
+    },
+  ]);
+  // Registration is add-only. `addResourceFileToGroup` is idempotent
+  // (skips a file already in the group), so repeat prebuilds don't
+  // duplicate the entry. We don't strip the entry when `defaultConfig`
+  // is removed: `xcode`'s `removeResourceFile` throws on RN/Expo projects
+  // (it assumes a `Resources` PBXGroup that doesn't exist here), and
+  // hand-removing pbxproj sections is version-fragile. Removing the prop
+  // therefore requires a clean prebuild (`expo prebuild --clean`) to drop
+  // the stale reference; otherwise the build looks for a missing file.
+  if (defaultConfig == null) return config;
+  return withXcodeProject(config, (cfg) => {
+    IOSConfig.XcodeUtils.addResourceFileToGroup({
+      filepath: `${cfg.modRequest.projectName}/${DEFAULT_CONFIG_FILENAME}`,
+      groupName: cfg.modRequest.projectName,
+      project: cfg.modResults,
+      isBuildFile: true,
+      verbose: false,
+    });
     return cfg;
   });
 }

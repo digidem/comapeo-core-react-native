@@ -8,12 +8,14 @@ const DEFAULT_CUSTOM_MAP_FILE_NAME = "default.smp";
  * @param {Object} options
  * @param {string} options.privateStorageDir
  * @param {string} options.migrationsFolderPath
+ * @param {string} [options.defaultConfigPath] Optional default project config (presets/categories) the consuming app bundles. Undefined → new projects get no default config.
  * @param {Buffer} options.rootKey 16-byte device identity supplied by native code.
  * @param {import('fastify').FastifyInstance} options.fastify
  */
 export function createComapeo({
   privateStorageDir,
   migrationsFolderPath,
+  defaultConfigPath,
   rootKey,
   fastify,
 }) {
@@ -46,6 +48,7 @@ export function createComapeo({
     clientMigrationsFolder: path.join(migrationsFolderPath, "client"),
     rootKey,
     fastify,
+    defaultConfigPath,
     defaultOnlineStyleUrl: DEFAULT_ONLINE_MAP_STYLE_URL,
     customMapPath: path.join(customMapsDir, DEFAULT_CUSTOM_MAP_FILE_NAME),
   });
