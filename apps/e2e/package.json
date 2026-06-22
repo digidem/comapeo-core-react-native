@@ -27,7 +27,7 @@
     "expo-dev-client": "56.0.20",
     "jasmine-core": "5.13.0",
     "patch-package": "8.0.1",
-    "typescript": "5.9.3"
+    "typescript": "6.0.3"
   },
   "private": true,
   "expo": {
