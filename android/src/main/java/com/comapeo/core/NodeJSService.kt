@@ -44,6 +44,10 @@ const val SHARED_PREFS_NAME_POSTFIX = "_nodejs_preferences"
 const val NODEJS_PROJECT_DIRNAME = "nodejs-project"
 // loader.mjs parses --sentry* argv, optionally inits @sentry/node, then imports index.mjs.
 const val NODEJS_PROJECT_INDEX_FILENAME = "loader.mjs"
+// Optional default project config the consuming app bundles via the Expo
+// plugin (app.plugin.js) into `assets/nodejs-project/`; extracted into
+// nodeProjectDir alongside the backend. Absent → no default config.
+const val DEFAULT_CONFIG_FILENAME = "comapeo-default-config.comapeocat"
 
 /** Bound on `ipcDeferred.await()` in [sendErrorNativeFrame] so a never-completing
  *  deferred (FGS failed before NodeJSIPC was constructed) doesn't pin a coroutine. */
@@ -325,12 +329,18 @@ class NodeJSService(
 
     /** Positionals are read by backend/index.js; `--sentry*` flags by backend/loader.mjs. */
     private fun buildBackendArgs(entryPath: String): Array<String> {
+        // 4th positional: default config path, or "" when the app bundled
+        // none. Always present so the `--sentry*` flags can't slip into it.
+        val defaultConfigFile = File(nodeProjectDir, DEFAULT_CONFIG_FILENAME)
+        val defaultConfigPath =
+            if (defaultConfigFile.exists()) defaultConfigFile.absolutePath else ""
         val args = mutableListOf(
             "node",
             entryPath,
             comapeoSocketFile.absolutePath,
             controlSocketFile.absolutePath,
             dataDir,
+            defaultConfigPath,
         )
         sentryConfig?.let { cfg ->
             args += "--sentryDsn=${cfg.dsn}"
