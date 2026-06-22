@@ -1,11 +1,8 @@
 name: E2E Tests
 
+# Expensive native CI runs only in the merge queue, not on every PR push:
+# the merge_group run validates the actual merged result before it lands.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
 
 concurrency:
@@ -17,7 +14,6 @@ env:
 
 jobs:
   build-android:
-    if: ${{ github.event_name == 'merge_group' || github.event.pull_request.draft == false }}
     name: Build (Android)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -113,7 +109,6 @@ jobs:
           echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
 
   build-ios:
-    if: ${{ github.event_name == 'merge_group' || github.event.pull_request.draft == false }}
     name: Build (iOS)
     runs-on: macos-26
     timeout-minutes: 15
@@ -219,7 +214,6 @@ jobs:
           echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
 
   upload-test-suite:
-    if: ${{ github.event_name == 'merge_group' || github.event.pull_request.draft == false }}
     name: Upload test suite
     # TODO: Enable when we know this job works
     # needs: [build-android, build-ios]

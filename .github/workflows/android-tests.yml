@@ -1,10 +1,8 @@
 name: Android Tests
 
+# Expensive native CI runs only in the merge queue, not on every PR push:
+# the merge_group run validates the actual merged result before it lands.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   merge_group:
 
 concurrency:
