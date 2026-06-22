@@ -1,0 +1,92 @@
+name: PR Title
+"on":
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    name: Lint conventional title
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            docs
+            refactor
+            test
+            chore
+            ci
+            build
+          requireScope: false
+
+  label:
+    runs-on: ubuntu-latest
+    name: Apply changelog label
+    needs: lint
+    permissions:
+      pull-requests: write
+    steps:
+      # Derives a changelog label from the conventional-commit PR title so devs
+      # only need to write a good title; the label drives .github/release.yml.
+      # Title-only — never checks out PR code, so pull_request_target is safe here.
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const body = context.payload.pull_request.body || '';
+            const m = title.match(/^(\w+)(\(([\w$.\-*/ ]+)\))?(!)?:/);
+            if (!m) return;
+            const [, type, , scope, bang] = m;
+
+            const map = {
+              feat: 'feature',
+              fix: 'fix',
+              perf: 'performance',
+              docs: 'documentation',
+              refactor: 'maintenance',
+              test: 'maintenance',
+              chore: 'maintenance',
+              ci: 'maintenance',
+              build: 'maintenance',
+            };
+
+            // Conventional Commits: a `!` in the title or a `BREAKING CHANGE:`
+            // footer in the body both mark a breaking change.
+            const breakingFooter = /^BREAKING[ -]CHANGE:/m.test(body);
+
+            const wanted = new Set();
+            if (bang || breakingFooter) wanted.add('breaking');
+            if (scope && /^deps(-dev)?$/.test(scope)) wanted.add('dependencies');
+            else if (map[type]) wanted.add(map[type]);
+
+            const managed = new Set([
+              'feature', 'fix', 'performance', 'documentation',
+              'maintenance', 'breaking', 'dependencies',
+            ]);
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const current = context.payload.pull_request.labels.map(l => l.name);
+
+            for (const name of current) {
+              if (managed.has(name) && !wanted.has(name)) {
+                await github.rest.issues
+                  .removeLabel({ owner, repo, issue_number, name })
+                  .catch(() => {});
+              }
+            }
+
+            const toAdd = [...wanted].filter(l => !current.includes(l));
+            if (toAdd.length) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: toAdd });
+            }
