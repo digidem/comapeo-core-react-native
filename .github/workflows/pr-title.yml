@@ -10,6 +10,12 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     name: Lint conventional title
+    # Skip the optic release bot: its PR title (`[OPTIC-RELEASE-AUTOMATION]
+    # release/...`) is fixed and non-conventional, and that prefix is load-bearing
+    # for release.yml's post-merge publish detection, so it can't be made to pass.
+    # The `label` job needs this one, so it skips too — release PRs shouldn't get a
+    # changelog category anyway.
+    if: github.event.pull_request.user.login != 'optic-release-automation[bot]'
     permissions:
       pull-requests: read
     steps:
