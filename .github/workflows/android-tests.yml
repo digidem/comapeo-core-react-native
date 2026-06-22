@@ -20,23 +20,23 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
           node-version-file: package.json
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
@@ -60,7 +60,7 @@ jobs:
         run: cd apps/example && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
       - name: Run JVM unit tests
         run: |
@@ -69,7 +69,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unit-test-results
           path: |
@@ -86,10 +86,10 @@ jobs:
         api-level: [30]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
           android: false
           dotnet: true
@@ -103,13 +103,13 @@ jobs:
         with:
           node-version-file: package.json
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
 
       - name: Clean up unused SDK components
         run: |
@@ -134,7 +134,7 @@ jobs:
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
@@ -161,7 +161,7 @@ jobs:
         run: cd apps/example && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
       - name: Build test APKs
         run: |
@@ -175,7 +175,7 @@ jobs:
 
       - name: Run instrumented tests
         timeout-minutes: 15
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
         with:
           api-level: ${{ matrix.api-level }}
           target: google_atd
@@ -196,7 +196,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: instrumented-test-results-api${{ matrix.api-level }}
           path: |
