@@ -34,7 +34,7 @@ import { isJsFile, stringToUUID } from "@sentry/bundler-plugin-core";
 
 /**
  * @param {Map<string, string>} idMap
- * @returns {import('rollup').Plugin}
+ * @returns {import('rolldown').Plugin}
  */
 export function captureDebugIdsPlugin(idMap) {
   return {
@@ -51,7 +51,7 @@ export function captureDebugIdsPlugin(idMap) {
  * @param {string} outDir
  * @param {string} sourcemapDir
  * @param {Map<string, string>} idMap
- * @returns {import('rollup').Plugin}
+ * @returns {import('rolldown').Plugin}
  */
 export function relocateSourcemapsPlugin(outDir, sourcemapDir, idMap) {
   return {
