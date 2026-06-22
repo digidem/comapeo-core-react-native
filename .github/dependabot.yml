@@ -1,0 +1,45 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories:
+      - "/"
+      - "/backend"
+      - "/ios/nodejs-project"
+      - "/apps/example"
+      - "/apps/e2e"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    # Never adopt a release younger than 72h. A freshly published version is the
+    # window in which a compromised or broken release is live but not yet yanked;
+    # waiting it out trades 3 days of latency (incl. on security patches) for that
+    # safety. Applies to every update type via default-days.
+    cooldown:
+      default-days: 3
+    # `chore(deps)` / `chore(deps-dev)` so titles pass pr-title.yml and the
+    # `deps` scope maps to the `dependencies` changelog label.
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch
