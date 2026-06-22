@@ -1,6 +1,6 @@
 name: Run BrowserStack Maestro Tests
 
-description: Triggers a BrowserStack Maestro build and polls until completion
+description: Triggers a BrowserStack Maestro build, polls until completion, and retries infra-class flakes
 
 inputs:
   platform:
@@ -25,9 +25,16 @@ inputs:
     description: BrowserStack access key
     required: true
   timeout:
-    description: Test run timeout in seconds
+    description: Per-attempt test run timeout in seconds
     required: false
     default: "600"
+  max_attempts:
+    description: >-
+      Max build attempts. A failed build is only re-triggered when every
+      failed session is an infra-class flake (e.g. the device driver
+      connection resetting during launchApp), never on a real test failure.
+    required: false
+    default: "3"
 
 runs:
   using: composite
@@ -36,6 +43,7 @@ runs:
       env:
         PLATFORM: ${{ inputs.platform }}
         TIMEOUT: ${{ fromJson(inputs.timeout) }}
+        MAX_ATTEMPTS: ${{ fromJson(inputs.max_attempts) }}
       shell: bash
       run: |
         if [[ "$PLATFORM" != "android" && "$PLATFORM" != "ios" ]]; then
@@ -48,8 +56,13 @@ runs:
           exit 1
         fi
 
-    - name: Trigger build
-      id: trigger
+        if [[ "$MAX_ATTEMPTS" -lt 1 ]]; then
+          echo "max_attempts must be at least 1"
+          exit 1
+        fi
+
+    - name: Run tests
+      id: run
       env:
         APP_URL: ${{ inputs.app_url }}
         TEST_SUITE_URL: ${{ inputs.test_suite_url }}
@@ -58,8 +71,24 @@ runs:
         BROWSERSTACK_USERNAME: ${{ inputs.browserstack_username }}
         BROWSERSTACK_ACCESS_KEY: ${{ inputs.browserstack_access_key }}
         PLATFORM: ${{ inputs.platform }}
+        TIMEOUT: ${{ fromJson(inputs.timeout) }}
+        MAX_ATTEMPTS: ${{ fromJson(inputs.max_attempts) }}
       shell: bash
       run: |
+        set -o pipefail
+
+        API="https://api-cloud.browserstack.com/app-automate/maestro/v2"
+        AUTH="$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY"
+        POLL_INTERVAL=30
+
+        # Failures originating in the BrowserStack/Maestro harness (device
+        # driver transport, app install/launch, XCUITest/WebDriverAgent)
+        # rather than an in-app assertion. These are environment flakes —
+        # the same build passes on a retry and on the other device. The
+        # archetype is the XCTest driver connection resetting during the
+        # implicit setPermissions of `launchApp`.
+        INFRA_RE='Unable to set permissions|Connection reset|Connection refused|ECONNRESET|SocketException|Socket closed|SocketTimeout|Unable to launch app|Unable to clear state|Failed to install app|WebDriverAgent|XCTestDriverClient|xcuitest'
+
         PAYLOAD=$(jq -n \
           --arg app "$APP_URL" \
           --arg suite "$TEST_SUITE_URL" \
@@ -75,91 +104,138 @@ runs:
           }'
         )
 
-        # Capture body and status separately: BrowserStack returns a
-        # JSON `message` (e.g. queue/parallel-limit errors) that
-        # `--fail` would discard, leaving only an opaque exit code.
-        RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
-          -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
-          -X POST "https://api-cloud.browserstack.com/app-automate/maestro/v2/$PLATFORM/build" \
-          -H "Content-Type: application/json" \
-          -d "$PAYLOAD")
-        HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
-        BODY=$(printf '%s' "$RESPONSE" | sed '$d')
+        # Trigger a build; echoes only the build id on stdout (diagnostics
+        # go to stderr) so it can be captured via command substitution.
+        trigger_build() {
+          local response http_code body build_id
+          # Capture body and status separately: BrowserStack returns a
+          # JSON `message` (e.g. queue/parallel-limit errors) that
+          # `--fail` would discard, leaving only an opaque exit code.
+          response=$(curl --show-error -sS -w '\n%{http_code}' \
+            -u "$AUTH" \
+            -X POST "$API/$PLATFORM/build" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+          http_code=$(printf '%s' "$response" | tail -n1)
+          body=$(printf '%s' "$response" | sed '$d')
 
-        if [ "$HTTP_CODE" -ge 400 ]; then
-          echo "BrowserStack build trigger failed (HTTP $HTTP_CODE): $BODY" >&2
-          exit 1
-        fi
+          if [ "$http_code" -ge 400 ]; then
+            echo "BrowserStack build trigger failed (HTTP $http_code): $body" >&2
+            return 1
+          fi
 
-        BUILD_ID=$(printf '%s' "$BODY" | jq -r '.build_id // empty')
-        if [ -z "$BUILD_ID" ]; then
-          echo "BrowserStack build trigger returned no build_id (HTTP $HTTP_CODE): $BODY" >&2
-          exit 1
-        fi
+          build_id=$(printf '%s' "$body" | jq -r '.build_id // empty')
+          if [ -z "$build_id" ]; then
+            echo "BrowserStack build trigger returned no build_id (HTTP $http_code): $body" >&2
+            return 1
+          fi
 
-        echo "Triggered build: $BUILD_ID"
-        echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          printf '%s' "$build_id"
+        }
 
-    - name: Poll for result
-      env:
-        BUILD_ID: ${{ steps.trigger.outputs.build_id }}
-        BROWSERSTACK_USERNAME: ${{ inputs.browserstack_username }}
-        BROWSERSTACK_ACCESS_KEY: ${{ inputs.browserstack_access_key }}
-        TIMEOUT: ${{ fromJson(inputs.timeout) }}
-      shell: bash
-      run: |
-        MAX_WAIT=$TIMEOUT
-        POLL_INTERVAL=30
-        ELAPSED=0
+        # Poll a build until it reaches a terminal state. Sets BUILD_RESPONSE
+        # and STATUS; returns 0 only on pass.
+        poll_build() {
+          local build_id=$1 elapsed=0
+          while [ "$elapsed" -lt "$TIMEOUT" ]; do
+            BUILD_RESPONSE=$(curl --fail --show-error -s -u "$AUTH" "$API/builds/$build_id")
+            STATUS=$(echo "$BUILD_RESPONSE" | jq -r '.status')
+            echo "[${elapsed}s] Build $build_id status: $STATUS"
+            case "$STATUS" in
+              passed|completed) return 0 ;;
+              failed|error|timedout) return 1 ;;
+            esac
+            sleep "$POLL_INTERVAL"
+            elapsed=$((elapsed + POLL_INTERVAL))
+          done
+          STATUS=timedout
+          echo "Timed out after ${TIMEOUT}s waiting for build $build_id"
+          return 1
+        }
 
-        # On a non-pass terminal state, dump the per-device/session report
-        # so the actual Maestro failure is visible in the CI log instead of
-        # a bare "Tests failed". The poll response (v2 build) carries
-        # per-device sessions; the v1 sessions endpoint adds the Maestro
-        # logs + dashboard link for each one.
+        # Dump the per-device/session report plus the tail of each failed
+        # session's Maestro log, so the actual failure (assertion or infra
+        # error) is visible in the CI log instead of a bare "Tests failed".
         report_failure() {
-          echo "::group::BrowserStack build report ($BUILD_ID)"
-          printf '%s\n' "$RESPONSE" | jq '.' || printf '%s\n' "$RESPONSE"
-          printf '%s\n' "$RESPONSE" \
+          local build_id=$1 detail
+          echo "::group::BrowserStack build report ($build_id)"
+          printf '%s\n' "$BUILD_RESPONSE" | jq '.' || printf '%s\n' "$BUILD_RESPONSE"
+          printf '%s\n' "$BUILD_RESPONSE" \
             | jq -r '.devices[]? | "device=\(.device // .os) status=\(.status) session=\(.sessions[]?.id // "?")"' \
             || true
           echo "::endgroup::"
-          for SESSION_ID in $(printf '%s\n' "$RESPONSE" | jq -r '.devices[]?.sessions[]?.id // empty'); do
-            echo "::group::Session $SESSION_ID"
-            curl --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
-              "https://api-cloud.browserstack.com/app-automate/maestro/v2/builds/$BUILD_ID/sessions/$SESSION_ID" \
-              | jq '.' || true
+          for session_id in $(printf '%s\n' "$BUILD_RESPONSE" \
+            | jq -r '.devices[]?.sessions[]? | select(.status != "passed") | .id'); do
+            echo "::group::Session $session_id"
+            detail=$(curl --show-error -s -u "$AUTH" "$API/builds/$build_id/sessions/$session_id")
+            printf '%s\n' "$detail" | jq '.' || true
+            for log_url in $(printf '%s\n' "$detail" | jq -r '.. | .maestro_log? // empty'); do
+              echo "--- maestro log (tail): $log_url ---"
+              curl --show-error -s -u "$AUTH" "$log_url" | tail -n 60 || true
+            done
             echo "::endgroup::"
           done
         }
 
-        while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
-          RESPONSE=$(curl --fail --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
-            "https://api-cloud.browserstack.com/app-automate/maestro/v2/builds/$BUILD_ID")
+        # Returns 0 only if there is at least one failed session and every
+        # failed session's Maestro log matches an infra signature. Any failed
+        # session without an infra signature is treated as a real failure
+        # (return 1) so genuine regressions are never retried away. A failed
+        # session whose log can't be fetched also counts as real (fail safe).
+        is_infra_only() {
+          local build_id=$1 saw_failure=0 detail log session_infra
+          for session_id in $(printf '%s\n' "$BUILD_RESPONSE" \
+            | jq -r '.devices[]?.sessions[]? | select(.status != "passed") | .id'); do
+            saw_failure=1
+            detail=$(curl --show-error -s -u "$AUTH" "$API/builds/$build_id/sessions/$session_id")
+            session_infra=0
+            for log_url in $(printf '%s\n' "$detail" | jq -r '.. | .maestro_log? // empty'); do
+              log=$(curl --show-error -s -u "$AUTH" "$log_url")
+              if printf '%s' "$log" | grep -qiE "$INFRA_RE"; then
+                session_infra=1
+              fi
+            done
+            if [ "$session_infra" -ne 1 ]; then
+              echo "Session $session_id has no infra signature — treating build as a real failure." >&2
+              return 1
+            fi
+          done
+          [ "$saw_failure" -eq 1 ]
+        }
 
-          STATUS=$(echo "$RESPONSE" | jq -r '.status')
-          echo "[${ELAPSED}s] Build $BUILD_ID status: $STATUS"
+        for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+          echo "::group::Attempt $attempt/$MAX_ATTEMPTS — triggering BrowserStack build"
+          BUILD_ID=$(trigger_build)
+          trigger_rc=$?
+          echo "::endgroup::"
+          if [ "$trigger_rc" -ne 0 ] || [ -z "$BUILD_ID" ]; then
+            exit 1
+          fi
+          echo "Triggered build: $BUILD_ID"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
 
-          case "$STATUS" in
-            passed|completed) echo "Tests passed"; exit 0 ;;
-            failed|error|timedout)
-              echo "Tests failed (status: $STATUS)"
-              report_failure
-              exit 1 ;;
-          esac
+          if poll_build "$BUILD_ID"; then
+            echo "Tests passed"
+            exit 0
+          fi
 
-          sleep "$POLL_INTERVAL"
-          ELAPSED=$((ELAPSED + POLL_INTERVAL))
+          report_failure "$BUILD_ID"
+
+          if [ "$attempt" -lt "$MAX_ATTEMPTS" ] && is_infra_only "$BUILD_ID"; then
+            echo "::warning::Build $BUILD_ID failed with an infra-class flake (status: $STATUS); retrying (next attempt $((attempt + 1))/$MAX_ATTEMPTS)"
+            continue
+          fi
+
+          echo "Tests failed (status: $STATUS)"
+          exit 1
         done
 
-        echo "Timed out after ${MAX_WAIT}s waiting for build $BUILD_ID"
-        report_failure
         exit 1
 
     - name: Stop BrowserStack build on cancel
-      if: cancelled() && steps.trigger.outputs.build_id != ''
+      if: cancelled() && steps.run.outputs.build_id != ''
       env:
-        BUILD_ID: ${{ steps.trigger.outputs.build_id }}
+        BUILD_ID: ${{ steps.run.outputs.build_id }}
         BROWSERSTACK_USERNAME: ${{ inputs.browserstack_username }}
         BROWSERSTACK_ACCESS_KEY: ${{ inputs.browserstack_access_key }}
       shell: bash
