@@ -19,7 +19,7 @@
     "uint8array-extras": "1.5.0"
   },
   "devDependencies": {
-    "@babel/core": "7.29.0",
+    "@babel/core": "8.0.1",
     "@comapeo/core": "7.1.0",
     "@mapeo/mock-data": "5.0.0",
     "@types/jasmine": "5.1.15",
