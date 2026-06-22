@@ -75,3 +75,35 @@ export type ComapeoErrorInfo = {
   errorPhase: string;
   errorMessage: string;
 };
+
+/**
+ * Status of the notification permission. Mirrors expo-modules-core's
+ * `PermissionStatus`:
+ * - `granted`      — the user allowed notifications.
+ * - `denied`       — the user said no.
+ * - `undetermined` — never asked, so a request will show the system dialog.
+ */
+export type NotificationPermissionStatus = "granted" | "denied" | "undetermined";
+
+/**
+ * Result of checking or requesting the notification permission. Same shape
+ * as expo's `PermissionResponse` so host code can treat it interchangeably
+ * with permissions from `expo-camera`, `expo-location`, etc.
+ *
+ * On Android < 13 (API 33) and on iOS this always resolves as `granted`:
+ * `POST_NOTIFICATIONS` is a no-op runtime permission there, so the
+ * foreground-service notification shows without an explicit grant.
+ */
+export type NotificationPermissionResponse = {
+  status: NotificationPermissionStatus;
+  /** Convenience flag, `true` only when `status === "granted"`. */
+  granted: boolean;
+  /**
+   * `false` once the user has denied with "Don't ask again" (Android) —
+   * the system dialog won't show again and the host must deep-link the
+   * user to the app's notification settings instead.
+   */
+  canAskAgain: boolean;
+  /** Always `"never"`; notification grants don't expire. */
+  expires: "never" | number;
+};

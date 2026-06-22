@@ -106,5 +106,25 @@ public class ComapeoCoreModule: Module {
             ComapeoPrefs.open().writeCaptureApplicationData(value)
             if !value { ComapeoPrefs.wipeSentryOutbox() }
         }
+
+        // POST_NOTIFICATIONS gates the Android FGS notification only; iOS has
+        // no foreground service and no matching runtime gate, so both methods
+        // resolve `granted` to keep host code cross-platform. (User-facing
+        // notification permission on iOS is a separate concern handled via
+        // expo-notifications, not the FGS.)
+        AsyncFunction("getNotificationPermissionsAsync") { () -> [String: Any] in
+            ComapeoCoreModule.grantedPermissionResponse
+        }
+
+        AsyncFunction("requestNotificationPermissionsAsync") { () -> [String: Any] in
+            ComapeoCoreModule.grantedPermissionResponse
+        }
     }
+
+    private static let grantedPermissionResponse: [String: Any] = [
+        "status": "granted",
+        "granted": true,
+        "canAskAgain": true,
+        "expires": "never",
+    ]
 }
