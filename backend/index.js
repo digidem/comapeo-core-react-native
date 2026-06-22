@@ -5,8 +5,10 @@ import Fastify from "fastify";
 import { ComapeoRpc } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { createMapServer } from "./lib/create-map-server.js";
+import { errorFrame } from "./lib/error-frame.mjs";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 import * as sentry from "./lib/sentry.js";
+import { validateInit } from "./lib/validate-init.mjs";
 
 // Shared/Android entry. Android's nodejs-mobile build ships the
 // undici-backed `fetch`/`Response`/`Request` globals the map server needs;
@@ -58,39 +60,12 @@ const controlIpcServer = new SimpleRpcServer({
       console.warn("Received init after manager was created; ignoring");
       return;
     }
-    if (typeof message.rootKey !== "string") {
-      rejectInit(
-        new Error(
-          `init.rootKey must be a base64 string, got ${typeof message.rootKey}`,
-        ),
-      );
-      initConsumed = true;
-      return;
-    }
-    // `Buffer.from(s, "base64")` silently drops invalid chars, so a
-    // tampered string can still decode to 16 unrelated bytes. Both
-    // platforms emit standard base64; 16 bytes = 22 chars + "==".
-    if (!/^[A-Za-z0-9+/]{22}==$/.test(message.rootKey)) {
-      rejectInit(
-        new Error(
-          `init.rootKey is not strict-base64 of 16 bytes (expected ` +
-            `/^[A-Za-z0-9+/]{22}==$/, got ${message.rootKey.length} chars)`,
-        ),
-      );
-      initConsumed = true;
-      return;
-    }
-    const rootKey = Buffer.from(message.rootKey, "base64");
-    if (rootKey.byteLength !== 16) {
-      rejectInit(
-        new Error(
-          `init.rootKey must decode to 16 bytes, got ${rootKey.byteLength}`,
-        ),
-      );
-      initConsumed = true;
-      return;
-    }
     initConsumed = true;
+    const { rootKey, error } = validateInit(message);
+    if (error) {
+      rejectInit(error);
+      return;
+    }
     resolveInit(rootKey);
   },
   shutdown: async () => {
@@ -141,30 +116,43 @@ const controlIpcServer = new SimpleRpcServer({
  * event with `phase`, broadcast to native, flush, exit. Keeps the boot
  * IIFE straight-line.
  *
+ * Deps default to the module singletons; tests inject stubs to assert
+ * the broadcast frame and phase routing without killing the process.
+ *
  * @param {string} phase
  * @param {unknown} error
+ * @param {{
+ *   broadcast?: (frame: ReturnType<typeof errorFrame>) => void,
+ *   captureFatal?: typeof sentry.captureFatal,
+ *   flush?: typeof sentry.flush,
+ *   exit?: (code: number) => void,
+ * }} [deps]
  */
-async function handleFatal(phase, error) {
+async function handleFatal(
+  phase,
+  error,
+  {
+    broadcast = (frame) => controlIpcServer.broadcast(frame),
+    captureFatal = sentry.captureFatal,
+    flush = sentry.flush,
+    exit = process.exit,
+  } = {},
+) {
   const err = ensureError(error);
   console.error(`Fatal during ${phase}:`, err);
   const source = getStringProp(err, "source") || "unknown";
-  sentry.captureFatal(phase, err, source);
+  captureFatal(phase, err, source);
   try {
-    controlIpcServer.broadcast({
-      type: "error",
-      phase,
-      message: err.message,
-      stack: err.stack,
-    });
+    broadcast(errorFrame(phase, err));
   } catch (broadcastErr) {
     console.error("Failed to broadcast error frame", broadcastErr);
   }
   // 100ms covers AF_UNIX flush; Sentry flushes in parallel.
   await Promise.all([
-    sentry.flush(100),
+    flush(100),
     new Promise((resolve) => setTimeout(resolve, 100)),
   ]);
-  process.exit(1);
+  exit(1);
 }
 
 // Async handlers OK: Node waits on pending microtasks/timers before exit.
