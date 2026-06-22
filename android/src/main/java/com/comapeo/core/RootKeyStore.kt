@@ -66,12 +66,64 @@ class RootKeyStore(private val context: Context) {
      */
     @Throws(RootKeyException::class)
     fun loadOrInitialize(): RootKeyResult {
-        loadExisting()?.let {
-            log("RootKeyStore: native hit")
+        nativeHitOrRecover()?.let {
             return RootKeyResult(it, generated = false)
         }
+
+        migrateFromLegacy()?.let {
+            log("RootKeyStore: migrated from expo-secure-store")
+            return RootKeyResult(it, generated = false)
+        }
+
         log("RootKeyStore: generated for first install")
         return RootKeyResult(generateAndPersist(), generated = true)
+    }
+
+    /**
+     * Native-store read with the §7 recovery hatch: if a native blob is present
+     * but fails to decrypt, fall back to the legacy store before giving up rather
+     * than surfacing the error immediately. A present-but-corrupt native blob with
+     * a recoverable legacy entry is itself recoverable; we only surface the native
+     * decrypt failure when there is no legacy entry to fall back to.
+     */
+    private fun nativeHitOrRecover(): ByteArray? {
+        val native = try {
+            loadExisting()
+        } catch (e: RootKeyException) {
+            log("RootKeyStore: native decrypt failed, attempting legacy fallback")
+            val recovered = try {
+                migrateFromLegacy()
+            } catch (_: RootKeyException) {
+                // Surface the original native failure; the legacy attempt is a best-
+                // effort recovery, not the primary path here.
+                throw e
+            }
+            if (recovered != null) {
+                log("RootKeyStore: recovered via legacy fallback")
+                return recovered
+            }
+            throw e
+        }
+        if (native != null) {
+            log("RootKeyStore: native hit")
+        }
+        return native
+    }
+
+    /**
+     * One-shot, one-way migration: decode the rootkey from the previous app's
+     * `expo-secure-store`, re-wrap under our wrapper key, and persist. Returns the
+     * 16 bytes, or `null` if there is no legacy entry (true first install). Never
+     * touches the legacy entry — it stays in place as the only on-device recovery
+     * hatch (see docs/root-key-storage-and-migration-plan.md §2.1).
+     */
+    private fun migrateFromLegacy(): ByteArray? {
+        val legacyKey = LegacyRootKeyDecoder(context).decode() ?: return null
+        return try {
+            persistAndVerify(legacyKey)
+        } finally {
+            legacyKey.fill(0)
+        }
     }
 
     private fun loadExisting(): ByteArray? {
@@ -120,6 +172,26 @@ class RootKeyStore(private val context: Context) {
 
     private fun generateAndPersist(): ByteArray {
         val plaintext = ByteArray(ROOTKEY_BYTE_LENGTH).also { SecureRandom().nextBytes(it) }
+        return try {
+            persistAndVerify(plaintext)
+        } finally {
+            plaintext.fill(0)
+        }
+    }
+
+    /**
+     * Wraps [plaintext] under our wrapper key, writes the envelope with a durable
+     * `commit()`, then reads it back and byte-compares before returning. Shared by
+     * the generate and legacy-migrate paths. Does not zero [plaintext] — the caller
+     * owns its lifetime.
+     */
+    private fun persistAndVerify(plaintext: ByteArray): ByteArray {
+        if (plaintext.size != ROOTKEY_BYTE_LENGTH) {
+            throw RootKeyException(
+                "Refusing to persist rootkey of wrong length: ${plaintext.size} " +
+                    "(expected $ROOTKEY_BYTE_LENGTH)",
+            )
+        }
         val wrapperKey = createOrLoadWrapperKey()
         // With `setRandomizedEncryptionRequired(true)`, hardware-backed AndroidKeyStore
         // refuses a caller-supplied IV at encrypt time (InvalidAlgorithmParameterException
@@ -161,7 +233,6 @@ class RootKeyStore(private val context: Context) {
         if (!verified.contentEquals(plaintext)) {
             throw RootKeyException("Rootkey verification mismatch after write")
         }
-        plaintext.fill(0)
         return verified
     }
 
