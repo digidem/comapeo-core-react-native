@@ -28,8 +28,10 @@ permissions: {}
 
 jobs:
   e2e:
-    # Untrusted PRs only (Dependabot / forks). Internal-branch PRs run via
-    # e2e-tests.yml on the same label; gating them out here avoids a double run.
+    # Untrusted PRs only (Dependabot / forks). Internal-branch PRs run e2e via
+    # e2e-tests.yml on every PR; gating them out here avoids a double run. This
+    # untrusted gate must stay the logical complement of e2e-tests.yml's trust
+    # check — keep the two in sync.
     if: >-
       github.event.action == 'labeled' &&
       github.event.label.name == 'safe-to-test' &&

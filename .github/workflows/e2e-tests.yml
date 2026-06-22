@@ -21,8 +21,10 @@ jobs:
   e2e:
     # merge_group / manual dispatch always run. On a PR, only internal,
     # non-draft branches run here (secrets available); Dependabot and forks are
-    # routed to e2e-trusted.yml. `||` short-circuits, so the PR-payload lookups
-    # are skipped on merge_group/dispatch (where github.event.pull_request is null).
+    # routed to e2e-trusted.yml. This PR-trust check must stay the logical
+    # complement of e2e-trusted.yml's untrusted gate — keep the two in sync, or
+    # e2e runs twice (or not at all) for some PR class. `||` short-circuits, so
+    # the PR-payload lookups are skipped on merge_group/dispatch (pull_request null).
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.draft == false &&
