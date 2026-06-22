@@ -61,7 +61,7 @@ jobs:
           node-version-file: package.json
 
       - name: Install dependencies
-        run: npm install && cd apps/example && npm install
+        run: npm install --ignore-scripts && cd apps/example && npm install --ignore-scripts
 
       - name: Download NodeMobile
         # Both platforms: `scripts/build-backend.ts#getNodeJsMobileNodeVersions`
@@ -189,7 +189,7 @@ jobs:
           node-version-file: package.json
 
       - name: Install dependencies
-        run: npm install && cd apps/example && npm install
+        run: npm install --ignore-scripts && cd apps/example && npm install --ignore-scripts
 
       - name: Download NodeMobile
         run: npm run download:nodejs-mobile

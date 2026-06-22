@@ -51,5 +51,10 @@
     "require-addon": "1.1.0",
     "sodium-native": "5.1.0",
     "sodium-universal": "5.0.1"
+  },
+  "allowScripts": {
+    "@sentry/cli": false,
+    "better-sqlite3": false,
+    "protobufjs": false
   }
 }
