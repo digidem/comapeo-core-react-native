@@ -60,6 +60,11 @@ jobs:
           # in 24). Match the runtime declared in `package.json#devEngines`.
           node-version-file: package.json
 
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         run: npm install && cd apps/example && npm install
 
@@ -187,6 +192,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version-file: package.json
+
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: npm install && cd apps/example && npm install

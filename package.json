@@ -43,7 +43,7 @@
   "devEngines": {
     "packageManager": {
       "name": "npm",
-      "version": "^11",
+      "version": "^11.16.0",
       "onFail": "warn"
     },
     "runtime": {
@@ -60,7 +60,6 @@
     "prepare": "node scripts/write-version.mjs && node scripts/check-sentry-cocoa-pin.mjs && expo-module build --watch false",
     "prepublishOnly": "expo-module prepublishOnly",
     "prepack": "node scripts/write-version.mjs && npm run backend:build",
-    "postinstall": "patch-package",
     "open:ios": "xed example/ios",
     "open:android": "open -a \"Android Studio\" example/android",
     "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh",
@@ -92,7 +91,6 @@
     "expo": "^56.0.12",
     "expo-module-scripts": "56.0.3",
     "globals": "17.5.0",
-    "patch-package": "8.0.1",
     "prettier": "3.8.3",
     "react": "19.2.3",
     "react-native": "0.85.3",
@@ -107,5 +105,11 @@
   },
   "dependencies": {
     "@comapeo/ipc": "^9.0.0-pre.2"
+  },
+  "allowScripts": {
+    "@sentry/cli": false,
+    "better-sqlite3": false,
+    "fsevents": false,
+    "protobufjs": false
   }
 }
