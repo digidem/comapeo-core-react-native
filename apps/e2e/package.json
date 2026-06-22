@@ -40,5 +40,10 @@
         "typescript"
       ]
     }
+  },
+  "allowScripts": {
+    "@sentry/cli": false,
+    "better-sqlite3": false,
+    "protobufjs": false
   }
 }

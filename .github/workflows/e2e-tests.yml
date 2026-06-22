@@ -58,8 +58,16 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      # No --ignore-scripts: the committed allowlists deny every dependency's
+      # install script, while this package's own `prepare` still runs and builds
+      # `build/` (the `main` the e2e app imports via the metro symlink).
       - name: Install npm dependencies
-        run: npm install --ignore-scripts
+        run: npm install
 
       - name: Build backend bundle
         run: npm run backend:build
@@ -67,7 +75,7 @@ jobs:
       - name: Set up E2E app
         working-directory: apps/e2e
         run: |
-          npm install --ignore-scripts
+          npm install
           npx expo prebuild --platform android --no-install
 
       - name: Build APK
@@ -146,8 +154,16 @@ jobs:
         if: steps.cache-ios-framework.outputs.cache-hit != 'true'
         run: ./scripts/download-nodejs-mobile.sh
 
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      # No --ignore-scripts: the committed allowlists deny every dependency's
+      # install script, while this package's own `prepare` still runs and builds
+      # `build/` (the `main` the e2e app imports via the metro symlink).
       - name: Install npm dependencies
-        run: npm install --ignore-scripts
+        run: npm install
 
       - name: Build backend bundle
         run: npm run backend:build
@@ -155,7 +171,7 @@ jobs:
       - name: Set up E2E app
         working-directory: apps/e2e
         run: |
-          npm install --ignore-scripts
+          npm install
           npx expo prebuild --platform ios
 
       - name: Build .ipa

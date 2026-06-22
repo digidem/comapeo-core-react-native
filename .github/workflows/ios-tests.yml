@@ -60,8 +60,13 @@ jobs:
           # in 24). Match the runtime declared in `package.json#devEngines`.
           node-version-file: package.json
 
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
       - name: Install dependencies
-        run: npm install --ignore-scripts && cd apps/example && npm install --ignore-scripts
+        run: npm install && cd apps/example && npm install
 
       - name: Download NodeMobile
         # Both platforms: `scripts/build-backend.ts#getNodeJsMobileNodeVersions`
@@ -188,8 +193,13 @@ jobs:
         with:
           node-version-file: package.json
 
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
       - name: Install dependencies
-        run: npm install --ignore-scripts && cd apps/example && npm install --ignore-scripts
+        run: npm install && cd apps/example && npm install
 
       - name: Download NodeMobile
         run: npm run download:nodejs-mobile
