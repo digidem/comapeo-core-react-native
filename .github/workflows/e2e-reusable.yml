@@ -18,6 +18,11 @@ on:
         description: Git ref/SHA to build. Empty = the ref that triggered the caller.
         type: string
         default: ""
+    secrets:
+      BROWSERSTACK_USERNAME_TESTS:
+        required: true
+      BROWSERSTACK_ACCESS_KEY_TESTS:
+        required: true
 
 env:
   NODEJS_MOBILE_VERSION: v18.20.4
@@ -32,26 +37,26 @@ jobs:
     outputs:
       app_url: ${{ steps.upload.outputs.app_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version-file: package.json
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           distribution: temurin
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
@@ -64,7 +69,7 @@ jobs:
         run: ./scripts/download-nodejs-mobile.sh
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
 
       # strict-allow-scripts (skip dependency install scripts via the committed
       # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
@@ -128,7 +133,7 @@ jobs:
     outputs:
       app_url: ${{ steps.upload.outputs.app_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -136,13 +141,13 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version-file: package.json
 
       - name: Cache nodejs-mobile binaries
         id: cache-ios-framework
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           # android/libnode is needed even on iOS builds:
           # `readNodeJsMobileVersions()` in scripts/lib/node-versions.ts
@@ -233,7 +238,7 @@ jobs:
     outputs:
       test_suite_url: ${{ steps.upload.outputs.test_suite_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -279,7 +284,7 @@ jobs:
     steps:
       # No `ref`: the composite action receives the BrowserStack secrets, so it
       # must always come from the base ref, never the PR head.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
           sparse-checkout: .github/actions
@@ -314,7 +319,7 @@ jobs:
     steps:
       # No `ref`: the composite action receives the BrowserStack secrets, so it
       # must always come from the base ref, never the PR head.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
           sparse-checkout: .github/actions

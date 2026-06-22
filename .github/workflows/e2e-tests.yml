@@ -11,6 +11,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions: {}
+
 jobs:
   e2e:
     # Pushes to main and PRs from internal branches get the BrowserStack secrets
@@ -21,5 +23,9 @@ jobs:
       (github.event.pull_request.draft == false &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.actor != 'dependabot[bot]')
+    permissions:
+      contents: read
     uses: ./.github/workflows/e2e-reusable.yml
-    secrets: inherit
+    secrets:
+      BROWSERSTACK_USERNAME_TESTS: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
+      BROWSERSTACK_ACCESS_KEY_TESTS: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
