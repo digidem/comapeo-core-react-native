@@ -63,7 +63,7 @@
     "open:ios": "xed example/ios",
     "open:android": "open -a \"Android Studio\" example/android",
     "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh",
-    "backend:install": "npm ci --ignore-scripts --prefix backend && npm --prefix backend run postinstall",
+    "backend:install": "npm ci --no-dry-run --prefix backend",
     "prebackend:build": "npm run backend:install",
     "backend:build": "node ./scripts/build-backend.ts"
   },
