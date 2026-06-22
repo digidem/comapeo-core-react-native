@@ -36,7 +36,7 @@ jobs:
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
@@ -134,7 +134,7 @@ jobs:
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
