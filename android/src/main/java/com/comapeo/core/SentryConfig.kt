@@ -23,8 +23,10 @@ data class SentryConfig(
     val rpcArgsBytes: Int? = null,
     /** Fresh-install default for diagnostics toggle. `null` → `true`. User write wins. */
     val diagnosticsEnabledDefault: Boolean? = null,
-    /** Fresh-install default for capture-application-data toggle. `null` → `false`. */
-    val captureApplicationDataDefault: Boolean? = null,
+    /** Fresh-install default for application-usage-data toggle. `null` → `false`. */
+    val applicationUsageDataDefault: Boolean? = null,
+    /** Fresh-install default for the `debug` toggle. `null` → `false`. */
+    val debugDefault: Boolean? = null,
     /** Opt in to Sentry structured logs (`Sentry.logger.*`). `null` → off. */
     val enableLogs: Boolean? = null,
     /**
@@ -43,13 +45,23 @@ data class SentryConfig(
      * Subset that maps cleanly to `Sentry.init` options on the RN side. Sent to JS
      * as the `sentryConfig` constant; consumers spread into `Sentry.init({...})`.
      */
-    fun toSentryInitMap(): Map<String, Any> = buildMap {
+    fun toSentryInitMap(deviceTags: DeviceTags? = null): Map<String, Any> = buildMap {
         put("dsn", dsn)
         put("environment", environment)
         put("release", release)
         sampleRate?.let { put("sampleRate", it) }
         tracesSampleRate?.let { put("tracesSampleRate", it) }
         enableLogs?.let { put("enableLogs", it) }
+        deviceTags?.let {
+            put(
+                "deviceTags",
+                mapOf(
+                    "platform" to it.platform,
+                    "deviceClass" to it.deviceClass,
+                    "osMajor" to it.osMajor,
+                ),
+            )
+        }
     }
 
     companion object {
@@ -62,8 +74,13 @@ data class SentryConfig(
         const val META_RPC_ARGS_BYTES = "com.comapeo.core.sentry.rpcArgsBytes"
         const val META_DIAGNOSTICS_ENABLED_DEFAULT =
             "com.comapeo.core.sentry.diagnosticsEnabledDefault"
+        const val META_APPLICATION_USAGE_DATA_DEFAULT =
+            "com.comapeo.core.sentry.applicationUsageDataDefault"
+
+        /** Deprecated pre-Phase-11 key; still read for one minor (§11.7). */
         const val META_CAPTURE_APPLICATION_DATA_DEFAULT =
             "com.comapeo.core.sentry.captureApplicationDataDefault"
+        const val META_DEBUG_DEFAULT = "com.comapeo.core.sentry.debugDefault"
         const val META_ENABLE_LOGS = "com.comapeo.core.sentry.enableLogs"
         const val META_MODULE_VERSION = "com.comapeo.core.module.version"
         const val META_BACKEND_MODULES = "com.comapeo.core.backend.modules"
@@ -113,9 +130,12 @@ data class SentryConfig(
                 diagnosticsEnabledDefault = metaString(
                     META_DIAGNOSTICS_ENABLED_DEFAULT,
                 )?.toBooleanStrictOrNull(),
-                captureApplicationDataDefault = metaString(
-                    META_CAPTURE_APPLICATION_DATA_DEFAULT,
+                // New key wins; fall back to the deprecated key for one minor (§11.7).
+                applicationUsageDataDefault = (
+                    metaString(META_APPLICATION_USAGE_DATA_DEFAULT)
+                        ?: metaString(META_CAPTURE_APPLICATION_DATA_DEFAULT)
                 )?.toBooleanStrictOrNull(),
+                debugDefault = metaString(META_DEBUG_DEFAULT)?.toBooleanStrictOrNull(),
                 enableLogs = metaString(META_ENABLE_LOGS)?.toBooleanStrictOrNull(),
                 moduleVersion = metaString(META_MODULE_VERSION),
                 backendModulesJson = metaString(META_BACKEND_MODULES),

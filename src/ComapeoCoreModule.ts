@@ -21,6 +21,7 @@ import * as Sentry from "@sentry/react-native";
 // the import is safe.
 import { getTraceData, startNewTrace } from "@sentry/core";
 import type { SentryInitConfig } from "./sentry";
+import { rpcClientMetric, rpcStatusFor } from "./sentry-metrics";
 
 // `onRequestHook` request type derived from `createComapeoCoreClient` so
 // any hook-signature change up-stream is a compile error here. The
@@ -36,13 +37,15 @@ type IpcRequestWithMetadata = IpcHookRequest & {
 
 /**
  * User-persisted sentry preferences (snapshot at module construction).
- * Diagnostics on by default; capture-app-data off by default. Plugin
- * `diagnosticsEnabledDefault` / `captureApplicationDataDefault` change
- * the fresh-install defaults but not the user's saved choice.
+ * Diagnostics on by default; application-usage-data and debug off by
+ * default. Plugin `diagnosticsEnabledDefault` /
+ * `applicationUsageDataDefault` / `debugDefault` change the
+ * fresh-install defaults but not the user's saved choice.
  */
 export type SentryPreferences = {
   diagnosticsEnabled: boolean;
-  captureApplicationData: boolean;
+  applicationUsageData: boolean;
+  debug: boolean;
 };
 
 declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
@@ -56,8 +59,8 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   readonly sentryConfig: SentryInitConfig;
   /**
    * User-persisted preferences, read at module construction.
-   * Snapshot-at-boot — `setDiagnosticsEnabled` / `setCaptureApplicationData`
-   * writes only take effect on the next launch.
+   * Snapshot-at-boot — `setDiagnosticsEnabled` / `setApplicationUsageData`
+   * / `setDebugEnabled` writes only take effect on the next launch.
    */
   readonly sentryPreferences: SentryPreferences;
   /**
@@ -69,11 +72,23 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   setDiagnosticsEnabled(value: boolean): Promise<void>;
   /**
    * Same shape as `setDiagnosticsEnabled` but for the
-   * `captureApplicationData` toggle. Outbox wipe on false is full
+   * `applicationUsageData` toggle. Outbox wipe on false is full
    * (not just trace envelopes) — selective wipe would be a lot of
    * code for the same effect when an outbox is mixed.
    */
+  setApplicationUsageData(value: boolean): Promise<void>;
+  /**
+   * Deprecated native alias for {@link setApplicationUsageData}; kept
+   * for one minor release so a stale native call site keeps working.
+   * @deprecated use `setApplicationUsageData`.
+   */
   setCaptureApplicationData(value: boolean): Promise<void>;
+  /**
+   * Persist the `debug` toggle and (on a transition to true) stamp the
+   * enable time so the 24h auto-off can fire on a later launch.
+   * Restart-to-activate.
+   */
+  setDebugEnabled(value: boolean): Promise<void>;
 }
 
 // This call loads the native module object from the JSI.
@@ -95,17 +110,32 @@ export function readSentryConfig(): SentryInitConfig {
 /**
  * User-persisted sentry preferences. Snapshot-at-boot: the values are
  * read at native module construction, so `setDiagnosticsEnabled` /
- * `setCaptureApplicationData` writes only take effect on the next
- * launch. Falls back to safe defaults (diagnostics on, capture-app-
- * data off) when the native module isn't available (test contexts).
+ * `setApplicationUsageData` / `setDebugEnabled` writes only take effect
+ * on the next launch. Falls back to safe defaults (diagnostics on,
+ * application-usage-data off, debug off) when the native module isn't
+ * available (test contexts).
+ *
+ * Reads the deprecated `captureApplicationData` field if a stale native
+ * module still emits it, so an in-flight native/JS version skew doesn't
+ * silently flip the toggle off.
  */
 export function readSentryPreferences(): SentryPreferences {
-  return (
-    nativeModule.sentryPreferences ?? {
+  const raw = nativeModule.sentryPreferences as
+    | (SentryPreferences & { captureApplicationData?: boolean })
+    | undefined;
+  if (!raw) {
+    return {
       diagnosticsEnabled: true,
-      captureApplicationData: false,
-    }
-  );
+      applicationUsageData: false,
+      debug: false,
+    };
+  }
+  return {
+    diagnosticsEnabled: raw.diagnosticsEnabled,
+    applicationUsageData:
+      raw.applicationUsageData ?? raw.captureApplicationData ?? false,
+    debug: raw.debug ?? false,
+  };
 }
 
 /** Persist `diagnosticsEnabled`. See `setDiagnosticsEnabled` JSDoc. */
@@ -113,9 +143,14 @@ export function setDiagnosticsEnabledNative(value: boolean): Promise<void> {
   return nativeModule.setDiagnosticsEnabled(value);
 }
 
-/** Persist `captureApplicationData`. See `setCaptureApplicationData` JSDoc. */
-export function setCaptureApplicationDataNative(value: boolean): Promise<void> {
-  return nativeModule.setCaptureApplicationData(value);
+/** Persist `applicationUsageData`. See `setApplicationUsageData` JSDoc. */
+export function setApplicationUsageDataNative(value: boolean): Promise<void> {
+  return nativeModule.setApplicationUsageData(value);
+}
+
+/** Persist `debug`. See `setDebugEnabled` JSDoc. */
+export function setDebugEnabledNative(value: boolean): Promise<void> {
+  return nativeModule.setDebugEnabled(value);
 }
 
 type MessagePortEvents = {
@@ -213,26 +248,52 @@ function hasInheritableActiveSpan(): boolean {
   return rootOp !== "ui.load" && !rootOp.startsWith("app.start.");
 }
 
+/**
+ * `true` when per-RPC tracing is active — `diagnosticsEnabled && debug`
+ * with the SDK actually initialised. Read once at module construction
+ * (snapshot-at-boot, like the rest of the preferences) so a per-call
+ * branch stays cheap.
+ */
+const debugTracingEnabled = (() => {
+  const prefs = readSentryPreferences();
+  return prefs.diagnosticsEnabled && prefs.debug;
+})();
+
 export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort, {
   timeout: RPC_TIMEOUT_MS,
   onRequestHook: (request, next) => {
     // Sentry-not-initialised guard. `isInitialized` lives in `@sentry/core`
     // and is reachable through the namespace at runtime but isn't on the
     // public type surface — defensive accessor in case the helper isn't
-    // wired through in older SDK releases. Don't gate on `getActiveSpan`:
-    // it's undefined whenever no transaction is in progress (e.g. after
-    // App Start ends), which is exactly when we still want to create the
-    // span and propagate the trace to the backend.
+    // wired through in older SDK releases.
     const isInitialized = (
       Sentry as unknown as {
         isInitialized?: () => boolean;
       }
     ).isInitialized;
-    if (typeof isInitialized === "function" && !isInitialized()) {
-      next(request).catch(noop);
+    const sentryUp =
+      typeof isInitialized !== "function" || isInitialized();
+    const method = request.method.join(".");
+
+    // Always-on metric path. Records the per-call duration + status as a
+    // distribution metric regardless of `debug`; the metrics layer no-ops
+    // when Sentry is off, so this is safe even before init. Per-RPC traces
+    // (below) only run under `debug`.
+    const recordMetric = (start: number, status: string) => {
+      rpcClientMetric(method, status, performance.now() - start);
+    };
+
+    if (!sentryUp || !debugTracingEnabled) {
+      const start = performance.now();
+      next(request)
+        .then(
+          () => recordMetric(start, rpcStatusFor(null)),
+          (error: unknown) => recordMetric(start, rpcStatusFor(error)),
+        )
+        .catch(noop);
       return;
     }
-    const method = request.method.join(".");
+
     const runSpan = () =>
       Sentry.startSpan(
         {
@@ -257,6 +318,10 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
                 },
               }
             : request;
+          // Record the metric while the span is active so it links to the
+          // trace (§11.3). Duration is measured around the same round-trip
+          // the span brackets.
+          const start = performance.now();
           try {
             // Split the span duration into "sync send" (JSI hop + UDS write
             // to Node) and "await" (entire round-trip incl. response delivery
@@ -271,8 +336,10 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
             );
             await responsePromise;
             span.setStatus?.({ code: 1, message: "ok" });
+            recordMetric(start, rpcStatusFor(null));
           } catch (error) {
             span.setStatus?.({ code: 2, message: "internal_error" });
+            recordMetric(start, rpcStatusFor(error));
             Sentry.captureException(error);
           }
         },

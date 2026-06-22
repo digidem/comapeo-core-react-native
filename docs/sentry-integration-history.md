@@ -544,3 +544,55 @@ on iOS.
 - `ios/Tests/AppExitMetricsCollectorTests.swift` — 11 decoder tests
   (duplication semantics, tier gating, level/cause-class mapping, unknown
   buckets, window-id stability).
+
+## Phase 11 — toggle rework, metrics layer, PII scrubbers
+
+Landed the three-toggle model (§11.1), the always-on metrics layer
+(§11.2/§11.3), and the symmetric PII scrubbers (§9b.1/§9b.5).
+
+Toggle rework (#75):
+- Renamed `captureApplicationData` → `applicationUsageData` across the JS
+  API, native bridge methods, the on-device stored key, the Expo plugin
+  field, and the Node CLI flags. Deprecated aliases (`getCaptureApplicationData`
+  / `setCaptureApplicationData`, native `setCaptureApplicationData`, the
+  `--captureApplicationData` argv flag, and the plugin field) forward to
+  the new names for one minor release. A one-shot stored-key migration runs
+  on first `ComapeoPrefs.open` on both platforms.
+- New `debug` toggle: `get/setDebugEnabled` (JS), `setDebugEnabled` (native),
+  `sentry.debug` + `sentry.debugEnabledAtMs` prefs slots, `--debug` argv,
+  `debugDefault` plugin field. 24h auto-off (§11.5) implemented in the
+  `readDebugEnabled` reader on both platforms; re-enable refreshes the window.
+- Device classification (§11.2.b): new `DeviceTags.{kt,swift}` bucket the
+  device low/mid/high by RAM + cores and compute `<platform>.<major>`.
+  Plumbed to RN via the `sentryConfig.deviceTags` constant and to Node via
+  `--deviceClass` / `--osMajor` / `--platformTag`.
+- `tracesSampleRate` now derives from `debug` (1.0 / 0), not from the
+  usage toggle.
+
+Metrics layer (#76):
+- New `backend/lib/metrics.js` + `src/sentry-metrics.ts`: wrappers around
+  `Sentry.metrics.*` that inject `platform` on every metric, attach
+  `device_class` / `os_major` only on the `.by_device` mirrors, no-op when
+  Sentry is off, and run a `before_metric_send` forbidden-tag filter.
+- RPC hooks split on both sides: always record the metric; only create a
+  Sentry span when `debug` is on, recording the metric while the span is
+  active so it links to the trace.
+- Backend `consoleIntegration` moved behind `debug`. 60s memory /
+  event-loop sampler, boot-phase durations, state transitions, and a
+  bucketed storage-size counter wired in `index.js` / `withSpan`.
+
+PII scrubbers (#77):
+- Shared regex list (rootKey markers, 22-char base64, lat/lng markers) in
+  `src/sentry-scrub.ts` (RN) and the hand-mirrored `backend/before-send.js`
+  (Node). RN wires the real scrubber as `beforeSend` ahead of the host's
+  chain and a host-only URL `beforeBreadcrumb`; Node registers the same
+  scrub as an `addEventProcessor`. Walks message, exception text, extra,
+  contexts, breadcrumb message + data, and span description + data; HTTP
+  breadcrumb URLs reduce to host-only.
+
+Tests: `backend/lib/metrics.test.mjs`, `backend/lib/before-send.test.mjs`,
+extended `backend/lib/sentry.test.mjs` (debug on/off branching) and
+`src/__tests__/sentry.test.js` (scrubber + traces gating); native
+migration / 24h-auto-off / device-boundary tests in
+`ComapeoPrefs{Test,Tests}` and new `DeviceTags{Test,Tests}` on both
+platforms (run on CI emulator/Xcode).

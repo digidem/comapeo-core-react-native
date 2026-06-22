@@ -5,43 +5,57 @@ import * as Sentry from "@sentry/node-core";
 
 import { initSentry } from "./sentry-init.js";
 import { rpcHook, setSink, flush } from "./sentry.js";
+import * as metrics from "./metrics.js";
 
 /**
- * End-to-end "is the Node Sentry layer alive" check. Drives the real
- * `@sentry/node-core` SDK + OpenTelemetry SDK through `sentry.js`'s
- * `forwardingTransport` and asserts that an envelope frame reaches
- * the sink. If init silently skips, if the OTel SDK isn't wired so
- * `startSpan` produces nothing, if the transport doesn't get connected,
- * if rpcHook returns undefined when it shouldn't, or if the sink stops
- * draining — this test fails.
+ * Phase 11 debug-on / debug-off branching of `rpcHook` (§11.3):
+ *   - debug OFF ⇒ no span (no envelope reaches the sink), but the metric
+ *                 IS recorded.
+ *   - debug ON  ⇒ span created (envelope reaches the sink) AND metric
+ *                 recorded while the span is active.
  *
- * Deliberately asserts on **presence**, not on op-name strings or
- * attribute shapes. Renaming `rpc.server` or adding new attributes
- * is a legitimate refactor that should not break this test; the
- * regression class to catch is "no envelope at all".
+ * `sentry.js`'s `init` wires the metrics layer with the real SDK; we
+ * immediately re-`init` the metrics layer with a fake recorder SDK so a
+ * metric emission records into an array instead of producing its own
+ * envelope. That keeps the sink-frame count attributable to spans only.
+ *
+ * Presence-not-shape on the span side: assert "an envelope reached the
+ * sink", never on op-name strings.
  */
-test("rpcHook produces an envelope frame end-to-end via real @sentry/node-core", async () => {
-  initSentry({
-    sentryDsn: "https://x@sentry.io/1",
-    sentryEnvironment: "test",
-    sentryRelease: "0.0.0+test",
-    sentrySampleRate: "1.0",
-    sentryTracesSampleRate: "1.0",
-    sentryRpcArgsBytes: "0",
-    sentryEnableLogs: false,
-    sentryBaggage: "",
-    captureApplicationData: true,
-  });
 
-  const captured = [];
-  setSink((frame) => captured.push(frame));
+const baseArgv = {
+  sentryDsn: "https://x@sentry.io/1",
+  sentryEnvironment: "test",
+  sentryRelease: "0.0.0+test",
+  sentrySampleRate: "1.0",
+  sentryTracesSampleRate: "1.0",
+  sentryRpcArgsBytes: "0",
+  sentryEnableLogs: false,
+  sentryBaggage: "",
+  applicationUsageData: true,
+  deviceClass: "mid",
+  osMajor: "android.14",
+  platformTag: "android",
+};
 
-  const hook = rpcHook();
-  assert.ok(hook, "rpcHook returned undefined — Sentry didn't initialise");
+/** Fake metrics SDK that records distribution calls instead of emitting. */
+function recordingMetricsSdk() {
+  const distributions = [];
+  return {
+    distributions,
+    sdk: {
+      metrics: {
+        distribution: (name, value, data) =>
+          distributions.push({ name, value, ...data }),
+        count: () => {},
+        gauge: () => {},
+      },
+    },
+  };
+}
 
-  // Wait for next() to be called from inside startSpan's async callback.
-  // `hook` itself returns undefined, but the span only ends after the
-  // inner async callback resolves — gate test resolution on that.
+/** Drive one RPC through the hook; resolves once `next()` has been called. */
+async function driveHook(hook) {
   let nextCalled = false;
   await new Promise((resolve) => {
     hook(
@@ -56,18 +70,78 @@ test("rpcHook produces an envelope frame end-to-end via real @sentry/node-core",
       },
       async () => {
         nextCalled = true;
-        // setImmediate so startSpan has a tick after next() resolves
-        // to call span.setStatus, end the span, and queue the envelope.
         setImmediate(resolve);
       },
     );
   });
+  return nextCalled;
+}
+
+test("debug ON: rpcHook produces an envelope AND records the rpc metric", async () => {
+  initSentry({ ...baseArgv, debug: true });
+  const rec = recordingMetricsSdk();
+  metrics.init({
+    Sentry: rec.sdk,
+    platform: "android",
+    deviceClass: "mid",
+    osMajor: "android.14",
+    applicationUsageData: true,
+  });
+
+  const captured = [];
+  setSink((frame) => captured.push(frame));
+
+  const hook = rpcHook();
+  assert.ok(hook, "rpcHook returned undefined — Sentry didn't initialise");
+
+  const nextCalled = await driveHook(hook);
   await flush(2000);
 
   assert.ok(nextCalled, "rpcHook did not invoke next()");
   assert.ok(
     captured.length > 0,
-    "no envelope frame reached the sink — Node Sentry layer is silent",
+    "no envelope frame reached the sink — debug span not created",
+  );
+  assert.ok(
+    rec.distributions.some((d) => d.name === "comapeo.rpc.server.duration_ms"),
+    "rpc.server metric not recorded while the debug span was active",
+  );
+
+  await Sentry.close();
+});
+
+test("debug OFF: rpcHook records the metric but creates no span/envelope", async () => {
+  initSentry({ ...baseArgv, debug: false });
+  const rec = recordingMetricsSdk();
+  metrics.init({
+    Sentry: rec.sdk,
+    platform: "android",
+    deviceClass: "mid",
+    osMajor: "android.14",
+    applicationUsageData: true,
+  });
+
+  const captured = [];
+  setSink((frame) => captured.push(frame));
+
+  const hook = rpcHook();
+  assert.ok(
+    hook,
+    "rpcHook returned undefined — should still wrap for the metric path",
+  );
+
+  const nextCalled = await driveHook(hook);
+  await flush(500);
+
+  assert.ok(nextCalled, "rpcHook did not invoke next()");
+  assert.equal(
+    captured.length,
+    0,
+    "debug-off must not create an rpc.server transaction envelope",
+  );
+  assert.ok(
+    rec.distributions.some((d) => d.name === "comapeo.rpc.server.duration_ms"),
+    "rpc.server metric must be recorded on the debug-off path",
   );
 
   await Sentry.close();

@@ -167,8 +167,9 @@ class ComapeoCoreModule : Module() {
         // `Sentry.init(...)` by the JS `/sentry` sub-export. Empty map when the
         // plugin isn't registered so spreading is always safe.
         Constant("sentryConfig") {
-            appContext.reactContext?.let {
-                SentryConfig.loadFromManifest(it)?.toSentryInitMap()
+            appContext.reactContext?.let { ctx ->
+                SentryConfig.loadFromManifest(ctx)
+                    ?.toSentryInitMap(DeviceTags.compute(ctx))
             } ?: emptyMap<String, Any>()
         }
 
@@ -179,13 +180,15 @@ class ComapeoCoreModule : Module() {
             if (ctx == null) {
                 mapOf(
                     "diagnosticsEnabled" to ComapeoPrefs.DEFAULT_DIAGNOSTICS_ENABLED,
-                    "captureApplicationData" to ComapeoPrefs.DEFAULT_CAPTURE_APPLICATION_DATA,
+                    "applicationUsageData" to ComapeoPrefs.DEFAULT_APPLICATION_USAGE_DATA,
+                    "debug" to ComapeoPrefs.DEFAULT_DEBUG,
                 )
             } else {
                 val prefs = ComapeoPrefs.open(ctx)
                 mapOf(
                     "diagnosticsEnabled" to prefs.readDiagnosticsEnabled(),
-                    "captureApplicationData" to prefs.readCaptureApplicationData(),
+                    "applicationUsageData" to prefs.readApplicationUsageData(),
+                    "debug" to prefs.readDebugEnabled(),
                 )
             }
         }
@@ -202,12 +205,31 @@ class ComapeoCoreModule : Module() {
             if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
         }
 
+        AsyncFunction("setApplicationUsageData") { value: Boolean ->
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "setApplicationUsageData called before native context attached",
+                )
+            ComapeoPrefs.open(ctx).writeApplicationUsageData(value)
+            if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
+        }
+
+        // Deprecated alias for `setApplicationUsageData`; kept for one minor (§11.7).
         AsyncFunction("setCaptureApplicationData") { value: Boolean ->
             val ctx = appContext.reactContext
                 ?: throw IllegalStateException(
                     "setCaptureApplicationData called before native context attached",
                 )
-            ComapeoPrefs.open(ctx).writeCaptureApplicationData(value)
+            ComapeoPrefs.open(ctx).writeApplicationUsageData(value)
+            if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
+        }
+
+        AsyncFunction("setDebugEnabled") { value: Boolean ->
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "setDebugEnabled called before native context attached",
+                )
+            ComapeoPrefs.open(ctx).writeDebugEnabled(value)
             if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
         }
     }

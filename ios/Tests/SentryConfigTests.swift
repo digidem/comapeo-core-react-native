@@ -49,7 +49,8 @@ final class SentryConfigTests: XCTestCase {
         XCTAssertNil(config?.tracesSampleRate)
         XCTAssertNil(config?.rpcArgsBytes)
         XCTAssertNil(config?.diagnosticsEnabledDefault)
-        XCTAssertNil(config?.captureApplicationDataDefault)
+        XCTAssertNil(config?.applicationUsageDataDefault)
+        XCTAssertNil(config?.debugDefault)
     }
 
     func testPluginReleaseOverridesDefault() {
@@ -159,29 +160,30 @@ final class SentryConfigTests: XCTestCase {
         XCTAssertNil(stray?.diagnosticsEnabledDefault)
     }
 
-    func testCaptureApplicationDataDefaultParsesString() {
+    func testApplicationUsageDataDefaultParsesString() {
         let on = SentryConfig.load(
             from: [
                 SentryConfig.Key.dsn: "https://x@sentry.io/1",
                 SentryConfig.Key.environment: "qa",
-                SentryConfig.Key.captureApplicationDataDefault: "true",
+                SentryConfig.Key.applicationUsageDataDefault: "true",
             ],
             defaultRelease: defaultRelease
         )
-        XCTAssertEqual(on?.captureApplicationDataDefault, true)
+        XCTAssertEqual(on?.applicationUsageDataDefault, true)
 
         let off = SentryConfig.load(
             from: [
                 SentryConfig.Key.dsn: "https://x@sentry.io/1",
                 SentryConfig.Key.environment: "production",
-                SentryConfig.Key.captureApplicationDataDefault: "false",
+                SentryConfig.Key.applicationUsageDataDefault: "false",
             ],
             defaultRelease: defaultRelease
         )
-        XCTAssertEqual(off?.captureApplicationDataDefault, false)
+        XCTAssertEqual(off?.applicationUsageDataDefault, false)
     }
 
-    func testCaptureApplicationDataDefaultParsesNativeBool() {
+    func testDeprecatedCaptureApplicationDataDefaultStillReadAsUsage() {
+        // §11.7: the old plist key feeds the new field for one minor.
         let config = SentryConfig.load(
             from: [
                 SentryConfig.Key.dsn: "https://x@sentry.io/1",
@@ -190,10 +192,22 @@ final class SentryConfigTests: XCTestCase {
             ],
             defaultRelease: defaultRelease
         )
-        XCTAssertEqual(config?.captureApplicationDataDefault, true)
+        XCTAssertEqual(config?.applicationUsageDataDefault, true)
     }
 
-    func testCaptureApplicationDataDefaultStrictness() {
+    func testDebugDefaultParses() {
+        let config = SentryConfig.load(
+            from: [
+                SentryConfig.Key.dsn: "https://x@sentry.io/1",
+                SentryConfig.Key.environment: "qa",
+                SentryConfig.Key.debugDefault: "true",
+            ],
+            defaultRelease: defaultRelease
+        )
+        XCTAssertEqual(config?.debugDefault, true)
+    }
+
+    func testApplicationUsageDataDefaultStrictness() {
         // Only "true"/"false" (or a real Bool) parse. A stray
         // "1"/"yes" returns nil → native treats absence as false.
         // Defensive against hand-written plists silently flipping
@@ -202,11 +216,11 @@ final class SentryConfigTests: XCTestCase {
             from: [
                 SentryConfig.Key.dsn: "https://x@sentry.io/1",
                 SentryConfig.Key.environment: "qa",
-                SentryConfig.Key.captureApplicationDataDefault: "yes",
+                SentryConfig.Key.applicationUsageDataDefault: "yes",
             ],
             defaultRelease: defaultRelease
         )
-        XCTAssertNil(config?.captureApplicationDataDefault)
+        XCTAssertNil(config?.applicationUsageDataDefault)
     }
 
     func testMissingEnvironmentReturnsNilNotFatal() {

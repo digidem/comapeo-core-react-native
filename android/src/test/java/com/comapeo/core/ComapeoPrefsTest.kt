@@ -24,44 +24,57 @@ class ComapeoPrefsTest {
 
     /** Backing HashMap stand-in for the SharedPreferences file. */
     private class FakeStore {
-        private val data = mutableMapOf<String, Boolean>()
-        val read: (String) -> Boolean? = { key -> data[key] }
-        val write: (String, Boolean) -> Unit = { key, value -> data[key] = value }
-        fun has(key: String) = data.containsKey(key)
+        private val bools = mutableMapOf<String, Boolean>()
+        private val longs = mutableMapOf<String, Long>()
+        val readBool: (String) -> Boolean? = { key -> bools[key] }
+        val writeBool: (String, Boolean) -> Unit = { key, value -> bools[key] = value }
+        val readLong: (String) -> Long? = { key -> longs[key] }
+        val writeLong: (String, Long) -> Unit = { key, value -> longs[key] = value }
+        val remove: (String) -> Unit = { key -> bools.remove(key); longs.remove(key) }
+        fun has(key: String) = bools.containsKey(key) || longs.containsKey(key)
+        fun putBool(key: String, value: Boolean) { bools[key] = value }
     }
 
     private fun prefs(
         store: FakeStore,
         diagnosticsDefault: Boolean = ComapeoPrefs.DEFAULT_DIAGNOSTICS_ENABLED,
-        captureDefault: Boolean = ComapeoPrefs.DEFAULT_CAPTURE_APPLICATION_DATA,
+        usageDefault: Boolean = ComapeoPrefs.DEFAULT_APPLICATION_USAGE_DATA,
+        debugDefault: Boolean = ComapeoPrefs.DEFAULT_DEBUG,
+        now: () -> Long = { 0L },
     ): ComapeoPrefs = ComapeoPrefs(
-        readBool = store.read,
-        writeBool = store.write,
+        readBool = store.readBool,
+        writeBool = store.writeBool,
+        readLong = store.readLong,
+        writeLong = store.writeLong,
+        removeKey = store.remove,
         defaults = ComapeoPrefs.Defaults(
             diagnosticsEnabled = diagnosticsDefault,
-            captureApplicationData = captureDefault,
+            applicationUsageData = usageDefault,
+            debug = debugDefault,
         ),
+        now = now,
     )
 
     @Test
     fun bakedDefaultWhenKeyAbsent() {
         // Fresh install, plugin didn't ship a default, user hasn't
-        // toggled anything — diagnostics on, capture-app-data off.
+        // toggled anything — diagnostics on, usage off, debug off.
         val p = prefs(FakeStore())
         assertTrue(p.readDiagnosticsEnabled())
-        assertFalse(p.readCaptureApplicationData())
+        assertFalse(p.readApplicationUsageData())
+        assertFalse(p.readDebugEnabled())
     }
 
     @Test
     fun pluginDefaultOverridesBakedWhenKeyAbsent() {
-        // E.g. a dev/qa plugin config with both flags on by default.
+        // E.g. a dev/qa plugin config with usage on by default.
         val p = prefs(
             FakeStore(),
             diagnosticsDefault = false,
-            captureDefault = true,
+            usageDefault = true,
         )
         assertFalse(p.readDiagnosticsEnabled())
-        assertTrue(p.readCaptureApplicationData())
+        assertTrue(p.readApplicationUsageData())
     }
 
     @Test
@@ -72,12 +85,87 @@ class ComapeoPrefsTest {
         val p = prefs(
             store,
             diagnosticsDefault = true,
-            captureDefault = false,
+            usageDefault = false,
         )
         p.writeDiagnosticsEnabled(false)
-        p.writeCaptureApplicationData(true)
+        p.writeApplicationUsageData(true)
         assertFalse(p.readDiagnosticsEnabled())
-        assertTrue(p.readCaptureApplicationData())
+        assertTrue(p.readApplicationUsageData())
+    }
+
+    @Test
+    fun migrationCopiesLegacyKeyThenDeletesIt() {
+        // §11.7 one-shot rename: captureApplicationData=true present,
+        // applicationUsageData absent → new key populated true, old key gone.
+        val store = FakeStore()
+        store.putBool(ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA, true)
+        ComapeoPrefs.migrateLegacyKeys(store.readBool, store.writeBool, store.remove)
+        assertTrue(store.readBool(ComapeoPrefs.KEY_APPLICATION_USAGE_DATA) == true)
+        assertFalse(
+            "old key must be deleted after migration",
+            store.has(ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA),
+        )
+    }
+
+    @Test
+    fun migrationIsNoOpWhenNewKeyAlreadySet() {
+        // Idempotent: a new-key write must not be clobbered by a stale old key.
+        val store = FakeStore()
+        store.putBool(ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA, true)
+        store.putBool(ComapeoPrefs.KEY_APPLICATION_USAGE_DATA, false)
+        ComapeoPrefs.migrateLegacyKeys(store.readBool, store.writeBool, store.remove)
+        assertFalse(store.readBool(ComapeoPrefs.KEY_APPLICATION_USAGE_DATA)!!)
+        assertFalse(store.has(ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA))
+    }
+
+    @Test
+    fun debugAutoOffBoundaries() {
+        // §11.5: fresh enable true; +23h59m true; +24h01m false + cleared.
+        val store = FakeStore()
+        var clock = 1_000_000L
+        val p = prefs(store, now = { clock })
+        p.writeDebugEnabled(true)
+        assertTrue("fresh enable reads true", p.readDebugEnabled())
+
+        clock += ComapeoPrefs.DEBUG_MAX_AGE_MS - 60_000 // +23h59m
+        assertTrue("within 24h reads true", p.readDebugEnabled())
+
+        clock += 120_000 // now past 24h since enable
+        assertFalse("past 24h auto-disables", p.readDebugEnabled())
+        assertFalse(
+            "auto-off clears the value",
+            store.readBool(ComapeoPrefs.KEY_DEBUG)!!,
+        )
+        assertFalse(
+            "auto-off clears the timestamp",
+            store.has(ComapeoPrefs.KEY_DEBUG_ENABLED_AT_MS),
+        )
+        // A second read does not mutate further.
+        assertFalse(p.readDebugEnabled())
+    }
+
+    @Test
+    fun debugReEnableRefreshesWindow() {
+        val store = FakeStore()
+        var clock = 0L
+        val p = prefs(store, now = { clock })
+        p.writeDebugEnabled(true)
+        clock += ComapeoPrefs.DEBUG_MAX_AGE_MS - 60_000
+        // Re-enable at 23h59m → fresh 24h window.
+        p.writeDebugEnabled(true)
+        clock += ComapeoPrefs.DEBUG_MAX_AGE_MS - 60_000
+        assertTrue("re-enable should reset the 24h clock", p.readDebugEnabled())
+    }
+
+    @Test
+    fun debugTrueWithoutTimestampStampsAndStaysOn() {
+        // Older install: debug=true cell exists, no timestamp. Treat as
+        // "enabled now" and stamp on first read.
+        val store = FakeStore()
+        store.putBool(ComapeoPrefs.KEY_DEBUG, true)
+        val p = prefs(store, now = { 500L })
+        assertTrue(p.readDebugEnabled())
+        assertEquals(500L, store.readLong(ComapeoPrefs.KEY_DEBUG_ENABLED_AT_MS))
     }
 
     @Test
@@ -105,9 +193,14 @@ class ComapeoPrefsTest {
             ComapeoPrefs.KEY_DIAGNOSTICS_ENABLED,
         )
         assertEquals(
+            "sentry.applicationUsageData",
+            ComapeoPrefs.KEY_APPLICATION_USAGE_DATA,
+        )
+        assertEquals(
             "sentry.captureApplicationData",
             ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA,
         )
+        assertEquals("sentry.debug", ComapeoPrefs.KEY_DEBUG)
     }
 
     @Test

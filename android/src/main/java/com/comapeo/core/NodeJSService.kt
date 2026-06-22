@@ -54,8 +54,12 @@ class NodeJSService(
     context: android.content.Context,
     /** Forwarded as `--sentry*` argv to backend/loader.mjs. `null` → loader skips Sentry. */
     private val sentryConfig: SentryConfig? = null,
-    /** Backend forwards span/event data with potential app content when `true`. Ignored when [sentryConfig] is null. */
-    private val captureApplicationData: Boolean = false,
+    /** Stable user.id + usage events when `true`. Ignored when [sentryConfig] is null. */
+    private val applicationUsageData: Boolean = false,
+    /** Per-RPC tracing + consoleIntegration when `true`. Ignored when [sentryConfig] is null. */
+    private val debug: Boolean = false,
+    /** Device classification tags forwarded to Node for the `.by_device` metrics. */
+    private val deviceTags: DeviceTags? = null,
     /** Max ms in STARTING before the watchdog forces ERROR. 30 s covers cold boot + native addon dlopens. */
     private val startupTimeoutMs: Long = 30_000,
 ) : ContextWrapper(context) {
@@ -340,7 +344,13 @@ class NodeJSService(
             cfg.tracesSampleRate?.let { args += "--sentryTracesSampleRate=$it" }
             cfg.rpcArgsBytes?.let { args += "--sentryRpcArgsBytes=$it" }
             if (cfg.enableLogs == true) args += "--sentryEnableLogs"
-            if (captureApplicationData) args += "--captureApplicationData"
+            if (applicationUsageData) args += "--applicationUsageData"
+            if (debug) args += "--debug"
+            deviceTags?.let {
+                args += "--deviceClass=${it.deviceClass}"
+                args += "--osMajor=${it.osMajor}"
+                args += "--platformTag=${it.platform}"
+            }
 
             // Forward node-spawn's trace so Node spans nest under it; fall back to
             // the transaction defensively if node-spawn hasn't opened yet.

@@ -55,7 +55,9 @@ class ComapeoCoreService : Service() {
 
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
 
-        val captureApplicationData = prefs.readCaptureApplicationData()
+        val applicationUsageData = prefs.readApplicationUsageData()
+        val debug = prefs.readDebugEnabled()
+        val deviceTags = DeviceTags.compute(applicationContext)
         serviceScope.launch(Dispatchers.IO) {
             // Snapshot the previous FGS session's anchors before stamping
             // this run's — the decoder must see what was true at the old exit.
@@ -68,7 +70,7 @@ class ComapeoCoreService : Service() {
                 // android:process — a rename can't silently break the filter.
                 processName = currentProcessName(applicationContext),
                 procKey = SentryTags.PROC_FGS,
-                captureApplicationData = captureApplicationData,
+                captureApplicationData = applicationUsageData,
                 snapshot = snapshot,
             )
         }
@@ -76,7 +78,9 @@ class ComapeoCoreService : Service() {
         nodeJSService = NodeJSService(
             applicationContext,
             sentryConfig = effectiveConfig,
-            captureApplicationData = captureApplicationData,
+            applicationUsageData = applicationUsageData,
+            debug = debug,
+            deviceTags = deviceTags,
         )
     }
 

@@ -7,6 +7,11 @@ import { createComapeo } from "./lib/create-comapeo.js";
 import { createMapServer } from "./lib/create-map-server.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 import * as sentry from "./lib/sentry.js";
+import * as metrics from "./lib/metrics.js";
+
+// 60s sampler cadence for backend memory + uptime gauges (§11.2.a). No-op
+// when Sentry is off (the metrics layer never got its SDK).
+const MEMORY_SAMPLE_INTERVAL_MS = 60_000;
 
 // Shared/Android entry. Android's nodejs-mobile build ships the
 // undici-backed `fetch`/`Response`/`Request` globals the map server needs;
@@ -260,11 +265,70 @@ async function withPhase(phase, fn) {
     console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
 
     controlIpcServer.setReadinessPhase("ready");
+    metrics.bootOutcome("started");
+    metrics.stateTransition("starting", "started");
+    startMemorySampler();
+    sampleStorageSize(privateStorageDir);
   } catch (error) {
     const phase = getStringProp(error, "phase") || "boot";
+    metrics.bootOutcome("error", phase);
+    metrics.stateTransition("starting", "error");
     handleFatal(phase, error);
   }
 })();
+
+/**
+ * 60s gauge sampler for backend memory + uptime + event-loop delay
+ * (§11.2.a). `unref()` so the timer never keeps the process alive past
+ * shutdown. No-op metric calls when Sentry is off.
+ */
+function startMemorySampler() {
+  let last = performance.now();
+  const timer = setInterval(() => {
+    // Event-loop delay: how late did this 60s timer actually fire? The
+    // overshoot past the scheduled interval is a cheap delay proxy.
+    const now = performance.now();
+    const delay = Math.max(0, now - last - MEMORY_SAMPLE_INTERVAL_MS);
+    last = now;
+    metrics.backendMemorySample();
+    metrics.eventLoopDelaySample(delay);
+  }, MEMORY_SAMPLE_INTERVAL_MS);
+  timer.unref?.();
+}
+
+/**
+ * One-shot bucketed storage-size counter at STARTED (§11.2.a). Reads the
+ * private storage dir recursively; best-effort — a stat error skips the
+ * sample rather than failing boot.
+ *
+ * @param {string | undefined} dir
+ */
+function sampleStorageSize(dir) {
+  if (!dir) return;
+  import("node:fs")
+    .then(async ({ promises: fs }) => {
+      let total = 0;
+      /** @param {string} path */
+      const walk = async (path) => {
+        const entries = await fs.readdir(path, { withFileTypes: true });
+        for (const entry of entries) {
+          const full = `${path}/${entry.name}`;
+          if (entry.isDirectory()) {
+            await walk(full);
+          } else {
+            try {
+              total += (await fs.stat(full)).size;
+            } catch {
+              // Vanished mid-walk — skip.
+            }
+          }
+        }
+      };
+      await walk(dir);
+      metrics.storageSizeBucket(metrics.storageBucket(total));
+    })
+    .catch(() => {});
+}
 
 process.on("exit", () => {
   console.log("node exiting");

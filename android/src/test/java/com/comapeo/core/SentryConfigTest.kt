@@ -51,7 +51,8 @@ class SentryConfigTest {
         assertNull(config.tracesSampleRate)
         assertNull(config.rpcArgsBytes)
         assertNull(config.diagnosticsEnabledDefault)
-        assertNull(config.captureApplicationDataDefault)
+        assertNull(config.applicationUsageDataDefault)
+        assertNull(config.debugDefault)
         assertNull(config.enableLogs)
     }
 
@@ -154,8 +155,36 @@ class SentryConfigTest {
     }
 
     @Test
-    fun captureApplicationDataDefaultParses() {
+    fun applicationUsageDataDefaultParses() {
         val on = SentryConfig.load(
+            mapGetter(
+                mapOf(
+                    SentryConfig.META_DSN to "https://x@sentry.io/1",
+                    SentryConfig.META_ENVIRONMENT to "qa",
+                    SentryConfig.META_APPLICATION_USAGE_DATA_DEFAULT to "true",
+                ),
+            ),
+            DEFAULT_RELEASE,
+        )!!
+        assertEquals(true, on.applicationUsageDataDefault)
+
+        val off = SentryConfig.load(
+            mapGetter(
+                mapOf(
+                    SentryConfig.META_DSN to "https://x@sentry.io/1",
+                    SentryConfig.META_ENVIRONMENT to "production",
+                    SentryConfig.META_APPLICATION_USAGE_DATA_DEFAULT to "false",
+                ),
+            ),
+            DEFAULT_RELEASE,
+        )!!
+        assertEquals(false, off.applicationUsageDataDefault)
+    }
+
+    @Test
+    fun deprecatedCaptureApplicationDataDefaultStillReadAsUsage() {
+        // §11.7: the old meta key feeds the new field for one minor.
+        val config = SentryConfig.load(
             mapGetter(
                 mapOf(
                     SentryConfig.META_DSN to "https://x@sentry.io/1",
@@ -165,23 +194,26 @@ class SentryConfigTest {
             ),
             DEFAULT_RELEASE,
         )!!
-        assertEquals(true, on.captureApplicationDataDefault)
+        assertEquals(true, config.applicationUsageDataDefault)
+    }
 
-        val off = SentryConfig.load(
+    @Test
+    fun debugDefaultParses() {
+        val on = SentryConfig.load(
             mapGetter(
                 mapOf(
                     SentryConfig.META_DSN to "https://x@sentry.io/1",
-                    SentryConfig.META_ENVIRONMENT to "production",
-                    SentryConfig.META_CAPTURE_APPLICATION_DATA_DEFAULT to "false",
+                    SentryConfig.META_ENVIRONMENT to "qa",
+                    SentryConfig.META_DEBUG_DEFAULT to "true",
                 ),
             ),
             DEFAULT_RELEASE,
         )!!
-        assertEquals(false, off.captureApplicationDataDefault)
+        assertEquals(true, on.debugDefault)
     }
 
     @Test
-    fun captureApplicationDataDefaultStrictness() {
+    fun applicationUsageDataDefaultStrictness() {
         // `toBooleanStrictOrNull` rejects values other than "true" /
         // "false". Defensive: a stray "1"/"yes" from a hand-written
         // manifest should not silently flip the default. Returns
@@ -191,12 +223,12 @@ class SentryConfigTest {
                 mapOf(
                     SentryConfig.META_DSN to "https://x@sentry.io/1",
                     SentryConfig.META_ENVIRONMENT to "qa",
-                    SentryConfig.META_CAPTURE_APPLICATION_DATA_DEFAULT to "yes",
+                    SentryConfig.META_APPLICATION_USAGE_DATA_DEFAULT to "yes",
                 ),
             ),
             DEFAULT_RELEASE,
         )!!
-        assertNull(config.captureApplicationDataDefault)
+        assertNull(config.applicationUsageDataDefault)
     }
 
     @Test

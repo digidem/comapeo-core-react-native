@@ -1286,7 +1286,27 @@ before they ship.
 
 ---
 
-## 9. Three-tier privacy model
+## 9. Privacy model
+
+> **Phase 11 update (see [`sentry-integration-plan.md` §11](./sentry-integration-plan.md#phase-11--metrics-first-observability--debug-tier)).**
+> The two-toggle model below has been superseded by a three-toggle
+> model. `captureApplicationData` was renamed to `applicationUsageData`
+> (deprecated alias kept for one minor release) and a new `debug` toggle
+> was added. The current contract:
+>
+> | Toggle                 | Gates                                                                                  | Default   |
+> | ---------------------- | -------------------------------------------------------------------------------------- | --------- |
+> | `diagnosticsEnabled`   | `Sentry.init`; errors, lifecycle, **metrics**, boot/sync/shutdown transactions.        | `true`    |
+> | `applicationUsageData` | Stable `user.id` (no monthly hash) + feature-usage breadcrumbs/counters.               | `false`   |
+> | `debug`                | Per-RPC traces, `@comapeo/core` OTel spans, backend `consoleIntegration`, `rpc.args`.  | `false`   |
+>
+> Day-to-day performance signal now rides an always-on **metrics** layer
+> at the diagnostic tier (`comapeo.rpc.*`, `comapeo.boot.*`, etc. — see
+> §11.2); per-RPC *traces* moved behind `debug`, which 100%-samples while
+> on and auto-expires 24h after the most recent enable. `tracesSampleRate`
+> is `debug ? 1.0 : 0` (was `applicationUsageData ? 0.1 : 0`). The §9.2
+> sections below describe the renamed toggle; read `applicationUsageData`
+> wherever they say `captureApplicationData`.
 
 CoMapeo's host-app privacy contract has three states, not two:
 

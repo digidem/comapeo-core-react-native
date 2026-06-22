@@ -14,14 +14,17 @@ struct SentryConfig: Equatable {
     /// write wins thereafter.
     let diagnosticsEnabledDefault: Bool?
     /// Default for fresh installs. `nil` → `false`.
-    let captureApplicationDataDefault: Bool?
+    let applicationUsageDataDefault: Bool?
+    /// Default for the `debug` toggle. `nil` → `false`.
+    let debugDefault: Bool?
     /// Opt in to `SentrySDK.logger.*`. `nil`/`false` → logger no-ops.
     let enableLogs: Bool?
 
     /// Subset that maps cleanly to JS-side `Sentry.init` options;
     /// plugin-internal fields excluded. Spread on the JS side as
-    /// `Sentry.init({ ...sentryConfig, ...mine })`.
-    func toSentryInitMap() -> [String: Any] {
+    /// `Sentry.init({ ...sentryConfig, ...mine })`. `deviceTags` (§11.2.b)
+    /// rides along for the `.by_device` metrics.
+    func toSentryInitMap(deviceTags: DeviceTags? = nil) -> [String: Any] {
         var map: [String: Any] = [
             "dsn": dsn,
             "environment": environment,
@@ -30,6 +33,13 @@ struct SentryConfig: Equatable {
         if let sampleRate = sampleRate { map["sampleRate"] = sampleRate }
         if let tracesSampleRate = tracesSampleRate { map["tracesSampleRate"] = tracesSampleRate }
         if let enableLogs = enableLogs { map["enableLogs"] = enableLogs }
+        if let deviceTags = deviceTags {
+            map["deviceTags"] = [
+                "platform": deviceTags.platform,
+                "deviceClass": deviceTags.deviceClass,
+                "osMajor": deviceTags.osMajor,
+            ]
+        }
         return map
     }
 
@@ -42,7 +52,10 @@ struct SentryConfig: Equatable {
         static let tracesSampleRate = "ComapeoCoreSentryTracesSampleRate"
         static let rpcArgsBytes = "ComapeoCoreSentryRpcArgsBytes"
         static let diagnosticsEnabledDefault = "ComapeoCoreSentryDiagnosticsEnabledDefault"
+        static let applicationUsageDataDefault = "ComapeoCoreSentryApplicationUsageDataDefault"
+        /// Deprecated pre-Phase-11 key; still read for one minor (§11.7).
         static let captureApplicationDataDefault = "ComapeoCoreSentryCaptureApplicationDataDefault"
+        static let debugDefault = "ComapeoCoreSentryDebugDefault"
         static let enableLogs = "ComapeoCoreSentryEnableLogs"
     }
 
@@ -85,9 +98,12 @@ struct SentryConfig: Equatable {
             diagnosticsEnabledDefault: parseStrictBool(
                 info[Key.diagnosticsEnabledDefault]
             ),
-            captureApplicationDataDefault: parseStrictBool(
-                info[Key.captureApplicationDataDefault]
+            // New key wins; fall back to the deprecated key for one minor (§11.7).
+            applicationUsageDataDefault: parseStrictBool(
+                info[Key.applicationUsageDataDefault]
+                    ?? info[Key.captureApplicationDataDefault]
             ),
+            debugDefault: parseStrictBool(info[Key.debugDefault]),
             enableLogs: parseStrictBool(info[Key.enableLogs])
         )
     }

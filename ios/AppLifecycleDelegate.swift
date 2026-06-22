@@ -63,7 +63,9 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             try AppLifecycleDelegate.rootKeyStore.loadOrInitialize()
         },
         sentryConfig: AppLifecycleDelegate.resolveEffectiveSentryConfig(),
-        captureApplicationData: ComapeoPrefs.open().readCaptureApplicationData()
+        applicationUsageData: ComapeoPrefs.open().readApplicationUsageData(),
+        debug: ComapeoPrefs.open().readDebugEnabled(),
+        deviceTags: DeviceTags.compute()
     )
 
     /// Directory for the Unix-domain socket files. The 104-byte
@@ -117,6 +119,14 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         // runs later with `autoInitializeNativeSdk: false`.
         if let cfg = Self.resolveEffectiveSentryConfig() {
             SentryNativeBridge.initFromConfig(cfg)
+            // Drain a `debug` 24h auto-off (§11.5) queued by the prefs
+            // reader, which runs before the SDK is up.
+            if DebugAutoOff.consume() {
+                SentryNativeBridge.addBreadcrumb(
+                    category: "comapeo.debug.auto_disabled",
+                    message: "debug auto-disabled after 24h"
+                )
+            }
             // MXAppExitMetric needs iOS 14+; the podspec floor (15.1)
             // guarantees it, so no availability guard.
             #if canImport(MetricKit)

@@ -4,7 +4,7 @@
  * This module owns the RN-side `Sentry.init` call — the host calls
  * [initSentry] once at app entry and the module decides DSN, release,
  * sample rates, and user-tier gating based on the persisted
- * `diagnosticsEnabled` / `captureApplicationData` preferences. The host
+ * `diagnosticsEnabled` / `applicationUsageData` / `debug` preferences. The host
  * cannot override DSN or sample rates; it can append integrations and
  * chain its own `beforeSend` / `beforeBreadcrumb` after our scrubber.
  *
@@ -20,14 +20,23 @@ import {
   readSentryConfig,
   readSentryPreferences,
   setDiagnosticsEnabledNative,
-  setCaptureApplicationDataNative,
+  setApplicationUsageDataNative,
+  setDebugEnabledNative,
 } from "./ComapeoCoreModule";
 import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types";
 import { SentryTags } from "./sentry-tags";
+import { scrubEvent, scrubBreadcrumb } from "./sentry-scrub";
 import {
   BACKEND_MODULES,
   COMAPEO_MODULE_VERSION_LABEL,
 } from "./version";
+
+/**
+ * Feature-usage helper. No-op unless `applicationUsageData` is on.
+ * `recordUsage.screen("ObservationList")` /
+ * `recordUsage.feature("export.geojson")` (§11.4).
+ */
+export { recordUsage } from "./sentry-metrics";
 
 /**
  * Subset of `Sentry.init` options that map cleanly from values the
@@ -40,6 +49,23 @@ export type SentryInitConfig = {
   sampleRate?: number;
   tracesSampleRate?: number;
   enableLogs?: boolean;
+  /**
+   * Device-classification tags computed once at native process start
+   * (§11.2.b). Rides on the `.by_device` mirror metrics only — see
+   * `sentry-metrics.ts`. Absent in test contexts / pre-attach.
+   */
+  deviceTags?: SentryDeviceTags;
+};
+
+/**
+ * Low-cardinality device classification (§11.2.b). `deviceClass`
+ * buckets RAM + CPU cores into low/mid/high; `osMajor` is
+ * `<platform>.<major>`; `platform` is `ios` / `android`.
+ */
+export type SentryDeviceTags = {
+  platform: string;
+  deviceClass: string;
+  osMajor: string;
 };
 
 /**
@@ -51,13 +77,6 @@ export type SentryInitConfig = {
  * Always-defined: empty object when the plugin isn't registered.
  */
 export const sentryConfig: SentryInitConfig = readSentryConfig();
-
-/**
- * Fallback `tracesSampleRate` when the plugin doesn't configure one
- * and `captureApplicationData` is on. Keep in sync with
- * `backend/loader.mjs`'s `DEFAULT_TRACES_SAMPLE_RATE`.
- */
-const DEFAULT_TRACES_SAMPLE_RATE = 0.1;
 
 // ── Host extension API ──────────────────────────────────────────
 
@@ -126,19 +145,54 @@ export function setDiagnosticsEnabled(value: boolean): Promise<void> {
 
 /**
  * User's saved value (or the plugin/baked default if unset). Note
- * that the *effective* value (what actually gates per-RPC traces
- * etc.) is `getCaptureApplicationData() && getDiagnosticsEnabled()`
- * — but the getter returns the saved value so a settings UI can
- * render the toggle's stored state regardless of the diagnostics
- * setting.
+ * that the *effective* value (what gates the stable `user.id` + usage
+ * events) is `getApplicationUsageData() && getDiagnosticsEnabled()` —
+ * but the getter returns the saved value so a settings UI can render
+ * the toggle's stored state regardless of the diagnostics setting.
  */
-export function getCaptureApplicationData(): boolean {
-  return readSentryPreferences().captureApplicationData;
+export function getApplicationUsageData(): boolean {
+  return readSentryPreferences().applicationUsageData;
 }
 
 /** Persist the toggle. See [setDiagnosticsEnabled] for semantics. */
+export function setApplicationUsageData(value: boolean): Promise<void> {
+  return setApplicationUsageDataNative(value);
+}
+
+/**
+ * @deprecated Renamed to [getApplicationUsageData] in Phase 11. The
+ * old name forwards for one minor release; switch to the new name.
+ */
+export function getCaptureApplicationData(): boolean {
+  return getApplicationUsageData();
+}
+
+/**
+ * @deprecated Renamed to [setApplicationUsageData] in Phase 11. The
+ * old name forwards for one minor release; switch to the new name.
+ */
 export function setCaptureApplicationData(value: boolean): Promise<void> {
-  return setCaptureApplicationDataNative(value);
+  return setApplicationUsageData(value);
+}
+
+/**
+ * User's saved `debug` value (or the plugin/baked default if unset).
+ * `debug` gates per-RPC traces, `@comapeo/core` OTel spans, backend
+ * `consoleIntegration`, and `rpc.args` capture. Restart-to-activate.
+ * Auto-expires 24h after the most recent enable (§11.5), enforced
+ * natively on the next launch.
+ */
+export function getDebugEnabled(): boolean {
+  return readSentryPreferences().debug;
+}
+
+/**
+ * Persist the `debug` toggle. Writing `true` (re)starts the 24h
+ * auto-off window. See [setDiagnosticsEnabled] for the
+ * restart-to-activate semantics.
+ */
+export function setDebugEnabled(value: boolean): Promise<void> {
+  return setDebugEnabledNative(value);
 }
 
 // ── initSentry ──────────────────────────────────────────────────
@@ -167,10 +221,9 @@ let sentryReady = false;
  * - `dsn`, `release`, `environment`, `sampleRate`, `enableLogs` —
  *   from `sentryConfig` (the Expo plugin's prebuild output).
  * - `sendDefaultPii: false` — privacy default; not overridable.
- * - `tracesSampleRate` — 0 when capture-application-data is off, the
- *   plugin's configured value (default 0.1) when on.
- * - PII scrubber (currently an identity no-op; full implementation
- *   lands in the subsequent phase) runs before any host `beforeSend`.
+ * - `tracesSampleRate` — 1.0 when `debug` is on, 0 otherwise. Per-RPC
+ *   traces are investigation-only; metrics carry the day-to-day signal.
+ * - PII scrubber (§9b.1) runs before any host `beforeSend`.
  */
 export function initSentry(options: InitSentryOptions = {}): void {
   if (initialized) {
@@ -222,17 +275,20 @@ export function initSentry(options: InitSentryOptions = {}): void {
     return;
   }
 
-  // 0 when off; plugin value (or DEFAULT_TRACES_SAMPLE_RATE) when on.
-  // Locked — the host extension API can't override this.
-  const effectiveTracesSampleRate = preferences.captureApplicationData
-    ? sentryConfig.tracesSampleRate ?? DEFAULT_TRACES_SAMPLE_RATE
-    : 0;
+  // Per-RPC traces are an investigation-only mode behind `debug`
+  // (§11.5): full sample while on (the window is user-bounded), 0
+  // otherwise. Day-to-day perf signal rides the always-on metrics
+  // layer instead. Locked — the host extension API can't override this.
+  const effectiveTracesSampleRate = preferences.debug ? 1.0 : 0;
 
-  // PII scrubber — currently identity. Substring scan (rootKey,
-  // base64-22-char, lat/lng) TBD; chain shape is wired now so the
-  // host contract doesn't have to change later.
-  const ourBeforeSend: BeforeSendHook = (event) => event;
-  const ourBeforeBreadcrumb: BeforeBreadcrumbHook = (crumb) => crumb;
+  // PII scrubber (§9b.1) — substring scan for rootKey, base64-22-char,
+  // and lat/lng markers across every text field. Runs BEFORE any host
+  // `beforeSend` so a buggy or malicious host never sees a raw payload.
+  const ourBeforeSend: BeforeSendHook = (event) => scrubEvent(event);
+  // URL-scrubbing breadcrumb hook (§9b.5): HTTP breadcrumbs reduced to
+  // host-only so request paths/queries don't leak.
+  const ourBeforeBreadcrumb: BeforeBreadcrumbHook = (crumb) =>
+    scrubBreadcrumb(crumb);
 
   const chainedBeforeSend = chainHook(ourBeforeSend, options.beforeSend);
   const chainedBeforeBreadcrumb = chainHook(

@@ -81,16 +81,19 @@ public class ComapeoCoreModule: Module {
         // Plist-baked Sentry options, re-exported by the JS `/sentry`
         // sub-export. Empty map when DSN absent so spreading is safe.
         Constant("sentryConfig") { () -> [String: Any] in
-            SentryConfig.loadFromMainBundle()?.toSentryInitMap() ?? [:]
+            SentryConfig.loadFromMainBundle()?
+                .toSentryInitMap(deviceTags: DeviceTags.compute()) ?? [:]
         }
 
         // Snapshot-at-launch. Toggle changes take effect on next launch
-        // (see `setDiagnosticsEnabled` / `setCaptureApplicationData`).
+        // (see `setDiagnosticsEnabled` / `setApplicationUsageData` /
+        // `setDebugEnabled`).
         Constant("sentryPreferences") { () -> [String: Any] in
             let prefs = ComapeoPrefs.open()
             return [
                 "diagnosticsEnabled": prefs.readDiagnosticsEnabled(),
-                "captureApplicationData": prefs.readCaptureApplicationData(),
+                "applicationUsageData": prefs.readApplicationUsageData(),
+                "debug": prefs.readDebugEnabled(),
             ]
         }
 
@@ -102,8 +105,19 @@ public class ComapeoCoreModule: Module {
             if !value { ComapeoPrefs.wipeSentryOutbox() }
         }
 
+        AsyncFunction("setApplicationUsageData") { (value: Bool) in
+            ComapeoPrefs.open().writeApplicationUsageData(value)
+            if !value { ComapeoPrefs.wipeSentryOutbox() }
+        }
+
+        // Deprecated alias for `setApplicationUsageData`; kept for one minor (§11.7).
         AsyncFunction("setCaptureApplicationData") { (value: Bool) in
-            ComapeoPrefs.open().writeCaptureApplicationData(value)
+            ComapeoPrefs.open().writeApplicationUsageData(value)
+            if !value { ComapeoPrefs.wipeSentryOutbox() }
+        }
+
+        AsyncFunction("setDebugEnabled") { (value: Bool) in
+            ComapeoPrefs.open().writeDebugEnabled(value)
             if !value { ComapeoPrefs.wipeSentryOutbox() }
         }
     }

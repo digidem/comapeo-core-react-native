@@ -25,7 +25,11 @@ describe("initSentry", () => {
   let addEventProcessorSpy;
 
   beforeEach(() => {
-    preferences = { diagnosticsEnabled: true, captureApplicationData: false };
+    preferences = {
+      diagnosticsEnabled: true,
+      applicationUsageData: false,
+      debug: false,
+    };
     configDsn = "https://x@sentry.io/1";
     isInitializedFlag = false;
     initSpy = jest.fn();
@@ -49,7 +53,17 @@ describe("initSentry", () => {
       }),
       readSentryPreferences: () => preferences,
       setDiagnosticsEnabledNative: jest.fn(),
-      setCaptureApplicationDataNative: jest.fn(),
+      setApplicationUsageDataNative: jest.fn(),
+      setDebugEnabledNative: jest.fn(),
+    }));
+
+    // `src/sentry.ts` re-exports `recordUsage` from `./sentry-metrics`,
+    // which would otherwise pull the whole metrics layer (and a circular
+    // import back to `./sentry`) into this unit test. Stub it.
+    jest.doMock("../sentry-metrics", () => ({
+      recordUsage: { screen: jest.fn(), feature: jest.fn() },
+      rpcClientMetric: jest.fn(),
+      rpcStatusFor: jest.fn(() => "ok"),
     }));
 
     const globalScope = {
@@ -118,17 +132,25 @@ describe("initSentry", () => {
     expect(opts.environment).toBe("test");
     expect(opts.release).toBe("1.0+1");
     expect(opts.sendDefaultPii).toBe(false);
-    // captureApplicationData=false → traces forced to 0 regardless
-    // of the plugin's configured 0.5.
+    // debug=false → traces forced to 0 (per-RPC traces are debug-only;
+    // the plugin's configured rate no longer applies in Phase 11).
     expect(opts.tracesSampleRate).toBe(0);
     expect(opts.enableLogs).toBe(true);
   });
 
-  test("tracesSampleRate uses plugin value when captureApplicationData is on", () => {
-    preferences.captureApplicationData = true;
+  test("tracesSampleRate is 1.0 when debug is on, 0 otherwise", () => {
+    preferences.debug = true;
     const { initSentry } = require("../sentry");
     initSentry();
-    expect(initSpy.mock.calls[0][0].tracesSampleRate).toBe(0.5);
+    expect(initSpy.mock.calls[0][0].tracesSampleRate).toBe(1.0);
+  });
+
+  test("applicationUsageData does NOT drive tracesSampleRate (debug does)", () => {
+    preferences.applicationUsageData = true;
+    preferences.debug = false;
+    const { initSentry } = require("../sentry");
+    initSentry();
+    expect(initSpy.mock.calls[0][0].tracesSampleRate).toBe(0);
   });
 
   test("autoInitializeNativeSdk=false on iOS so AppLifecycleDelegate's native init isn't replaced", () => {
@@ -191,9 +213,7 @@ describe("initSentry", () => {
   });
 
   test("beforeSend chains: our scrubber runs first, host's second", () => {
-    // Our scrubber is currently identity (PII implementation lands
-    // in Phase 9b) — but the chain order itself is load-bearing:
-    // the host's hook must see only post-scrub payloads, never raw
+    // The host's hook must see only post-scrub payloads, never raw
     // ones. Test by passing a host hook that observes the input.
     const hostBeforeSend = jest.fn((event) => ({
       ...event,
@@ -205,6 +225,46 @@ describe("initSentry", () => {
     const result = chain({ original: true }, undefined);
     expect(hostBeforeSend).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ original: true, hostMarker: true });
+  });
+
+  test("beforeSend scrubber redacts base64-22, lat/lng, and rootKey before the host sees them", () => {
+    const seen = [];
+    const hostBeforeSend = jest.fn((event) => {
+      seen.push(JSON.stringify(event));
+      return event;
+    });
+    const { initSentry } = require("../sentry");
+    initSentry({ beforeSend: hostBeforeSend });
+    const chain = initSpy.mock.calls[0][0].beforeSend;
+    chain(
+      {
+        message: "latitude: -12.34",
+        exception: {
+          values: [{ type: "Error", value: "rootKey=aGVsbG8td29ybGQtMTIzNA" }],
+        },
+        extra: { token: "bm90LWEtcmVhbC1rZXktMQ" },
+      },
+      undefined,
+    );
+    const payload = seen[0];
+    expect(payload).toContain("[redacted]");
+    expect(payload).not.toContain("aGVsbG8td29ybGQtMTIzNA");
+    expect(payload).not.toContain("bm90LWEtcmVhbC1rZXktMQ");
+    expect(payload).not.toContain("-12.34");
+  });
+
+  test("beforeBreadcrumb reduces HTTP URLs to host-only", () => {
+    const { initSentry } = require("../sentry");
+    initSentry();
+    const beforeBreadcrumb = initSpy.mock.calls[0][0].beforeBreadcrumb;
+    const result = beforeBreadcrumb(
+      {
+        category: "http",
+        data: { url: "https://cloud.comapeo.app/projects/abc?token=x" },
+      },
+      undefined,
+    );
+    expect(result.data.url).toBe("https://cloud.comapeo.app");
   });
 
   test("beforeSend drops the event when host returns null", () => {
