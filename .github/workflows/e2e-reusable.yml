@@ -46,7 +46,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -55,17 +55,17 @@ jobs:
         with:
           node-version-file: package.json
 
-      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+      - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287 # v5.3.0
         with:
           distribution: temurin
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
@@ -78,7 +78,7 @@ jobs:
         run: ./scripts/download-nodejs-mobile.sh
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
+        uses: gradle/actions/setup-gradle@b128da9bf0c2651a9fe51856df98ba6e611afc58 # v4
 
       # strict-allow-scripts (skip dependency install scripts via the committed
       # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
@@ -106,7 +106,7 @@ jobs:
           ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-apk
           path: apps/e2e/android/app/build/outputs/apk/release/app-release.apk
@@ -120,7 +120,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -134,7 +134,7 @@ jobs:
 
       - name: Cache nodejs-mobile binaries
         id: cache-ios-framework
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           # android/libnode is needed even on iOS builds:
           # `readNodeJsMobileVersions()` in scripts/lib/node-versions.ts
@@ -190,7 +190,7 @@ jobs:
           zip -r corereactnativee2e.ipa Payload/
 
       - name: Upload IPA artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-ipa
           path: apps/e2e/ios/corereactnativee2e.ipa
@@ -208,7 +208,7 @@ jobs:
     outputs:
       app_url: ${{ steps.upload.outputs.app_url }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: e2e-apk
           path: artifact
@@ -247,7 +247,7 @@ jobs:
     outputs:
       app_url: ${{ steps.upload.outputs.app_url }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: e2e-ipa
           path: artifact
@@ -289,7 +289,7 @@ jobs:
     outputs:
       test_suite_url: ${{ steps.upload.outputs.test_suite_url }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -335,7 +335,7 @@ jobs:
     steps:
       # No `ref`: the composite action receives the BrowserStack secrets, so it
       # must always come from the base ref, never the PR head.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           sparse-checkout: .github/actions
@@ -370,7 +370,7 @@ jobs:
     steps:
       # No `ref`: the composite action receives the BrowserStack secrets, so it
       # must always come from the base ref, never the PR head.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           sparse-checkout: .github/actions
