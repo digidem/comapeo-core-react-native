@@ -147,6 +147,9 @@ jobs:
       # `tee` redirection this step intermittently times out at ~15 min.
       - name: Run integration tests
         run: |
+          # pipefail: without it the step's exit code is tee's (always 0),
+          # so a failing or non-compiling xcodebuild is masked as green.
+          set -o pipefail
           cd apps/example/ios
           xcodebuild test \
             -workspace corereactnativeexample.xcworkspace \
@@ -159,10 +162,10 @@ jobs:
         if: failure()
         run: |
           echo "=== xcodebuild test failure summary ==="
-          grep -E "error:|FAIL|Test Case|Assertion|XCTAssert|timed out|fatal error" example/ios/xcodebuild-test.log | head -100 || true
+          grep -E "error:|FAIL|Test Case|Assertion|XCTAssert|timed out|fatal error" apps/example/ios/xcodebuild-test.log | head -100 || true
           echo ""
           echo "=== last 300 lines of log ==="
-          tail -300 example/ios/xcodebuild-test.log || true
+          tail -300 apps/example/ios/xcodebuild-test.log || true
 
   device-build:
     name: iOS Device Build (xcframework codesign verification)
