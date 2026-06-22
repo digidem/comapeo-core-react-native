@@ -1,0 +1,44 @@
+name: E2E Tests (trusted)
+
+# Runs the full BrowserStack e2e on PRs that don't receive secrets by default
+# (Dependabot and forks). Gated on a maintainer reviewing the diff — including a
+# Socket.dev supply-chain report — and adding the `safe-to-test` label. The
+# label is removed after each run, so any new commit needs a fresh review.
+#
+# This builds the PR head SHA with secrets available, so the `safe-to-test`
+# review MUST confirm the PR doesn't touch build/CI machinery (`.github/`,
+# scripts, install-script allowlists). For Dependabot manifest/lockfile bumps
+# that's automatic. The reusable workflow's steps come from the base branch and
+# its secret-handling test jobs use the base composite action, so a PR can only
+# influence what runs through the app build itself.
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+concurrency:
+  group: e2e-trusted-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    if: github.event.label.name == 'safe-to-test'
+    uses: ./.github/workflows/e2e-reusable.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit
+
+  remove-label:
+    needs: [e2e]
+    if: always() && github.event.label.name == 'safe-to-test'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remove safe-to-test label
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --remove-label safe-to-test || true

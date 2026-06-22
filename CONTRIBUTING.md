@@ -60,6 +60,13 @@ invocations live in the CI workflows, which are the source of truth:
 
 iOS e2e cannot run on a local simulator; it goes through BrowserStack.
 
+The BrowserStack e2e needs secrets, which GitHub withholds from Dependabot and
+fork PRs (so an untrusted dependency can't read them). Those PRs build but skip
+the device run until a maintainer reviews the diff — including the Socket.dev
+supply-chain report — and adds the `safe-to-test` label, which triggers
+[.github/workflows/e2e-trusted.yml](.github/workflows/e2e-trusted.yml). The label
+is removed after the run, so a new commit needs a fresh review.
+
 ## Pull requests and commit conventions
 
 PRs are merged with a merge commit. The release notes are generated from merged
