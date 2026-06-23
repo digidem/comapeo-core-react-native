@@ -1,15 +1,18 @@
 name: E2E Tests
 
-# Internal/trusted e2e. Runs on internal-branch PRs for pre-merge feedback and
-# in the merge queue (merge_group) as the gate before a PR lands. Dependabot
-# and fork PRs get no secrets here — they run through e2e-trusted.yml once a
-# maintainer reviews the diff and adds `safe-to-test`.
+# Internal/trusted e2e. The expensive build + device jobs run in the merge queue
+# (merge_group) as the gate before a PR lands, plus on manual dispatch or on a PR
+# carrying the `run-e2e` label. A plain PR defers the run to the queue — the
+# `e2e / Gate` check still passes cheaply, so the PR stays mergeable without
+# burning paid device time on every push. Dependabot and fork PRs get no secrets
+# here — they run through e2e-trusted.yml once a maintainer reviews the diff and
+# adds `safe-to-test`.
 on:
   merge_group:
   workflow_dispatch:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -32,6 +35,8 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
+      # Lets the reusable workflow's path-detection job list the PR's files.
+      pull-requests: read
     uses: ./.github/workflows/e2e-reusable.yml
     secrets:
       BROWSERSTACK_USERNAME_TESTS: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
