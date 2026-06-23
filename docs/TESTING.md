@@ -2,8 +2,8 @@
 
 How this repo is tested, how the GitHub Actions workflows fit together, and the
 cross-cutting models (the merge queue, required checks, the secrets/trust
-boundary, and the cost controls on the paid device suite) that make the set of
-workflows hang together.
+boundary, and the cost controls on the slow device-test suites) that make the
+set of workflows hang together.
 
 This is the maintainer-facing **why**. For the contributor **how-to** — local
 commands, the PR/commit conventions, the release flow — see
@@ -78,15 +78,28 @@ What each layer is actually for:
   simulator (`CoreManagerSmokeTest`, `ServiceLifecycleTest`, `RootKeyStoreTests`,
   `ComapeoCoreModuleTests`, …): the embedded `MapeoManager` instantiates and the
   service lifecycle works end-to-end in the single-process iOS model.
-- **Layer 6 — iOS device build.** Phase 2 ships device + simulator slices in one
-  xcframework per native addon (see
-  [`build-architecture-plan.md`](./build-architecture-plan.md)). The simulator
-  integration tests exercise the runtime; this job `xcodebuild build`s against a
-  generic iOS device to prove the **device** slice links and codesigns (CI can't
-  run on real iOS hardware, so it builds but doesn't test).
+- **Layer 6 — iOS device build.** Tests that the app **builds for a physical
+  device** — something no other layer checks. iOS native addons ship as
+  xcframeworks that Xcode links per-architecture and embeds (with `@rpath` install
+  names); a device build links the app against each framework's **device** (arm64)
+  slice and runs the embed step. The simulator integration tests (layer 5) only
+  ever load the *simulator* slice, so a broken device slice — a missing arch, a
+  wrong install name, a structure Xcode rejects — passes them unnoticed. This job
+  catches it with `xcodebuild build` against a generic iOS device (build only — CI
+  has no real iOS hardware, and signing is disabled, so it checks the link + embed
+  rather than real signatures). **Android needs no equivalent because the failure
+  mode doesn't exist there:** Android addons are plain `.so` files packaged into
+  the APK and resolved by `dlopen` at runtime — no per-library signing, no
+  build-time link/embed step — so anything wrong with the device ABIs can only
+  surface at runtime, which the layer-7 device run covers.
 - **Layer 7 — End-to-end.** The full stack on real devices, driven by Maestro
-  through BrowserStack. [§7](#7-the-browserstack-e2e-end-to-end) covers the
-  mechanics.
+  through BrowserStack. This layer **includes its own build steps**: `build-android`
+  (`gradlew assembleRelease`) and `build-ios` (`xcodebuild archive`) build the
+  `apps/e2e` release APK and device `.ipa` — including the Android `arm64` /
+  `armeabi-v7a` build that nothing else produces (the instrumented tests build
+  x86_64 only) — before uploading them and running the suite.
+  [§3.1](#31-the-e2e-jobs) lists the jobs; [§7](#7-the-browserstack-e2e-end-to-end)
+  covers the device run.
 
 ### 2.1 The two test apps
 
@@ -212,11 +225,10 @@ required checks would never report on the queue → the queue stalls.
 
 ### 4.2 Skipping a required check without leaving it "pending"
 
-GitHub has a sharp edge: **a required check that never reports blocks the PR**
-(it sits "pending" / "expected" forever). This rules out the naive way to skip
-expensive work — adding `paths:`/`paths-ignore:` to a workflow trigger. A
-path-skipped workflow doesn't run, so its required check never reports, so the
-PR can't merge.
+**A required check that never reports blocks the PR** — it stays "pending"
+forever. So the obvious way to skip expensive work — a `paths:`/`paths-ignore:`
+filter on the workflow trigger — backfires: a path-skipped workflow never runs,
+its required check never reports, and the PR can never merge.
 
 The fix used for the e2e suite (issue
 [#139](https://github.com/digidem/comapeo-core-react-native/issues/139), PR
@@ -257,10 +269,13 @@ stuck pending. This also collapses what used to be five nested required checks
 
 ## 5. When the expensive e2e runs
 
-BrowserStack device time is paid and slow (~15–25 min per run). The `changes`
-job in `e2e-reusable.yml` (an `actions/github-script` step — read-only file
-listing, no checkout, so it's safe even on the `pull_request_target` path)
-decides `run_e2e` per event:
+BrowserStack isn't billed per device-minute — the constraint is the account's
+**parallel-session limit**, so running the suite on every PR push would contend
+for those slots. It's also slow in CI terms, but the *device* run is the cheap
+part (~2 min per platform): the app builds dominate (~8–9 min each for
+`build-android` / `build-ios`). The `changes` job in `e2e-reusable.yml` (an
+`actions/github-script` step — read-only file listing, no checkout, so it's safe
+even on the `pull_request_target` path) decides `run_e2e` per event:
 
 | Trigger | Runs the e2e device jobs? |
 |---|---|
@@ -273,12 +288,12 @@ The design intent:
 
 - **The merge queue is the gate.** The authoritative e2e run is on the
   `merge_group` commit — the actual thing about to land. A plain PR defers to the
-  queue and gets a cheap green gate in the meantime, so we don't pay for a device
-  run on every push.
+  queue and gets a cheap green gate in the meantime, so we don't spend the build
+  time and a parallel slot on every push.
 - **Devs opt in for early feedback.** Touched device-facing code and want to see
   e2e before queueing? Add the **`run-e2e`** label (or trigger a manual
   dispatch). It runs on the PR and again in the queue.
-- **Docs/config changes never pay.** A change touching only `*.md`, `docs/**`,
+- **Docs/config changes always skip.** A change touching only `*.md`, `docs/**`,
   `LICENSE`, editor dotfiles, or other `.github/**` config skips the device jobs
   on every event — the gate still passes. A change to the **e2e machinery
   itself** (`.github/workflows/e2e-*.yml`,
@@ -332,13 +347,12 @@ twice (or not at all) for some PR class.
 
 ### 6.1 Why an untrusted PR is *blocked*, not *passed*
 
-For an untrusted PR, `e2e-tests.yml`'s `e2e` job is gated out by the trust `if:`,
-so the reusable workflow is never instantiated and `e2e / Gate` is **absent** on
-the PR head — the required check has nothing to satisfy it, so the PR is blocked
-until a maintainer adds `safe-to-test` and `e2e-trusted.yml` produces the gate.
-This depends on the absent-vs-skipped distinction from
-[§4.2](#42-skipping-a-required-check-without-leaving-it-pending): a job-level skip
-would report *skipped* = *passing* and let untrusted code merge unreviewed.
+For an untrusted PR the trust `if:` gates out `e2e-tests.yml`'s `e2e` job, so the
+reusable workflow never runs and `e2e / Gate` is **absent** — not *skipped*.
+That's the crucial distinction: a skipped required check counts as *passing*
+([§4.2](#42-skipping-a-required-check-without-leaving-it-pending)) — which would
+let untrusted code merge unreviewed — whereas an *absent* one leaves the PR
+unmergeable until `safe-to-test` triggers `e2e-trusted.yml` and the gate reports.
 
 ### 6.2 The reusable workflow keeps code and secrets apart
 
@@ -467,8 +481,6 @@ platform-specific code.
   release conventions.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — process model, IPC, lifecycle (what
   the native/e2e suites verify).
-- [`build-architecture-plan.md`](./build-architecture-plan.md) — native-addon
-  packaging and the fast-feedback story for module builds (§7 there).
 - e2e gating design:
   [#139](https://github.com/digidem/comapeo-core-react-native/issues/139),
   [#142](https://github.com/digidem/comapeo-core-react-native/pull/142). Merge
