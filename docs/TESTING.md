@@ -136,8 +136,9 @@ Test sources by layer:
 | Workflow | Triggers | Jobs → check contexts | Purpose |
 |---|---|---|---|
 | [`lint.yml`](../.github/workflows/lint.yml) | `pull_request`, `merge_group` | `Lint & Unit Tests` | Layer 1 |
-| [`android-tests.yml`](../.github/workflows/android-tests.yml) | `pull_request`, `merge_group`, `workflow_dispatch` | `JVM Unit Tests`, `Instrumented Tests (30)` | Layers 3–4 |
-| [`ios-tests.yml`](../.github/workflows/ios-tests.yml) | `pull_request`, `merge_group`, `workflow_dispatch` | `Swift Package Tests (macOS)`, `Integration Tests (Example App)`, `iOS Device Build (…)` | Layers 2, 5–6 |
+| [`android-tests.yml`](../.github/workflows/android-tests.yml) | `pull_request`, `merge_group`, `workflow_dispatch` | `JVM Unit Tests` (always), `Instrumented Tests (30)` (gated) | Layers 3–4 |
+| [`ios-tests.yml`](../.github/workflows/ios-tests.yml) | `pull_request`, `merge_group`, `workflow_dispatch` | `Swift Package Tests (macOS)` (always), `Integration Tests (Example App)` + `iOS Device Build (…)` (gated) | Layers 2, 5–6 |
+| [`detect-heavy-ci.yml`](../.github/workflows/detect-heavy-ci.yml) | `workflow_call` | (classifier — no check) | Shared run/skip decision for the heavy native suites; called by the two above |
 | [`e2e-tests.yml`](../.github/workflows/e2e-tests.yml) | `merge_group`, `workflow_dispatch`, `pull_request` (internal) | one `e2e` job → calls `e2e-reusable.yml` | Layer 7, internal/trusted path |
 | [`e2e-trusted.yml`](../.github/workflows/e2e-trusted.yml) | `pull_request_target: [labeled, synchronize]` | `e2e` → `e2e-reusable.yml`, plus `remove-label` + `reset-on-push` (label hygiene) | Layer 7, Dependabot/fork path |
 | [`e2e-reusable.yml`](../.github/workflows/e2e-reusable.yml) | `workflow_call` | the e2e jobs ([§3.1](#31-the-e2e-jobs)) | Shared body for the two callers above |
@@ -147,7 +148,7 @@ Test sources by layer:
 Plus [`dependabot.yml`](../.github/dependabot.yml) (config, not a workflow):
 opens dependency PRs with a 3-day cooldown.
 
-Two things to notice:
+Three things to notice:
 
 1. **Every test workflow also triggers on `merge_group`.** That's not redundant
    — it's required, see [§4](#4-the-merge-queue-and-required-checks).
@@ -157,6 +158,13 @@ Two things to notice:
    `safe-to-test` label ([§6](#6-secrets-and-the-trust-boundary)). Factoring them
    out means the path/label gating and the gate job are defined once and both
    callers honour them.
+3. **The heavy jobs run conditionally; the fast ones always run.** `android-tests`
+   and `ios-tests` call `detect-heavy-ci.yml` from a `changes` job and gate their
+   slow suites (`Instrumented Tests (30)`, `Integration Tests (Example App)`,
+   `iOS Device Build`) on its `run` output — the same merge-queue / `run-e2e` /
+   docs-skip logic the e2e suite uses ([§5](#5-when-the-expensive-e2e-runs)). The
+   fast suites (`JVM Unit Tests`, `Swift Package Tests`, `Lint & Unit Tests`) run
+   on every PR.
 
 ### 3.1 The e2e jobs
 
@@ -237,10 +245,13 @@ stuck pending. This also collapses what used to be five nested required checks
 > gate is *absent*, not *skipped*, so the PR stays blocked until a maintainer
 > approves it.
 
-> **Ruleset change required for the gate.** Switching the required check from the
-> five nested contexts to `e2e / Gate` is an admin-only edit to the branch
-> ruleset (the GitHub CLI can't PATCH rulesets). It lands with
-> [#142](https://github.com/digidem/comapeo-core-react-native/pull/142).
+> **The heavy native suites take the simpler route.** `Instrumented Tests (30)`,
+> `Integration Tests (Example App)`, and `iOS Device Build` are gated by a
+> `needs`/`if` on the `detect-heavy-ci` result and simply **skip** when gated out
+> — relying on *skipped = passing*. That's safe here precisely because they hold
+> no secrets and have no trust boundary to protect (unlike e2e), so there's no
+> "untrusted PR must stay blocked" requirement forcing an always-reporting gate.
+> Only e2e needs the gate-job pattern.
 
 ---
 
@@ -279,15 +290,20 @@ The trade-off: an e2e regression on a plain PR surfaces at **queue time** (a
 failing `e2e / Gate` ejects the PR from the queue) rather than on the PR itself.
 The `run-e2e` label is the escape hatch.
 
-The cheaper native suites (Android, iOS — layers 2–6) are free GitHub-hosted
-runs and stay **always-on** for every PR, so most regressions still surface
-pre-queue without a label.
+The **same gating applies to the heavy native suites**: `Instrumented Tests (30)`,
+`Integration Tests (Example App)`, and `iOS Device Build` are gated on
+`detect-heavy-ci.yml`'s `run` output (merge queue / `run-e2e` / docs-skip) and
+skip as *passing* when gated out
+([§4.2](#42-skipping-a-required-check-without-leaving-it-pending)). Only the
+**fast** suites stay always-on for every PR — `JVM Unit Tests`, `Swift Package
+Tests`, and `Lint & Unit Tests` — so most regressions still surface pre-queue
+without a label.
 
 ### Labels
 
 | Label | Meaning | Who/what consumes it |
 |---|---|---|
-| `run-e2e` | Run the full e2e on this internal PR (otherwise it runs only in the queue) | `e2e-tests.yml` via the `changes` job |
+| `run-e2e` | Run the heavy suites (e2e **and** the slow native suites) on a PR; otherwise they run only in the merge queue | `e2e-reusable.yml` + `detect-heavy-ci.yml` |
 | `safe-to-test` | Maintainer reviewed an untrusted (Dependabot/fork) diff — OK to build it with secrets | `e2e-trusted.yml` ([§6](#6-secrets-and-the-trust-boundary)) |
 
 ---
@@ -388,18 +404,23 @@ actual cause is visible in the CI log.
 
 ### 7.2 Running the e2e suite locally
 
-The BrowserStack run above is the CI path. To run the same `apps/e2e` suite on a
-local **Android** emulator:
+The same `apps/e2e` suite runs on a local emulator/simulator — **including iOS**.
+(The "iOS only works on BrowserStack" idea was a misread: the device binary CI
+uploads is unsigned and can't run on a simulator, but a local `expo run:ios`
+signs with your Apple dev team, so the embedded backend's keychain access works.)
 
 ```bash
-cd apps/e2e && npm install && npx expo run:android && cd -  # build + install on a running emulator
-maestro test maestro/e2e.yaml                               # drive it with Maestro
+cd apps/e2e && npm install
+npx expo run:ios          # or: npx expo run:android — builds + installs a dev-client build
+maestro test maestro/e2e.local.yaml
 ```
 
-**iOS can't run locally** — the backend needs a keychain entitlement the
-simulator can't grant, so the process crashes on launch. iOS e2e goes through
-BrowserStack only (trigger via the API; inspect the Maestro screenshots / device
-logs).
+Two flows live in `maestro/`: [`e2e.local.yaml`](../maestro/e2e.local.yaml) for a
+local Metro-backed dev-client build (it drops `clearState`, which would wipe the
+dev launcher's saved Metro URL), and [`e2e.yaml`](../maestro/e2e.yaml) for the
+standalone build CI uploads to BrowserStack. Keep their `Run tests` /
+`all-tests-*` steps in sync. [`CONTRIBUTING.md`](../CONTRIBUTING.md) has the
+Metro-port details for pointing the dev client at the right server.
 
 ---
 
@@ -432,6 +453,7 @@ platform-specific code.
 - Workflows: [`lint.yml`](../.github/workflows/lint.yml),
   [`android-tests.yml`](../.github/workflows/android-tests.yml),
   [`ios-tests.yml`](../.github/workflows/ios-tests.yml),
+  [`detect-heavy-ci.yml`](../.github/workflows/detect-heavy-ci.yml),
   [`e2e-tests.yml`](../.github/workflows/e2e-tests.yml),
   [`e2e-trusted.yml`](../.github/workflows/e2e-trusted.yml),
   [`e2e-reusable.yml`](../.github/workflows/e2e-reusable.yml),
@@ -439,6 +461,8 @@ platform-specific code.
   [`release.yml`](../.github/workflows/release.yml).
 - Composite action:
   [`run-browserstack-maestro`](../.github/actions/run-browserstack-maestro).
+- Maestro flows: [`maestro/e2e.yaml`](../maestro/e2e.yaml) (CI/BrowserStack),
+  [`maestro/e2e.local.yaml`](../maestro/e2e.local.yaml) (local simulator).
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) — local setup, commands, commit/PR/
   release conventions.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — process model, IPC, lifecycle (what

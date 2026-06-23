@@ -87,13 +87,14 @@ evaluated on the queued merge commit before it lands, so the actual merged resul
 is what gates the merge, and several PRs can land without each one re-running CI
 every time another merges.
 
-The cheap native suites (Android, iOS) run on every PR for pre-merge feedback and
-again in the queue. The **BrowserStack e2e is paid device time**, so by default it
-runs only **in the merge queue**, not on every PR push — a plain PR gets a green
-`e2e / Gate` cheaply and the real run happens when the PR is queued. To run the
-full e2e on a PR before queueing it (e.g. you touched device-facing code), add the
-**`run-e2e`** label or trigger the workflow manually. See
-[docs/TESTING.md §5](./docs/TESTING.md) for the full decision table.
+The **fast** suites (JVM unit tests, Swift package tests, lint) run on every PR.
+The **heavy** suites — Android instrumented, iOS integration + device build, and
+the BrowserStack e2e — are slow/paid, so by default they run only **in the merge
+queue**, not on every PR push: a plain PR gets cheap green checks and the real
+runs happen when the PR is queued. To run the heavy suites on a PR before queueing
+it (e.g. you touched device-facing code), add the **`run-e2e`** label or trigger
+the workflow manually. See [docs/TESTING.md §5](./docs/TESTING.md) for the full
+decision table.
 
 The BrowserStack e2e needs secrets, which GitHub withholds from Dependabot and
 fork PRs (so an untrusted dependency can't read them). Those PRs build but skip
