@@ -84,7 +84,7 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install dependencies
-        run: npm install && cd apps/example && npm install
+        run: npm install && cd apps/integration && npm install
 
       - name: Download NodeMobile
         # Both platforms: `scripts/build-backend.ts#getNodeJsMobileNodeVersions`
@@ -106,10 +106,10 @@ jobs:
         run: npm run backend:build
 
       - name: Expo prebuild
-        run: cd apps/example && npx expo prebuild --platform ios --no-install
+        run: cd apps/integration && npx expo prebuild --platform ios --no-install
 
       - name: Pod install
-        run: cd apps/example/ios && pod install
+        run: cd apps/integration/ios && pod install
 
       # Don't pin a specific device name (e.g. "iPhone 16"). GitHub-hosted
       # macos-26 runners *should* have iPhone 16 pre-installed for iOS 26 per
@@ -165,10 +165,10 @@ jobs:
       # `tee` redirection this step intermittently times out at ~15 min.
       - name: Run integration tests
         run: |
-          cd apps/example/ios
+          cd apps/integration/ios
           xcodebuild test \
-            -workspace corereactnativeexample.xcworkspace \
-            -scheme corereactnativeexample \
+            -workspace corereactnativeintegration.xcworkspace \
+            -scheme corereactnativeintegration \
             -sdk iphonesimulator \
             -destination "id=${{ steps.simulator.outputs.udid }}" \
             CODE_SIGNING_ALLOWED='NO' 2>&1 | tee xcodebuild-test.log
@@ -177,10 +177,10 @@ jobs:
         if: failure()
         run: |
           echo "=== xcodebuild test failure summary ==="
-          grep -E "error:|FAIL|Test Case|Assertion|XCTAssert|timed out|fatal error" example/ios/xcodebuild-test.log | head -100 || true
+          grep -E "error:|FAIL|Test Case|Assertion|XCTAssert|timed out|fatal error" apps/integration/ios/xcodebuild-test.log | head -100 || true
           echo ""
           echo "=== last 300 lines of log ==="
-          tail -300 example/ios/xcodebuild-test.log || true
+          tail -300 apps/integration/ios/xcodebuild-test.log || true
 
   device-build:
     name: iOS Device Build (xcframework codesign verification)
@@ -219,7 +219,7 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install dependencies
-        run: npm install && cd apps/example && npm install
+        run: npm install && cd apps/integration && npm install
 
       - name: Download NodeMobile
         run: npm run download:nodejs-mobile
@@ -228,17 +228,17 @@ jobs:
         run: npm run backend:build
 
       - name: Expo prebuild
-        run: cd apps/example && npx expo prebuild --platform ios --no-install
+        run: cd apps/integration && npx expo prebuild --platform ios --no-install
 
       - name: Pod install
-        run: cd apps/example/ios && pod install
+        run: cd apps/integration/ios && pod install
 
       - name: Build for iOS device (no run)
         run: |
-          cd apps/example/ios
+          cd apps/integration/ios
           xcodebuild build \
-            -workspace corereactnativeexample.xcworkspace \
-            -scheme corereactnativeexample \
+            -workspace corereactnativeintegration.xcworkspace \
+            -scheme corereactnativeintegration \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED='NO'

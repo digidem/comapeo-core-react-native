@@ -29,7 +29,7 @@ if test_target.nil?
     bs['BUNDLE_LOADER']               = '$(TEST_HOST)'
     bs['PRODUCT_BUNDLE_IDENTIFIER']   = test_bundle_id
     bs['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
-    # Swift 5.9 minimum: the auto-generated Pods-corereactnativeexampleTests
+    # Swift 5.9 minimum: the auto-generated Pods-corereactnativeintegrationTests
     # ExpoModulesProvider.swift uses Swift 5.9+'s `internal import X`
     # access-level-on-import syntax (SE-0409). Compiling the test target
     # in Swift 5.0 mode triggers "ambiguous implicit access level" errors

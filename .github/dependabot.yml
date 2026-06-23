@@ -46,7 +46,7 @@ updates:
   # separate grouped PR.
   - package-ecosystem: npm
     directories:
-      - "/apps/example"
+      - "/apps/integration"
       - "/apps/e2e"
     schedule:
       interval: weekly

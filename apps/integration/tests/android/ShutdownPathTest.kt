@@ -1,4 +1,4 @@
-package com.comapeo.core.example
+package com.comapeo.core.integration
 
 import android.app.ActivityManager
 import android.content.Context
@@ -28,7 +28,7 @@ class ShutdownPathTest {
     private lateinit var device: UiDevice
 
     companion object {
-        private const val PACKAGE_NAME = "com.comapeo.core.example"
+        private const val PACKAGE_NAME = "com.comapeo.core.integration"
         private const val SERVICE_CLASS = "com.comapeo.core.ComapeoCoreService"
         private const val SERVICE_PROCESS = ":ComapeoCore"
         private const val POLL_INTERVAL_MS = 500L
