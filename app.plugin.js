@@ -29,6 +29,7 @@ import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 const { withAndroidManifest } = configPlugins;
+const { withMainApplication } = configPlugins;
 const { withInfoPlist } = configPlugins;
 const { withPodfile } = configPlugins;
 const { withDangerousMod } = configPlugins;
@@ -109,7 +110,81 @@ function withComapeoCore(config, props) {
   // for localhost only, on both platforms.
   config = withMapServerCleartextAndroid(config);
   config = withMapServerCleartextIos(config);
+  // Skip React Native init in the headless `:ComapeoCore` backend process so its
+  // cold start doesn't ANR before the foreground service can promote itself.
+  config = withComapeoCoreProcessGuard(config);
   return config;
+}
+
+// The backend foreground service runs in a separate `:ComapeoCore` process
+// (declared in this module's AndroidManifest). Android instantiates the app's
+// single Application in EVERY process and re-runs `onCreate` there — so on a
+// cold start of that process the host `MainApplication.onCreate` runs the full
+// React Native + Expo init (`loadReactNative` + `ApplicationLifecycleDispatcher`)
+// in a process that has no UI and never touches RN. That delays the service's
+// `startForeground()` past Android's deadline and ANRs the process. Android has
+// no per-process Application class, so guarding `onCreate` by process name is the
+// only fix; the FGS loads its own JNI library via `System.loadLibrary` and needs
+// none of RN.
+//
+// Keep `:ComapeoCore` in sync with `android:process` in the module's
+// AndroidManifest.xml.
+const COMAPEO_CORE_PROCESS_SUFFIX = ":ComapeoCore";
+const PROCESS_GUARD_MARKER = "comapeo-core-process-guard";
+const PROCESS_GUARD_ANCHOR = "super.onCreate()";
+
+const PROCESS_GUARD_KOTLIN = `
+    // ${PROCESS_GUARD_MARKER}: skip React Native / Expo init in the
+    // ${COMAPEO_CORE_PROCESS_SUFFIX} backend process (Node foreground service, no UI).
+    // Running it here delays the service's startForeground() past Android's deadline
+    // and ANRs the process on cold start. This returns early, so anything else this
+    // app's onCreate does is also skipped in that process — intended: nothing else
+    // runs there. The FGS loads its own native library via System.loadLibrary.
+    run {
+      val comapeoBackendProcess: String? =
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+          android.app.Application.getProcessName()
+        } else {
+          val comapeoBackendPid = android.os.Process.myPid()
+          (getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager)
+            ?.runningAppProcesses
+            ?.firstOrNull { it.pid == comapeoBackendPid }
+            ?.processName
+        }
+      if (comapeoBackendProcess?.endsWith("${COMAPEO_CORE_PROCESS_SUFFIX}") == true) {
+        return
+      }
+    }`;
+
+function withComapeoCoreProcessGuard(config) {
+  return withMainApplication(config, (cfg) => {
+    const { language, contents } = cfg.modResults;
+    if (contents.includes(PROCESS_GUARD_MARKER)) return cfg;
+    // Hard-fail rather than warn-and-skip: a missed warning ships an app that
+    // ANRs on first cold start of the backend process — far worse than a loud
+    // prebuild failure the consumer must resolve.
+    if (language !== "kt") {
+      throw new Error(
+        `@comapeo/core-react-native plugin: MainApplication is ${language}, not Kotlin. ` +
+          "The :ComapeoCore process guard only supports a Kotlin MainApplication; " +
+          "a Java MainApplication would cold-start the headless backend process with " +
+          "full React Native init and ANR. Failing prebuild rather than shipping that.",
+      );
+    }
+    const idx = contents.indexOf(PROCESS_GUARD_ANCHOR);
+    if (idx === -1) {
+      throw new Error(
+        `@comapeo/core-react-native plugin: could not find \`${PROCESS_GUARD_ANCHOR}\` ` +
+          "in MainApplication.kt to anchor the :ComapeoCore process guard. The generated " +
+          "MainApplication template likely changed and the plugin must be updated. Failing " +
+          "prebuild rather than silently shipping a cold-start ANR in the backend process.",
+      );
+    }
+    const at = idx + PROCESS_GUARD_ANCHOR.length;
+    cfg.modResults.contents =
+      contents.slice(0, at) + PROCESS_GUARD_KOTLIN + contents.slice(at);
+    return cfg;
+  });
 }
 
 // Scoped to loopback so the rest of the app keeps the secure default
