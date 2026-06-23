@@ -17,6 +17,16 @@ permissions:
   contents: read
 
 jobs:
+  # Defer the slow integration + device-build jobs to the merge queue: skip them
+  # on a plain PR (they then report as skipped, which satisfies the required
+  # checks) and run them on merge_group, on manual dispatch, or on a PR labeled
+  # `run-e2e`. The fast Swift package tests below stay on every PR.
+  changes:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/detect-heavy-ci.yml
+
   package-tests:
     name: Swift Package Tests (macOS)
     runs-on: macos-26
@@ -43,6 +53,8 @@ jobs:
 
   integration-tests:
     name: Integration Tests (Example App)
+    needs: [changes]
+    if: needs.changes.outputs.run == 'true'
     # Xcode 26 minimum: Expo SDK 56's ExpoModulesCore source uses
     # `@MainActor` on protocol conformances and other Swift Concurrency
     # constructs that fail to compile on Xcode 16.x (Swift 6.0/6.1) under
@@ -172,6 +184,8 @@ jobs:
 
   device-build:
     name: iOS Device Build (xcframework codesign verification)
+    needs: [changes]
+    if: needs.changes.outputs.run == 'true'
     # Phase 2 ships device + simulator slices in one xcframework per
     # addon. The simulator integration tests above exercise the runtime
     # path; this job verifies the device slice actually links and
