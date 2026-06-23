@@ -16,7 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-EXAMPLE_DIR="$PROJECT_ROOT/example"
+EXAMPLE_DIR="$PROJECT_ROOT/apps/example"
 MAESTRO_DIR="$SCRIPT_DIR/.maestro"
 APK_PATH="$EXAMPLE_DIR/android/app/build/outputs/apk/release/app-release.apk"
 DEBUG_APK_PATH="$EXAMPLE_DIR/android/app/build/outputs/apk/debug/app-debug.apk"

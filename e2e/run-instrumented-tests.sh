@@ -21,7 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-EXAMPLE_DIR="$PROJECT_ROOT/example"
+EXAMPLE_DIR="$PROJECT_ROOT/apps/example"
 
 SKIP_BUILD=false
 TEST_CLASS=""
@@ -72,8 +72,8 @@ ensure_deps() {
 }
 
 # ---------------------------------------------------------------------------
-# Regenerate example/android via Expo prebuild. The plugin at
-# example/plugins/with-android-tests injects the instrumented-test sources
+# Regenerate apps/example/android via Expo prebuild. The plugin at
+# apps/example/plugins/with-android-tests injects the instrumented-test sources
 # and Gradle deps.
 # ---------------------------------------------------------------------------
 
@@ -198,5 +198,5 @@ echo ""
 echo "==> All tests completed."
 echo ""
 echo "Test reports:"
-echo "  Instrumented: example/android/build/reports/androidTests/connected/"
+echo "  Instrumented: apps/example/android/build/reports/androidTests/connected/"
 echo "  Unit:         android/build/reports/tests/"

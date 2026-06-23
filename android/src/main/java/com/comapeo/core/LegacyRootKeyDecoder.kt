@@ -123,14 +123,14 @@ internal class LegacyRootKeyDecoder(private val context: Context) {
     /** Decrypts the legacy envelope, returning the stored UTF-8 string (the hex rootkey). */
     private fun decrypt(envelope: LegacyEnvelope): String {
         val alias = keystoreAlias(envelope.usesKeystoreSuffix)
-        val ks = KeyStore.getInstance(RootKeyStore.ANDROID_KEY_STORE).apply { load(null) }
-        // getEntry == null means the OS wiped the keystore entry (some OEMs do this on
-        // a credential reset). The ciphertext is permanently unreadable; surface it
-        // rather than regenerate a fresh — and therefore different — identity.
-        val entry = ks.getEntry(alias, null) as? KeyStore.SecretKeyEntry
-            ?: throw RootKeyException(
-                "Legacy keystore alias missing — keystore was wiped, rootkey unrecoverable",
-            )
+        val entry = try {
+            val ks = KeyStore.getInstance(RootKeyStore.ANDROID_KEY_STORE).apply { load(null) }
+            ks.getEntry(alias, null) as? KeyStore.SecretKeyEntry
+        } catch (e: Exception) {
+            throw RootKeyException("Failed to access legacy keystore alias '$alias'", e)
+        } ?: throw RootKeyException(
+            "Legacy keystore alias missing — keystore was wiped, rootkey unrecoverable",
+        )
         val plaintext = try {
             Cipher.getInstance(AES_CIPHER).apply {
                 init(
