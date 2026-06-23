@@ -1,4 +1,4 @@
-appId: com.comapeo.core.example
+appId: com.comapeo.core.integration
 ---
 # Test: State transitions happen in correct order
 - launchApp

@@ -5,7 +5,7 @@ updates:
       - "/"
       - "/backend"
       - "/ios/nodejs-project"
-      - "/apps/example"
+      - "/apps/integration"
       - "/apps/e2e"
     schedule:
       interval: weekly

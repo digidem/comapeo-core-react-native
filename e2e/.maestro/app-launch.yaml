@@ -1,4 +1,4 @@
-appId: com.comapeo.core.example
+appId: com.comapeo.core.integration
 ---
 # Test: App launches and displays initial UI
 - launchApp

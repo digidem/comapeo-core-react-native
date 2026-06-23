@@ -60,17 +60,17 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install npm dependencies
-        run: npm install && cd apps/example && npm install
+        run: npm install && cd apps/integration && npm install
 
-      - name: Expo prebuild (generates apps/example/android)
-        run: cd apps/example && npx expo prebuild --platform android --no-install
+      - name: Expo prebuild (generates apps/integration/android)
+        run: cd apps/integration && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
       - name: Run JVM unit tests
         run: |
-          cd apps/example/android
+          cd apps/integration/android
           ./gradlew :comapeo-core-react-native:testDebugUnitTest --no-daemon
 
       - name: Upload test results
@@ -158,20 +158,20 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install npm dependencies
-        run: npm install && cd apps/example && npm install
+        run: npm install && cd apps/integration && npm install
 
       - name: Build backend
         run: npm run backend:build
 
-      - name: Expo prebuild (generates apps/example/android)
-        run: cd apps/example && npx expo prebuild --platform android --no-install
+      - name: Expo prebuild (generates apps/integration/android)
+        run: cd apps/integration && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
       - name: Build test APKs
         run: |
-          cd apps/example/android
+          cd apps/integration/android
           ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest :app:assembleDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
 
       # Snapshot caching was tried but is not portable across GitHub
@@ -198,7 +198,7 @@ jobs:
             adb shell settings put global animator_duration_scale 0.0
             # -i prints per-test STARTED/PASSED/FAILED so a hanging test is
             # identifiable
-            cd apps/example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -i -PreactNativeArchitectures=x86_64
+            cd apps/integration/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -i -PreactNativeArchitectures=x86_64
 
       - name: Upload test results
         if: always()
@@ -208,5 +208,5 @@ jobs:
           path: |
             android/build/reports/androidTests/
             android/build/outputs/androidTest-results/
-            apps/example/android/app/build/reports/androidTests/
-            apps/example/android/app/build/outputs/androidTest-results/
+            apps/integration/android/app/build/reports/androidTests/
+            apps/integration/android/app/build/outputs/androidTest-results/

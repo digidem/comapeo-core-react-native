@@ -1,4 +1,4 @@
-appId: com.comapeo.core.example
+appId: com.comapeo.core.integration
 ---
 # Test: Node.js process starts and reaches "ready" state
 - launchApp

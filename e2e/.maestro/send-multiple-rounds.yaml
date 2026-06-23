@@ -1,4 +1,4 @@
-appId: com.comapeo.core.example
+appId: com.comapeo.core.integration
 ---
 # Test: Multiple rounds of IPC messaging work correctly
 - launchApp

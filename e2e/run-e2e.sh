@@ -16,11 +16,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-EXAMPLE_DIR="$PROJECT_ROOT/example"
+EXAMPLE_DIR="$PROJECT_ROOT/apps/integration"
 MAESTRO_DIR="$SCRIPT_DIR/.maestro"
 APK_PATH="$EXAMPLE_DIR/android/app/build/outputs/apk/release/app-release.apk"
 DEBUG_APK_PATH="$EXAMPLE_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
-PACKAGE_NAME="com.comapeo.core.example"
+PACKAGE_NAME="com.comapeo.core.integration"
 
 SKIP_BUILD=false
 SINGLE_FLOW=""

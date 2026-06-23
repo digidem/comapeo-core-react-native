@@ -21,7 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-EXAMPLE_DIR="$PROJECT_ROOT/example"
+EXAMPLE_DIR="$PROJECT_ROOT/apps/integration"
 
 SKIP_BUILD=false
 TEST_CLASS=""
@@ -198,5 +198,5 @@ echo ""
 echo "==> All tests completed."
 echo ""
 echo "Test reports:"
-echo "  Instrumented: example/android/build/reports/androidTests/connected/"
+echo "  Instrumented: apps/integration/android/build/reports/androidTests/connected/"
 echo "  Unit:         android/build/reports/tests/"

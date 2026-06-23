@@ -1,5 +1,5 @@
 {
-  "name": "core-react-native-example",
+  "name": "core-react-native-integration",
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {
@@ -10,7 +10,7 @@
     "e2e:android": "../e2e/run-e2e.sh",
     "test:android": "../e2e/run-instrumented-tests.sh",
     "test:android:unit": "../e2e/run-instrumented-tests.sh --unit-only",
-    "test:ios": "cd ios && xcodebuild test -workspace corereactnativeexample.xcworkspace -scheme corereactnativeexample -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' CODE_SIGNING_ALLOWED='NO'"
+    "test:ios": "cd ios && xcodebuild test -workspace corereactnativeintegration.xcworkspace -scheme corereactnativeintegration -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' CODE_SIGNING_ALLOWED='NO'"
   },
   "dependencies": {
     "@sentry/react-native": "^8.13.0",

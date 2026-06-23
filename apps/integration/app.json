@@ -1,21 +1,21 @@
 {
   "expo": {
-    "name": "core-react-native-example",
-    "slug": "core-react-native-example",
+    "name": "core-react-native-integration",
+    "slug": "core-react-native-integration",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.comapeo.core.example"
+      "bundleIdentifier": "com.comapeo.core.integration"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.comapeo.core.example"
+      "package": "com.comapeo.core.integration"
     },
     "plugins": [
       "./plugins/with-android-tests",

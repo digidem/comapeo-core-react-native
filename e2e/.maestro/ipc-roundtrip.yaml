@@ -1,4 +1,4 @@
-appId: com.comapeo.core.example
+appId: com.comapeo.core.integration
 ---
 # Test: IPC round-trip messaging works (sends 1000 messages, receives echoes)
 - launchApp

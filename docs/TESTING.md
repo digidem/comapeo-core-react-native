@@ -18,9 +18,10 @@ model, IPC, lifecycle) see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
   JVM unit → Android instrumented (emulator) → iOS integration (simulator) → iOS
   device build → full **BrowserStack** e2e on real devices.
   ([§2](#2-the-test-layers))
-- The native/integration layers run inside the **example app** (`apps/example`);
-  the device e2e runs a separate **e2e app** (`apps/e2e`). Two different apps
-  with two different test mechanisms — ([§2.1](#21-the-two-test-apps)).
+- The native/integration layers run inside the **integration app**
+  (`apps/integration`); the device e2e runs a separate **e2e app** (`apps/e2e`).
+  Two different apps with two different test mechanisms —
+  ([§2.1](#21-the-two-test-apps)).
 - Each layer maps to a job in one of the **test workflows** (`lint.yml`,
   `android-tests.yml`, `ios-tests.yml`, `e2e-*.yml`). The e2e jobs are factored
   into a reusable workflow shared by two callers. ([§3](#3-the-workflows))
@@ -73,7 +74,7 @@ What each layer is actually for:
   isolation, the shutdown/recovery path, socket-file lifecycle. This is where
   the Android process model ([`ARCHITECTURE.md`](./ARCHITECTURE.md) §2.2) is
   actually verified.
-- **Layer 5 — iOS integration.** Runs the example app's XCTest targets on a
+- **Layer 5 — iOS integration.** Runs the integration app's XCTest targets on a
   simulator (`CoreManagerSmokeTest`, `ServiceLifecycleTest`, `RootKeyStoreTests`,
   `ComapeoCoreModuleTests`, …): the embedded `MapeoManager` instantiates and the
   service lifecycle works end-to-end in the single-process iOS model.
@@ -92,20 +93,20 @@ What each layer is actually for:
 Layers 3–7 run against an Expo app, but **not the same one** — and the two apps
 test in fundamentally different ways. This is the distinction to keep straight:
 
-| | `apps/example` | `apps/e2e` |
+| | `apps/integration` | `apps/e2e` |
 |---|---|---|
-| Package / bundle id | `core-react-native-example` / `com.comapeo.core.example` | `core-react-native-e2e` / `com.comapeo.core.e2e` |
+| Package / bundle id | `core-react-native-integration` / `com.comapeo.core.integration` | `core-react-native-e2e` / `com.comapeo.core.e2e` |
 | What the tests *are* | **Native test targets** — Swift `XCTest` + Kotlin `androidTest`/JVM, compiled into the app | An **in-app JS test suite** (`src/tests/*.ts`) run by `TestRunner.tsx` |
 | Who runs them | The platform test runners: `xcodebuild test`, Gradle `connectedDebugAndroidTest` | The app runs them itself on launch/tap; **Maestro** (on BrowserStack) drives the UI and reads the verdict |
 | What they verify | The native module, RN bridge, and service lifecycle at the platform layer | The full RN → native → Node stack doing real `@comapeo/core` work (project CRUD, the map server, basic lifecycle) |
 | Layers | 3, 4, 5, 6 | 7 |
 | CI | `android-tests.yml`, `ios-tests.yml` | `e2e-*.yml` |
 
-So **`apps/example`** is where compiled native tests live: the iOS XCTest
-targets are injected into the prebuilt app by an example-only config plugin
-(`apps/example/plugins/with-ios-tests/`), and the Android instrumented/JVM tests
-build and run through `apps/example/android`'s Gradle. It doubles as the runnable
-dev example (`expo run:*`, `expo start --dev-client`).
+So **`apps/integration`** is where compiled native tests live: the iOS XCTest
+targets are injected into the prebuilt app by an app-only config plugin
+(`apps/integration/plugins/with-ios-tests/`), and the Android instrumented/JVM
+tests build and run through `apps/integration/android`'s Gradle. It doubles as a
+runnable dev app (`expo run:*`, `expo start --dev-client`).
 
 **`apps/e2e`** is a thin harness: its `TestRunner.tsx` runs the suites under
 `apps/e2e/src/tests/` (`basic`, `project-crud`, `map-server`) in-process against
@@ -114,23 +115,18 @@ the real backend and surfaces the result through testIDs (`all-tests-done`,
 just taps **Run tests** and asserts on those testIDs — all the real assertions
 run inside the app.
 
-> **Naming caveat.** `apps/example` is really the *integration-test harness* that
-> happens to also be runnable as an example; the name undersells its main job and
-> is easy to confuse with `apps/e2e`. A rename is under discussion — see the PR
-> for the proposal and blast radius.
-
 Test sources by layer:
 
 | Layer | Location |
 |---|---|
 | JS unit (1) | `src/__tests__/` |
 | Swift package (2) | `ios/Tests/` (`ComapeoCore-Package` test target) |
-| JVM unit / Android instrumented (3–4) | module's `android/src/test/` + `android/src/androidTest/`, plus the example-app suites injected from `apps/example/tests/android/` |
-| iOS integration (5) | `apps/example/tests/ios/` (re-injected into the prebuilt example app by `with-ios-tests`) |
+| JVM unit / Android instrumented (3–4) | module's `android/src/test/` + `android/src/androidTest/`, plus the integration-app suites injected from `apps/integration/tests/android/` |
+| iOS integration (5) | `apps/integration/tests/ios/` (re-injected into the prebuilt integration app by `with-ios-tests`) |
 | e2e (7) | `apps/e2e/src/tests/` (the in-app suite) + `maestro/e2e.yaml` (the driving flow) |
 
-> `apps/example` and `apps/e2e`'s `ios/`/`android/` trees are gitignored and
-> regenerated by `expo prebuild`; the test files under `apps/example/tests/` are
+> `apps/integration` and `apps/e2e`'s `ios/`/`android/` trees are gitignored and
+> regenerated by `expo prebuild`; the test files under `apps/integration/tests/` are
 > the source of truth and get re-injected on prebuild.
 
 ---
@@ -401,7 +397,7 @@ actual cause is visible in the CI log.
   inspect Maestro screenshots / device logs).
 
 > The older [`e2e/README.md`](../e2e/README.md) predates the current layout
-> (it references `example/` rather than `apps/example/`, Maestro Cloud rather
+> (it references `example/` rather than `apps/integration/`, Maestro Cloud rather
 > than BrowserStack, and an older socket name). Treat this document and the
 > workflow files as the source of truth until that README is refreshed.
 
@@ -420,14 +416,12 @@ cd ios && swift test   # layer 2 — Swift package tests (macOS, no simulator)
 ./e2e/run-instrumented-tests.sh               # layers 3–4 — instrumented (emulator)
 ```
 
+`npm run open:ios` / `npm run open:android` open the integration app in
+Xcode / Android Studio.
+
 Run at least `npm run lint` and `npm run test` before opening a PR. The native
 and device layers run in CI; reproduce them locally only when iterating on
 platform-specific code.
-
-> The root `open:ios` / `open:android` package scripts point at `example/ios` /
-> `example/android`, which no longer exist (the app moved to `apps/example/`).
-> They're stale and need fixing — another instance of docs/tooling lagging the
-> actual layout.
 
 ---
 
