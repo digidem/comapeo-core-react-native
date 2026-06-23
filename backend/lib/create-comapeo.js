@@ -4,11 +4,15 @@ import { mkdirSync } from "node:fs";
 
 const DEFAULT_CUSTOM_MAP_FILE_NAME = "default.smp";
 
+const DEFAULT_ONLINE_MAP_STYLE_URL =
+  "https://demotiles.maplibre.org/style.json";
+
 /**
  * @param {Object} options
  * @param {string} options.privateStorageDir
  * @param {string} options.migrationsFolderPath
  * @param {string} [options.defaultConfigPath] Optional default project config (presets/categories) the consuming app bundles. Undefined → new projects get no default config.
+ * @param {string} [options.defaultOnlineStyleUrl] Online map style URL the consuming app sets via the Expo plugin. Undefined → falls back to {@link DEFAULT_ONLINE_MAP_STYLE_URL}.
  * @param {Buffer} options.rootKey 16-byte device identity supplied by native code.
  * @param {import('fastify').FastifyInstance} options.fastify
  */
@@ -16,6 +20,7 @@ export function createComapeo({
   privateStorageDir,
   migrationsFolderPath,
   defaultConfigPath,
+  defaultOnlineStyleUrl,
   rootKey,
   fastify,
 }) {
@@ -30,8 +35,6 @@ export function createComapeo({
   const DB_DIR_NAME = "sqlite-dbs";
   const CORE_STORAGE_DIR_NAME = "core-storage";
   const CUSTOM_MAPS_DIR_NAME = "maps";
-
-  const DEFAULT_ONLINE_MAP_STYLE_URL = "https://demotiles.maplibre.org/style.json";
 
   const dbFolder = path.join(privateStorageDir, DB_DIR_NAME);
   const indexFolder = path.join(privateStorageDir, CORE_STORAGE_DIR_NAME);
@@ -49,7 +52,7 @@ export function createComapeo({
     rootKey,
     fastify,
     defaultConfigPath,
-    defaultOnlineStyleUrl: DEFAULT_ONLINE_MAP_STYLE_URL,
+    defaultOnlineStyleUrl: defaultOnlineStyleUrl || DEFAULT_ONLINE_MAP_STYLE_URL,
     customMapPath: path.join(customMapsDir, DEFAULT_CUSTOM_MAP_FILE_NAME),
   });
 }

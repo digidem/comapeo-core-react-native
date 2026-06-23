@@ -22,12 +22,20 @@ console.log("Starting Comapeo Node server...");
 
 // 4th positional is an optional path to the default project config
 // (presets/categories) the consuming app bundles via the Expo plugin.
-// Native always passes the slot (empty string when none) so the
-// `--sentry*` flags that follow can't land in it. Empty → undefined →
-// MapeoManager applies no default config to new projects.
-const [comapeoSocketPath, controlSocketPath, privateStorageDir, configArg] =
-  process.argv.slice(2);
+// 5th positional is an optional online map style URL the consuming app
+// sets via the Expo plugin. Native always passes both slots (empty
+// string when unset) so the `--sentry*` flags that follow can't land in
+// them. Empty 4th → undefined → MapeoManager applies no default config;
+// empty 5th → undefined → createComapeo falls back to its built-in URL.
+const [
+  comapeoSocketPath,
+  controlSocketPath,
+  privateStorageDir,
+  configArg,
+  styleUrlArg,
+] = process.argv.slice(2);
 const defaultConfigPath = configArg || undefined;
+const defaultOnlineStyleUrl = styleUrlArg || undefined;
 
 const fastify = Fastify();
 
@@ -230,6 +238,7 @@ async function withPhase(phase, fn) {
           fastify,
           migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
           defaultConfigPath,
+          defaultOnlineStyleUrl,
           rootKey,
         });
 
