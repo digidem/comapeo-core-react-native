@@ -49,6 +49,10 @@ npm run open:android   # open the example app in Android Studio
 
 Run `npm run lint` and `npm run test` before opening a PR.
 
+How the suites, workflows, and CI gating fit together (the merge queue, the
+e2e trust boundary, why some checks run where they do) is documented in
+[docs/TESTING.md](./docs/TESTING.md). This section is the short how-to.
+
 Native and integration suites are slower and platform-specific; the exact
 invocations live in the CI workflows, which are the source of truth:
 
@@ -62,10 +66,18 @@ iOS e2e cannot run on a local simulator; it goes through BrowserStack.
 
 ### The native suites and the merge queue
 
-The expensive native suites (Android, iOS, e2e) run on internal-branch PRs for
-pre-merge feedback and again in the **merge queue** before a PR lands, so the
-actual merged result is what gates the merge. The queue is what lets several PRs
-land without each one re-running CI every time another merges.
+Merges go through a required **merge queue**: a PR's required checks are
+evaluated on the queued merge commit before it lands, so the actual merged result
+is what gates the merge, and several PRs can land without each one re-running CI
+every time another merges.
+
+The cheap native suites (Android, iOS) run on every PR for pre-merge feedback and
+again in the queue. The **BrowserStack e2e is paid device time**, so by default it
+runs only **in the merge queue**, not on every PR push — a plain PR gets a green
+`e2e / Gate` cheaply and the real run happens when the PR is queued. To run the
+full e2e on a PR before queueing it (e.g. you touched device-facing code), add the
+**`run-e2e`** label or trigger the workflow manually. See
+[docs/TESTING.md §5](./docs/TESTING.md) for the full decision table.
 
 The BrowserStack e2e needs secrets, which GitHub withholds from Dependabot and
 fork PRs (so an untrusted dependency can't read them). Those PRs build but skip
