@@ -32,6 +32,8 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
+      # Lets the reusable workflow's path-detection job list the PR's files.
+      pull-requests: read
     uses: ./.github/workflows/e2e-reusable.yml
     secrets:
       BROWSERSTACK_USERNAME_TESTS: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
