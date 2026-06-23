@@ -81,9 +81,9 @@ class RootKeyStore(private val context: Context) {
         }
 
         log("RootKeyStore: generated for first install")
-        val generated = generateAndPersist()
+        val key = generateAndPersist()
         metricCount(METRIC_LOAD, mapOf("outcome" to "generated"))
-        return RootKeyResult(generated, generated = true)
+        return RootKeyResult(key, generated = true)
     }
 
     /**

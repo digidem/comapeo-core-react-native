@@ -256,6 +256,45 @@ class RootKeyStoreTest {
         )
     }
 
+    @Test
+    fun migrationLeavesLegacyEntryInPlace() {
+        seedLegacyEntry(KNOWN_HEX, keychainAware = true)
+        RootKeyStore(context).loadOrInitialize()
+
+        // §2.1: the legacy entry is the only on-device recovery hatch — migration is
+        // one-way and must never delete it.
+        val legacy = context.getSharedPreferences(
+            LegacyRootKeyDecoder.SECURE_STORE_PREFS_NAME,
+            Context.MODE_PRIVATE,
+        ).getString(
+            "${LegacyRootKeyDecoder.DEFAULT_KEYCHAIN_SERVICE}-${LegacyRootKeyDecoder.KEY_NAME}",
+            null,
+        )
+        assertNotNull("migration must leave the legacy entry as the recovery hatch", legacy)
+    }
+
+    @Test
+    fun wipedWrapperKeyWithValidLegacyRecovers() {
+        // Migrate first: native blob written, wrapper key created, legacy entry intact.
+        seedLegacyEntry(KNOWN_HEX, keychainAware = true)
+        val first = RootKeyStore(context).loadOrInitialize()
+        assertArrayEquals(KNOWN_BYTES, first.key)
+
+        // Simulate an OEM credential reset wiping only the native wrapper key, leaving the
+        // native blob and the legacy entry in place — the §7 "native decrypt fails" path that
+        // nativeCorruptWithValidLegacyRecoversViaFallback (a parse failure) does not exercise.
+        val ks = KeyStore.getInstance(RootKeyStore.ANDROID_KEY_STORE).apply { load(null) }
+        ks.deleteEntry(RootKeyStore.WRAPPER_KEY_ALIAS)
+
+        val recovered = RootKeyStore(context).loadOrInitialize()
+        assertFalse("recovery must not regenerate a fresh identity", recovered.generated)
+        assertArrayEquals(
+            "must recover the original legacy identity via the fallback",
+            KNOWN_BYTES,
+            recovered.key,
+        )
+    }
+
     /**
      * Writes a handcrafted `expo-secure-store` AES entry: generates the legacy
      * AndroidKeyStore alias the way `expo-secure-store@56` does, encrypts [hex] as a
