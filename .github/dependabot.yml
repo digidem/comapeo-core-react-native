@@ -1,12 +1,12 @@
 version: 2
 updates:
+  # Root + native/backend packages. These gate the shipped library and are
+  # merged on a different cadence than the example/e2e apps, so they get their
+  # own grouped PR (see the apps/ entry below).
   - package-ecosystem: npm
     directories:
       - "/"
       - "/backend"
-      - "/ios/nodejs-project"
-      - "/apps/integration"
-      - "/apps/e2e"
     schedule:
       interval: weekly
       day: monday
@@ -37,6 +37,34 @@ updates:
       # React Native and Expo are version-coupled and gate the whole toolchain;
       # a RN 0.85 -> 0.86 bump is a "minor" in semver but effectively a major
       # upgrade. Take patch fixes only and do minor/SDK bumps deliberately.
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "expo"
+        update-types: ["version-update:semver-minor"]
+
+  # Example + e2e apps. Lower merge priority than the root package, so kept in a
+  # separate grouped PR.
+  - package-ecosystem: npm
+    directories:
+      - "/apps/example"
+      - "/apps/e2e"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
       - dependency-name: "react-native"
         update-types: ["version-update:semver-minor"]
       - dependency-name: "expo"
