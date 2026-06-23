@@ -20,6 +20,16 @@ env:
   NODEJS_MOBILE_VERSION: v18.20.4
 
 jobs:
+  # Defer the slow instrumented suite to the merge queue: skip it on a plain PR
+  # (it then reports as skipped, which satisfies the required check) and run it
+  # on merge_group, on manual dispatch, or on a PR labeled `run-e2e`. The fast
+  # JVM unit tests below stay on every PR.
+  changes:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/detect-heavy-ci.yml
+
   unit-tests:
     name: JVM Unit Tests
     runs-on: ubuntu-latest
@@ -84,6 +94,8 @@ jobs:
 
   instrumented-tests:
     name: Instrumented Tests
+    needs: [changes]
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
 

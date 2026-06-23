@@ -1,0 +1,87 @@
+name: Detect heavy CI
+
+# Shared decision for the slow native suites (Android instrumented, iOS
+# integration + device build): run them in the merge queue (the gate before a
+# PR lands) and on manual dispatch, on a PR only when it carries the `run-e2e`
+# label, and skip docs/config-only changes everywhere. Mirrors the event/label
+# logic in e2e-reusable.yml's `changes` job — kept separate because the
+# self-test `machinery` paths differ per suite.
+
+on:
+  workflow_call:
+    outputs:
+      run:
+        description: "'true' if the heavy native jobs should run, else 'false'."
+        value: ${{ jobs.classify.outputs.run }}
+
+jobs:
+  classify:
+    name: Detect relevant changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.script.outputs.run }}
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        id: script
+        with:
+          script: |
+            const ev = context.eventName;
+            // Manual dispatch is an explicit request — run unconditionally.
+            if (ev === 'workflow_dispatch') {
+              core.info('workflow_dispatch: running heavy CI.');
+              return core.setOutput('run', 'true');
+            }
+
+            // Changed files for the current event — read-only, never checks out
+            // or runs PR code. Fail safe to running if the lookup fails.
+            let names;
+            try {
+              if (ev === 'merge_group') {
+                const { base_sha, head_sha } = context.payload.merge_group;
+                const cmp = await github.rest.repos.compareCommitsWithBasehead({
+                  ...context.repo,
+                  basehead: `${base_sha}...${head_sha}`,
+                });
+                names = (cmp.data.files ?? []).map((f) => f.filename);
+              } else {
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  ...context.repo,
+                  pull_number: context.payload.pull_request.number,
+                });
+                names = files.map((f) => f.filename);
+              }
+            } catch (err) {
+              core.warning(`Could not list changed files (${err.message}) — running heavy CI to be safe.`);
+              return core.setOutput('run', 'true');
+            }
+            core.info(`Changed files:\n${names.join('\n')}`);
+
+            // A change to a native test workflow (or this detector) must run the
+            // heavy jobs so it's self-tested, even though it lives under the
+            // otherwise-safe .github/.
+            const isMachinery = (f) =>
+              /^\.github\/workflows\/(android-tests|ios-tests|detect-heavy-ci)\.yml$/.test(f);
+            // Safe = can't affect runtime: docs, license, editor dotfiles, other
+            // .github config. Everything else (src, android, ios, backend, apps,
+            // scripts, package*.json) is code.
+            const isSafe = (f) =>
+              f.endsWith('.md') ||
+              f.startsWith('docs/') ||
+              f === 'LICENSE' ||
+              ['.gitignore', '.gitattributes', '.editorconfig'].includes(f) ||
+              f.startsWith('.github/');
+            const codeChanged =
+              names.length === 0 || names.some((f) => isMachinery(f) || !isSafe(f));
+
+            // merge_group (the pre-merge gate) runs whenever code changed; a plain
+            // PR defers to the queue unless it carries `run-e2e`.
+            let run = codeChanged;
+            if (ev === 'pull_request') {
+              const labels = (context.payload.pull_request.labels ?? []).map((l) => l.name);
+              run = codeChanged && labels.includes('run-e2e');
+            }
+            core.info(`event=${ev} codeChanged=${codeChanged} run=${run}`);
+            core.setOutput('run', String(run));
