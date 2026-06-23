@@ -44,10 +44,11 @@ env:
   NODEJS_MOBILE_VERSION: v18.20.4
 
 jobs:
-  # Skip the expensive build + paid BrowserStack device jobs for PRs that can't
-  # affect runtime (config/docs only). merge_group, manual dispatch, and any
-  # change to the e2e machinery itself always run. The `gate` job always reports,
-  # so skipping here never leaves the required check stuck pending.
+  # Decide whether the expensive build + paid BrowserStack device jobs run.
+  # The full run happens in the merge queue (merge_group) before a PR lands, on
+  # manual dispatch, or on a PR carrying the `run-e2e` label — a plain PR defers
+  # to the queue. Docs/config-only changes skip on every event. The `gate` job
+  # always reports, so skipping here never leaves the required check pending.
   changes:
     name: Detect relevant changes
     runs-on: ubuntu-latest
@@ -61,45 +62,63 @@ jobs:
         id: classify
         with:
           script: |
-            // merge_group (the pre-merge gate) and manual dispatch always run.
-            if (!['pull_request', 'pull_request_target'].includes(context.eventName)) {
-              core.info(`Event '${context.eventName}' always runs e2e.`);
+            const ev = context.eventName;
+            // Manual dispatch is an explicit request — run unconditionally.
+            if (ev === 'workflow_dispatch') {
+              core.info('workflow_dispatch: running e2e.');
               return core.setOutput('run_e2e', 'true');
             }
 
-            // List the PR's files via the API — read-only, never checks out or
-            // runs PR code. On any failure, fail safe and run e2e.
+            // Changed files for the current event — read-only, never checks out
+            // or runs PR code. Fail safe to running e2e if the lookup fails.
             let names;
             try {
-              const files = await github.paginate(github.rest.pulls.listFiles, {
-                ...context.repo,
-                pull_number: context.payload.pull_request.number,
-              });
-              names = files.map((f) => f.filename);
+              if (ev === 'merge_group') {
+                const { base_sha, head_sha } = context.payload.merge_group;
+                const cmp = await github.rest.repos.compareCommitsWithBasehead({
+                  ...context.repo,
+                  basehead: `${base_sha}...${head_sha}`,
+                });
+                names = (cmp.data.files ?? []).map((f) => f.filename);
+              } else {
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  ...context.repo,
+                  pull_number: context.payload.pull_request.number,
+                });
+                names = files.map((f) => f.filename);
+              }
             } catch (err) {
-              core.warning(`Could not list PR files (${err.message}) — running e2e to be safe.`);
+              core.warning(`Could not list changed files (${err.message}) — running e2e to be safe.`);
               return core.setOutput('run_e2e', 'true');
             }
             core.info(`Changed files:\n${names.join('\n')}`);
 
-            // Checked first: a change to the e2e machinery must run e2e so it's
-            // self-tested, even though it lives under the otherwise-safe .github/.
+            // A change to the e2e machinery must run e2e so it's self-tested,
+            // even though it lives under the otherwise-safe .github/.
             const isMachinery = (f) =>
               /^\.github\/workflows\/e2e-[^/]*\.yml$/.test(f) ||
               f.startsWith('.github/actions/run-browserstack-maestro/');
             // Safe = can't affect runtime: docs, license, editor dotfiles, other
-            // .github config. Anything else (src, android, ios, backend, apps,
-            // scripts, maestro, package*.json) is code → run e2e.
+            // .github config. Everything else (src, android, ios, backend, apps,
+            // scripts, maestro, package*.json) is code.
             const isSafe = (f) =>
               f.endsWith('.md') ||
               f.startsWith('docs/') ||
               f === 'LICENSE' ||
               ['.gitignore', '.gitattributes', '.editorconfig'].includes(f) ||
               f.startsWith('.github/');
-
-            const runE2e =
+            const codeChanged =
               names.length === 0 || names.some((f) => isMachinery(f) || !isSafe(f));
-            core.info(`run_e2e=${runE2e}`);
+
+            // merge_group (the pre-merge gate) and pull_request_target (reached
+            // only after a maintainer added `safe-to-test`) run whenever code
+            // changed. A plain PR defers to the queue unless it carries `run-e2e`.
+            let runE2e = codeChanged;
+            if (ev === 'pull_request') {
+              const labels = (context.payload.pull_request.labels ?? []).map((l) => l.name);
+              runE2e = codeChanged && labels.includes('run-e2e');
+            }
+            core.info(`event=${ev} codeChanged=${codeChanged} run_e2e=${runE2e}`);
             core.setOutput('run_e2e', String(runE2e));
 
   build-android:
