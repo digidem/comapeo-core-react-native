@@ -1,11 +1,14 @@
 package com.comapeo.core
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -13,6 +16,7 @@ import android.os.Process
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
@@ -37,6 +41,16 @@ class ComapeoCoreService : Service() {
          *  reuses the same process and creates a new instance. */
         @Volatile
         private var activeInstanceCount = 0
+
+        /** The runtime gate for the FGS notification on API 33+. Below 33
+         *  `checkSelfPermission` reports the manifest-declared permission as
+         *  granted, so this returns `true` without a runtime grant. Pulled
+         *  into the companion as a testable seam (see `NotificationPermissionTest`). */
+        internal fun hasPostNotificationsPermission(context: Context): Boolean =
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
     }
 
     override fun onCreate() {
@@ -189,17 +203,47 @@ class ComapeoCoreService : Service() {
     private fun startService() {
         log("Starting the foreground service")
         val notification = createNotification(true)
+
+        // On API 33+ the FGS notification is suppressed without a runtime
+        // POST_NOTIFICATIONS grant, which lets the system deprioritise or kill
+        // the service. The host app is responsible for requesting the grant
+        // (ComapeoCore.requestNotificationPermissionsAsync); here we only log
+        // so a missing grant degrades gracefully instead of crashing. See
+        // docs/ForegroundService.md.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !hasPostNotificationsPermission(this)
+        ) {
+            logCrumb(
+                SentryCategories.FGS,
+                "POST_NOTIFICATIONS not granted; FGS notification may be suppressed",
+                level = "warning",
+            )
+        }
+
         // Android requires startForeground on every startForegroundService call.
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            notification,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            } else {
-                0
-            },
-        )
+        // A missing notification grant can surface as a SecurityException here on
+        // some OEM builds; catch it so the service keeps running deprioritised
+        // rather than taking the process down.
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                } else {
+                    0
+                },
+            )
+        } catch (e: SecurityException) {
+            logCapture(
+                SentryCategories.FGS,
+                "comapeo: startForeground denied (POST_NOTIFICATIONS missing?): ${e.message}",
+                level = "warning",
+                tags = mapOf(SentryTags.PHASE to "fgs-notification-permission"),
+            )
+        }
+
         if (isServiceStarted) return
         Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
         nodeJSService.start(nodeJSServiceCallback)
