@@ -93,15 +93,16 @@ jobs:
             android/build/test-results/
 
   instrumented-tests:
-    name: Instrumented Tests
+    # The "(30)" is baked into the name (not a matrix) on purpose: a *matrix*
+    # job skipped by `if` reports its check without the matrix suffix, so the
+    # required `Instrumented Tests (30)` context would never report and the PR
+    # would hang on "Expected — Waiting". A plain job reports the exact name as
+    # skipped (= passing) when gated out.
+    name: Instrumented Tests (30)
     needs: [changes]
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-
-    strategy:
-      matrix:
-        api-level: [30]
 
     steps:
       - uses: actions/checkout@v7
@@ -137,7 +138,7 @@ jobs:
           for dir in "$ANDROID_HOME/platforms"/*/; do
             plat=$(basename "$dir")
             case "$plat" in
-              android-34|android-${{ matrix.api-level }}) ;; # keep what we need
+              android-34|android-30) ;; # keep what we need
               *) echo "Removing unused platform $plat"; rm -rf "$dir" ;;
             esac
           done
@@ -195,7 +196,7 @@ jobs:
         timeout-minutes: 15
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
         with:
-          api-level: ${{ matrix.api-level }}
+          api-level: 30
           target: google_atd
           arch: x86_64
           force-avd-creation: false
@@ -216,7 +217,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: instrumented-test-results-api${{ matrix.api-level }}
+          name: instrumented-test-results-api30
           path: |
             android/build/reports/androidTests/
             android/build/outputs/androidTest-results/
