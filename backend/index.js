@@ -248,7 +248,11 @@ async function withPhase(phase, fn) {
         // failures to getUrl() callers only.
         fastify.listen({ host: "127.0.0.1", port: 0 }).catch(() => {});
 
-        mapServer = createMapServer({ privateStorageDir, rootKey });
+        mapServer = createMapServer({
+          privateStorageDir,
+          rootKey,
+          defaultOnlineStyleUrl,
+        });
         // Map server is non-critical: boot still reaches "ready" if it fails.
         // Attach a no-op catch so a listen() rejection surfaces only to
         // getBaseUrl() callers and never trips the global unhandledRejection

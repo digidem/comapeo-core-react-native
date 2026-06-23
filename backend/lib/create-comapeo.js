@@ -2,10 +2,9 @@ import path from "node:path";
 import { MapeoManager } from "@comapeo/core";
 import { mkdirSync } from "node:fs";
 
-const DEFAULT_CUSTOM_MAP_FILE_NAME = "default.smp";
+import { DEFAULT_ONLINE_MAP_STYLE_URL } from "./default-online-style-url.js";
 
-const DEFAULT_ONLINE_MAP_STYLE_URL =
-  "https://demotiles.maplibre.org/style.json";
+const DEFAULT_CUSTOM_MAP_FILE_NAME = "default.smp";
 
 /**
  * @param {Object} options
