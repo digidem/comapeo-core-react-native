@@ -40,7 +40,7 @@ jobs:
     # consumers would fail to dlopen the native addons at runtime. The same
     # macOS run also produces the Android jniLibs (pure file copy of downloaded
     # prebuilds — no Android toolchain needed), so one runner ships both.
-    runs-on: macos-15
+    runs-on: macos-latest
     permissions:
       contents: write
       issues: write

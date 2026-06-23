@@ -1,0 +1,29 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: ⚠️ Breaking Changes
+      labels:
+        - breaking
+    - title: 🚀 Features
+      labels:
+        - feature
+    - title: 🐛 Bug Fixes
+      labels:
+        - fix
+    - title: ⚡ Performance
+      labels:
+        - performance
+    - title: 📝 Documentation
+      labels:
+        - documentation
+    - title: ⬆️ Dependencies
+      labels:
+        - dependencies
+    - title: 🏗️ Maintenance
+      labels:
+        - maintenance
+    - title: Other Changes
+      labels:
+        - "*"

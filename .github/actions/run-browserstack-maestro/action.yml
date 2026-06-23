@@ -89,6 +89,13 @@ runs:
         # implicit setPermissions of `launchApp`.
         INFRA_RE='Unable to set permissions|Connection reset|Connection refused|ECONNRESET|SocketException|Socket closed|SocketTimeout|Unable to launch app|Unable to clear state|Failed to install app|WebDriverAgent|XCTestDriverClient|xcuitest'
 
+        # Session-start failures that BrowserStack surfaces in the session's
+        # structured `error.message` rather than the Maestro log: the device
+        # session never came up, so the Maestro log holds only boilerplate
+        # system info and matches no INFRA_RE pattern. BrowserStack's own
+        # message tells you to "run the test again" — i.e. it's a flake.
+        SESSION_ERR_RE='Could not start a session|Something went wrong during test execution|Please try to run the test again|Device failed to start|Failed to start the session'
+
         PAYLOAD=$(jq -n \
           --arg app "$APP_URL" \
           --arg suite "$TEST_SUITE_URL" \
@@ -178,17 +185,27 @@ runs:
         }
 
         # Returns 0 only if there is at least one failed session and every
-        # failed session's Maestro log matches an infra signature. Any failed
-        # session without an infra signature is treated as a real failure
-        # (return 1) so genuine regressions are never retried away. A failed
-        # session whose log can't be fetched also counts as real (fail safe).
+        # failed session is infra-class: either its structured session
+        # `error.message` matches SESSION_ERR_RE (the session never started)
+        # or its Maestro log matches INFRA_RE. Any failed session matching
+        # neither is treated as a real failure (return 1) so genuine
+        # regressions are never retried away. A failed session whose log
+        # can't be fetched also counts as real (fail safe).
         is_infra_only() {
-          local build_id=$1 saw_failure=0 detail log session_infra
+          local build_id=$1 saw_failure=0 detail log session_infra err_msg
           for session_id in $(printf '%s\n' "$BUILD_RESPONSE" \
             | jq -r '.devices[]?.sessions[]? | select(.status != "passed") | .id'); do
             saw_failure=1
             detail=$(curl --show-error -s -u "$AUTH" "$API/builds/$build_id/sessions/$session_id")
             session_infra=0
+
+            # Session-level error (e.g. "Could not start a session"): the
+            # session never ran, so there's no telling Maestro log to grep.
+            err_msg=$(printf '%s' "$detail" | jq -r '.error.message // empty')
+            if [ -n "$err_msg" ] && printf '%s' "$err_msg" | grep -qiE "$SESSION_ERR_RE"; then
+              session_infra=1
+            fi
+
             for log_url in $(printf '%s\n' "$detail" | jq -r '.. | .maestro_log? // empty'); do
               log=$(curl --show-error -s -u "$AUTH" "$log_url")
               if printf '%s' "$log" | grep -qiE "$INFRA_RE"; then

@@ -66,3 +66,12 @@ fun logCapture(
     log("[$category] $message", level, tags + ("category" to category))
     SentryFgsBridge.captureMessage(message, level, tags)
 }
+
+/**
+ * Sentry counter metric. Unsampled (unlike spans), so use it for fleet-wide rates and
+ * fractions; reserve events for cases needing a stack/message. No logcat line — call
+ * sites already log their state string.
+ */
+fun metricCount(name: String, attributes: Map<String, String> = emptyMap()) {
+    SentryFgsBridge.countMetric(name, attributes)
+}
