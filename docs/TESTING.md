@@ -16,22 +16,26 @@ model, IPC, lifecycle) see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 - Tests run in **seven layers**, cheapest first: JS lint/unit → Swift-package →
   JVM unit → Android instrumented (emulator) → iOS integration (simulator) → iOS
-  device build → full **BrowserStack** e2e on real devices. §2.
+  device build → full **BrowserStack** e2e on real devices.
+  ([§2](#2-the-test-layers))
+- The native/integration layers run inside the **example app** (`apps/example`);
+  the device e2e runs a separate **e2e app** (`apps/e2e`). Two different apps
+  with two different test mechanisms — ([§2.1](#21-the-two-test-apps)).
 - Each layer maps to a job in one of the **test workflows** (`lint.yml`,
   `android-tests.yml`, `ios-tests.yml`, `e2e-*.yml`). The e2e jobs are factored
-  into a reusable workflow shared by two callers. §3.
+  into a reusable workflow shared by two callers. ([§3](#3-the-workflows))
 - Merges go through a **required merge queue**. Required checks are evaluated on
   the `merge_group` commit, which is why every test workflow also triggers on
-  `merge_group`. §4.
+  `merge_group`. ([§4](#4-the-merge-queue-and-required-checks))
 - The expensive BrowserStack e2e is collapsed behind a single **`e2e / Gate`**
   required check and **runs in the merge queue, not on every PR** — a plain PR
   defers to the queue; a maintainer opts a PR in with the **`run-e2e`** label or
-  a manual dispatch. §5.
+  a manual dispatch. ([§5](#5-when-the-expensive-e2e-runs))
 - Secrets are withheld from Dependabot/fork PRs. They build without secrets and
   run the device suite only after a maintainer reviews the diff and adds
   **`safe-to-test`**, which routes through an isolated `pull_request_target`
   workflow. The reusable workflow keeps untrusted code execution and the secrets
-  in separate jobs. §6.
+  in separate jobs. ([§6](#6-secrets-and-the-trust-boundary))
 
 ---
 
@@ -41,58 +45,93 @@ The in-app behaviour is exercised at increasing cost and fidelity. The cheap
 layers catch most regressions in seconds; the expensive ones catch the
 integration and real-device failures the cheap ones can't see.
 
-| # | Layer | Framework / command | Device? | Runner | Required check |
-|---|---|---|---|---|---|
-| 1 | JS lint + unit | `expo-module lint`, `expo-module test` | no | ubuntu | `Lint & Unit Tests` |
-| 2 | Swift package | `cd ios && swift test` (`ComapeoCore-Package`) | no | macOS | `Swift Package Tests (macOS)` |
-| 3 | JVM unit | Gradle `:comapeo-core-react-native:testDebugUnitTest` | no | ubuntu | `JVM Unit Tests` |
-| 4 | Android instrumented | Gradle `connectedDebugAndroidTest` (AndroidJUnit4 + UiAutomator) | emulator | ubuntu + KVM | `Instrumented Tests (30)` |
-| 5 | iOS integration | `xcodebuild test` (example app) | simulator | macOS | `Integration Tests (Example App)` |
-| 6 | iOS device build | `xcodebuild build` for `generic/platform=iOS` | no (build only) | macOS | `iOS Device Build (xcframework codesign verification)` |
-| 7 | End-to-end | Maestro flow on BrowserStack real devices | real devices | ubuntu + BrowserStack | `e2e / Gate` |
+| # | Layer | Framework / command | Device? | Runner | App | Required check |
+|---|---|---|---|---|---|---|
+| 1 | JS lint + unit | `expo-module lint`, `expo-module test` | no | ubuntu | — | `Lint & Unit Tests` |
+| 2 | Swift package | `cd ios && swift test` (`ComapeoCore-Package`) | no | macOS | — | `Swift Package Tests (macOS)` |
+| 3 | JVM unit | Gradle `:comapeo-core-react-native:testDebugUnitTest` | no | ubuntu | example | `JVM Unit Tests` |
+| 4 | Android instrumented | Gradle `connectedDebugAndroidTest` (AndroidJUnit4 + UiAutomator) | emulator | ubuntu + KVM | example | `Instrumented Tests (30)` |
+| 5 | iOS integration | `xcodebuild test` | simulator | macOS | example | `Integration Tests (Example App)` |
+| 6 | iOS device build | `xcodebuild build` for `generic/platform=iOS` | no (build only) | macOS | example | `iOS Device Build (xcframework codesign verification)` |
+| 7 | End-to-end | Maestro flow on BrowserStack real devices | real devices | ubuntu + BrowserStack | e2e | `e2e / Gate` |
 
 What each layer is actually for:
 
 - **Layer 1 — JS lint + unit.** The fast gate. ESLint plus the TypeScript unit
-  tests over `src/` (the RN-facing adapter). Seconds, no native toolchain.
+  tests under `src/__tests__/` (the RN-facing adapter). Seconds, no native
+  toolchain.
 - **Layer 2 — Swift package.** Builds only the platform-portable Swift sources
   (`NodeJSIPC`, `NodeJSService`, `Log`) and exercises framing / IPC / service
   lifecycle / `waitForFile` against Unix sockets via Darwin APIs — no simulator
-  needed, so it's fast-feedback for the iOS native layer. See
-  [ARCHITECTURE.md §3](./ARCHITECTURE.md).
+  needed, so it's fast-feedback for the iOS native layer. Tests live in
+  `ios/Tests/` (the `ComapeoCore-Package` test target). See
+  [`ARCHITECTURE.md`](./ARCHITECTURE.md) §3.
 - **Layer 3 — JVM unit.** Pure-JVM Android tests (message-framing protocol
   encode/decode) with no emulator.
 - **Layer 4 — Android instrumented.** Boots an emulator and runs the real
   `:ComapeoCore` foreground service: IPC connect/send/receive, process
   isolation, the shutdown/recovery path, socket-file lifecycle. This is where
-  the Android process model (ARCHITECTURE.md §2.2) is actually verified.
-- **Layer 5 — iOS integration.** Builds the example app and runs its XCTest
-  targets on a simulator (`CoreManagerSmokeTest`, `ServiceLifecycleTest`,
-  `RootKeyStoreTests`, `ComapeoCoreModuleTests`, …): the embedded
-  `MapeoManager` instantiates and the service lifecycle works end-to-end in the
-  single-process iOS model.
+  the Android process model ([`ARCHITECTURE.md`](./ARCHITECTURE.md) §2.2) is
+  actually verified.
+- **Layer 5 — iOS integration.** Runs the example app's XCTest targets on a
+  simulator (`CoreManagerSmokeTest`, `ServiceLifecycleTest`, `RootKeyStoreTests`,
+  `ComapeoCoreModuleTests`, …): the embedded `MapeoManager` instantiates and the
+  service lifecycle works end-to-end in the single-process iOS model.
 - **Layer 6 — iOS device build.** Phase 2 ships device + simulator slices in one
   xcframework per native addon (see
-  [build-architecture-plan.md](./build-architecture-plan.md)). The simulator
+  [`build-architecture-plan.md`](./build-architecture-plan.md)). The simulator
   integration tests exercise the runtime; this job `xcodebuild build`s against a
   generic iOS device to prove the **device** slice links and codesigns (CI can't
   run on real iOS hardware, so it builds but doesn't test).
 - **Layer 7 — End-to-end.** The full stack on real devices, driven by Maestro
-  through BrowserStack. §7 covers the mechanics.
+  through BrowserStack. [§7](#7-the-browserstack-e2e-end-to-end) covers the
+  mechanics.
 
-The test source lives next to what it tests:
+### 2.1 The two test apps
+
+Layers 3–7 run against an Expo app, but **not the same one** — and the two apps
+test in fundamentally different ways. This is the distinction to keep straight:
+
+| | `apps/example` | `apps/e2e` |
+|---|---|---|
+| Package / bundle id | `core-react-native-example` / `com.comapeo.core.example` | `core-react-native-e2e` / `com.comapeo.core.e2e` |
+| What the tests *are* | **Native test targets** — Swift `XCTest` + Kotlin `androidTest`/JVM, compiled into the app | An **in-app JS test suite** (`src/tests/*.ts`) run by `TestRunner.tsx` |
+| Who runs them | The platform test runners: `xcodebuild test`, Gradle `connectedDebugAndroidTest` | The app runs them itself on launch/tap; **Maestro** (on BrowserStack) drives the UI and reads the verdict |
+| What they verify | The native module, RN bridge, and service lifecycle at the platform layer | The full RN → native → Node stack doing real `@comapeo/core` work (project CRUD, the map server, basic lifecycle) |
+| Layers | 3, 4, 5, 6 | 7 |
+| CI | `android-tests.yml`, `ios-tests.yml` | `e2e-*.yml` |
+
+So **`apps/example`** is where compiled native tests live: the iOS XCTest
+targets are injected into the prebuilt app by an example-only config plugin
+(`apps/example/plugins/with-ios-tests/`), and the Android instrumented/JVM tests
+build and run through `apps/example/android`'s Gradle. It doubles as the runnable
+dev example (`expo run:*`, `expo start --dev-client`).
+
+**`apps/e2e`** is a thin harness: its `TestRunner.tsx` runs the suites under
+`apps/e2e/src/tests/` (`basic`, `project-crud`, `map-server`) in-process against
+the real backend and surfaces the result through testIDs (`all-tests-done`,
+`all-tests-passed`). The Maestro flow ([§7](#7-the-browserstack-e2e-end-to-end))
+just taps **Run tests** and asserts on those testIDs — all the real assertions
+run inside the app.
+
+> **Naming caveat.** `apps/example` is really the *integration-test harness* that
+> happens to also be runnable as an example; the name undersells its main job and
+> is easy to confuse with `apps/e2e`. A rename is under discussion — see the PR
+> for the proposal and blast radius.
+
+Test sources by layer:
 
 | Layer | Location |
 |---|---|
-| JS unit | `src/__tests__/` |
-| Swift package | `ios/Tests/` (the `ComapeoCore-Package` test target) |
-| JVM unit / Android instrumented | `android/src/test/`, `android/src/androidTest/`, plus the example-app injected suites under `apps/example/tests/android/` |
-| iOS integration | `apps/example/tests/ios/` (re-injected into the prebuilt example app by an example-only config plugin) |
-| e2e | `apps/e2e/` (the Expo harness app) + `maestro/e2e.yaml` (the flow) |
+| JS unit (1) | `src/__tests__/` |
+| Swift package (2) | `ios/Tests/` (`ComapeoCore-Package` test target) |
+| JVM unit / Android instrumented (3–4) | module's `android/src/test/` + `android/src/androidTest/`, plus the example-app suites injected from `apps/example/tests/android/` |
+| iOS integration (5) | `apps/example/tests/ios/` (re-injected into the prebuilt example app by `with-ios-tests`) |
+| e2e (7) | `apps/e2e/src/tests/` (the in-app suite) + `maestro/e2e.yaml` (the driving flow) |
 
-> `apps/example/`'s `ios/` and `android/` trees are gitignored and regenerated
-> by `expo prebuild`; the test files under `apps/example/tests/` are the source
-> of truth and get re-injected on prebuild.
+> `apps/example` and `apps/e2e`'s `ios/`/`android/` trees are gitignored and
+> regenerated by `expo prebuild`; the test files under `apps/example/tests/` are
+> the source of truth and get re-injected on prebuild.
 
 ---
 
@@ -103,24 +142,48 @@ The test source lives next to what it tests:
 | [`lint.yml`](../.github/workflows/lint.yml) | `pull_request`, `merge_group` | `Lint & Unit Tests` | Layer 1 |
 | [`android-tests.yml`](../.github/workflows/android-tests.yml) | `pull_request`, `merge_group`, `workflow_dispatch` | `JVM Unit Tests`, `Instrumented Tests (30)` | Layers 3–4 |
 | [`ios-tests.yml`](../.github/workflows/ios-tests.yml) | `pull_request`, `merge_group`, `workflow_dispatch` | `Swift Package Tests (macOS)`, `Integration Tests (Example App)`, `iOS Device Build (…)` | Layers 2, 5–6 |
-| [`e2e-tests.yml`](../.github/workflows/e2e-tests.yml) | `merge_group`, `workflow_dispatch`, `pull_request` (internal) | `e2e / Gate` (+ nested build/run jobs) | Layer 7, internal/trusted path |
-| [`e2e-trusted.yml`](../.github/workflows/e2e-trusted.yml) | `pull_request_target: [labeled, synchronize]` | `e2e / Gate` (+ nested) | Layer 7, Dependabot/fork path |
-| [`e2e-reusable.yml`](../.github/workflows/e2e-reusable.yml) | `workflow_call` | (defines the e2e jobs) | Shared body for the two callers above |
+| [`e2e-tests.yml`](../.github/workflows/e2e-tests.yml) | `merge_group`, `workflow_dispatch`, `pull_request` (internal) | one `e2e` job → calls `e2e-reusable.yml` | Layer 7, internal/trusted path |
+| [`e2e-trusted.yml`](../.github/workflows/e2e-trusted.yml) | `pull_request_target: [labeled, synchronize]` | `e2e` → `e2e-reusable.yml`, plus `remove-label` + `reset-on-push` (label hygiene) | Layer 7, Dependabot/fork path |
+| [`e2e-reusable.yml`](../.github/workflows/e2e-reusable.yml) | `workflow_call` | the e2e jobs ([§3.1](#31-the-e2e-jobs)) | Shared body for the two callers above |
 | [`pr-title.yml`](../.github/workflows/pr-title.yml) | `pull_request_target` | `Lint conventional title`, `Apply changelog label` | Conventional-Commits title lint + changelog label |
 | [`release.yml`](../.github/workflows/release.yml) | `workflow_dispatch`, `pull_request: [closed]` | `release` | Two-phase npm release (see CONTRIBUTING.md) |
 
 Plus [`dependabot.yml`](../.github/dependabot.yml) (config, not a workflow):
 opens dependency PRs with a 3-day cooldown.
 
-Two things to notice in that table:
+Two things to notice:
 
 1. **Every test workflow also triggers on `merge_group`.** That's not redundant
-   — it's required, see §4.
+   — it's required, see [§4](#4-the-merge-queue-and-required-checks).
 2. **The e2e jobs live in `e2e-reusable.yml`, called from two places.**
    `e2e-tests.yml` handles internal-branch PRs and the merge queue (secrets
    available); `e2e-trusted.yml` handles Dependabot/fork PRs behind the
-   `safe-to-test` label (§6). Factoring them out means the path/label gating and
-   the gate job are defined once and both callers honour them.
+   `safe-to-test` label ([§6](#6-secrets-and-the-trust-boundary)). Factoring them
+   out means the path/label gating and the gate job are defined once and both
+   callers honour them.
+
+### 3.1 The e2e jobs
+
+Both callers invoke `e2e-reusable.yml` from a job named `e2e`, so its jobs
+surface as nested check contexts `e2e / <job name>`. The jobs (in dependency
+order):
+
+| Job (`name`) | Holds secrets? | Runs PR code? | What it does |
+|---|---|---|---|
+| `changes` (Detect relevant changes) | no | no (lists filenames via API) | Decides `run_e2e` ([§5](#5-when-the-expensive-e2e-runs)) |
+| `build-android` (Build (Android)) | **no** | **yes** | Builds the `apps/e2e` APK |
+| `build-ios` (Build (iOS)) | **no** | **yes** | Builds the `apps/e2e` IPA |
+| `upload-android` (Upload Android app) | **yes** | no | Uploads the APK to BrowserStack |
+| `upload-ios` (Upload iOS app) | **yes** | no | Uploads the IPA to BrowserStack |
+| `upload-test-suite` (Upload test suite) | **yes** | no | Zips + uploads `maestro/e2e.yaml` |
+| `test-android` (Run tests (Android)) | **yes** | no (action from base ref) | Triggers + polls the Android device run |
+| `test-ios` (Run tests (iOS)) | **yes** | no (action from base ref) | Triggers + polls the iOS device run |
+| `gate` (Gate) | no | no | The single required check — always reports ([§4.2](#42-skipping-a-required-check-without-leaving-it-pending)) |
+
+The "holds secrets / runs PR code" split is the trust boundary —
+[§6.2](#62-the-reusable-workflow-keeps-code-and-secrets-apart) explains why the
+build jobs (which run untrusted code) and the upload/test jobs (which hold the
+BrowserStack secrets) are never the same job.
 
 ---
 
@@ -156,7 +219,8 @@ The fix used for the e2e suite (issue
 [#142](https://github.com/digidem/comapeo-core-react-native/pull/142)) is a
 single **gate job** that *always reports*:
 
-- A `changes` job decides whether the expensive jobs should run (§5).
+- A `changes` job decides whether the expensive jobs should run
+  ([§5](#5-when-the-expensive-e2e-runs)).
 - The build/upload/test jobs are gated on that decision and skip when it's
   false.
 - A final **`gate` job** (`needs:` every e2e job, `if: always()`) passes when the
@@ -173,8 +237,9 @@ stuck pending. This also collapses what used to be five nested required checks
 > *skipped* required check as *passing*. So skipping the gate would let a PR
 > merge without the suite ever running. The gate is therefore never skipped — it
 > runs and explicitly decides pass/fail. The trust path relies on the same
-> distinction (§6): for an untrusted PR the gate is *absent*, not *skipped*, so
-> the PR stays blocked until a maintainer approves it.
+> distinction ([§6](#6-secrets-and-the-trust-boundary)): for an untrusted PR the
+> gate is *absent*, not *skipped*, so the PR stays blocked until a maintainer
+> approves it.
 
 > **Ruleset change required for the gate.** Switching the required check from the
 > five nested contexts to `e2e / Gate` is an admin-only edit to the branch
@@ -227,7 +292,7 @@ pre-queue without a label.
 | Label | Meaning | Who/what consumes it |
 |---|---|---|
 | `run-e2e` | Run the full e2e on this internal PR (otherwise it runs only in the queue) | `e2e-tests.yml` via the `changes` job |
-| `safe-to-test` | Maintainer reviewed an untrusted (Dependabot/fork) diff — OK to build it with secrets | `e2e-trusted.yml` (§6) |
+| `safe-to-test` | Maintainer reviewed an untrusted (Dependabot/fork) diff — OK to build it with secrets | `e2e-trusted.yml` ([§6](#6-secrets-and-the-trust-boundary)) |
 
 ---
 
@@ -243,9 +308,10 @@ complements — exactly one runs for any given PR:
 - **Dependabot / forks** → `e2e-trusted.yml` on `pull_request_target`, gated on
   the **`safe-to-test`** label. `pull_request_target` runs in the **base** repo's
   context (secrets available) but checks out the **base** workflow definitions,
-  so a PR can't rewrite what runs. The label is removed after each run and on
-  every new push (`synchronize`), so an approval can never outlive the exact diff
-  it covered. Maintainers review the diff — including the Socket.dev
+  so a PR can't rewrite what runs. Two helper jobs keep the approval honest:
+  `remove-label` strips `safe-to-test` after each run, and `reset-on-push` strips
+  it on every new commit (`synchronize`) — so an approval can never outlive the
+  exact diff it covered. Maintainers review the diff — including the Socket.dev
   supply-chain report — before adding it.
 
 The `if:` trust gate in `e2e-tests.yml` and the untrusted gate in
@@ -258,13 +324,14 @@ For an untrusted PR, `e2e-tests.yml`'s `e2e` job is gated out by the trust `if:`
 so the reusable workflow is never instantiated and `e2e / Gate` is **absent** on
 the PR head — the required check has nothing to satisfy it, so the PR is blocked
 until a maintainer adds `safe-to-test` and `e2e-trusted.yml` produces the gate.
-This depends on the absent-vs-skipped distinction from §4.2: a job-level skip
+This depends on the absent-vs-skipped distinction from
+[§4.2](#42-skipping-a-required-check-without-leaving-it-pending): a job-level skip
 would report *skipped* = *passing* and let untrusted code merge unreviewed.
 
 ### 6.2 The reusable workflow keeps code and secrets apart
 
-Within `e2e-reusable.yml` the jobs are split so untrusted code execution and the
-secrets never share a runner:
+Within `e2e-reusable.yml` the jobs ([§3.1](#31-the-e2e-jobs)) are split so
+untrusted code execution and the secrets never share a runner:
 
 - **Build jobs** check out the PR head and execute untrusted code (npm install,
   Gradle, `expo prebuild`, `xcodebuild`) but hold **no secrets**. They emit the
@@ -283,22 +350,25 @@ filenames via the API (no checkout), so it's safe on the trusted path too.
 
 ## 7. The BrowserStack e2e, end to end
 
-The device run is orchestrated by `e2e-reusable.yml` plus the
+The device run is orchestrated by `e2e-reusable.yml` ([§3.1](#31-the-e2e-jobs))
+plus the
 [`run-browserstack-maestro`](../.github/actions/run-browserstack-maestro) action:
 
 1. **Build** the e2e Expo app (`apps/e2e`) per platform → `.apk` / `.ipa`
-   artifact (the build jobs, §6.2).
-2. **Upload** the app binary to BrowserStack and the Maestro flow
-   (`maestro/e2e.yaml`, zipped) to the BrowserStack Maestro v2 test-suite
-   endpoint; capture the returned `bs://…` URLs.
-3. **Run** via the composite action: trigger a Maestro build against a small
-   device matrix, poll every 30 s until a terminal status, and on cancellation
-   stop the BrowserStack build.
+   artifact (`build-android` / `build-ios`).
+2. **Upload** the app binary to BrowserStack (`upload-android` / `upload-ios`)
+   and the Maestro flow (`maestro/e2e.yaml`, zipped) to the BrowserStack Maestro
+   v2 test-suite endpoint (`upload-test-suite`); capture the returned `bs://…`
+   URLs.
+3. **Run** via the composite action (`test-android` / `test-ios`): trigger a
+   Maestro build against a small device matrix, poll every 30 s until a terminal
+   status, and on cancellation stop the BrowserStack build.
 
 The app harness and flow are deliberately thin. `apps/e2e` is an Expo app whose
 UI exposes a **Run tests** button and result testIDs; the actual assertions run
-*in-app* (against the embedded backend). `maestro/e2e.yaml` just drives the UI
-and reads the verdict:
+*in-app* (`apps/e2e/src/tests/`, against the embedded backend — see
+[§2.1](#21-the-two-test-apps)). `maestro/e2e.yaml` just drives the UI and reads
+the verdict:
 
 ```yaml
 - launchApp: { clearState: true }
@@ -353,6 +423,11 @@ cd ios && swift test   # layer 2 — Swift package tests (macOS, no simulator)
 Run at least `npm run lint` and `npm run test` before opening a PR. The native
 and device layers run in CI; reproduce them locally only when iterating on
 platform-specific code.
+
+> The root `open:ios` / `open:android` package scripts point at `example/ios` /
+> `example/android`, which no longer exist (the app moved to `apps/example/`).
+> They're stale and need fixing — another instance of docs/tooling lagging the
+> actual layout.
 
 ---
 
