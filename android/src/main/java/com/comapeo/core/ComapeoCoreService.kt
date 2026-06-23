@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
@@ -40,6 +41,16 @@ class ComapeoCoreService : Service() {
          *  reuses the same process and creates a new instance. */
         @Volatile
         private var activeInstanceCount = 0
+
+        /** The runtime gate for the FGS notification on API 33+. Below 33
+         *  `checkSelfPermission` reports the manifest-declared permission as
+         *  granted, so this returns `true` without a runtime grant. Pulled
+         *  into the companion as a testable seam (see `NotificationPermissionTest`). */
+        internal fun hasPostNotificationsPermission(context: Context): Boolean =
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
     }
 
     override fun onCreate() {
@@ -200,7 +211,7 @@ class ComapeoCoreService : Service() {
         // so a missing grant degrades gracefully instead of crashing. See
         // docs/ForegroundService.md.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            !hasPostNotificationsPermission()
+            !hasPostNotificationsPermission(this)
         ) {
             logCrumb(
                 SentryCategories.FGS,
@@ -238,12 +249,6 @@ class ComapeoCoreService : Service() {
         nodeJSService.start(nodeJSServiceCallback)
         isServiceStarted = true
     }
-
-    private fun hasPostNotificationsPermission(): Boolean =
-        ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.POST_NOTIFICATIONS,
-        ) == PackageManager.PERMISSION_GRANTED
 
     private fun stopService() {
         log("Stopping the foreground service")

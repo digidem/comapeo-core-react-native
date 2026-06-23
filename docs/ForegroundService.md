@@ -60,6 +60,11 @@ interchangeable with permissions from `expo-camera`, `expo-location`, etc. On
 Android < 13 and on iOS they resolve as `granted` without showing a dialog, so
 host code can call them unconditionally without branching on platform.
 
+`POST_NOTIFICATIONS` is a single app-global permission, so if your app already
+requests it through `expo-notifications` (or any other permissions library)
+you don't need these helpers — they exist so you don't have to pull in
+`expo-notifications` solely to grant the foreground-service notification.
+
 **Graceful degradation.** Starting the service does **not** require the
 permission. If it's missing, the service still starts; it just runs without a
 visible notification and may be deprioritised by the system. The service logs

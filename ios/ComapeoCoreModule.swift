@@ -121,7 +121,9 @@ public class ComapeoCoreModule: Module {
         }
     }
 
-    private static let grantedPermissionResponse: [String: Any] = [
+    // Testable seam: the constant value both notification AsyncFunctions
+    // resolve. iOS has no FGS runtime gate, so it's always `granted`.
+    static let grantedPermissionResponse: [String: Any] = [
         "status": "granted",
         "granted": true,
         "canAskAgain": true,

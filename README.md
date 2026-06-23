@@ -118,6 +118,49 @@ key. Traffic to the public internet keeps the secure default. If your
 app manages its own `networkSecurityConfig` or App Transport Security
 settings, make sure cleartext to loopback stays allowed.
 
+# Notification permission (Android 13+)
+
+The foreground service posts an ongoing notification so the user can see the
+backend is running. On Android 13+ (API level 33) posting it requires the
+runtime `POST_NOTIFICATIONS` grant; without it the system **suppresses** the
+notification, which lets Android deprioritise or kill the service sooner. The
+module declares the permission and exposes check/request helpers, so you don't
+have to add `expo-notifications` just to grant the foreground-service
+notification:
+
+```ts
+import {
+  getNotificationPermissionsAsync,
+  requestNotificationPermissionsAsync,
+} from "@comapeo/core-react-native";
+
+// Check without prompting.
+const current = await getNotificationPermissionsAsync();
+
+// Prompt only if we still can.
+if (!current.granted && current.canAskAgain) {
+  const result = await requestNotificationPermissionsAsync();
+  // result.canAskAgain === false → user picked "Don't ask again";
+  //   show your own rationale and deep-link them to app settings.
+}
+```
+
+Both resolve an expo-style `PermissionResponse`
+(`{ status, granted, canAskAgain, expires }`), interchangeable with permissions
+from `expo-camera`, `expo-location`, etc. On Android < 13 and on iOS they
+resolve as `granted` without a dialog, so host code can call them
+unconditionally without branching on platform.
+
+**The module never prompts on its own.** You decide when to ask and own the UX
+around it — the rationale copy and the "open settings" fallback once
+`canAskAgain` is `false`. Starting the service does **not** require the grant:
+if it's missing, the service still starts and degrades gracefully (no visible
+notification, possible deprioritisation) rather than failing. If your app
+already requests `POST_NOTIFICATIONS` through `expo-notifications`, you don't
+need these helpers. See
+[`docs/ForegroundService.md`](docs/ForegroundService.md) for the full
+rationale.
+
 # Default project config
 
 New projects are created with no presets/categories unless you supply a
