@@ -26,6 +26,7 @@ final class MockBackend {
     /// Set when the service sends `{"type":"shutdown"}` after the handshake.
     private(set) var receivedShutdown = false
     private var handshakeComplete = DispatchSemaphore(value: 0)
+    private let shutdownObserved = DispatchSemaphore(value: 0)
 
     init(controlSocketPath: String) {
         self.server = MockNodeServer(socketPath: controlSocketPath)
@@ -50,6 +51,15 @@ final class MockBackend {
     @discardableResult
     func waitForHandshake(timeout: TimeInterval = 5) -> Bool {
         return handshakeComplete.wait(timeout: .now() + timeout) == .success
+    }
+
+    /// Blocks until the post-handshake shutdown frame has been read on the
+    /// background loop, or `timeout` elapses. Prefer this over reading
+    /// `receivedShutdown` directly — the flag is set on `queue`, so peeking it
+    /// races the read loop (and has no cross-thread memory barrier).
+    @discardableResult
+    func waitForShutdown(timeout: TimeInterval = 5) -> Bool {
+        return shutdownObserved.wait(timeout: .now() + timeout) == .success
     }
 
     /// Sends a raw frame string on the connected client socket. Tests use
@@ -125,6 +135,7 @@ final class MockBackend {
                 lock.lock()
                 receivedShutdown = true
                 lock.unlock()
+                shutdownObserved.signal()
                 MockNodeServer.sendFramedMessage(fd: fd, message: #"{"type":"stopping"}"#)
                 return
             }
