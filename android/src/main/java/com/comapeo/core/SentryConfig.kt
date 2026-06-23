@@ -122,6 +122,15 @@ data class SentryConfig(
             )
         }
 
+        /**
+         * Single `<application>` meta-data string, or null if absent. `get(...)?.toString()`
+         * preserves the wire value where Android's parser coerced `"true"`/`"1.0"` to a
+         * non-String type (see [loadFromManifest]).
+         */
+        @JvmStatic
+        fun readApplicationMetaDataString(context: Context, name: String): String? =
+            readApplicationMetaData(context)?.get(name)?.toString()
+
         private fun readApplicationMetaData(context: Context): Bundle? {
             return try {
                 if (Build.VERSION.SDK_INT >= 33) {

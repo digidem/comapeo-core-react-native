@@ -145,6 +145,25 @@ If you later **remove** `defaultConfig` after having set it, run a clean
 prebuild (`expo prebuild --clean`) so the bundled file is dropped from the
 iOS Xcode project; a non-clean prebuild leaves the stale reference behind.
 
+# Online map style
+
+Maps fall back to an online style when no offline map is available. The
+default is MapLibre's demo tiles (`https://demotiles.maplibre.org/style.json`).
+Override it by passing `defaultOnlineStyleUrl` to the Expo config plugin:
+
+```js
+// app.config.js / app.json plugins
+[
+  "@comapeo/core-react-native",
+  {
+    defaultOnlineStyleUrl: "https://example.com/style.json",
+  },
+]
+```
+
+Omit it to keep the default. The value is baked in at prebuild, so changing
+it requires a new prebuild + build.
+
 # Optional: Sentry integration
 
 This module can forward its native-side and JS-side lifecycle events

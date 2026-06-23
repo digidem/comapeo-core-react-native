@@ -18,6 +18,10 @@ name: E2E (reusable)
 # pull_request_target this file's body is also read from the base branch, so a PR
 # cannot alter the job steps. `cache_key_prefix` namespaces the build cache for
 # untrusted PRs so a labeled PR can't poison the shared (base-scope) cache.
+#
+# The `changes` path-detection job only lists the PR's filenames via the API
+# (no checkout, no PR code execution) and holds no secrets, so it's safe on the
+# pull_request_target path.
 
 on:
   workflow_call:
@@ -40,8 +44,87 @@ env:
   NODEJS_MOBILE_VERSION: v18.20.4
 
 jobs:
+  # Decide whether the expensive build + paid BrowserStack device jobs run.
+  # The full run happens in the merge queue (merge_group) before a PR lands, on
+  # manual dispatch, or on a PR carrying the `run-e2e` label — a plain PR defers
+  # to the queue. Docs/config-only changes skip on every event. The `gate` job
+  # always reports, so skipping here never leaves the required check pending.
+  changes:
+    name: Detect relevant changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run_e2e: ${{ steps.classify.outputs.run_e2e }}
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        id: classify
+        with:
+          script: |
+            const ev = context.eventName;
+            // Manual dispatch is an explicit request — run unconditionally.
+            if (ev === 'workflow_dispatch') {
+              core.info('workflow_dispatch: running e2e.');
+              return core.setOutput('run_e2e', 'true');
+            }
+
+            // Changed files for the current event — read-only, never checks out
+            // or runs PR code. Fail safe to running e2e if the lookup fails.
+            let names;
+            try {
+              if (ev === 'merge_group') {
+                const { base_sha, head_sha } = context.payload.merge_group;
+                const cmp = await github.rest.repos.compareCommitsWithBasehead({
+                  ...context.repo,
+                  basehead: `${base_sha}...${head_sha}`,
+                });
+                names = (cmp.data.files ?? []).map((f) => f.filename);
+              } else {
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  ...context.repo,
+                  pull_number: context.payload.pull_request.number,
+                });
+                names = files.map((f) => f.filename);
+              }
+            } catch (err) {
+              core.warning(`Could not list changed files (${err.message}) — running e2e to be safe.`);
+              return core.setOutput('run_e2e', 'true');
+            }
+            core.info(`Changed files:\n${names.join('\n')}`);
+
+            // A change to the e2e machinery must run e2e so it's self-tested,
+            // even though it lives under the otherwise-safe .github/.
+            const isMachinery = (f) =>
+              /^\.github\/workflows\/e2e-[^/]*\.yml$/.test(f) ||
+              f.startsWith('.github/actions/run-browserstack-maestro/');
+            // Safe = can't affect runtime: docs, license, editor dotfiles, other
+            // .github config. Everything else (src, android, ios, backend, apps,
+            // scripts, maestro, package*.json) is code.
+            const isSafe = (f) =>
+              f.endsWith('.md') ||
+              f.startsWith('docs/') ||
+              f === 'LICENSE' ||
+              ['.gitignore', '.gitattributes', '.editorconfig'].includes(f) ||
+              f.startsWith('.github/');
+            const codeChanged =
+              names.length === 0 || names.some((f) => isMachinery(f) || !isSafe(f));
+
+            // merge_group (the pre-merge gate) and pull_request_target (reached
+            // only after a maintainer added `safe-to-test`) run whenever code
+            // changed. A plain PR defers to the queue unless it carries `run-e2e`.
+            let runE2e = codeChanged;
+            if (ev === 'pull_request') {
+              const labels = (context.payload.pull_request.labels ?? []).map((l) => l.name);
+              runE2e = codeChanged && labels.includes('run-e2e');
+            }
+            core.info(`event=${ev} codeChanged=${codeChanged} run_e2e=${runE2e}`);
+            core.setOutput('run_e2e', String(runE2e));
+
   build-android:
     name: Build (Android)
+    needs: [changes]
+    if: needs.changes.outputs.run_e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -116,6 +199,8 @@ jobs:
 
   build-ios:
     name: Build (iOS)
+    needs: [changes]
+    if: needs.changes.outputs.run_e2e == 'true'
     runs-on: macos-26
     timeout-minutes: 15
     permissions:
@@ -284,6 +369,8 @@ jobs:
   # not the runner).
   upload-test-suite:
     name: Upload test suite
+    needs: [changes]
+    if: needs.changes.outputs.run_e2e == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -390,3 +477,61 @@ jobs:
             "iPhone 15-17",
             "iPhone 17-26"
             ]
+
+  # Single required status check for the whole e2e suite. Always reports, so a
+  # config-/docs-only PR (heavy jobs skipped) still satisfies the requirement
+  # instead of leaving five nested checks stuck pending. Passes when e2e was
+  # legitimately skipped or every e2e job succeeded; fails if any job failed or
+  # was cancelled, or if path detection itself failed (fail closed).
+  gate:
+    name: Gate
+    needs:
+      - changes
+      - build-android
+      - build-ios
+      - upload-android
+      - upload-ios
+      - upload-test-suite
+      - test-android
+      - test-ios
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Evaluate e2e outcome
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUN_E2E: ${{ needs.changes.outputs.run_e2e }}
+          BUILD_ANDROID: ${{ needs.build-android.result }}
+          BUILD_IOS: ${{ needs.build-ios.result }}
+          UPLOAD_ANDROID: ${{ needs.upload-android.result }}
+          UPLOAD_IOS: ${{ needs.upload-ios.result }}
+          UPLOAD_SUITE: ${{ needs.upload-test-suite.result }}
+          TEST_ANDROID: ${{ needs.test-android.result }}
+          TEST_IOS: ${{ needs.test-ios.result }}
+        run: |
+          set -euo pipefail
+          echo "changes=$CHANGES run_e2e=$RUN_E2E"
+          echo "build: android=$BUILD_ANDROID ios=$BUILD_IOS"
+          echo "upload: android=$UPLOAD_ANDROID ios=$UPLOAD_IOS suite=$UPLOAD_SUITE"
+          echo "test: android=$TEST_ANDROID ios=$TEST_IOS"
+
+          if [ "$CHANGES" != "success" ]; then
+            echo "Path detection did not succeed — failing closed." >&2
+            exit 1
+          fi
+
+          if [ "$RUN_E2E" != "true" ]; then
+            echo "No code paths changed — e2e build/device jobs skipped. Gate passes."
+            exit 0
+          fi
+
+          for r in "$BUILD_ANDROID" "$BUILD_IOS" "$UPLOAD_ANDROID" "$UPLOAD_IOS" \
+                   "$UPLOAD_SUITE" "$TEST_ANDROID" "$TEST_IOS"; do
+            if [ "$r" != "success" ]; then
+              echo "An e2e job did not succeed (result: $r). Gate fails." >&2
+              exit 1
+            fi
+          done
+
+          echo "All e2e jobs succeeded. Gate passes."

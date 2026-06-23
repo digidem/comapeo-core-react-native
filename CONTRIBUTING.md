@@ -66,7 +66,19 @@ invocations live in the CI workflows, which are the source of truth:
   and `scripts/run-instrumented-tests.sh` for a local emulator run.
 - End-to-end — [.github/workflows/e2e-tests.yml](.github/workflows/e2e-tests.yml).
 
-iOS e2e cannot run on a local simulator; it goes through BrowserStack.
+For fast local iteration you can run the e2e app on an iOS simulator directly:
+`cd apps/e2e && npx expo run:ios`. This signs with your Apple development team
+automatically, so the embedded Node backend's keychain access works and the
+in-app test harness runs on the simulator. To drive the suite with Maestro
+against that simulator, use [maestro/e2e.local.yaml](maestro/e2e.local.yaml)
+(`maestro test maestro/e2e.local.yaml`) — the dev-client variant of the CI flow.
+If the e2e app's Metro server isn't on the default port (e.g. another project is
+using it), start its own: `cd apps/e2e && npx expo start --port 8082`.
+
+CI runs iOS e2e on real devices through BrowserStack instead. That path builds
+an unsigned device archive (`CODE_SIGNING_ALLOWED=NO`) for upload — which is a
+device binary and cannot run on a simulator regardless of signing, so don't try
+to run the BrowserStack artifact locally; use `expo run:ios` for the simulator.
 
 ### The native suites and the merge queue
 
