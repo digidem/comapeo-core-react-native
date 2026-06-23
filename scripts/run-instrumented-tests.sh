@@ -14,10 +14,10 @@ set -euo pipefail
 #   - Node.js and npm (for building the example app)
 #
 # Usage:
-#   ./e2e/run-instrumented-tests.sh                           # run all tests
-#   ./e2e/run-instrumented-tests.sh --skip-build              # skip build
-#   ./e2e/run-instrumented-tests.sh --class NodeJSIPCTest     # single test class
-#   ./e2e/run-instrumented-tests.sh --unit-only               # JVM unit tests only (no device)
+#   ./scripts/run-instrumented-tests.sh                           # run all tests
+#   ./scripts/run-instrumented-tests.sh --skip-build              # skip build
+#   ./scripts/run-instrumented-tests.sh --class NodeJSIPCTest     # single test class
+#   ./scripts/run-instrumented-tests.sh --unit-only               # JVM unit tests only (no device)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

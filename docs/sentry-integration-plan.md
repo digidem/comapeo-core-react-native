@@ -900,7 +900,7 @@ hooks share the regex list.
     children. Metrics still recording in parallel.
   - Verify `.by_device` metric splits cleanly across two physical
     test devices (different `device_class`).
-- **Regression**: existing `e2e/run-instrumented-tests.sh` + Swift /
+- **Regression**: existing `scripts/run-instrumented-tests.sh` + Swift /
   Xcode test suites pass with all toggles off (Sentry inert).
 
 ### 11.10 Decisions
@@ -945,7 +945,7 @@ hooks share the regex list.
 
 ### Regression
 
-- Run the existing `e2e/run-instrumented-tests.sh` and the iOS
+- Run the existing `scripts/run-instrumented-tests.sh` and the iOS
   `swift test` / `xcodebuild test` suite with `initSentry` _not_
   called → no behaviour change.
 

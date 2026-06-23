@@ -386,20 +386,20 @@ can't be fetched — is treated as a real failure and never retried away. On eve
 failure it dumps the per-session report and the tail of each Maestro log so the
 actual cause is visible in the CI log.
 
-### 7.2 Local iteration
+### 7.2 Running the e2e suite locally
 
-- **Android**: run Maestro locally against an emulator. The
-  [`e2e/`](../e2e/) helper scripts (`run-e2e.sh`, `run-instrumented-tests.sh`)
-  build and drive a local run.
-- **iOS**: the e2e **cannot** run on a local simulator — the backend needs a
-  keychain entitlement the simulator can't grant, and the process crashes on
-  launch. iOS e2e iteration goes through BrowserStack (trigger via the API,
-  inspect Maestro screenshots / device logs).
+The BrowserStack run above is the CI path. To run the same `apps/e2e` suite on a
+local **Android** emulator:
 
-> The older [`e2e/README.md`](../e2e/README.md) predates the current layout
-> (it references `example/` rather than `apps/integration/`, Maestro Cloud rather
-> than BrowserStack, and an older socket name). Treat this document and the
-> workflow files as the source of truth until that README is refreshed.
+```bash
+cd apps/e2e && npm install && npx expo run:android && cd -  # build + install on a running emulator
+maestro test maestro/e2e.yaml                               # drive it with Maestro
+```
+
+**iOS can't run locally** — the backend needs a keychain entitlement the
+simulator can't grant, so the process crashes on launch. iOS e2e goes through
+BrowserStack only (trigger via the API; inspect the Maestro screenshots / device
+logs).
 
 ---
 
@@ -412,9 +412,11 @@ ones are in [`CONTRIBUTING.md`](../CONTRIBUTING.md). Quick reference:
 npm run lint      # layer 1 — ESLint
 npm run test      # layer 1 — JS unit tests
 cd ios && swift test   # layer 2 — Swift package tests (macOS, no simulator)
-./e2e/run-instrumented-tests.sh --unit-only   # layer 3 — JVM unit (no device)
-./e2e/run-instrumented-tests.sh               # layers 3–4 — instrumented (emulator)
+./scripts/run-instrumented-tests.sh --unit-only   # layer 3 — JVM unit (no device)
+./scripts/run-instrumented-tests.sh               # layers 3–4 — instrumented (emulator)
 ```
+
+The full e2e suite runs locally too — see [§7.2](#72-running-the-e2e-suite-locally).
 
 `npm run open:ios` / `npm run open:android` open the integration app in
 Xcode / Android Studio.
