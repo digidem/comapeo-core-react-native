@@ -248,17 +248,26 @@ async function withPhase(phase, fn) {
         // failures to getUrl() callers only.
         fastify.listen({ host: "127.0.0.1", port: 0 }).catch(() => {});
 
-        mapServer = createMapServer({
-          privateStorageDir,
-          rootKey,
-          defaultOnlineStyleUrl,
+        // Map server is non-critical: boot must still reach "ready" if it
+        // fails. Isolate construction *and* listen() inside one promise so any
+        // failure — a synchronous createMapServer() throw included — surfaces
+        // only to getBaseUrl() callers, never aborting the manager's boot or
+        // tripping the global unhandledRejection handler (which exits).
+        const mapServerListenPromise = Promise.resolve().then(() => {
+          mapServer = createMapServer({
+            privateStorageDir,
+            rootKey,
+            defaultOnlineStyleUrl,
+          });
+          return mapServer.listen();
         });
-        // Map server is non-critical: boot still reaches "ready" if it fails.
-        // Attach a no-op catch so a listen() rejection surfaces only to
-        // getBaseUrl() callers and never trips the global unhandledRejection
-        // handler (which exits the process).
-        const mapServerListenPromise = mapServer.listen();
-        mapServerListenPromise.catch(() => {});
+        mapServerListenPromise.catch((err) => {
+          sentry.captureFatal(
+            "map-server-init",
+            ensureError(err),
+            "create-map-server",
+          );
+        });
         /** @type {import("@comapeo/ipc/server.js").ComapeoServicesApi} */
         const comapeoServices = {
           mapServer: {
