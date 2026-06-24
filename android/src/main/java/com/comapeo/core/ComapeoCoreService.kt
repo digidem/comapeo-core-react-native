@@ -150,18 +150,20 @@ class ComapeoCoreService : Service() {
 
         when (intent?.action) {
             Actions.USER_FOREGROUND.name -> {
-                startService(serviceStartElapsedMs)
-                updateNotification(true)
+                if (startService(serviceStartElapsedMs)) updateNotification(true)
             }
 
             Actions.USER_BACKGROUND.name -> {
                 // A USER_BACKGROUND intent can cold-start this process (the FGS was
                 // killed, then the app backgrounded). We were still launched via
-                // startForegroundService, so we must promote within the deadline.
-                if (!isServiceStarted) {
-                    startService(serviceStartElapsedMs)
+                // startForegroundService, so we must promote within the deadline —
+                // unless the OS forbids a background start, in which case startService
+                // stops us and we skip the notification update.
+                if (isServiceStarted) {
+                    updateNotification(false)
+                } else if (startService(serviceStartElapsedMs)) {
+                    updateNotification(false)
                 }
-                updateNotification(false)
             }
 
             Actions.STOP.name -> {
@@ -174,8 +176,7 @@ class ComapeoCoreService : Service() {
                 val isAppInForeground = ProcessLifecycleOwner.get()
                     .lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
                 log("Service restarted by system - app in foreground: $isAppInForeground")
-                startService(serviceStartElapsedMs)
-                updateNotification(isAppInForeground)
+                if (startService(serviceStartElapsedMs)) updateNotification(isAppInForeground)
             }
 
             else -> log("Unknown action in received intent: ${intent.action}")
@@ -242,7 +243,9 @@ class ComapeoCoreService : Service() {
         }
     }
 
-    private fun startService(serviceStartElapsedMs: Long) {
+    /** @return true if the service is (or stays) promoted to the foreground; false if
+     *  a background-start restriction forced it to stop. */
+    private fun startService(serviceStartElapsedMs: Long): Boolean {
         log("Starting the foreground service")
         val notification = createNotification(true)
         // On API 33+ the FGS notification is suppressed without a runtime
@@ -283,8 +286,22 @@ class ComapeoCoreService : Service() {
                 level = "warning",
                 tags = mapOf(SentryTags.PHASE to "fgs-notification-permission"),
             )
+        } catch (e: IllegalStateException) {
+            // API 31+ ForegroundServiceStartNotAllowedException (an IllegalStateException,
+            // so the SecurityException catch above misses it): a background start outside
+            // the grace period, e.g. a USER_BACKGROUND intent that cold-starts this
+            // process. We can't promote, so stop cleanly instead of crashing the headless
+            // process — the next USER_FOREGROUND start will succeed.
+            logCapture(
+                SentryCategories.FGS,
+                "comapeo: startForeground not allowed from background: ${e.message}",
+                level = "warning",
+                tags = mapOf(SentryTags.PHASE to "fgs-start-not-allowed"),
+            )
+            stopService()
+            return false
         }
-        if (isServiceStarted) return
+        if (isServiceStarted) return true
 
         ensureBackendInitialized()
         if (serviceStartElapsedMs >= 0) {
@@ -293,6 +310,7 @@ class ComapeoCoreService : Service() {
         Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
         nodeJSService.start(nodeJSServiceCallback)
         isServiceStarted = true
+        return true
     }
 
     private fun stopService() {
