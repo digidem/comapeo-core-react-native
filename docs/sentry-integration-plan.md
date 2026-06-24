@@ -900,7 +900,7 @@ hooks share the regex list.
     children. Metrics still recording in parallel.
   - Verify `.by_device` metric splits cleanly across two physical
     test devices (different `device_class`).
-- **Regression**: existing `e2e/run-instrumented-tests.sh` + Swift /
+- **Regression**: existing `scripts/run-instrumented-tests.sh` + Swift /
   Xcode test suites pass with all toggles off (Sentry inert).
 
 ### 11.10 Decisions
@@ -945,7 +945,7 @@ hooks share the regex list.
 
 ### Regression
 
-- Run the existing `e2e/run-instrumented-tests.sh` and the iOS
+- Run the existing `scripts/run-instrumented-tests.sh` and the iOS
   `swift test` / `xcodebuild test` suite with `initSentry` _not_
   called → no behaviour change.
 
@@ -961,7 +961,7 @@ hooks share the regex list.
 | `release` source                      | Default to `versionName + "+" + versionCode` (Android) / `CFBundleShortVersionString + "+" + CFBundleVersion` (iOS). Successive EAS builds of the same marketing version produce distinct releases. Plugin override always wins.               |
 | Boot transaction sample rate          | Force 100% even when overall `tracesSampleRate` is low. Boot is once-per-process and high-value.                                                                                                                                               |
 | Bundle size strategy                  | Single bundle with rollup chunk-splitting — accept the disk cost. No dual-bundle build for v1.                                                                                                                                                  |
-| Plugin behaviour with no `sentry` arg | No-op silently. Treat absent meta-data / plist keys as Sentry off. Used by `apps/example/`.                                                                                                                                                    |
+| Plugin behaviour with no `sentry` arg | No-op silently. Treat absent meta-data / plist keys as Sentry off. Used by `apps/integration/`.                                                                                                                                                    |
 | Sourcemap upload                      | Consumer responsibility. Module ships `*.map` in npm package; consumer excludes from APK/IPA and runs `sentry-cli sourcemaps upload` against `node_modules/.../nodejs-project/` in their own CI with their own credentials.                    |
 | Toggle UI surface                     | Out of scope for this module. Module exposes `getDiagnosticsEnabled` / `setDiagnosticsEnabled` and `getCaptureApplicationData` / `setCaptureApplicationData` only; consumer builds the settings UI and the restart prompt.                     |
 | Capture-application-data default      | Per-environment, decided by consumer at build time via `captureApplicationDataDefault` plugin field. EAS env var pattern: default to `true` when `environment !== "production"`. Once user flips the switch their explicit choice wins.        |

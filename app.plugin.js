@@ -62,6 +62,12 @@ const ANDROID_KEYS = {
   backendModulesJson: "com.comapeo.core.backend.modules",
 };
 
+// Online map style URL the consuming app sets via `defaultOnlineStyleUrl`.
+// Read by native (NodeJSService.{kt,swift}) and forwarded to the backend as
+// the 5th argv positional; absent → backend falls back to its built-in URL.
+const ANDROID_MAP_STYLE_URL_KEY = "com.comapeo.core.map.defaultOnlineStyleUrl";
+const IOS_MAP_STYLE_URL_KEY = "ComapeoCoreDefaultOnlineStyleUrl";
+
 // Prefixed with `ComapeoCore` to avoid colliding with
 // `@sentry/react-native`'s own keys (`SentryDsn`, etc.).
 const IOS_KEYS = {
@@ -93,11 +99,20 @@ function withComapeoCore(config, props) {
   // when this prop is absent, new projects get no default config.
   config = withDefaultConfigAndroid(config, props?.defaultConfig);
   config = withDefaultConfigIos(config, props?.defaultConfig);
+  // Optional online map style URL. Absent → the backend uses its built-in
+  // default. Always passed through both mods so a `--no-clean` re-prebuild
+  // after removing the prop strips the stale value.
+  config = withDefaultOnlineStyleUrlAndroid(config, props?.defaultOnlineStyleUrl);
+  config = withDefaultOnlineStyleUrlIos(config, props?.defaultOnlineStyleUrl);
   // The embedded map server serves tiles over cleartext HTTP on
   // loopback; release builds block cleartext by default. Permit it
   // for localhost only, on both platforms.
   config = withMapServerCleartextAndroid(config);
   config = withMapServerCleartextIos(config);
+  // The embedded backend connects directly to peers on the local subnet;
+  // iOS gates that behind the Local Network prompt, so ship a usage
+  // description (overridable via `localNetworkPermission`). iOS only.
+  config = withLocalNetworkPermissionIos(config, props?.localNetworkPermission);
   return config;
 }
 
@@ -154,6 +169,28 @@ function withMapServerCleartextIos(config) {
     const ats = cfg.modResults.NSAppTransportSecurity || {};
     ats.NSAllowsLocalNetworking = true;
     cfg.modResults.NSAppTransportSecurity = ats;
+    return cfg;
+  });
+}
+
+const IOS_LOCAL_NETWORK_USAGE_KEY = "NSLocalNetworkUsageDescription";
+const DEFAULT_LOCAL_NETWORK_USAGE_DESCRIPTION =
+  "Connects to nearby devices on your local network to sync with other CoMapeo peers.";
+
+// iOS Local Network privacy is enforced at the socket layer, not the HTTP
+// stack — so unlike ATS/cleartext it reaches the Node thread, where the
+// embedded backend opens direct connections to peers on the local subnet
+// (hyperswarm). Without a usage description iOS denies those connections
+// with no prompt. The module owns this key; customise the wording via the
+// `localNetworkPermission` prop rather than setting the Info.plist key
+// separately. mDNS/Bonjour discovery and the matching `NSBonjourServices`
+// stay the app's concern — the module neither browses nor advertises.
+function withLocalNetworkPermissionIos(config, usageDescription) {
+  return withInfoPlist(config, (cfg) => {
+    cfg.modResults[IOS_LOCAL_NETWORK_USAGE_KEY] =
+      typeof usageDescription === "string"
+        ? usageDescription
+        : DEFAULT_LOCAL_NETWORK_USAGE_DESCRIPTION;
     return cfg;
   });
 }
@@ -246,6 +283,56 @@ function withDefaultConfigIos(config, defaultConfig) {
       isBuildFile: true,
       verbose: false,
     });
+    return cfg;
+  });
+}
+
+// Validate the consumer's `defaultOnlineStyleUrl` — a malformed URL should
+// fail prebuild loudly rather than silently ship a broken style. `null`
+// (prop absent) is allowed: native then forwards an empty slot and the
+// backend uses its built-in default.
+function normalizeStyleUrl(styleUrl) {
+  if (styleUrl == null) return undefined;
+  if (typeof styleUrl !== "string" || styleUrl.length === 0) {
+    throw new Error(
+      "@comapeo/core-react-native plugin: `defaultOnlineStyleUrl` must be a non-empty URL string",
+    );
+  }
+  let parsed;
+  try {
+    parsed = new globalThis.URL(styleUrl);
+  } catch {
+    throw new Error(
+      `@comapeo/core-react-native plugin: \`defaultOnlineStyleUrl\` is not a valid URL: ${styleUrl}`,
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `@comapeo/core-react-native plugin: \`defaultOnlineStyleUrl\` must be an http(s) URL: ${styleUrl}`,
+    );
+  }
+  return styleUrl;
+}
+
+function withDefaultOnlineStyleUrlAndroid(config, styleUrl) {
+  const url = normalizeStyleUrl(styleUrl);
+  return withAndroidManifest(config, (cfg) => {
+    const application = cfg.modResults.manifest.application?.[0];
+    if (!application) {
+      throw new Error(
+        "@comapeo/core-react-native plugin: AndroidManifest.xml has no <application> element",
+      );
+    }
+    application["meta-data"] = application["meta-data"] || [];
+    syncAndroidMetaData(application, ANDROID_MAP_STYLE_URL_KEY, url);
+    return cfg;
+  });
+}
+
+function withDefaultOnlineStyleUrlIos(config, styleUrl) {
+  const url = normalizeStyleUrl(styleUrl);
+  return withInfoPlist(config, (cfg) => {
+    setOrDelete(cfg.modResults, IOS_MAP_STYLE_URL_KEY, url);
     return cfg;
   });
 }

@@ -1,5 +1,12 @@
 # Build architecture plan
 
+> **Status: historical planning & decision record.** Phases 1–2 shipped; the
+> resulting system is documented as-built in [`BUILD.md`](./BUILD.md) — read that
+> for *how it works today*. This doc is retained for the rationale, the
+> alternatives weighed (static linking, the addon-load-interception survey, why
+> UDS), and the migration history. Where the two disagree, `BUILD.md` is current
+> (e.g. the addon filename separator is `__`, and the module set has changed).
+
 Plan for improving how `comapeo-core-react-native` builds, links, and loads
 native Node addons and backend JS. Companion doc:
 [bare-architecture.md](./bare-architecture.md) explains how Bare does this —

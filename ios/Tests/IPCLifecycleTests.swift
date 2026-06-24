@@ -125,14 +125,17 @@ final class IPCLifecycleTests: XCTestCase {
             stopReturned.fulfill()
         }
         wait(for: [stopping], timeout: 5)
+
+        // Wait for the backend's read loop to observe the shutdown frame before signalling
+        // exit; reading backend.receivedShutdown directly raced that background loop.
+        XCTAssertTrue(
+            backend.waitForShutdown(timeout: 5),
+            "MockBackend should observe the shutdown frame"
+        )
         signalNodeExit()
 
         wait(for: [stopped, stopReturned], timeout: 5)
         XCTAssertEqual(service.state, .stopped)
-        XCTAssertTrue(
-            backend.receivedShutdown,
-            "MockBackend should observe the shutdown frame"
-        )
     }
 
     /// Tests multiple message exchanges followed by graceful shutdown —

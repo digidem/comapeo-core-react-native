@@ -270,15 +270,19 @@ final class NodeJSServiceTests: XCTestCase {
         // Unexpected and landing the service in .error.
         wait(for: [stoppingExpectation], timeout: 5)
 
+        // stop() sends the shutdown frame before it blocks on node exit, so wait until the
+        // backend's background read loop has actually observed it — before signalling exit.
+        // Reading backend.receivedShutdown directly (after stop() returned) raced that loop.
+        XCTAssertTrue(
+            backend.waitForShutdown(timeout: 5),
+            "MockBackend should observe the shutdown frame on the control socket"
+        )
+
         // Signal the mock node process to exit so stop() can complete.
         signalExit()
 
         wait(for: [stopFinished], timeout: 5)
         XCTAssertEqual(service.state, .stopped)
-        XCTAssertTrue(
-            backend.receivedShutdown,
-            "MockBackend should observe the shutdown frame on the control socket"
-        )
     }
 
     func testStopTransitionsToStopped() throws {

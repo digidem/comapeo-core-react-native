@@ -65,4 +65,18 @@ final class ComapeoCoreModuleTests: XCTestCase {
         semaphore.signal()
         service.cleanup()
     }
+
+    func testNotificationPermissionResponseAlwaysGranted() {
+        // iOS has no foreground service and no POST_NOTIFICATIONS runtime
+        // gate, so both notification AsyncFunctions resolve this fixed
+        // response. The shape must stay assignable to the JS
+        // `NotificationPermissionResponse` type so host code can treat it
+        // interchangeably with Android's expo PermissionResponse.
+        let response = ComapeoCoreModule.grantedPermissionResponse
+
+        XCTAssertEqual(response["status"] as? String, "granted")
+        XCTAssertEqual(response["granted"] as? Bool, true)
+        XCTAssertEqual(response["canAskAgain"] as? Bool, true)
+        XCTAssertEqual(response["expires"] as? String, "never")
+    }
 }
