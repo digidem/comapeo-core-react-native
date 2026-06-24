@@ -271,9 +271,9 @@ class ComapeoCoreService : Service() {
         }
 
         // Promote to the foreground FIRST, before building the Node backend below —
-        // the startForeground deadline starts at the (cold-start) process fork.
-        // A missing notification grant can surface as a SecurityException on some
-        // OEM builds; catch it so the service keeps running deprioritised.
+        // the startForeground deadline starts at the (cold-start) process fork. If
+        // promotion fails, stop cleanly: running the backend on a service the OS never
+        // foregrounded risks a delayed ForegroundServiceDidNotStartInTimeException.
         try {
             ServiceCompat.startForeground(
                 this,
@@ -286,18 +286,23 @@ class ComapeoCoreService : Service() {
                 },
             )
         } catch (e: SecurityException) {
+            // Missing a foreground-service permission (e.g. the dataSync type) on this
+            // device: the FGS can't start at all, so the whole backend is down and won't
+            // recover by returning to the foreground — hence error, not warning.
             logCapture(
                 SentryCategories.FGS,
-                "comapeo: startForeground denied (POST_NOTIFICATIONS missing?): ${e.message}",
-                level = "warning",
-                tags = mapOf(SentryTags.PHASE to "fgs-notification-permission"),
+                "comapeo: startForeground denied (foreground-service permission): ${e.message}",
+                level = "error",
+                tags = mapOf(SentryTags.PHASE to "fgs-permission-denied"),
             )
+            stopService()
+            return false
         } catch (e: IllegalStateException) {
             // API 31+ ForegroundServiceStartNotAllowedException (an IllegalStateException,
             // so the SecurityException catch above misses it): a background start outside
             // the grace period, e.g. a USER_BACKGROUND intent that cold-starts this
-            // process. We can't promote, so stop cleanly instead of crashing the headless
-            // process — the next USER_FOREGROUND start will succeed.
+            // process. The next USER_FOREGROUND start will succeed — hence warning, not
+            // error. Stop cleanly instead of crashing the headless process.
             logCapture(
                 SentryCategories.FGS,
                 "comapeo: startForeground not allowed from background: ${e.message}",
