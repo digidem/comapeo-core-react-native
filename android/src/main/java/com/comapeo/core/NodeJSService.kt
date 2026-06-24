@@ -165,6 +165,11 @@ class NodeJSService(
     @Volatile
     var serviceStartElapsedMs: Long = -1L
 
+    /** `boot.kind` tag value, set by [ComapeoCoreService] from the start intent's
+     *  action (foreground / background / system restart). */
+    @Volatile
+    var bootKind: String = SentryTags.BOOT_KIND_SYSTEM_RESTART
+
     /** Sentry boot transaction handle. Opened in [start], closed in [applyAndEmit]
      *  on the first non-STARTING transition. `Any?` keeps io.sentry.* out of callers. */
     private val bootTx = AtomicReference<Any?>(null)
@@ -390,15 +395,11 @@ class NodeJSService(
         // Open boot transaction BEFORE STOPPED→STARTING — applyAndEmit's close-on-
         // terminal logic only fires when bootTx is non-null at transition time.
         // Backdate to startForegroundService so boot.fgs-launch sits at t=0.
-        // Absence of the stamp means a system restart without an intent — tag both
-        // populations separately.
+        // Absence of the stamp means a system restart without an intent — no span.
+        // boot.kind (set by the caller from the intent action) separates the
+        // foreground / background / system-restart populations.
         val backdatedStart =
             if (serviceStartElapsedMs >= 0) serviceStartElapsedMs else null
-        val bootKind = if (backdatedStart != null) {
-            SentryTags.BOOT_KIND_USER_FOREGROUND
-        } else {
-            SentryTags.BOOT_KIND_SYSTEM_RESTART
-        }
         val tx = SentryFgsBridge.startBootTransaction(backdatedStart, bootKind)
         bootTx.set(tx)
         if (tx != null && backdatedStart != null) {

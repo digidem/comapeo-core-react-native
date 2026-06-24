@@ -128,7 +128,7 @@ const PROCESS_GUARD_KOTLIN = `
     // ${PROCESS_GUARD_MARKER}: the :ComapeoCore backend process (Node foreground
     // service, no UI) must not run React Native init — it would ANR the service on
     // cold start. See com.comapeo.core.ComapeoProcessGuard.
-    if (com.comapeo.core.ComapeoProcessGuard.isBackendProcess()) {
+    if (com.comapeo.core.ComapeoProcessGuard.isBackendProcess(this)) {
       return
     }`;
 

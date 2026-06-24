@@ -84,7 +84,8 @@ class ComapeoCoreService : Service() {
         // guard would also have failed to skip RN init — capture it to measure
         // detection reliability in the field (notably the pre-28 /proc path).
         val detectedProcessName = ComapeoProcessGuard.detectProcessName()
-        if (detectedProcessName?.endsWith(ComapeoProcessGuard.PROCESS_SUFFIX) != true) {
+        val backendProcessName = ComapeoProcessGuard.backendProcessName(applicationContext)
+        if (detectedProcessName == null || detectedProcessName != backendProcessName) {
             logCapture(
                 SentryCategories.FGS,
                 "comapeo: backend process-name detection failed",
@@ -92,6 +93,7 @@ class ComapeoCoreService : Service() {
                 tags = mapOf(
                     SentryTags.PHASE to "process-detection",
                     SentryTags.PROCESS_DETECT_NAME to (detectedProcessName ?: "null"),
+                    SentryTags.PROCESS_DETECT_EXPECTED to (backendProcessName ?: "null"),
                     SentryTags.SDK_INT to Build.VERSION.SDK_INT.toString(),
                 ),
             )
@@ -150,7 +152,9 @@ class ComapeoCoreService : Service() {
 
         when (intent?.action) {
             Actions.USER_FOREGROUND.name -> {
-                if (startService(serviceStartElapsedMs)) updateNotification(true)
+                if (startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_USER_FOREGROUND)) {
+                    updateNotification(true)
+                }
             }
 
             Actions.USER_BACKGROUND.name -> {
@@ -161,7 +165,7 @@ class ComapeoCoreService : Service() {
                 // stops us and we skip the notification update.
                 if (isServiceStarted) {
                     updateNotification(false)
-                } else if (startService(serviceStartElapsedMs)) {
+                } else if (startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_USER_BACKGROUND)) {
                     updateNotification(false)
                 }
             }
@@ -176,7 +180,9 @@ class ComapeoCoreService : Service() {
                 val isAppInForeground = ProcessLifecycleOwner.get()
                     .lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
                 log("Service restarted by system - app in foreground: $isAppInForeground")
-                if (startService(serviceStartElapsedMs)) updateNotification(isAppInForeground)
+                if (startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_SYSTEM_RESTART)) {
+                    updateNotification(isAppInForeground)
+                }
             }
 
             else -> log("Unknown action in received intent: ${intent.action}")
@@ -245,7 +251,7 @@ class ComapeoCoreService : Service() {
 
     /** @return true if the service is (or stays) promoted to the foreground; false if
      *  a background-start restriction forced it to stop. */
-    private fun startService(serviceStartElapsedMs: Long): Boolean {
+    private fun startService(serviceStartElapsedMs: Long, bootKind: String): Boolean {
         log("Starting the foreground service")
         val notification = createNotification(true)
         // On API 33+ the FGS notification is suppressed without a runtime
@@ -307,6 +313,7 @@ class ComapeoCoreService : Service() {
         if (serviceStartElapsedMs >= 0) {
             nodeJSService.serviceStartElapsedMs = serviceStartElapsedMs
         }
+        nodeJSService.bootKind = bootKind
         Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
         nodeJSService.start(nodeJSServiceCallback)
         isServiceStarted = true
