@@ -285,29 +285,30 @@ class ComapeoCoreService : Service() {
                     0
                 },
             )
-        } catch (e: SecurityException) {
-            // Missing a foreground-service permission (e.g. the dataSync type) on this
-            // device: the FGS can't start at all, so the whole backend is down and won't
-            // recover by returning to the foreground — hence error, not warning.
+        } catch (e: Exception) {
+            // startForeground's failure modes aren't fully enumerable (the JVM has no
+            // checked exceptions, and OEM builds vary), and an uncaught throw here kills
+            // the headless process — so catch broadly. The try wraps only the framework
+            // call, so this can't mask our own logic. (Throwable/Error are deliberately
+            // not caught — those aren't recoverable.) Whatever the cause, we never
+            // foregrounded, so stop cleanly rather than run the backend on a service the
+            // OS won't treat as foreground (which risks a delayed
+            // ForegroundServiceDidNotStartInTimeException).
+            val (level, phase) = when (e) {
+                // API 31+ ForegroundServiceStartNotAllowedException: a background start
+                // outside the grace period (e.g. a USER_BACKGROUND cold start). The next
+                // USER_FOREGROUND start succeeds, so warning not error.
+                is IllegalStateException -> "warning" to "fgs-start-not-allowed"
+                // Missing a foreground-service permission (e.g. the dataSync type): the
+                // backend can't start at all and won't recover by foregrounding.
+                is SecurityException -> "error" to "fgs-permission-denied"
+                else -> "error" to "fgs-start-failed"
+            }
             logCapture(
                 SentryCategories.FGS,
-                "comapeo: startForeground denied (foreground-service permission): ${e.message}",
-                level = "error",
-                tags = mapOf(SentryTags.PHASE to "fgs-permission-denied"),
-            )
-            stopService()
-            return false
-        } catch (e: IllegalStateException) {
-            // API 31+ ForegroundServiceStartNotAllowedException (an IllegalStateException,
-            // so the SecurityException catch above misses it): a background start outside
-            // the grace period, e.g. a USER_BACKGROUND intent that cold-starts this
-            // process. The next USER_FOREGROUND start will succeed — hence warning, not
-            // error. Stop cleanly instead of crashing the headless process.
-            logCapture(
-                SentryCategories.FGS,
-                "comapeo: startForeground not allowed from background: ${e.message}",
-                level = "warning",
-                tags = mapOf(SentryTags.PHASE to "fgs-start-not-allowed"),
+                "comapeo: startForeground failed: ${e.message}",
+                level = level,
+                tags = mapOf(SentryTags.PHASE to phase),
             )
             stopService()
             return false
