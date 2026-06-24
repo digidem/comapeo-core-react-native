@@ -109,6 +109,10 @@ function withComapeoCore(config, props) {
   // for localhost only, on both platforms.
   config = withMapServerCleartextAndroid(config);
   config = withMapServerCleartextIos(config);
+  // The embedded backend connects directly to peers on the local subnet;
+  // iOS gates that behind the Local Network prompt, so ship a usage
+  // description (overridable via `localNetworkPermission`). iOS only.
+  config = withLocalNetworkPermissionIos(config, props?.localNetworkPermission);
   return config;
 }
 
@@ -165,6 +169,28 @@ function withMapServerCleartextIos(config) {
     const ats = cfg.modResults.NSAppTransportSecurity || {};
     ats.NSAllowsLocalNetworking = true;
     cfg.modResults.NSAppTransportSecurity = ats;
+    return cfg;
+  });
+}
+
+const IOS_LOCAL_NETWORK_USAGE_KEY = "NSLocalNetworkUsageDescription";
+const DEFAULT_LOCAL_NETWORK_USAGE_DESCRIPTION =
+  "Connects to nearby devices on your local network to sync with other CoMapeo peers.";
+
+// iOS Local Network privacy is enforced at the socket layer, not the HTTP
+// stack — so unlike ATS/cleartext it reaches the Node thread, where the
+// embedded backend opens direct connections to peers on the local subnet
+// (hyperswarm). Without a usage description iOS denies those connections
+// with no prompt. The module owns this key; customise the wording via the
+// `localNetworkPermission` prop rather than setting the Info.plist key
+// separately. mDNS/Bonjour discovery and the matching `NSBonjourServices`
+// stay the app's concern — the module neither browses nor advertises.
+function withLocalNetworkPermissionIos(config, usageDescription) {
+  return withInfoPlist(config, (cfg) => {
+    cfg.modResults[IOS_LOCAL_NETWORK_USAGE_KEY] =
+      typeof usageDescription === "string"
+        ? usageDescription
+        : DEFAULT_LOCAL_NETWORK_USAGE_DESCRIPTION;
     return cfg;
   });
 }
