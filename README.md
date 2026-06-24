@@ -245,12 +245,9 @@ to localise or reword the prompt:
 }];
 ```
 
-iOS gates local-network access at the socket layer — below App Transport
-Security — so it applies to the backend's peer connections even though they run
-in the Node thread, and the loopback cleartext exception does not cover it. The
-plugin owns the `NSLocalNetworkUsageDescription` key, so set the wording here
+The plugin owns the `NSLocalNetworkUsageDescription` key, so set the wording here
 rather than in your own Info.plist or it will be overwritten. mDNS/Bonjour
-discovery stays your app's responsibility: the module neither browses nor
+discovery stays your app's responsibility: this module currently neither browses nor
 advertises services, so if your app does, add the matching `NSBonjourServices`
 entries yourself. Android needs nothing — its cleartext/network-security config
 doesn't gate the Node thread's sockets, and there's no equivalent permission.
