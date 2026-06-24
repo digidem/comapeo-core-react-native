@@ -47,7 +47,7 @@ final class ComapeoCoreModuleTests: XCTestCase {
             privateStorageDir: (testDir as NSString).appendingPathComponent("private-storage"),
             nodeEntryPoint: mockEntry,
             resolveJSEntryPoint: { "/fake/index.mjs" },
-            rootKeyProvider: { Data(repeating: 0xAB, count: 16) }
+            rootKeyProvider: { RootKeyResult(key: Data(repeating: 0xAB, count: 16), generated: true) }
         )
 
         let starting = expectation(description: "mock service reached .starting")
