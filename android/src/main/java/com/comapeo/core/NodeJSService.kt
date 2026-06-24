@@ -463,6 +463,10 @@ class NodeJSService(
                     withContext(Dispatchers.IO) {
                         nodeProjectDir.deleteRecursively()
                         copyAssetFolder(NODEJS_PROJECT_DIRNAME, nodeProjectDir)
+                        // Mark only after the *whole* top-level copy finishes, so a kill
+                        // mid-extraction leaves the marker unset and the next boot re-copies
+                        // rather than spawning Node against a half-written bundle.
+                        updateLastKnownVersion()
                         logCrumb(
                             SentryCategories.BOOT,
                             "asset copy complete",
@@ -795,6 +799,5 @@ class NodeJSService(
                 }
             }
         }
-        updateLastKnownVersion()
     }
 }
