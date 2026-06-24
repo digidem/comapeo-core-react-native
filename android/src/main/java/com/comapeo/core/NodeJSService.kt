@@ -216,6 +216,11 @@ class NodeJSService(
         initialize(dataDir)
         serviceScope.launch {
             withContext(Dispatchers.IO) {
+                // Delete-before-bind: the socket filenames are a fixed cross-process
+                // contract (ComapeoCoreModule connects to the same paths), so cleanup
+                // is owned solely by this starting side. The shutdown paths must NOT
+                // unlink them — a dying generation could otherwise remove sockets a
+                // freshly cold-started process has already bound.
                 deleteSocketFiles()
             }
             // Drives the rootkey handshake: on `started` ship the init frame from
@@ -547,9 +552,10 @@ class NodeJSService(
                     )
                 }
                 callback.onError(e)
-            } finally {
-                deleteSocketFiles()
             }
+            // No socket cleanup here: the filenames are shared with a possible next
+            // cold-started generation, whose delete-before-bind in init() owns cleanup.
+            // Unlinking on the way out could remove sockets that generation just bound.
         }
     }
 
@@ -736,7 +742,9 @@ class NodeJSService(
 
     fun destroy() {
         logCrumb(SentryCategories.STATE, "destroy()")
-        deleteSocketFiles()
+        // No socket cleanup here (see start()'s finally): the next cold-started
+        // generation's init() deletes-before-bind, and unlinking the shared-name
+        // sockets on the way out could remove ones that generation already bound.
         nodeJob?.cancel()
         serviceScope.cancel()
         // Force a clean STOPPED (mirrors iOS `cleanup()`). lastError is preserved
