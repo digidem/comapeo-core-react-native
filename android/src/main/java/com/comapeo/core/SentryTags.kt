@@ -17,11 +17,19 @@ object SentryTags {
     const val SOURCE = "source"
     const val TIMEOUT = "timeout"
 
+    /** Reliability telemetry for the FGS process-name guard: the value detection
+     *  returned in the backend process (or `null`), the manifest-declared name it
+     *  was expected to match, and the device API level. */
+    const val PROCESS_DETECT_NAME = "comapeo.process_detect.name"
+    const val PROCESS_DETECT_EXPECTED = "comapeo.process_detect.expected"
+    const val SDK_INT = "comapeo.sdk_int"
+
     /**
-     * On `comapeo.boot` transactions: distinguishes activity-initiated starts
-     * (has `serviceStartElapsedMs` + `boot.fgs-launch` span) from system-driven
-     * FGS restarts (no intent, no stamp, no span). Filter the two populations
-     * separately — their timelines are structurally different.
+     * On `comapeo.boot` transactions: which start drove this boot. Activity
+     * foreground (onResume) and background (onPause, a cold start after the FGS
+     * was killed) both carry `serviceStartElapsedMs` + a `boot.fgs-launch` span;
+     * system-driven restarts have no intent, stamp, or span. Filter the three
+     * populations separately — their timelines are structurally different.
      */
     const val BOOT_KIND = "boot.kind"
 
@@ -52,7 +60,17 @@ object SentryTags {
 
     // boot.kind values
     const val BOOT_KIND_USER_FOREGROUND = "user-foreground"
+    const val BOOT_KIND_USER_BACKGROUND = "user-background"
     const val BOOT_KIND_SYSTEM_RESTART = "system-restart"
+
+    // phase values (comapeo.phase) — the closed set owned by the FGS lifecycle.
+    // (Some phases elsewhere are runtime data, e.g. forwarded from Node, and stay
+    // free-form strings.)
+    const val PHASE_PROCESS_DETECTION = "process-detection"
+    const val PHASE_SHUTDOWN_TIMEOUT = "shutdown-timeout"
+    const val PHASE_FGS_START_NOT_ALLOWED = "fgs-start-not-allowed"
+    const val PHASE_FGS_PERMISSION_DENIED = "fgs-permission-denied"
+    const val PHASE_FGS_START_FAILED = "fgs-start-failed"
 }
 
 /**

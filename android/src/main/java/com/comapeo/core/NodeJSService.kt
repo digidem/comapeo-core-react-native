@@ -165,6 +165,11 @@ class NodeJSService(
     @Volatile
     var serviceStartElapsedMs: Long = -1L
 
+    /** `boot.kind` tag value, set by [ComapeoCoreService] from the start intent's
+     *  action (foreground / background / system restart). */
+    @Volatile
+    var bootKind: String = SentryTags.BOOT_KIND_SYSTEM_RESTART
+
     /** Sentry boot transaction handle. Opened in [start], closed in [applyAndEmit]
      *  on the first non-STARTING transition. `Any?` keeps io.sentry.* out of callers. */
     private val bootTx = AtomicReference<Any?>(null)
@@ -211,6 +216,11 @@ class NodeJSService(
         initialize(dataDir)
         serviceScope.launch {
             withContext(Dispatchers.IO) {
+                // Delete-before-bind: the socket filenames are a fixed cross-process
+                // contract (ComapeoCoreModule connects to the same paths), so cleanup
+                // is owned solely by this starting side. The shutdown paths must NOT
+                // unlink them — a dying generation could otherwise remove sockets a
+                // freshly cold-started process has already bound.
                 deleteSocketFiles()
             }
             // Drives the rootkey handshake: on `started` ship the init frame from
@@ -390,15 +400,11 @@ class NodeJSService(
         // Open boot transaction BEFORE STOPPED→STARTING — applyAndEmit's close-on-
         // terminal logic only fires when bootTx is non-null at transition time.
         // Backdate to startForegroundService so boot.fgs-launch sits at t=0.
-        // Absence of the stamp means a system restart without an intent — tag both
-        // populations separately.
+        // Absence of the stamp means a system restart without an intent — no span.
+        // boot.kind (set by the caller from the intent action) separates the
+        // foreground / background / system-restart populations.
         val backdatedStart =
             if (serviceStartElapsedMs >= 0) serviceStartElapsedMs else null
-        val bootKind = if (backdatedStart != null) {
-            SentryTags.BOOT_KIND_USER_FOREGROUND
-        } else {
-            SentryTags.BOOT_KIND_SYSTEM_RESTART
-        }
         val tx = SentryFgsBridge.startBootTransaction(backdatedStart, bootKind)
         bootTx.set(tx)
         if (tx != null && backdatedStart != null) {
@@ -457,6 +463,10 @@ class NodeJSService(
                     withContext(Dispatchers.IO) {
                         nodeProjectDir.deleteRecursively()
                         copyAssetFolder(NODEJS_PROJECT_DIRNAME, nodeProjectDir)
+                        // Mark only after the *whole* top-level copy finishes, so a kill
+                        // mid-extraction leaves the marker unset and the next boot re-copies
+                        // rather than spawning Node against a half-written bundle.
+                        updateLastKnownVersion()
                         logCrumb(
                             SentryCategories.BOOT,
                             "asset copy complete",
@@ -546,9 +556,10 @@ class NodeJSService(
                     )
                 }
                 callback.onError(e)
-            } finally {
-                deleteSocketFiles()
             }
+            // No socket cleanup here: the filenames are shared with a possible next
+            // cold-started generation, whose delete-before-bind in init() owns cleanup.
+            // Unlinking on the way out could remove sockets that generation just bound.
         }
     }
 
@@ -735,7 +746,9 @@ class NodeJSService(
 
     fun destroy() {
         logCrumb(SentryCategories.STATE, "destroy()")
-        deleteSocketFiles()
+        // No socket cleanup here (see start()'s finally): the next cold-started
+        // generation's init() deletes-before-bind, and unlinking the shared-name
+        // sockets on the way out could remove ones that generation already bound.
         nodeJob?.cancel()
         serviceScope.cancel()
         // Force a clean STOPPED (mirrors iOS `cleanup()`). lastError is preserved
@@ -786,6 +799,5 @@ class NodeJSService(
                 }
             }
         }
-        updateLastKnownVersion()
     }
 }

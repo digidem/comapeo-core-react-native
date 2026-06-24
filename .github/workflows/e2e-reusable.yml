@@ -391,7 +391,7 @@ jobs:
         run: |
           ZIP_NAME="flows.zip"
 
-          zip -r "$ZIP_NAME" maestro/e2e.yaml
+          zip -r "$ZIP_NAME" maestro/e2e.yaml maestro/fgs-restart.yaml
 
           RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
             -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
