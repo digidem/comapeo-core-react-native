@@ -29,6 +29,10 @@ class ComapeoCoreService : Service() {
 
     private var isServiceStarted: Boolean = false
     private lateinit var nodeJSService: NodeJSService
+    // Snapshotted in onCreate, consumed when the Node backend is built lazily in
+    // ensureBackendInitialized() after startForeground().
+    private var effectiveSentryConfig: SentryConfig? = null
+    private var captureApplicationData: Boolean = false
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     companion object {
@@ -56,31 +60,28 @@ class ComapeoCoreService : Service() {
     override fun onCreate() {
         super.onCreate()
         activeInstanceCount++
-        // Keep onCreate cheap. On a cold start of the :ComapeoCore process this runs
-        // before onStartCommand can call startForeground(); doing Sentry init or
-        // loading libnode here would count against Android's startForeground deadline
-        // and ANR the process. The backend is built in ensureBackendInitialized(),
-        // called from startService() *after* we've promoted to the foreground.
-        logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
-    }
-
-    /** Builds the FGS Sentry bridge and the Node backend. Deferred out of onCreate
-     *  and called only after startForeground(), so its cost — notably loading
-     *  libnode via NodeJSService's static initializer — can't race the FGS deadline. */
-    private fun ensureBackendInitialized() {
-        if (::nodeJSService.isInitialized) return
 
         // Snapshot-at-boot: `diagnosticsEnabled = false` leaves the FGS bridge inert
         // AND zeroes the `--sentry*` argv passed to loader.mjs (backend short-circuits
         // its own Sentry.init on absent DSN). Restart-to-activate.
         val sentryConfig = SentryConfig.loadFromManifest(applicationContext)
         val prefs = ComapeoPrefs.open(applicationContext)
-        val effectiveConfig = if (prefs.readDiagnosticsEnabled()) sentryConfig else null
-        effectiveConfig?.let { cfg ->
+        effectiveSentryConfig = if (prefs.readDiagnosticsEnabled()) sentryConfig else null
+        captureApplicationData = prefs.readCaptureApplicationData()
+
+        // Init the Sentry bridge here, not after startForeground: breadcrumbs no-op
+        // until it's initialised, so deferring it would drop the pre-start trail.
+        // It's cheap relative to the Node backend (libnode load), which is the only
+        // part deferred to ensureBackendInitialized() to keep off the FGS deadline.
+        effectiveSentryConfig?.let { cfg ->
             SentryFgsBridge.init(applicationContext, cfg)
         }
 
-        val captureApplicationData = prefs.readCaptureApplicationData()
+        logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
+
+        // Report the previous FGS process's exit reason and stamp this run's start
+        // anchor. Must run for every process lifecycle — even one that never reaches
+        // startForeground — so it stays in onCreate. Async on IO; off the deadline.
         serviceScope.launch(Dispatchers.IO) {
             // Snapshot the previous FGS session's anchors before stamping
             // this run's — the decoder must see what was true at the old exit.
@@ -97,10 +98,16 @@ class ComapeoCoreService : Service() {
                 snapshot = snapshot,
             )
         }
+    }
 
+    /** Builds the Node backend. Deferred out of onCreate and called only after
+     *  startForeground(), so loading libnode via NodeJSService's static initializer
+     *  can't race the FGS deadline. */
+    private fun ensureBackendInitialized() {
+        if (::nodeJSService.isInitialized) return
         nodeJSService = NodeJSService(
             applicationContext,
-            sentryConfig = effectiveConfig,
+            sentryConfig = effectiveSentryConfig,
             captureApplicationData = captureApplicationData,
         )
     }
@@ -130,9 +137,13 @@ class ComapeoCoreService : Service() {
             }
 
             Actions.USER_BACKGROUND.name -> {
-                if (isServiceStarted) {
-                    updateNotification(false)
+                // A USER_BACKGROUND intent can cold-start this process (the FGS was
+                // killed, then the app backgrounded). We were still launched via
+                // startForegroundService, so we must promote within the deadline.
+                if (!isServiceStarted) {
+                    startService(serviceStartElapsedMs)
                 }
+                updateNotification(false)
             }
 
             Actions.STOP.name -> {

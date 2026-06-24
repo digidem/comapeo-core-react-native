@@ -145,12 +145,18 @@ const PROCESS_GUARD_KOTLIN = `
         if (android.os.Build.VERSION.SDK_INT >= 28) {
           android.app.Application.getProcessName()
         } else {
-          val comapeoBackendPid = android.os.Process.myPid()
-          (getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager)
-            ?.runningAppProcesses
-            ?.firstOrNull { it.pid == comapeoBackendPid }
-            ?.processName
+          // No getProcessName() before API 28. Read /proc/self/cmdline (the zygote
+          // sets it before onCreate) instead of ActivityManager.runningAppProcesses,
+          // which can return null mid-cold-start and is a main-thread binder IPC.
+          try {
+            java.io.File("/proc/self/cmdline").readText().takeWhile { it.code != 0 }.trim()
+          } catch (e: Exception) {
+            null
+          }
         }
+      // Null/unknown falls through to running RN init — the safe direction: skipping
+      // it in the main process would brick the app; a missed guard only risks a
+      // recoverable ANR in the headless backend process.
       if (comapeoBackendProcess?.endsWith("${COMAPEO_CORE_PROCESS_SUFFIX}") == true) {
         return
       }
