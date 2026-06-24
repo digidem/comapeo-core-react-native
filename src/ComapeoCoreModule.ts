@@ -21,7 +21,11 @@ import * as Sentry from "@sentry/react-native";
 // the import is safe.
 import { getTraceData, startNewTrace } from "@sentry/core";
 import type { SentryInitConfig } from "./sentry";
-import { rpcClientMetric, rpcStatusFor } from "./sentry-metrics";
+import {
+  rpcClientMetric,
+  rpcClientSendMetric,
+  rpcStatusFor,
+} from "./sentry-metrics";
 
 // `onRequestHook` request type derived from `createComapeoCoreClient` so
 // any hook-signature change up-stream is a compile error here. The
@@ -285,7 +289,10 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
 
     if (!sentryUp || !debugTracingEnabled) {
       const start = performance.now();
-      next(request)
+      const sendStart = performance.now();
+      const responsePromise = next(request);
+      rpcClientSendMetric(method, performance.now() - sendStart);
+      responsePromise
         .then(
           () => recordMetric(start, rpcStatusFor(null)),
           (error: unknown) => recordMetric(start, rpcStatusFor(error)),
@@ -330,10 +337,9 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
             // cold boot, `rn.send.syncMs` stays small while total stays high.
             const sendStart = performance.now();
             const responsePromise = next(tracedRequest);
-            span.setAttribute?.(
-              "rn.send.syncMs",
-              performance.now() - sendStart,
-            );
+            const sendMs = performance.now() - sendStart;
+            span.setAttribute?.("rn.send.syncMs", sendMs);
+            rpcClientSendMetric(method, sendMs);
             await responsePromise;
             span.setStatus?.({ code: 1, message: "ok" });
             recordMetric(start, rpcStatusFor(null));

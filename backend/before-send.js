@@ -9,20 +9,27 @@
 // they leave the FGS.
 //
 // False-positive trade-off (documented per §9b.1, mirrored from
-// `src/sentry-scrub.ts`): the 22-char base64 pattern matches rootKey /
-// project-id shapes but also any unrelated 22-char base64 token; we
+// `src/sentry-scrub.ts`): the base64 pattern redacts any isolated
+// base64url run of 22-or-more chars (rootKey at 22, keypair public keys
+// at 43, z-base-32 project ids at ~52) but also any unrelated long
+// base64 token (32-char Sentry event/trace ids, long path segments); we
 // accept the occasional over-redaction because leaking a real project
-// secret costs far more than a stray `[redacted]`. lat/lng markers
-// redact the trailing number. HTTP breadcrumb URLs reduce to host-only.
+// secret costs far more than a stray `[redacted]`. Object fields keyed
+// lat/lng/latitude/longitude are redacted regardless of value type.
+// lat/lng markers redact the trailing number. HTTP breadcrumb URLs
+// reduce to host-only.
 
 const REDACTED = "[redacted]";
 
 /** @type {RegExp[]} */
 const SCRUB_PATTERNS = [
   /\broot[_-]?key\b\s*["']?\s*[:=]\s*\S+/gi,
-  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/g,
+  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22,}(?![A-Za-z0-9_-])/g,
   /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
+
+/** Object keys whose value is a raw coordinate — redacted regardless of type. */
+const SENSITIVE_KEY_PATTERN = /^(lat|lng|latitude|longitude)$/i;
 
 const FORBIDDEN_METRIC_TAG_NAMES = new Set([
   "device.model",
@@ -42,7 +49,7 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
 
 /** @type {RegExp[]} */
 const FORBIDDEN_METRIC_VALUE_PATTERNS = [
-  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/,
+  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22,}(?![A-Za-z0-9_-])/,
   /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/i,
 ];
 
@@ -72,7 +79,9 @@ function scrubValue(value) {
   if (value && typeof value === "object") {
     /** @type {Record<string, unknown>} */
     const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = scrubValue(v);
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = SENSITIVE_KEY_PATTERN.test(k) ? REDACTED : scrubValue(v);
+    }
     return out;
   }
   return value;
@@ -80,9 +89,9 @@ function scrubValue(value) {
 
 /**
  * Walk every text field of a Sentry event and scrub it (§9b.1):
- * message, exception values, extra, contexts, breadcrumb messages +
- * data, span descriptions + attributes. HTTP breadcrumb URLs reduce to
- * host-only (§9b.5). Mutates and returns the event (event-processor
+ * message, exception values, extra, contexts, request, breadcrumb
+ * messages + data, span descriptions + attributes. HTTP breadcrumb and
+ * request URLs reduce to host-only (§9b.5). Mutates and returns the event (event-processor
  * contract). Returns the event (never drops here — call-site capture is
  * the real fix; this is the net).
  *
@@ -106,6 +115,19 @@ export function scrubEvent(event) {
   }
   if (event.contexts && typeof event.contexts === "object") {
     event.contexts = scrubValue(event.contexts);
+  }
+
+  if (event.request && typeof event.request === "object") {
+    const req = event.request;
+    if (typeof req.url === "string") req.url = scrubUrlToHost(req.url);
+    if (req.query_string != null) req.query_string = scrubValue(req.query_string);
+    if (req.headers && typeof req.headers === "object") {
+      req.headers = scrubValue(req.headers);
+    }
+    if (req.cookies && typeof req.cookies === "object") {
+      req.cookies = scrubValue(req.cookies);
+    }
+    if (req.data != null) req.data = scrubValue(req.data);
   }
 
   if (Array.isArray(event.breadcrumbs)) {

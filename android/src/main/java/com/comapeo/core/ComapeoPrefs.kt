@@ -188,6 +188,16 @@ internal class ComapeoPrefs(
  * auto-off (§11.5). [ComapeoPrefs.readDebugEnabled] runs before
  * `Sentry.init`, so the breadcrumb can't be added directly; it's drained
  * by [SentryFgsBridge.init] / RN init once the SDK is up.
+ *
+ * Known gap: the main app process and the `:ComapeoCore` FGS process are
+ * separate JVMs with separate `DebugAutoOff` statics. On the common
+ * cold-start ordering the main-process `sentryPreferences` read
+ * ([ComapeoCoreModule]) can win the 24h flip; the FGS read then sees
+ * `debug` already false and is a no-op, and the main process has no
+ * native-side drain — so the crumb queued there is currently dropped.
+ * The auto-off behaviour itself is unaffected; only the timeline marker
+ * is lost. Delivering it would need cross-process plumbing (expose the
+ * pending flag to JS and drain in the RN `initSentry` path).
  */
 internal object DebugAutoOff {
     @Volatile

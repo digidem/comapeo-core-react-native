@@ -287,3 +287,6 @@ export function storageBucket(bytes) {
   if (bytes < 1_000_000_000) return "100MB-1GB";
   return ">1GB";
 }
+
+/** Test-only seam: drive a forbidden NAME through the wrappers (§11.8). */
+export const __testInternals = { count, distribution, gauge };

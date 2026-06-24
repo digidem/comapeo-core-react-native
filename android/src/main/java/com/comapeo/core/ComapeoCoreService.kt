@@ -49,14 +49,21 @@ class ComapeoCoreService : Service() {
         val sentryConfig = SentryConfig.loadFromManifest(applicationContext)
         val prefs = ComapeoPrefs.open(applicationContext)
         val effectiveConfig = if (prefs.readDiagnosticsEnabled()) sentryConfig else null
+
+        // Read debug/usage prefs BEFORE SentryFgsBridge.init: readDebugEnabled()
+        // may queue the §11.5 auto_disabled breadcrumb, and init drains the
+        // DebugAutoOff queue (SentryFgsBridge.init → DebugAutoOff.consume). If
+        // init ran first the crumb would be lost on the launch that performed
+        // the auto-off. These reads are independent of the diagnostics gate.
+        val applicationUsageData = prefs.readApplicationUsageData()
+        val debug = prefs.readDebugEnabled()
+
         effectiveConfig?.let { cfg ->
             SentryFgsBridge.init(applicationContext, cfg)
         }
 
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
 
-        val applicationUsageData = prefs.readApplicationUsageData()
-        val debug = prefs.readDebugEnabled()
         val deviceTags = DeviceTags.compute(applicationContext)
         serviceScope.launch(Dispatchers.IO) {
             // Snapshot the previous FGS session's anchors before stamping

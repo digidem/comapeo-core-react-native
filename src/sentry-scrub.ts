@@ -11,14 +11,18 @@
  * buggy host (and our own mistakes) before a payload leaves the device.
  *
  * False-positive trade-off (documented per the §9b.1 requirement):
- *   - The 22-char base64 pattern matches CoMapeo rootKey / project-id
- *     shapes, but ALSO any unrelated 22-char base64 token (some JWT
- *     segments, git blob fragments, nonces). We accept the occasional
- *     over-redaction of a harmless token because the cost of leaking a
- *     real project secret is far higher than the cost of a `[redacted]`
- *     in a log line. Example matches:
+ *   - The base64 pattern redacts any isolated base64url run of 22-or-more
+ *     chars (16-byte rootKey at 22, 32-byte keypair public keys at 43,
+ *     z-base-32 project ids at ~52), but ALSO any unrelated long base64
+ *     token — including 32-char Sentry event/trace ids and long
+ *     path/filename segments. We accept the occasional over-redaction
+ *     because the cost of leaking a real project secret is far higher
+ *     than the cost of a `[redacted]` in a log line. Example matches:
  *       "aGVsbG8td29ybGQtMTIzNA"  → redacted (real rootkey shape)
  *       "bm90LWEtcmVhbC1rZXktMQ"  → redacted (harmless, false positive)
+ *   - Object fields whose KEY is lat/lng/latitude/longitude are redacted
+ *     regardless of value type — a numeric `{latitude: 12.3}` is the most
+ *     likely capture shape and value-only scrubbing would miss it.
  *   - `lat=`/`lng=`/`latitude:`/`longitude:` markers redact the numeric
  *     value that follows. A sentence like "latitude: unknown" is
  *     redacted to "latitude: [redacted]" — harmless over-redaction.
@@ -38,12 +42,16 @@ const REDACTED = "[redacted]";
 const SCRUB_PATTERNS: RegExp[] = [
   // Explicit rootKey markers (key=value, json, prose).
   /\broot[_-]?key\b\s*["']?\s*[:=]\s*\S+/gi,
-  // 22-char URL-safe base64 (rootKey / hashed project-id shape). Bounded
-  // by non-base64 chars so we don't bite into longer strings mid-token.
-  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/g,
+  // 22+-char URL-safe base64 (rootKey at 22, keypair public keys at 43,
+  // z-base-32 project ids at ~52). Bounded by non-base64 chars so we
+  // don't bite into longer strings mid-token.
+  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22,}(?![A-Za-z0-9_-])/g,
   // Latitude / longitude markers followed by a number.
   /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
+
+/** Object keys whose value is a raw coordinate — redacted regardless of type. */
+const SENSITIVE_KEY_PATTERN = /^(lat|lng|latitude|longitude)$/i;
 
 /** Tag names/values that must never ride on a metric (§11.8). */
 const FORBIDDEN_METRIC_TAG_NAMES = new Set([
@@ -64,7 +72,7 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
 
 /** Reused for forbidden tag *values* — base64-22 / lat-lng shapes. */
 const FORBIDDEN_METRIC_VALUE_PATTERNS: RegExp[] = [
-  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/,
+  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22,}(?![A-Za-z0-9_-])/,
   /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/i,
 ];
 
@@ -95,7 +103,7 @@ function scrubValue(value: Json): Json {
   if (value && typeof value === "object") {
     const out: Record<string, Json> = {};
     for (const [k, v] of Object.entries(value as Record<string, Json>)) {
-      out[k] = scrubValue(v);
+      out[k] = SENSITIVE_KEY_PATTERN.test(k) ? REDACTED : scrubValue(v);
     }
     return out;
   }
@@ -106,8 +114,10 @@ type AnyRecord = Record<string, unknown>;
 
 /**
  * Walk every text field of a Sentry event and scrub it (§9b.1):
- * message, exception values, extra, contexts, breadcrumb messages +
- * data, span descriptions + attributes. Mutates and returns the event.
+ * message, exception values, extra, contexts, request, breadcrumb
+ * messages + data, span descriptions + attributes. HTTP breadcrumb and
+ * request URLs reduce to host-only (§9b.5). Mutates and returns the
+ * event.
  */
 export function scrubEvent(event: AnyRecord): AnyRecord {
   if (typeof event.message === "string") {
@@ -131,15 +141,23 @@ export function scrubEvent(event: AnyRecord): AnyRecord {
     event.contexts = scrubValue(event.contexts) as AnyRecord;
   }
 
+  if (event.request && typeof event.request === "object") {
+    const req = event.request as AnyRecord;
+    if (typeof req.url === "string") req.url = scrubUrlToHost(req.url);
+    if (req.query_string != null) req.query_string = scrubValue(req.query_string);
+    if (req.headers && typeof req.headers === "object") {
+      req.headers = scrubValue(req.headers);
+    }
+    if (req.cookies && typeof req.cookies === "object") {
+      req.cookies = scrubValue(req.cookies);
+    }
+    if (req.data != null) req.data = scrubValue(req.data);
+  }
+
   const breadcrumbs = event.breadcrumbs as AnyRecord[] | undefined;
   if (Array.isArray(breadcrumbs)) {
     for (const crumb of breadcrumbs) {
-      if (typeof crumb.message === "string") {
-        crumb.message = scrubString(crumb.message);
-      }
-      if (crumb.data && typeof crumb.data === "object") {
-        crumb.data = scrubValue(crumb.data) as AnyRecord;
-      }
+      scrubBreadcrumb(crumb);
     }
   }
 
@@ -177,6 +195,9 @@ export function scrubBreadcrumb(crumb: AnyRecord): AnyRecord {
   }
   if (typeof crumb.message === "string") {
     crumb.message = scrubString(crumb.message);
+  }
+  if (crumb.data && typeof crumb.data === "object") {
+    crumb.data = scrubValue(crumb.data) as AnyRecord;
   }
   return crumb;
 }

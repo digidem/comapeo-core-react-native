@@ -103,17 +103,24 @@ test("usage metrics no-op unless applicationUsageData is on", () => {
   assert.equal(second.calls.count[0].attributes.screen, "ObservationList");
 });
 
-test("before_metric_send drops forbidden tag NAMES", () => {
+test("before_metric_send filter drops a forbidden tag name routed through count()", () => {
   const { sdk, calls } = fakeSentry();
   initWith(sdk);
-  // `stateTransition` is fine; manufacture a forbidden one via the
-  // public storage helper but with a poisoned bucket name isn't a tag
-  // name issue — assert against a known-forbidden name path instead by
-  // calling count through a metric carrying `project_id`. The layer
-  // only exposes safe call sites, so we assert the filter via the
-  // by_device device tags can't be forbidden, and use a direct check.
-  metrics.stateTransition("starting", "started");
-  assert.equal(calls.count.length, 1);
+  // No public call site accepts a forbidden tag name, so drive the
+  // wrapper directly: this fails if the tagName branch of
+  // isForbiddenMetric (before-send.js) is removed.
+  metrics.__testInternals.count("comapeo.x", { project_id: "p" });
+  assert.equal(
+    calls.count.length,
+    0,
+    "metric carrying a forbidden tag NAME must be dropped",
+  );
+  // A forbidden metric NAME is dropped too.
+  metrics.__testInternals.count("project_id", { method: "read.doc" });
+  assert.equal(calls.count.length, 0, "forbidden metric NAME must be dropped");
+  // A clean metric still records.
+  metrics.__testInternals.count("comapeo.x", { method: "read.doc" });
+  assert.equal(calls.count.length, 1, "a clean metric still records");
 });
 
 test("before_metric_send drops forbidden tag VALUES (base64-22 in storage bucket)", () => {

@@ -24,6 +24,46 @@ test("scrubString redacts base64-22, lat/lng markers, and rootKey", () => {
   assert.equal(scrubString("hello world"), "hello world");
 });
 
+test("scrubString redacts base64url longer than 22 chars", () => {
+  // 32-byte keypair public key (43 base64url chars).
+  assert.match(scrubString("key AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8 x"), /\[redacted\]/);
+  assert.equal(
+    scrubString("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"),
+    "[redacted]",
+  );
+  // ~52-char z-base-32 project id.
+  assert.equal(
+    scrubString("ybybybybybybybybybybybybybybybybybybybybybybybybybyb"),
+    "[redacted]",
+  );
+});
+
+test("scrubEvent redacts numeric lat/lng stored as object fields (§9b.1)", () => {
+  const event = {
+    extra: { coords: { latitude: 12.3456, longitude: -56.78 } },
+    contexts: { geo: { lat: 1.0, lng: 2.0 } },
+  };
+  scrubEvent(event);
+  assert.equal(event.extra.coords.latitude, "[redacted]");
+  assert.equal(event.extra.coords.longitude, "[redacted]");
+  assert.equal(event.contexts.geo.lat, "[redacted]");
+  assert.equal(event.contexts.geo.lng, "[redacted]");
+});
+
+test("scrubEvent reduces request.url to host-only and scrubs query/headers", () => {
+  const event = {
+    request: {
+      url: "https://cloud.comapeo.app/projects/abc?token=x",
+      query_string: "key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      headers: { "x-secret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" },
+    },
+  };
+  scrubEvent(event);
+  assert.equal(event.request.url, "https://cloud.comapeo.app");
+  assert.match(event.request.query_string, /\[redacted\]/);
+  assert.equal(event.request.headers["x-secret"], "[redacted]");
+});
+
 test("scrubUrlToHost drops path + query (§9b.5)", () => {
   assert.equal(
     scrubUrlToHost("https://cloud.comapeo.app/projects/abc?token=secret"),
@@ -73,6 +113,19 @@ test("isForbiddenMetric drops forbidden tag names and base64-22 values", () => {
   assert.equal(isForbiddenMetric("project_id", { platform: "ios" }), true);
   assert.equal(
     isForbiddenMetric("comapeo.x", { bucket: "bm90LWEtcmVhbC1rZXktMQ" }),
+    true,
+  );
+  // 43-char base64url key and ~52-char z-base-32 id are also dropped.
+  assert.equal(
+    isForbiddenMetric("comapeo.x", {
+      bucket: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    }),
+    true,
+  );
+  assert.equal(
+    isForbiddenMetric("comapeo.x", {
+      bucket: "ybybybybybybybybybybybybybybybybybybybybybybybybybyb",
+    }),
     true,
   );
   assert.equal(
