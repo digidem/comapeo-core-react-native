@@ -62,6 +62,15 @@ object SentryTags {
     const val BOOT_KIND_USER_FOREGROUND = "user-foreground"
     const val BOOT_KIND_USER_BACKGROUND = "user-background"
     const val BOOT_KIND_SYSTEM_RESTART = "system-restart"
+
+    // phase values (comapeo.phase) — the closed set owned by the FGS lifecycle.
+    // (Some phases elsewhere are runtime data, e.g. forwarded from Node, and stay
+    // free-form strings.)
+    const val PHASE_PROCESS_DETECTION = "process-detection"
+    const val PHASE_SHUTDOWN_TIMEOUT = "shutdown-timeout"
+    const val PHASE_FGS_START_NOT_ALLOWED = "fgs-start-not-allowed"
+    const val PHASE_FGS_PERMISSION_DENIED = "fgs-permission-denied"
+    const val PHASE_FGS_START_FAILED = "fgs-start-failed"
 }
 
 /**

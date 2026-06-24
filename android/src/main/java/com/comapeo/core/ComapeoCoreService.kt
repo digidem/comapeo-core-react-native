@@ -91,7 +91,7 @@ class ComapeoCoreService : Service() {
                 "comapeo: backend process-name detection failed",
                 level = "warning",
                 tags = mapOf(
-                    SentryTags.PHASE to "process-detection",
+                    SentryTags.PHASE to SentryTags.PHASE_PROCESS_DETECTION,
                     SentryTags.PROCESS_DETECT_NAME to (detectedProcessName ?: "null"),
                     SentryTags.PROCESS_DETECT_EXPECTED to (backendProcessName ?: "null"),
                     SentryTags.SDK_INT to Build.VERSION.SDK_INT.toString(),
@@ -232,7 +232,7 @@ class ComapeoCoreService : Service() {
                         level = "error",
                         tags = mapOf(
                             SentryTags.TIMEOUT to "fgsStop",
-                            SentryTags.PHASE to "shutdown-timeout",
+                            SentryTags.PHASE to SentryTags.PHASE_SHUTDOWN_TIMEOUT,
                         ),
                     )
                 }
@@ -298,11 +298,11 @@ class ComapeoCoreService : Service() {
                 // API 31+ ForegroundServiceStartNotAllowedException: a background start
                 // outside the grace period (e.g. a USER_BACKGROUND cold start). The next
                 // USER_FOREGROUND start succeeds, so warning not error.
-                is IllegalStateException -> "warning" to "fgs-start-not-allowed"
+                is IllegalStateException -> "warning" to SentryTags.PHASE_FGS_START_NOT_ALLOWED
                 // Missing a foreground-service permission (e.g. the dataSync type): the
                 // backend can't start at all and won't recover by foregrounding.
-                is SecurityException -> "error" to "fgs-permission-denied"
-                else -> "error" to "fgs-start-failed"
+                is SecurityException -> "error" to SentryTags.PHASE_FGS_PERMISSION_DENIED
+                else -> "error" to SentryTags.PHASE_FGS_START_FAILED
             }
             logCapture(
                 SentryCategories.FGS,
