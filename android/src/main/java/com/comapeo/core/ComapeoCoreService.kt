@@ -73,10 +73,9 @@ class ComapeoCoreService : Service() {
 
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
 
-        // This service runs only in the :ComapeoCore process, so detection MUST
-        // resolve to that process here. If it doesn't, the host MainApplication
-        // guard would also have failed to skip RN init — capture it to measure
-        // detection reliability in the field (notably the pre-28 /proc path).
+        // Capture when process name detection fails, which results in react
+        // native being loaded in the foreground service process, which
+        // increases the risk of ANR on a slow device..
         val detectedProcessName = ComapeoProcessGuard.detectProcessName()
         val backendProcessName = ComapeoProcessGuard.backendProcessName(applicationContext)
         if (detectedProcessName == null || detectedProcessName != backendProcessName) {
@@ -93,9 +92,6 @@ class ComapeoCoreService : Service() {
             )
         }
 
-        // Report the previous FGS process's exit reason and stamp this run's start
-        // anchor. Must run for every process lifecycle — even one that never reaches
-        // startForeground — so it stays in onCreate. Async on IO; off the deadline.
         serviceScope.launch(Dispatchers.IO) {
             // Snapshot the previous FGS session's anchors before stamping
             // this run's — the decoder must see what was true at the old exit.
