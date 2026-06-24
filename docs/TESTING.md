@@ -81,7 +81,8 @@ What each layer is actually for:
 - **Layer 6 — iOS device build.** Tests that the app **builds for a physical
   device** — something no other layer checks. iOS native addons ship as
   xcframeworks that Xcode links per-architecture and embeds (with `@rpath` install
-  names); a device build links the app against each framework's **device** (arm64)
+  names — see [`BUILD.md`](./BUILD.md) for how they're built and packaged); a
+  device build links the app against each framework's **device** (arm64)
   slice and runs the embed step. The simulator integration tests (layer 5) only
   ever load the *simulator* slice, so a broken device slice — a missing arch, a
   wrong install name, a structure Xcode rejects — passes them unnoticed. This job
@@ -481,6 +482,8 @@ platform-specific code.
   release conventions.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — process model, IPC, lifecycle (what
   the native/e2e suites verify).
+- [`BUILD.md`](./BUILD.md) — how the native addons are built, packaged, and
+  loaded (what the build-and-link layers 6–7 exercise).
 - e2e gating design:
   [#139](https://github.com/digidem/comapeo-core-react-native/issues/139),
   [#142](https://github.com/digidem/comapeo-core-react-native/pull/142). Merge
