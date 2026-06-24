@@ -41,11 +41,6 @@ class ComapeoCoreService : Service() {
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
         const val CONTROL_SOCKET_FILENAME = "control.sock"
 
-        /** Guards `Process.killProcess` from racing a stop→restart cycle that
-         *  reuses the same process and creates a new instance. */
-        @Volatile
-        private var activeInstanceCount = 0
-
         /** The runtime gate for the FGS notification on API 33+. Below 33
          *  `checkSelfPermission` reports the manifest-declared permission as
          *  granted, so this returns `true` without a runtime grant. Pulled
@@ -59,7 +54,6 @@ class ComapeoCoreService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        activeInstanceCount++
 
         // Snapshot-at-boot: `diagnosticsEnabled = false` leaves the FGS bridge inert
         // AND zeroes the `--sentry*` argv passed to loader.mjs (backend short-circuits
@@ -215,12 +209,13 @@ class ComapeoCoreService : Service() {
         super.onDestroy()
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onDestroy")
         isServiceStarted = false
-        activeInstanceCount--
         serviceScope.launch {
             // nodeJSService is built lazily in startService(); a create→destroy with no
             // start path (e.g. an immediate STOP) leaves it uninitialised.
             if (::nodeJSService.isInitialized) {
                 try {
+                    // Graceful first: stop() ships the shutdown frame and joins the node
+                    // thread so the runtime exits cleanly whenever it can.
                     withTimeout(10_000) {
                         nodeJSService.stop()
                     }
@@ -236,16 +231,20 @@ class ComapeoCoreService : Service() {
                         ),
                     )
                 }
+                // Release this instance's scope/IPC even on the timeout path — also
+                // cancels in-flight coroutines (watchdog, pending sends) so they can't
+                // fire during the flush window below.
+                nodeJSService.destroy()
             }
-            if (activeInstanceCount <= 0) {
-                logCrumb(SentryCategories.FGS, "killProcess: no active instances")
-                // 2s flush — long enough to deliver under typical network, short enough
-                // not to stall shutdown noticeably.
-                SentryFgsBridge.flush(2_000)
-                Process.killProcess(Process.myPid())
-            } else {
-                log("Skipping process kill — new service instance is active")
-            }
+            // node::Start is single-shot per process: the runtime can't be reused by a
+            // restart that reuses this process, so always tear the process down. The
+            // pending START_STICKY / restart intent cold-starts a fresh process with a
+            // clean runtime, sockets, and data dir.
+            logCrumb(SentryCategories.FGS, "killProcess: FGS destroyed")
+            // 2s flush — long enough to deliver under typical network, short enough
+            // not to stall shutdown noticeably.
+            SentryFgsBridge.flush(2_000)
+            Process.killProcess(Process.myPid())
         }
     }
 
@@ -270,10 +269,9 @@ class ComapeoCoreService : Service() {
             )
         }
 
-        // Promote to the foreground FIRST, before building the Node backend below —
-        // the startForeground deadline starts at the (cold-start) process fork. If
-        // promotion fails, stop cleanly: running the backend on a service the OS never
-        // foregrounded risks a delayed ForegroundServiceDidNotStartInTimeException.
+        // Promote to the foreground before building the Node backend: the
+        // startForeground deadline runs from the (cold-start) process fork, so the
+        // costly libnode load must come after. On failure we stop — see catch.
         try {
             ServiceCompat.startForeground(
                 this,
@@ -286,21 +284,14 @@ class ComapeoCoreService : Service() {
                 },
             )
         } catch (e: Exception) {
-            // startForeground's failure modes aren't fully enumerable (the JVM has no
-            // checked exceptions, and OEM builds vary), and an uncaught throw here kills
-            // the headless process — so catch broadly. The try wraps only the framework
-            // call, so this can't mask our own logic. (Throwable/Error are deliberately
-            // not caught — those aren't recoverable.) Whatever the cause, we never
-            // foregrounded, so stop cleanly rather than run the backend on a service the
-            // OS won't treat as foreground (which risks a delayed
-            // ForegroundServiceDidNotStartInTimeException).
+            // Broad: startForeground has OEM-specific failure modes and an uncaught
+            // throw kills the headless process. Whatever the cause, we never
+            // foregrounded — stop rather than run a non-foreground backend.
             val (level, phase) = when (e) {
-                // API 31+ ForegroundServiceStartNotAllowedException: a background start
-                // outside the grace period (e.g. a USER_BACKGROUND cold start). The next
-                // USER_FOREGROUND start succeeds, so warning not error.
+                // ForegroundServiceStartNotAllowedException (API 31+): background start
+                // outside the grace period; recovers on the next USER_FOREGROUND.
                 is IllegalStateException -> "warning" to SentryTags.PHASE_FGS_START_NOT_ALLOWED
-                // Missing a foreground-service permission (e.g. the dataSync type): the
-                // backend can't start at all and won't recover by foregrounding.
+                // Missing FGS-type permission: won't recover by returning to foreground.
                 is SecurityException -> "error" to SentryTags.PHASE_FGS_PERMISSION_DENIED
                 else -> "error" to SentryTags.PHASE_FGS_START_FAILED
             }

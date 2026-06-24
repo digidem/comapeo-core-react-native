@@ -110,24 +110,25 @@ function withComapeoCore(config, props) {
   // for localhost only, on both platforms.
   config = withMapServerCleartextAndroid(config);
   config = withMapServerCleartextIos(config);
-  // Skip React Native init in the headless `:ComapeoCore` backend process so its
-  // cold start doesn't ANR before the foreground service can promote itself.
+  // The embedded backend connects directly to peers on the local subnet;
+  // iOS gates that behind the Local Network prompt, so ship a usage
+  // description (overridable via `localNetworkPermission`). iOS only.
+  config = withLocalNetworkPermissionIos(config, props?.localNetworkPermission);
+  // Skip React Native init in the headless `:ComapeoCore` backend process — running
+  // RN there risks a cold-start ANR (see com.comapeo.core.ComapeoProcessGuard).
   config = withComapeoCoreProcessGuard(config);
   return config;
 }
 
-// Inject a guard at the top of the host app's MainApplication.onCreate so the
-// headless `:ComapeoCore` backend process skips React Native init — running it
-// there would delay the foreground service's startForeground() past Android's
-// deadline and ANR the process on cold start. Detection and rationale live in
-// the module's com.comapeo.core.ComapeoProcessGuard; this only splices the call.
+// Inject the process guard at the top of the host app's MainApplication.onCreate.
+// Rationale and detection live in com.comapeo.core.ComapeoProcessGuard; this only
+// splices in the call.
 const PROCESS_GUARD_MARKER = "comapeo-core-process-guard";
 const PROCESS_GUARD_ANCHOR = "super.onCreate()";
 
 const PROCESS_GUARD_KOTLIN = `
-    // ${PROCESS_GUARD_MARKER}: the :ComapeoCore backend process (Node foreground
-    // service, no UI) must not run React Native init — it would ANR the service on
-    // cold start. See com.comapeo.core.ComapeoProcessGuard.
+    // ${PROCESS_GUARD_MARKER}: skip React Native init in the :ComapeoCore backend
+    // process — running it there risks a cold-start ANR. See ComapeoProcessGuard.
     if (com.comapeo.core.ComapeoProcessGuard.isBackendProcess(this)) {
       return
     }`;
@@ -136,15 +137,14 @@ function withComapeoCoreProcessGuard(config) {
   return withMainApplication(config, (cfg) => {
     const { language, contents } = cfg.modResults;
     if (contents.includes(PROCESS_GUARD_MARKER)) return cfg;
-    // Hard-fail rather than warn-and-skip: a missed warning ships an app that
-    // ANRs on first cold start of the backend process — far worse than a loud
-    // prebuild failure the consumer must resolve.
+    // Hard-fail rather than warn-and-skip: a skipped guard ships the cold-start ANR
+    // risk to production, which a missed warning wouldn't catch.
     if (language !== "kt") {
       throw new Error(
         `@comapeo/core-react-native plugin: MainApplication is ${language}, not Kotlin. ` +
           "The :ComapeoCore process guard only supports a Kotlin MainApplication; " +
-          "a Java MainApplication would cold-start the headless backend process with " +
-          "full React Native init and ANR. Failing prebuild rather than shipping that.",
+          "a Java MainApplication would run full React Native init in the headless " +
+          "backend process, risking a cold-start ANR. Failing prebuild rather than shipping that.",
       );
     }
     const idx = contents.indexOf(PROCESS_GUARD_ANCHOR);
@@ -153,7 +153,7 @@ function withComapeoCoreProcessGuard(config) {
         `@comapeo/core-react-native plugin: could not find \`${PROCESS_GUARD_ANCHOR}\` ` +
           "in MainApplication.kt to anchor the :ComapeoCore process guard. The generated " +
           "MainApplication template likely changed and the plugin must be updated. Failing " +
-          "prebuild rather than silently shipping a cold-start ANR in the backend process.",
+          "prebuild rather than silently shipping the cold-start ANR risk in the backend process.",
       );
     }
     const at = idx + PROCESS_GUARD_ANCHOR.length;
@@ -216,6 +216,28 @@ function withMapServerCleartextIos(config) {
     const ats = cfg.modResults.NSAppTransportSecurity || {};
     ats.NSAllowsLocalNetworking = true;
     cfg.modResults.NSAppTransportSecurity = ats;
+    return cfg;
+  });
+}
+
+const IOS_LOCAL_NETWORK_USAGE_KEY = "NSLocalNetworkUsageDescription";
+const DEFAULT_LOCAL_NETWORK_USAGE_DESCRIPTION =
+  "Connects to nearby devices on your local network to sync with other CoMapeo peers.";
+
+// iOS Local Network privacy is enforced at the socket layer, not the HTTP
+// stack — so unlike ATS/cleartext it reaches the Node thread, where the
+// embedded backend opens direct connections to peers on the local subnet
+// (hyperswarm). Without a usage description iOS denies those connections
+// with no prompt. The module owns this key; customise the wording via the
+// `localNetworkPermission` prop rather than setting the Info.plist key
+// separately. mDNS/Bonjour discovery and the matching `NSBonjourServices`
+// stay the app's concern — the module neither browses nor advertises.
+function withLocalNetworkPermissionIos(config, usageDescription) {
+  return withInfoPlist(config, (cfg) => {
+    cfg.modResults[IOS_LOCAL_NETWORK_USAGE_KEY] =
+      typeof usageDescription === "string"
+        ? usageDescription
+        : DEFAULT_LOCAL_NETWORK_USAGE_DESCRIPTION;
     return cfg;
   });
 }

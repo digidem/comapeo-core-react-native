@@ -7,16 +7,18 @@ import android.os.Build
 import java.io.File
 
 /**
- * Identifies the separate `:ComapeoCore` foreground-service process.
+ * Identifies the separate `:ComapeoCore` foreground-service process so the host's
+ * `MainApplication.onCreate` can skip React Native init there.
  *
- * `MainApplication.onCreate` runs in every process — both the host UI process and
- * the backend process — and would initialise React Native in both. The backend
- * process is a headless Node foreground service that doesn't use React Native, and
- * initialising it there delays the service's `startForeground()` past Android's
- * deadline, ANRing the process on cold start. The config plugin injects a call to
- * [isBackendProcess] at the top of `MainApplication.onCreate` so that process can
- * skip the init. Detection lives here, not in the injected string, so it is
- * testable and shared with the reliability telemetry in [ComapeoCoreService].
+ * `onCreate` runs in every process, but the backend process is a headless Node
+ * service that never uses RN. Initialising RN there lengthens the path to the
+ * service's `startForeground()` call; if that misses Android's few-second deadline
+ * on a slow device, the system raises a `ForegroundServiceDidNotStartInTimeException`.
+ * See https://developer.android.com/develop/background-work/services/fgs/troubleshooting#startForeground-too-slow
+ *
+ * The plugin injects an [isBackendProcess] call to skip the init; detection lives
+ * here (not the injected string) so it's testable and reused by the reliability
+ * telemetry in [ComapeoCoreService].
  */
 object ComapeoProcessGuard {
     @Volatile
