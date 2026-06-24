@@ -210,8 +210,10 @@ export default {
 
 Options are baked in at `prebuild`, so changing any of them requires a new
 prebuild and build. Regardless of options, the plugin always adds the
-loopback-only cleartext exception (so the map server is reachable) and, on iOS,
-the Sentry library-evolution Podfile hook.
+loopback-only cleartext exception (so the map server is reachable), the iOS
+local-network usage description (so peer sync works — see
+[`localNetworkPermission`](#localnetworkpermission)), and, on iOS, the Sentry
+library-evolution Podfile hook.
 
 ### `defaultConfig`
 
@@ -230,6 +232,25 @@ non-clean prebuild leaves the reference behind.
 The online map style used as a fallback when no offline map is available. Must
 be an `http(s)` URL. Defaults to MapLibre's demo tiles
 (`https://demotiles.maplibre.org/style.json`).
+
+### `localNetworkPermission`
+
+The iOS Local Network usage description shown when the app first connects to
+peers on the local network for sync. Defaults to a generic string. Override it
+to localise or reword the prompt:
+
+```js
+["@comapeo/core-react-native", {
+  localNetworkPermission: "MyApp connects to nearby devices to sync your data.",
+}];
+```
+
+The plugin owns the `NSLocalNetworkUsageDescription` key, so set the wording here
+rather than in your own Info.plist or it will be overwritten. mDNS/Bonjour
+discovery stays your app's responsibility: this module currently neither browses nor
+advertises services, so if your app does, add the matching `NSBonjourServices`
+entries yourself. Android needs nothing — its cleartext/network-security config
+doesn't gate the Node thread's sockets, and there's no equivalent permission.
 
 ### `sentry` options
 

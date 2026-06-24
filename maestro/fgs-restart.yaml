@@ -1,0 +1,31 @@
+# CI/BrowserStack flow: the :ComapeoCore FGS recovers after its process is torn
+# down. `node::Start` is single-shot per process, so a stop must end the process
+# and a restart must cold-start a fresh one (see PR #157 "one Node runtime per
+# process"). This force-stops the app — killing the :ComapeoCore backend
+# process — then relaunches WITHOUT clearing data and asserts the backend
+# reaches STARTED again on the existing data dir and the now-stale socket files
+# the killed generation left behind. The `backend-state-*` testID is rendered by
+# the e2e app's BackendStateIndicator. Keep launch conventions in sync with
+# e2e.yaml.
+appId: com.comapeo.core.e2e
+env:
+    TIMEOUT: 180000
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible:
+        id: "backend-state-STARTED"
+    timeout: ${TIMEOUT}
+- takeScreenshot: fgs-restart-before
+# Force-stop the whole app (am force-stop), which also kills the separate
+# :ComapeoCore backend process.
+- stopApp
+# Relaunch without clearState so the backend recovers against the existing data
+# dir and the stale sockets — the start-side delete-before-bind must clear them.
+- launchApp
+- extendedWaitUntil:
+    visible:
+        id: "backend-state-STARTED"
+    timeout: ${TIMEOUT}
+- takeScreenshot: fgs-restart-after
