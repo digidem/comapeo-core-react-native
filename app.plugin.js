@@ -116,50 +116,20 @@ function withComapeoCore(config, props) {
   return config;
 }
 
-// The backend foreground service runs in a separate `:ComapeoCore` process
-// (declared in this module's AndroidManifest). Android instantiates the app's
-// single Application in EVERY process and re-runs `onCreate` there — so on a
-// cold start of that process the host `MainApplication.onCreate` runs the full
-// React Native + Expo init (`loadReactNative` + `ApplicationLifecycleDispatcher`)
-// in a process that has no UI and never touches RN. That delays the service's
-// `startForeground()` past Android's deadline and ANRs the process. Android has
-// no per-process Application class, so guarding `onCreate` by process name is the
-// only fix; the FGS loads its own JNI library via `System.loadLibrary` and needs
-// none of RN.
-//
-// Keep `:ComapeoCore` in sync with `android:process` in the module's
-// AndroidManifest.xml.
-const COMAPEO_CORE_PROCESS_SUFFIX = ":ComapeoCore";
+// Inject a guard at the top of the host app's MainApplication.onCreate so the
+// headless `:ComapeoCore` backend process skips React Native init — running it
+// there would delay the foreground service's startForeground() past Android's
+// deadline and ANR the process on cold start. Detection and rationale live in
+// the module's com.comapeo.core.ComapeoProcessGuard; this only splices the call.
 const PROCESS_GUARD_MARKER = "comapeo-core-process-guard";
 const PROCESS_GUARD_ANCHOR = "super.onCreate()";
 
 const PROCESS_GUARD_KOTLIN = `
-    // ${PROCESS_GUARD_MARKER}: skip React Native / Expo init in the
-    // ${COMAPEO_CORE_PROCESS_SUFFIX} backend process (Node foreground service, no UI).
-    // Running it here delays the service's startForeground() past Android's deadline
-    // and ANRs the process on cold start. This returns early, so anything else this
-    // app's onCreate does is also skipped in that process — intended: nothing else
-    // runs there. The FGS loads its own native library via System.loadLibrary.
-    run {
-      val comapeoBackendProcess: String? =
-        if (android.os.Build.VERSION.SDK_INT >= 28) {
-          android.app.Application.getProcessName()
-        } else {
-          // No getProcessName() before API 28. Read /proc/self/cmdline (the zygote
-          // sets it before onCreate) instead of ActivityManager.runningAppProcesses,
-          // which can return null mid-cold-start and is a main-thread binder IPC.
-          try {
-            java.io.File("/proc/self/cmdline").readText().takeWhile { it.code != 0 }.trim()
-          } catch (e: Exception) {
-            null
-          }
-        }
-      // Null/unknown falls through to running RN init — the safe direction: skipping
-      // it in the main process would brick the app; a missed guard only risks a
-      // recoverable ANR in the headless backend process.
-      if (comapeoBackendProcess?.endsWith("${COMAPEO_CORE_PROCESS_SUFFIX}") == true) {
-        return
-      }
+    // ${PROCESS_GUARD_MARKER}: the :ComapeoCore backend process (Node foreground
+    // service, no UI) must not run React Native init — it would ANR the service on
+    // cold start. See com.comapeo.core.ComapeoProcessGuard.
+    if (com.comapeo.core.ComapeoProcessGuard.isBackendProcess()) {
+      return
     }`;
 
 function withComapeoCoreProcessGuard(config) {

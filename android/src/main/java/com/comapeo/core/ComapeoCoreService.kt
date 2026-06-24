@@ -79,6 +79,24 @@ class ComapeoCoreService : Service() {
 
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
 
+        // This service runs only in the :ComapeoCore process, so detection MUST
+        // resolve to that process here. If it doesn't, the host MainApplication
+        // guard would also have failed to skip RN init — capture it to measure
+        // detection reliability in the field (notably the pre-28 /proc path).
+        val detectedProcessName = ComapeoProcessGuard.detectProcessName()
+        if (detectedProcessName?.endsWith(ComapeoProcessGuard.PROCESS_SUFFIX) != true) {
+            logCapture(
+                SentryCategories.FGS,
+                "comapeo: backend process-name detection failed",
+                level = "warning",
+                tags = mapOf(
+                    SentryTags.PHASE to "process-detection",
+                    SentryTags.PROCESS_DETECT_NAME to (detectedProcessName ?: "null"),
+                    SentryTags.SDK_INT to Build.VERSION.SDK_INT.toString(),
+                ),
+            )
+        }
+
         // Report the previous FGS process's exit reason and stamp this run's start
         // anchor. Must run for every process lifecycle — even one that never reaches
         // startForeground — so it stays in onCreate. Async on IO; off the deadline.

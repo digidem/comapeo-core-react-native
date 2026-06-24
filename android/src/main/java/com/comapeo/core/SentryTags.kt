@@ -17,6 +17,11 @@ object SentryTags {
     const val SOURCE = "source"
     const val TIMEOUT = "timeout"
 
+    /** Reliability telemetry for the FGS process-name guard: the value detection
+     *  returned in the backend process (or `null`) and the device API level. */
+    const val PROCESS_DETECT_NAME = "comapeo.process_detect.name"
+    const val SDK_INT = "comapeo.sdk_int"
+
     /**
      * On `comapeo.boot` transactions: distinguishes activity-initiated starts
      * (has `serviceStartElapsedMs` + `boot.fgs-launch` span) from system-driven
