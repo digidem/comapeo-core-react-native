@@ -8,7 +8,12 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.comapeo.core.integration"
+      "bundleIdentifier": "com.comapeo.core.integration",
+      "entitlements": {
+        "keychain-access-groups": [
+          "$(AppIdentifierPrefix)$(CFBundleIdentifier)"
+        ]
+      }
     },
     "android": {
       "adaptiveIcon": {
