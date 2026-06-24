@@ -17,6 +17,61 @@ is appropriate for data transfer operations, such as:
 - Local file processing
 - Transfer data between a device and the cloud over a network
 
+### Notification permission (Android 13+)
+
+The foreground service shows an ongoing notification so the user knows the
+backend is running. On Android 13 (API level 33) and above, posting any
+notification requires the runtime `POST_NOTIFICATIONS` permission. Without it,
+the system **suppresses** the service notification, which lets Android
+deprioritise the service or kill it sooner under memory pressure. On Android 12
+and below (and on iOS) the permission is auto-granted, so there's nothing to
+request.
+
+**Who asks: the host app, not this module.** The module _exposes_ the
+check/request methods; it never prompts on its own. This keeps the rationale
+copy, timing, and the "open settings" fallback under the host app's control
+(the settings deep-link UX is tracked in
+[#100](https://github.com/digidem/comapeo-core-react-native/issues/100)).
+Typically the host calls these around the point where it starts the service —
+e.g. on first launch, or just before bringing the app to the foreground.
+
+```ts
+import {
+  getNotificationPermissionsAsync,
+  requestNotificationPermissionsAsync,
+} from "@comapeo/core-react-native";
+
+// Check without prompting.
+const current = await getNotificationPermissionsAsync();
+
+// Prompt if we still can. `status` is "granted" | "denied" | "undetermined";
+// `granted` is a convenience boolean.
+if (!current.granted && current.canAskAgain) {
+  const result = await requestNotificationPermissionsAsync();
+  // result.granted === true  → notification will show
+  // result.canAskAgain === false → user picked "Don't ask again";
+  //   show your own rationale and deep-link them to app settings.
+}
+```
+
+Both methods return an expo-style `PermissionResponse`
+(`{ status, granted, canAskAgain, expires }`), so the result is
+interchangeable with permissions from `expo-camera`, `expo-location`, etc. On
+Android < 13 and on iOS they resolve as `granted` without showing a dialog, so
+host code can call them unconditionally without branching on platform.
+
+`POST_NOTIFICATIONS` is a single app-global permission, so if your app already
+requests it through `expo-notifications` (or any other permissions library)
+you don't need these helpers — they exist so you don't have to pull in
+`expo-notifications` solely to grant the foreground-service notification.
+
+**Graceful degradation.** Starting the service does **not** require the
+permission. If it's missing, the service still starts; it just runs without a
+visible notification and may be deprioritised by the system. The service logs
+the missing grant (visible in diagnostics) and never crashes on the missing-
+permission path. Request the permission to keep the service running reliably in
+the background.
+
 ### User-initiated stopping
 
 Starting in Android 13 (API level 33), the user can stop an app from the

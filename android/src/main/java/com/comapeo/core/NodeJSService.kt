@@ -48,6 +48,10 @@ const val NODEJS_PROJECT_INDEX_FILENAME = "loader.mjs"
 // plugin (app.plugin.js) into `assets/nodejs-project/`; extracted into
 // nodeProjectDir alongside the backend. Absent → no default config.
 const val DEFAULT_CONFIG_FILENAME = "comapeo-default-config.comapeocat"
+// Manifest meta-data written by app.plugin.js when the consumer sets
+// `defaultOnlineStyleUrl`. Forwarded to the backend as the 5th argv
+// positional; absent → backend uses its built-in default.
+const val META_DEFAULT_ONLINE_STYLE_URL = "com.comapeo.core.map.defaultOnlineStyleUrl"
 
 /** Bound on `ipcDeferred.await()` in [sendErrorNativeFrame] so a never-completing
  *  deferred (FGS failed before NodeJSIPC was constructed) doesn't pin a coroutine. */
@@ -334,6 +338,9 @@ class NodeJSService(
         val defaultConfigFile = File(nodeProjectDir, DEFAULT_CONFIG_FILENAME)
         val defaultConfigPath =
             if (defaultConfigFile.exists()) defaultConfigFile.absolutePath else ""
+        // 5th positional: consumer's online map style URL, or "" when unset.
+        val defaultOnlineStyleUrl =
+            SentryConfig.readApplicationMetaDataString(this, META_DEFAULT_ONLINE_STYLE_URL) ?: ""
         val args = mutableListOf(
             "node",
             entryPath,
@@ -341,6 +348,7 @@ class NodeJSService(
             controlSocketFile.absolutePath,
             dataDir,
             defaultConfigPath,
+            defaultOnlineStyleUrl,
         )
         sentryConfig?.let { cfg ->
             args += "--sentryDsn=${cfg.dsn}"

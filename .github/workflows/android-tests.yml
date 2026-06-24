@@ -1,42 +1,63 @@
 name: Android Tests
 
+# Runs on PRs (pre-merge feedback) and in the merge queue (merge_group),
+# which is the gate before a PR lands. No secrets here, so it's safe on
+# fork/Dependabot PRs too.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   NODEJS_MOBILE_VERSION: v18.20.4
+  # NDK the generated example app builds against. Sourced from React Native's
+  # node_modules/react-native/gradle/libs.versions.toml (Expo's default); keep
+  # in sync on RN bumps. We install it explicitly (with retry) so Gradle never
+  # auto-downloads it mid-build, where a corrupt sdkmanager zip would fail hard.
+  NDK_VERSION: 27.1.12297006
 
 jobs:
+  # Defer the slow instrumented suite to the merge queue: skip it on a plain PR
+  # (it then reports as skipped, which satisfies the required check) and run it
+  # on merge_group, on manual dispatch, or on a PR labeled `run-e2e`. The fast
+  # JVM unit tests below stay on every PR.
+  changes:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/detect-heavy-ci.yml
+
   unit-tests:
     name: JVM Unit Tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
           node-version-file: package.json
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
@@ -54,22 +75,22 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install npm dependencies
-        run: npm install && cd apps/example && npm install
+        run: npm install && cd apps/integration && npm install
 
-      - name: Expo prebuild (generates apps/example/android)
-        run: cd apps/example && npx expo prebuild --platform android --no-install
+      - name: Expo prebuild (generates apps/integration/android)
+        run: cd apps/integration && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
       - name: Run JVM unit tests
         run: |
-          cd apps/example/android
+          cd apps/integration/android
           ./gradlew :comapeo-core-react-native:testDebugUnitTest --no-daemon
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unit-test-results
           path: |
@@ -77,19 +98,22 @@ jobs:
             android/build/test-results/
 
   instrumented-tests:
-    name: Instrumented Tests
+    # The "(30)" is baked into the name (not a matrix) on purpose: a *matrix*
+    # job skipped by `if` reports its check without the matrix suffix, so the
+    # required `Instrumented Tests (30)` context would never report and the PR
+    # would hang on "Expected — Waiting". A plain job reports the exact name as
+    # skipped (= passing) when gated out.
+    name: Instrumented Tests (30)
+    needs: [changes]
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    strategy:
-      matrix:
-        api-level: [30]
-
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
           android: false
           dotnet: true
@@ -103,13 +127,13 @@ jobs:
         with:
           node-version-file: package.json
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
 
       - name: Clean up unused SDK components
         run: |
@@ -119,12 +143,39 @@ jobs:
           for dir in "$ANDROID_HOME/platforms"/*/; do
             plat=$(basename "$dir")
             case "$plat" in
-              android-34|android-${{ matrix.api-level }}) ;; # keep what we need
+              android-34|android-30) ;; # keep what we need
               *) echo "Removing unused platform $plat"; rm -rf "$dir" ;;
             esac
           done
           echo "=== Disk space after cleanup ==="
           df -h /
+
+      # Cache + retry the one NDK the build needs. A cache hit skips the download
+      # entirely; on a miss we install it ourselves with retries so a corrupt
+      # sdkmanager zip ("Error on ZipFile unknown archive") no longer fails the
+      # job — previously Gradle auto-installed it mid-build with no retry.
+      - name: Cache Android NDK
+        id: cache-ndk
+        uses: actions/cache@v5
+        with:
+          # ANDROID_HOME on GitHub-hosted ubuntu runners; the install step below
+          # uses $ANDROID_HOME directly, which resolves to the same location.
+          path: /usr/local/lib/android/sdk/ndk/${{ env.NDK_VERSION }}
+          key: android-ndk-${{ env.NDK_VERSION }}
+
+      - name: Install Android NDK (retry on corrupt download)
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
+        run: |
+          for attempt in 1 2 3; do
+            if yes | sdkmanager "ndk;${NDK_VERSION}"; then
+              exit 0
+            fi
+            echo "::warning::NDK install attempt ${attempt} failed; purging partial download and retrying"
+            rm -rf "${ANDROID_HOME}/ndk/${NDK_VERSION}"
+            sleep 10
+          done
+          echo "::error::NDK ${NDK_VERSION} install failed after 3 attempts"
+          exit 1
 
       - name: Enable KVM
         run: |
@@ -134,7 +185,7 @@ jobs:
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
@@ -152,20 +203,20 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install npm dependencies
-        run: npm install && cd apps/example && npm install
+        run: npm install && cd apps/integration && npm install
 
       - name: Build backend
         run: npm run backend:build
 
-      - name: Expo prebuild (generates apps/example/android)
-        run: cd apps/example && npx expo prebuild --platform android --no-install
+      - name: Expo prebuild (generates apps/integration/android)
+        run: cd apps/integration && npx expo prebuild --platform android --no-install
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
       - name: Build test APKs
         run: |
-          cd apps/example/android
+          cd apps/integration/android
           ./gradlew :comapeo-core-react-native:assembleDebugAndroidTest :app:assembleDebugAndroidTest --no-daemon -PreactNativeArchitectures=x86_64
 
       # Snapshot caching was tried but is not portable across GitHub
@@ -175,9 +226,9 @@ jobs:
 
       - name: Run instrumented tests
         timeout-minutes: 15
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
         with:
-          api-level: ${{ matrix.api-level }}
+          api-level: 30
           target: google_atd
           arch: x86_64
           force-avd-creation: false
@@ -192,15 +243,15 @@ jobs:
             adb shell settings put global animator_duration_scale 0.0
             # -i prints per-test STARTED/PASSED/FAILED so a hanging test is
             # identifiable
-            cd apps/example/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -i -PreactNativeArchitectures=x86_64
+            cd apps/integration/android && ./gradlew :comapeo-core-react-native:connectedDebugAndroidTest :app:connectedDebugAndroidTest --no-daemon -i -PreactNativeArchitectures=x86_64
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: instrumented-test-results-api${{ matrix.api-level }}
+          name: instrumented-test-results-api30
           path: |
             android/build/reports/androidTests/
             android/build/outputs/androidTest-results/
-            apps/example/android/app/build/reports/androidTests/
-            apps/example/android/app/build/outputs/androidTest-results/
+            apps/integration/android/app/build/reports/androidTests/
+            apps/integration/android/app/build/outputs/androidTest-results/

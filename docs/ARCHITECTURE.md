@@ -62,7 +62,7 @@ The FGS is declared with `android:process=":ComapeoCore"` in
 syntax for a private process; the FGS gets its own zygote-forked pid,
 its own `Application` instance, its own `nodejs-mobile` JNI loader, and
 its own AndroidKeyStore client. The main React Native UI process
-(`com.comapeo.core.example` in the example app) is separate.
+(`com.comapeo.core.integration` in the example app) is separate.
 
 **Why a separate process?** Three reasons:
 

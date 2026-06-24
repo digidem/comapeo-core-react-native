@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
 import android.util.Base64
 import org.json.JSONObject
 import java.security.KeyStore
@@ -57,6 +56,11 @@ class RootKeyStore(private val context: Context) {
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
         const val GCM_TAG_LENGTH_BITS = 128
         const val GCM_IV_LENGTH_BYTES = 12
+
+        private val lock = Any()
+
+        private const val METRIC_LOAD = "rootkey.load"
+        private const val METRIC_WRAPPER_CREATED = "rootkey.wrapper_key.created"
     }
 
     /**
@@ -65,13 +69,82 @@ class RootKeyStore(private val context: Context) {
      * Throws on any failure that would risk silently fabricating a new identity.
      */
     @Throws(RootKeyException::class)
-    fun loadOrInitialize(): RootKeyResult {
-        loadExisting()?.let {
-            log("RootKeyStore: native hit")
+    fun loadOrInitialize(): RootKeyResult = synchronized(lock) {
+        nativeHitOrRecover()?.let {
             return RootKeyResult(it, generated = false)
         }
+
+        migrateFromLegacy()?.let {
+            log("RootKeyStore: migrated from expo-secure-store")
+            metricCount(METRIC_LOAD, mapOf("outcome" to "migrated"))
+            return RootKeyResult(it, generated = false)
+        }
+
         log("RootKeyStore: generated for first install")
-        return RootKeyResult(generateAndPersist(), generated = true)
+        val key = generateAndPersist()
+        metricCount(METRIC_LOAD, mapOf("outcome" to "generated"))
+        return RootKeyResult(key, generated = true)
+    }
+
+    /**
+     * Native-store read with the §7 recovery hatch: if a native blob is present
+     * but fails to decrypt, fall back to the legacy store before giving up rather
+     * than surfacing the error immediately. A present-but-corrupt native blob with
+     * a recoverable legacy entry is itself recoverable; we only surface the native
+     * decrypt failure when there is no legacy entry to fall back to.
+     */
+    private fun nativeHitOrRecover(): ByteArray? {
+        val native = try {
+            loadExisting()
+        } catch (e: RootKeyException) {
+            log("RootKeyStore: native decrypt failed, attempting legacy fallback")
+            val recovered = try {
+                migrateFromLegacy()
+            } catch (_: RootKeyException) {
+                // Surface the original native failure; the legacy attempt is a best-
+                // effort recovery, not the primary path here.
+                throw e
+            }
+            if (recovered != null) {
+                // Capture the native failure (with its stack, so a permanent keystore wipe is
+                // distinguishable from a transient glitch) even though we recovered — monitoring
+                // this rate tells us how often the §2.1 recovery hatch actually fires.
+                logException(
+                    SentryCategories.BOOT,
+                    e,
+                    message = "RootKeyStore: native read failed, recovered rootkey via legacy fallback",
+                    tags = mapOf(
+                        SentryTags.PHASE to "rootkey",
+                        SentryTags.STATE to "RECOVERED",
+                        SentryTags.SOURCE to "rootkey-store",
+                    ),
+                )
+                metricCount(METRIC_LOAD, mapOf("outcome" to "recovered"))
+                return recovered
+            }
+            throw e
+        }
+        if (native != null) {
+            log("RootKeyStore: native hit")
+            metricCount(METRIC_LOAD, mapOf("outcome" to "native"))
+        }
+        return native
+    }
+
+    /**
+     * One-shot, one-way migration: decode the rootkey from the previous app's
+     * `expo-secure-store`, re-wrap under our wrapper key, and persist. Returns the
+     * 16 bytes, or `null` if there is no legacy entry (true first install). Never
+     * touches the legacy entry — it stays in place as the only on-device recovery
+     * hatch (see docs/root-key-storage-and-migration-plan.md §2.1).
+     */
+    private fun migrateFromLegacy(): ByteArray? {
+        val legacyKey = LegacyRootKeyDecoder(context).decode() ?: return null
+        return try {
+            persistAndVerify(legacyKey)
+        } finally {
+            legacyKey.fill(0)
+        }
     }
 
     private fun loadExisting(): ByteArray? {
@@ -120,15 +193,40 @@ class RootKeyStore(private val context: Context) {
 
     private fun generateAndPersist(): ByteArray {
         val plaintext = ByteArray(ROOTKEY_BYTE_LENGTH).also { SecureRandom().nextBytes(it) }
-        val wrapperKey = createOrLoadWrapperKey()
-        // With `setRandomizedEncryptionRequired(true)`, hardware-backed AndroidKeyStore
-        // refuses a caller-supplied IV at encrypt time (InvalidAlgorithmParameterException
-        // on API 30+). Let the keystore generate the IV; read `cipher.iv` after init().
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-            init(Cipher.ENCRYPT_MODE, wrapperKey)
+        return try {
+            persistAndVerify(plaintext)
+        } finally {
+            plaintext.fill(0)
         }
-        val ct = cipher.doFinal(plaintext)
-        val iv = cipher.iv
+    }
+
+    /**
+     * Wraps [plaintext] under our wrapper key, writes the envelope with a durable
+     * `commit()`, then reads it back and byte-compares before returning. Shared by
+     * the generate and legacy-migrate paths. Does not zero [plaintext] — the caller
+     * owns its lifetime.
+     */
+    private fun persistAndVerify(plaintext: ByteArray): ByteArray {
+        if (plaintext.size != ROOTKEY_BYTE_LENGTH) {
+            throw RootKeyException(
+                "Refusing to persist rootkey of wrong length: ${plaintext.size} " +
+                    "(expected $ROOTKEY_BYTE_LENGTH)",
+            )
+        }
+        val wrapperKey = createOrLoadWrapperKey()
+        val (ct, iv) = try {
+            // With `setRandomizedEncryptionRequired(true)`, hardware-backed AndroidKeyStore
+            // refuses a caller-supplied IV at encrypt time (InvalidAlgorithmParameterException
+            // on API 30+). Let the keystore generate the IV; read `cipher.iv` after init().
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+                init(Cipher.ENCRYPT_MODE, wrapperKey)
+            }
+            val ciphertext = cipher.doFinal(plaintext)
+            val cipherIv = cipher.iv
+            ciphertext to cipherIv
+        } catch (e: Exception) {
+            throw RootKeyException("rootkey: encrypt failed", e)
+        }
         if (iv == null || iv.size != GCM_IV_LENGTH_BYTES) {
             // Defensive: loadExisting enforces 12-byte IVs, so a different-length IV
             // here would silently produce an unreadable envelope on next read.
@@ -161,52 +259,68 @@ class RootKeyStore(private val context: Context) {
         if (!verified.contentEquals(plaintext)) {
             throw RootKeyException("Rootkey verification mismatch after write")
         }
-        plaintext.fill(0)
         return verified
     }
 
     private fun loadWrapperKey(): SecretKey? {
-        val ks = KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }
-        if (!ks.containsAlias(WRAPPER_KEY_ALIAS)) return null
-        val entry = ks.getEntry(WRAPPER_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
-            ?: return null
-        return entry.secretKey
+        return try {
+            val ks = KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }
+            if (!ks.containsAlias(WRAPPER_KEY_ALIAS)) return null
+            val entry = ks.getEntry(WRAPPER_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
+                ?: return null
+            entry.secretKey
+        } catch (e: Exception) {
+            throw RootKeyException("Failed to load wrapper key from AndroidKeyStore", e)
+        }
     }
 
     private fun createOrLoadWrapperKey(): SecretKey {
+        // Outside the try so loadWrapperKey's own RootKeyException ("Failed to load…")
+        // surfaces unchanged instead of being re-wrapped as a creation failure.
         loadWrapperKey()?.let { return it }
 
-        val builder = KeyGenParameterSpec.Builder(
-            WRAPPER_KEY_ALIAS,
-            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-        )
-            .setKeySize(256)
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setRandomizedEncryptionRequired(true)
-            // Threat model is "device at rest is stolen", not in-process app attack.
-            .setUserAuthenticationRequired(false)
+        try {
+            val builder = KeyGenParameterSpec.Builder(
+                WRAPPER_KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+            )
+                .setKeySize(256)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setRandomizedEncryptionRequired(true)
+                // Threat model is "device at rest is stolen", not in-process app attack.
+                .setUserAuthenticationRequired(false)
 
-        // Not using setUnlockedDeviceRequired(true): generation fails on no-lock
-        // devices and disabling the lock later permanently invalidates the key —
-        // both are identity loss. See PR #57.
+            // Not using setUnlockedDeviceRequired(true): generation fails on no-lock
+            // devices and disabling the lock later permanently invalidates the key —
+            // both are identity loss. See PR #57.
 
-        val generator = KeyGenerator.getInstance(
-            KeyProperties.KEY_ALGORITHM_AES,
-            ANDROID_KEY_STORE,
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            try {
-                builder.setIsStrongBoxBacked(true)
-                generator.init(builder.build())
-                return generator.generateKey()
-            } catch (_: StrongBoxUnavailableException) {
-                // Opportunistic — non-StrongBox devices still get a hardware-backed key.
-                builder.setIsStrongBoxBacked(false)
+            val generator = KeyGenerator.getInstance(
+                KeyProperties.KEY_ALGORITHM_AES,
+                ANDROID_KEY_STORE,
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                try {
+                    builder.setIsStrongBoxBacked(true)
+                    generator.init(builder.build())
+                    val key = generator.generateKey()
+                    metricCount(METRIC_WRAPPER_CREATED, mapOf("strongbox" to "true"))
+                    return key
+                } catch (_: Exception) {
+                    // StrongBoxUnavailableException, ProviderException, or another StrongBox
+                    // provisioning error — fall back to a non-StrongBox (still hardware-backed)
+                    // key. Logged so the security downgrade is observable, not silent.
+                    log("RootKeyStore: StrongBox unavailable, using non-StrongBox wrapper key")
+                    builder.setIsStrongBoxBacked(false)
+                }
             }
+            generator.init(builder.build())
+            val key = generator.generateKey()
+            metricCount(METRIC_WRAPPER_CREATED, mapOf("strongbox" to "false"))
+            return key
+        } catch (e: Exception) {
+            throw RootKeyException("Failed to create wrapper key in AndroidKeyStore", e)
         }
-        generator.init(builder.build())
-        return generator.generateKey()
     }
 
     @Suppress("ArrayInDataClass")

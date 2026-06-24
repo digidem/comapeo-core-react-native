@@ -1,3 +1,6 @@
+# CI/BrowserStack flow (standalone build, real device). For local simulator
+# iteration against a Metro dev server, use e2e.local.yaml — keep the
+# "Run tests" / all-tests-* steps below in sync with it.
 appId: com.comapeo.core.e2e
 env:
     TIMEOUT: 300000

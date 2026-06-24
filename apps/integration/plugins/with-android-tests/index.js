@@ -9,7 +9,7 @@ const {
 } = require('@expo/config-plugins/build/utils/generateCode');
 
 const DEFAULT_SOURCE_DIR = '../../tests/android';
-const DEFAULT_TARGET_PACKAGE = 'com.comapeo.core.example';
+const DEFAULT_TARGET_PACKAGE = 'com.comapeo.core.integration';
 
 // androidTest deps — kept in sync with what the existing Kotlin tests import.
 const ANDROID_TEST_DEPS = [

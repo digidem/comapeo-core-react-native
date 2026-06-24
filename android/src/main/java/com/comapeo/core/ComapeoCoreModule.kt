@@ -1,5 +1,8 @@
 package com.comapeo.core
 
+import android.Manifest
+import expo.modules.interfaces.permissions.Permissions
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
@@ -209,6 +212,28 @@ class ComapeoCoreModule : Module() {
                 )
             ComapeoPrefs.open(ctx).writeCaptureApplicationData(value)
             if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
+        }
+
+        // POST_NOTIFICATIONS is the runtime gate (API 33+) for the FGS
+        // notification. Below API 33 `checkSelfPermission` reports the
+        // manifest-declared permission as granted, so both helpers resolve
+        // `granted` without a dialog. The module only exposes these — the
+        // host app decides when to call them (rationale + settings deep-link
+        // UX live in the host). See docs/ForegroundService.md.
+        AsyncFunction("getNotificationPermissionsAsync") { promise: Promise ->
+            Permissions.getPermissionsWithPermissionsManager(
+                appContext.permissions,
+                promise,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
+        }
+
+        AsyncFunction("requestNotificationPermissionsAsync") { promise: Promise ->
+            Permissions.askForPermissionsWithPermissionsManager(
+                appContext.permissions,
+                promise,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
         }
     }
 }

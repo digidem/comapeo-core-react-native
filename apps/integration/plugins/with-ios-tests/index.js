@@ -18,9 +18,9 @@ const {
   mergeContents,
 } = require('@expo/config-plugins/build/utils/generateCode');
 
-const APP_TARGET_NAME = 'corereactnativeexample';
-const TEST_TARGET_NAME = 'corereactnativeexampleTests';
-const TEST_BUNDLE_ID = 'com.comapeo.core.example.tests';
+const APP_TARGET_NAME = 'corereactnativeintegration';
+const TEST_TARGET_NAME = 'corereactnativeintegrationTests';
+const TEST_BUNDLE_ID = 'com.comapeo.core.integration.tests';
 const IPHONEOS_DEPLOYMENT_TARGET = '16.4';
 
 // Source of truth for the iOS XCTest sources. Kept under example/tests/ios/

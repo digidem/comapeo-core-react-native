@@ -217,14 +217,24 @@ JSON envelope. For the AES path (API 23+, which is everything we support):
 ```json
 {
   "scheme": "aes",
-  "keystoreAlias": "AES/GCM/NoPadding:<keychainService>:keystoreUnauthenticated",
+  "keystoreAlias": "<keychainService>",
+  "usesKeystoreSuffix": true,
+  "requireAuthentication": false,
   "ct": "<base64 ciphertext>",
   "iv": "<base64 iv>",
   "tlen": 128
 }
 ```
 
-Older entries may lack the `:keystoreUnauthenticated` suffix on the alias;
+Note the `keystoreAlias` field holds only the `<keychainService>` (e.g. `"key_v1"`),
+**not** the full AndroidKeyStore alias — `SecureStoreModule.saveEncryptedItem` writes
+`put(KEYSTORE_ALIAS_PROPERTY, keychainService)`. The full alias used to encrypt is
+`"AES/GCM/NoPadding:<keychainService>:keystoreUnauthenticated"` (from
+`AESEncryptor.getExtendedKeyStoreAlias`, with the `keystoreUnauthenticated` suffix when
+`usesKeystoreSuffix` is true, which it always is on writes from expo-secure-store 56). We
+reconstruct that full alias from `keychainService` + suffix — we do not read it from the
+envelope.
+
 _very_ old entries created on pre-API-23 devices may have `scheme: "hybrid"`. We
 do not handle `hybrid` — the consuming app's `minSdk` is well above 23. If we
 see it, we surface a clear error to JS rather than guess.
@@ -233,7 +243,9 @@ see it, we surface a clear error to JS rather than guess.
 
 ```kotlin
 val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-val entry = ks.getEntry(envelope.keystoreAlias, null) as KeyStore.SecretKeyEntry
+// Reconstruct the full alias — the envelope's keystoreAlias field is only the service.
+val alias = "AES/GCM/NoPadding:${envelope.keystoreAlias}:keystoreUnauthenticated"
+val entry = ks.getEntry(alias, null) as KeyStore.SecretKeyEntry
 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
 cipher.init(
   Cipher.DECRYPT_MODE,
@@ -393,13 +405,13 @@ native to Node.
 These are values we need pinned down before writing migration code. They live in
 the consuming app's repo, not here.
 
-1. **Pref key name.** What does the consuming app pass as the key to
-   `SecureStore.getItemAsync(...)` for the rootkey? Likely `"rootKey"` but needs
-   confirmation — case-sensitive.
-2. **`keychainService` override.** Does the consuming app pass a custom
-   `keychainService` in its options, or use the default `"key_v1"`?
-3. **String encoding of the 16 bytes.** Hex, base64, or something else? This is
-   release-blocking — see § 6.
+1. **Pref key name.** ✅ Resolved: `"__RootKey"` (not `"rootKey"`). Verified in
+   comapeo-mobile `src/frontend/initializeNodejs.ts`: `getItemAsync("__RootKey")`.
+2. **`keychainService` override.** ✅ Resolved: none — the app passes no options, so
+   the expo-secure-store default `"key_v1"` applies.
+3. **String encoding of the 16 bytes.** ✅ Resolved: hex.
+   `uint8ArrayToHex(getRandomBytes(16))` on write, `Buffer.from(rootKey, "hex")` on the
+   backend — a 32-char lowercase hex string.
 4. **Recovery UX on unrecoverable decrypt failure.** What should the FGS signal
    to JS? Is there an existing "rootkey lost" flow? Given that the answer is
    probably "no, because it never happens today and there's no recovery anyway,"

@@ -14,14 +14,14 @@ set -euo pipefail
 #   - Node.js and npm (for building the example app)
 #
 # Usage:
-#   ./e2e/run-instrumented-tests.sh                           # run all tests
-#   ./e2e/run-instrumented-tests.sh --skip-build              # skip build
-#   ./e2e/run-instrumented-tests.sh --class NodeJSIPCTest     # single test class
-#   ./e2e/run-instrumented-tests.sh --unit-only               # JVM unit tests only (no device)
+#   ./scripts/run-instrumented-tests.sh                           # run all tests
+#   ./scripts/run-instrumented-tests.sh --skip-build              # skip build
+#   ./scripts/run-instrumented-tests.sh --class NodeJSIPCTest     # single test class
+#   ./scripts/run-instrumented-tests.sh --unit-only               # JVM unit tests only (no device)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-EXAMPLE_DIR="$PROJECT_ROOT/example"
+EXAMPLE_DIR="$PROJECT_ROOT/apps/integration"
 
 SKIP_BUILD=false
 TEST_CLASS=""
@@ -198,5 +198,5 @@ echo ""
 echo "==> All tests completed."
 echo ""
 echo "Test reports:"
-echo "  Instrumented: example/android/build/reports/androidTests/connected/"
+echo "  Instrumented: apps/integration/android/build/reports/androidTests/connected/"
 echo "  Unit:         android/build/reports/tests/"

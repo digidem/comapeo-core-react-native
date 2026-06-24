@@ -1,0 +1,44 @@
+name: Lint & Unit Tests
+
+# Fast JS gate. Runs on pull_request for quick pre-merge feedback, and on
+# merge_group so it doesn't stall the queue if it's a required check.
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    name: Lint & Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      # strict-allow-scripts (skip dependency install scripts via the committed
+      # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      # No --ignore-scripts: this package's own `prepare` builds `build/`, which
+      # expo-module lint/test resolve against.
+      - name: Install dependencies
+        run: npm install
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test

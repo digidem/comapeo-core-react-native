@@ -6,6 +6,7 @@ import {
   type ComapeoState,
   type MessageErrorEventPayload,
   type MessageEventPayload,
+  type NotificationPermissionResponse,
   type StateChangeEventPayload,
 } from "./ComapeoCore.types";
 import type { MessagePortLike } from "rpc-reflector";
@@ -74,6 +75,18 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
    * code for the same effect when an outbox is mixed.
    */
   setCaptureApplicationData(value: boolean): Promise<void>;
+  /**
+   * Current notification-permission status without prompting. On Android
+   * < 13 (API 33) and on iOS this resolves as `granted` (no-op).
+   */
+  getNotificationPermissionsAsync(): Promise<NotificationPermissionResponse>;
+  /**
+   * Request the notification permission, showing the system dialog on
+   * Android 13+ when the status is `undetermined`. Resolves with the
+   * post-request status. On Android < 13 and on iOS this resolves as
+   * `granted` without prompting.
+   */
+  requestNotificationPermissionsAsync(): Promise<NotificationPermissionResponse>;
 }
 
 // This call loads the native module object from the JSI.
@@ -116,6 +129,47 @@ export function setDiagnosticsEnabledNative(value: boolean): Promise<void> {
 /** Persist `captureApplicationData`. See `setCaptureApplicationData` JSDoc. */
 export function setCaptureApplicationDataNative(value: boolean): Promise<void> {
   return nativeModule.setCaptureApplicationData(value);
+}
+
+const GRANTED_PERMISSION: NotificationPermissionResponse = {
+  status: "granted",
+  granted: true,
+  canAskAgain: true,
+  expires: "never",
+};
+
+/**
+ * Read the notification-permission status without prompting.
+ *
+ * The module exposes this so the host app can decide when (and whether) to
+ * surface a rationale before requesting. The FGS notification is suppressed
+ * on Android 13+ without this grant, which lets the system deprioritise or
+ * kill the service — see `docs/ForegroundService.md`.
+ *
+ * Falls back to `granted` when the native module isn't available (test
+ * contexts) so cross-platform host code never has to branch on platform.
+ */
+export function getNotificationPermissionsAsync(): Promise<NotificationPermissionResponse> {
+  return (
+    nativeModule.getNotificationPermissionsAsync?.() ??
+    Promise.resolve(GRANTED_PERMISSION)
+  );
+}
+
+/**
+ * Request the notification permission, showing the system dialog on
+ * Android 13+ when the status is `undetermined`. The host app owns the
+ * UX around this call (rationale, and the settings deep-link once
+ * `canAskAgain` is `false`). See `docs/ForegroundService.md`.
+ *
+ * Falls back to `granted` when the native module isn't available (test
+ * contexts).
+ */
+export function requestNotificationPermissionsAsync(): Promise<NotificationPermissionResponse> {
+  return (
+    nativeModule.requestNotificationPermissionsAsync?.() ??
+    Promise.resolve(GRANTED_PERMISSION)
+  );
 }
 
 type MessagePortEvents = {
