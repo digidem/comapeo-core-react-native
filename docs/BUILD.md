@@ -1,12 +1,7 @@
 # Native build & packaging
 
 How the embedded Node.js backend is bundled and how its native addons are
-packaged and loaded on each platform — as it works today.
-
-This is the as-built reference. The design rationale, the alternatives weighed
-(static linking, the addon-load-interception survey, why UDS), and the migration
-history live in [`build-architecture-plan.md`](./build-architecture-plan.md);
-this doc is what a maintainer needs to understand the shipping pipeline. For the
+packaged and loaded on each platform. For the
 runtime/process side (how native talks to the backend over sockets) see
 [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
