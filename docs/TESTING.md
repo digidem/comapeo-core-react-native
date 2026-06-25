@@ -193,7 +193,7 @@ order):
 | `build-ios` (Build (iOS)) | **no** | **yes** | Builds the `apps/e2e` IPA |
 | `upload-android` (Upload Android app) | **yes** | no | Uploads the APK to BrowserStack |
 | `upload-ios` (Upload iOS app) | **yes** | no | Uploads the IPA to BrowserStack |
-| `upload-test-suite` (Upload test suite) | **yes** | no | Zips + uploads `maestro/e2e.yaml` |
+| `upload-test-suite` (Upload test suite) | **yes** | no | Zips + uploads the `maestro/` CI flows (`e2e.yaml`, `fgs-restart.yaml`, `rootkey-persistence.yaml`) |
 | `test-android` (Run tests (Android)) | **yes** | no (action from base ref) | Triggers + polls the Android device run |
 | `test-ios` (Run tests (iOS)) | **yes** | no (action from base ref) | Triggers + polls the iOS device run |
 | `gate` (Gate) | no | no | The single required check — always reports ([§4.2](#42-skipping-a-required-check-without-leaving-it-pending)) |
@@ -439,6 +439,12 @@ only edge is fast JS reload, and nearly all of this module is native +
 nodejs-mobile code that needs a full rebuild on change anyway.
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) §"End-to-end locally" has the same how-to.
 
+CI also uploads two lifecycle flows that don't use the in-app suite:
+[`fgs-restart.yaml`](../maestro/fgs-restart.yaml) (the `:ComapeoCore` foreground
+service recovers after its process is force-stopped) and
+[`rootkey-persistence.yaml`](../maestro/rootkey-persistence.yaml) (the `deviceId`
+is unchanged after a force-stop + cold relaunch).
+
 ---
 
 ## 8. Local development
@@ -480,7 +486,9 @@ platform-specific code.
   [`run-browserstack-maestro`](../.github/actions/run-browserstack-maestro).
 - Maestro flows: [`maestro/e2e.yaml`](../maestro/e2e.yaml) (the e2e suite, run on
   BrowserStack in CI and against a local Release build),
-  [`maestro/fgs-restart.yaml`](../maestro/fgs-restart.yaml) (Android FGS recovery).
+  [`maestro/fgs-restart.yaml`](../maestro/fgs-restart.yaml) and
+  [`maestro/rootkey-persistence.yaml`](../maestro/rootkey-persistence.yaml)
+  (CI/BrowserStack lifecycle flows).
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) — local setup, commands, commit/PR/
   release conventions.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — process model, IPC, lifecycle (what
