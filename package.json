@@ -72,9 +72,9 @@
     "prebackend:build": "npm run backend:install",
     "backend:build": "node ./scripts/build-backend.ts",
     "backend:test": "npm --prefix backend test",
-    "e2e:ios": "npm --prefix apps/e2e run ios",
-    "e2e:android": "npm --prefix apps/e2e run android",
-    "e2e:local": "maestro test maestro/e2e.local.yaml"
+    "e2e:ios": "npm --prefix apps/e2e run build:ios",
+    "e2e:android": "npm --prefix apps/e2e run build:android",
+    "e2e:test": "maestro test maestro/e2e.yaml"
   },
   "keywords": [
     "react-native",

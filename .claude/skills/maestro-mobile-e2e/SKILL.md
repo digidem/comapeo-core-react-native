@@ -417,19 +417,23 @@ Needs Xcode Command Line Tools and a booted simulator (community
 
 ## This project (comapeo-core-react-native)
 
-The e2e app lives in `apps/e2e` (Expo dev-client, `appId`
-`com.comapeo.core.e2e`). The app renders an in-app test harness: tap
-**"Run tests"**, wait for the `all-tests-done` testID, assert `all-tests-passed`.
-Flows live in `maestro/`:
+The e2e app lives in `apps/e2e` (`appId` `com.comapeo.core.e2e`). It renders an
+in-app test harness: tap **"Run tests"**, wait for the `all-tests-done` testID,
+assert `all-tests-passed`. Flows live in `maestro/`:
 
-- `maestro/e2e.yaml` — CI/BrowserStack flow, standalone build, real device.
-  Launches with `clearState: true`.
-- `maestro/e2e.local.yaml` — local simulator variant against a Metro dev server.
-  No `clearState` (would wipe the dev launcher's Metro URL); adds the optional
-  "Continue" overlay-dismiss tap. Keep its "Run tests" / `all-tests-*` steps in
-  sync with `e2e.yaml`.
+- `maestro/e2e.yaml` — the e2e suite. Launches with `clearState: true`, taps
+  **Run tests**, asserts the verdict. Run unchanged both in CI (BrowserStack
+  real devices) and locally against a **Release** build.
 - `maestro/fgs-restart.yaml` — asserts the `:ComapeoCore` foreground service
   recovers after `stopApp` kills its process, relaunching without `clearState`.
+
+Local runs use a **Release** build, not a dev client: `npm run e2e:ios` /
+`e2e:android` builds + installs the Release app, then `npm run e2e:test` drives
+`maestro/e2e.yaml`. A Release build has no dev menu / LogBox overlays and loads
+its embedded JS bundle (no Metro), so none of the dev-build overlay/Metro
+handling above applies here — and there is deliberately no separate `.local.yaml`
+flow. (Nearly all of the module is native + nodejs-mobile code that needs a full
+rebuild on change anyway, so a dev build's fast-reload edge buys nothing for e2e.)
 
 The CI path builds the app, uploads the binary to BrowserStack, and runs the
 flow there (`.github/workflows/e2e-*.yml` → `run-browserstack-maestro`), not on

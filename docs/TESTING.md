@@ -419,23 +419,25 @@ actual cause is visible in the CI log.
 
 ### 7.2 Running the e2e suite locally
 
-The same `apps/e2e` suite runs on a local emulator/simulator — **including iOS**.
-(The "iOS only works on BrowserStack" idea was a misread: the device binary CI
-uploads is unsigned and can't run on a simulator, but a local `expo run:ios`
-signs with your Apple dev team, so the embedded backend's keychain access works.)
+The same `apps/e2e` suite runs on a local emulator/simulator — **including iOS**
+— driving a **Release** build with the exact `maestro/e2e.yaml` flow CI runs on
+BrowserStack. (The "iOS only works on BrowserStack" idea was a misread: the device
+binary CI uploads is unsigned and can't run on a simulator, but a local
+`expo run:ios` Release build signs with your Apple dev team, so the embedded
+backend's keychain access works.)
 
 ```bash
-cd apps/e2e && npm install
-npx expo run:ios          # or: npx expo run:android — builds + installs a dev-client build
-maestro test maestro/e2e.local.yaml
+npm run e2e:ios          # or: npm run e2e:android — Release build + install onto a sim/emulator
+npm run e2e:test         # drive it with Maestro (maestro/e2e.yaml)
 ```
 
-Two flows live in `maestro/`: [`e2e.local.yaml`](../maestro/e2e.local.yaml) for a
-local Metro-backed dev-client build (it drops `clearState`, which would wipe the
-dev launcher's saved Metro URL), and [`e2e.yaml`](../maestro/e2e.yaml) for the
-standalone build CI uploads to BrowserStack. Keep their `Run tests` /
-`all-tests-*` steps in sync. [`CONTRIBUTING.md`](../CONTRIBUTING.md) has the
-Metro-port details for pointing the dev client at the right server.
+A Release build disables the dev menu / LogBox overlays and loads its embedded JS
+bundle (no Metro), so the local run is a faithful copy of the CI run and needs no
+dev-build workarounds — hence a single flow, [`e2e.yaml`](../maestro/e2e.yaml),
+shared by both. There's deliberately no dev-client e2e variant: a dev build's
+only edge is fast JS reload, and nearly all of this module is native +
+nodejs-mobile code that needs a full rebuild on change anyway.
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) §"End-to-end locally" has the same how-to.
 
 ---
 
@@ -476,8 +478,9 @@ platform-specific code.
   [`release.yml`](../.github/workflows/release.yml).
 - Composite action:
   [`run-browserstack-maestro`](../.github/actions/run-browserstack-maestro).
-- Maestro flows: [`maestro/e2e.yaml`](../maestro/e2e.yaml) (CI/BrowserStack),
-  [`maestro/e2e.local.yaml`](../maestro/e2e.local.yaml) (local simulator).
+- Maestro flows: [`maestro/e2e.yaml`](../maestro/e2e.yaml) (the e2e suite, run on
+  BrowserStack in CI and against a local Release build),
+  [`maestro/fgs-restart.yaml`](../maestro/fgs-restart.yaml) (Android FGS recovery).
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) — local setup, commands, commit/PR/
   release conventions.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — process model, IPC, lifecycle (what

@@ -63,28 +63,34 @@ npm run open:ios           # open the integration app in Xcode
 npm run open:android       # open the integration app in Android Studio
 ```
 
-Building/running the test apps (each app installs its own deps via `npm run
-setup`, then builds the embedded backend in via the config plugin):
+Building the test apps. Each app's `build:*` script runs `expo prebuild` then a
+**Release** build onto a connected simulator/emulator (after `npm run setup` has
+installed its deps and built the embedded backend in via the config plugin):
 
 ```bash
-npm run e2e:ios            # build + install + run the e2e app on a simulator (dev client)
-npm run e2e:android        # build + install + run the e2e app on an emulator (dev client)
+npm run e2e:ios                                  # e2e, iOS Release build + install (alias of apps/e2e build:ios)
+npm run e2e:android                              # e2e, Android Release build + install
 
-# Release builds onto a local simulator/emulator (each app has both):
-npm --prefix apps/e2e run build:android          # e2e, Android release
-npm --prefix apps/e2e run build:ios              # e2e, iOS release
-npm --prefix apps/integration run build:android  # integration, Android release
-npm --prefix apps/integration run build:ios      # integration, iOS release
+# the underlying per-app Release builds (each app has both):
+npm --prefix apps/e2e run build:ios              # e2e, iOS Release
+npm --prefix apps/e2e run build:android          # e2e, Android Release
+npm --prefix apps/integration run build:ios      # integration, iOS Release
+npm --prefix apps/integration run build:android  # integration, Android Release
 ```
 
-`build:android` (`expo run:android --variant release`) and `build:ios`
-(`expo run:ios --configuration Release`) build the **Release** configuration onto
-a connected emulator/simulator — handy for release-only behaviour and FGS
-cold-start timing (debug is ~10× slower). They are *not* the BrowserStack
-artifacts: CI builds those separately in
+`build:ios` (`expo run:ios --configuration Release`) and `build:android`
+(`expo run:android --variant release`) build the **Release** configuration onto
+a connected simulator/emulator — what the e2e suite drives locally (see below),
+and handy for release-only behaviour and FGS cold-start timing (debug is ~10×
+slower). They are *not* the BrowserStack artifacts: CI builds those separately in
 [e2e-reusable.yml](.github/workflows/e2e-reusable.yml) — Android via
 `gradlew assembleRelease` (an APK) and iOS via `xcodebuild archive` (an unsigned
 arm64 *device* `.ipa` that can't run on a simulator at all).
+
+For a plain dev/demo run with Metro and fast JS reload (not e2e — see
+[§"End-to-end locally"](#end-to-end-locally) for why a dev build doesn't help
+there), use an app's own `ios` / `android` / `start` scripts, e.g.
+`npm --prefix apps/integration run ios`.
 
 ## Tests
 
@@ -106,7 +112,7 @@ what each one verifies) has a root script:
 | JVM unit | `npm run test:android:unit` | no device |
 | Android instrumented | `npm run test:android` | needs a booted emulator / device |
 | iOS integration | `npm run test:ios` | needs the integration app prebuilt + a simulator |
-| End-to-end (local) | `npm run e2e:ios` / `e2e:android`, then `npm run e2e:local` | see below |
+| End-to-end (local) | `npm run e2e:ios` / `e2e:android`, then `npm run e2e:test` | Release build + Maestro; see below |
 
 The native/integration commands are slower and platform-specific. The CI
 workflows remain the source of truth for the exact flags and device matrix:
@@ -120,29 +126,28 @@ the script directly to pass `--class <TestClass>` or `--skip-build`.
 ### End-to-end locally
 
 The e2e app runs its in-app suite on a local simulator/emulator — **including
-iOS**. An `expo run:ios` build signs with your Apple development team, so the
-embedded Node backend's keychain access works. (CI instead runs iOS e2e on real
-BrowserStack devices from an unsigned device archive — a device binary that
-can't run on a simulator regardless of signing, so don't try to run the
-BrowserStack artifact locally.)
+iOS**. Locally you drive a **Release** build with the exact `maestro/e2e.yaml`
+flow CI runs on BrowserStack:
 
 ```bash
-npm run e2e:ios          # or: npm run e2e:android — builds + installs the dev-client app
-npm run e2e:local        # drive it with Maestro (maestro/e2e.local.yaml)
+npm run e2e:ios          # or: npm run e2e:android — Release build + install onto a sim/emulator
+npm run e2e:test         # drive it with Maestro (maestro/e2e.yaml)
 ```
 
-`e2e:local` uses [maestro/e2e.local.yaml](maestro/e2e.local.yaml), the
-dev-client variant of the CI flow ([maestro/e2e.yaml](maestro/e2e.yaml)); it
-drops `clearState` so it doesn't wipe the dev launcher's saved Metro URL. If the
-e2e app's Metro server isn't on the default port (another project is using it),
-start its own and point the dev client at it:
+A Release build disables the dev menu / LogBox overlays and loads its embedded
+JS bundle (no Metro), so the local run needs no dev-build workarounds and matches
+what CI tests. An `expo run:ios` Release build signs with your Apple development
+team, so the embedded Node backend's keychain access works. (CI instead runs iOS
+e2e on real BrowserStack devices from an unsigned device archive — a device
+binary that can't run on a simulator regardless of signing, so don't try to run
+the BrowserStack artifact locally.)
 
-```bash
-cd apps/e2e && npx expo start --port 8082
-```
+There is deliberately no dev-client e2e variant. A dev build's only advantage is
+fast JS reload, but nearly all of this module is native + nodejs-mobile code that
+needs a full rebuild on change anyway — so the dev-build path buys nothing here,
+and the Release build is the one worth testing.
 
-For writing and debugging Maestro flows — and the Expo dev-menu / LogBox overlay
-handling that keeps local runs reliable — see the bundled
+For writing and debugging Maestro flows see the bundled
 [`maestro-mobile-e2e` skill](.claude/skills/maestro-mobile-e2e/SKILL.md).
 
 ### The native suites and the merge queue
