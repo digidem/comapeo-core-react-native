@@ -362,5 +362,5 @@ If your app already declares either attribute, the manifest merger fails with a
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup, tests, and
-commit/PR/release conventions, and [agents.md](./agents.md) for the
+commit/PR/release conventions, and [AGENTS.md](./AGENTS.md) for the
 architecture and a directory-by-directory breakdown.

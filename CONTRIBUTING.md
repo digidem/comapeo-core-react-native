@@ -5,25 +5,36 @@ development setup, how to run the tests, and the commit/PR/release conventions.
 
 For installation and usage of the published module see the [README](./README.md).
 For the architecture, process model, and directory-by-directory breakdown see
-[agents.md](./agents.md).
+[AGENTS.md](./AGENTS.md).
 
 ## Prerequisites
 
 - Node.js 24 (see [.nvmrc](./.nvmrc); `fnm use` or `nvm use` picks it up).
 - For iOS work: macOS with Xcode. For Android work: Android Studio / SDK + NDK.
+- For local end-to-end runs: [Maestro](https://docs.maestro.dev)
+  (`curl -fsSL "https://get.maestro.mobile.dev" | bash`) and Java 17+.
 
 ```bash
-npm install
-npm run download:nodejs-mobile   # fetch the nodejs-mobile runtime + headers
+npm install        # install module deps and build the module (prepare)
+npm run setup      # fetch nodejs-mobile, build the backend, install the test apps
 ```
 
-`download:nodejs-mobile` pulls `NodeMobile.xcframework` (iOS) and `libnode.so`
-per ABI plus headers (Android) into place — they are not committed.
+`npm run setup` runs, in order:
+
+- `download:nodejs-mobile` — pulls `NodeMobile.xcframework` (iOS) and `libnode.so`
+  per ABI plus headers (Android) into place; these are not committed.
+- `backend:build` — bundles the Node.js backend (`backend/`) that gets embedded in
+  the app. `npm install` alone does **not** build it.
+- installs dependencies for the two test apps (`apps/integration`, `apps/e2e`).
+
+Re-run `npm run setup` after pulling changes that bump the nodejs-mobile version
+or touch the backend. The individual steps are also available on their own
+(`npm run download:nodejs-mobile`, `npm run backend:build`).
 
 ## Repository layout
 
 This is a single published npm package with its build tooling and test apps in
-the same repo. The short version (full detail in [agents.md](./agents.md)):
+the same repo. The short version (full detail in [AGENTS.md](./AGENTS.md)):
 
 - `src/`, `android/`, `ios/` — the published module.
 - `backend/` — the Node.js backend rolled up by `scripts/build-backend.ts` and
@@ -40,14 +51,46 @@ the same repo. The short version (full detail in [agents.md](./agents.md)):
 
 ## Development
 
+Module and backend:
+
 ```bash
-npm run build          # compile TypeScript (expo-module build)
-npm run clean          # remove build artifacts
-npm run lint           # ESLint
-npm run test           # unit tests
-npm run open:ios       # open the integration app in Xcode
-npm run open:android   # open the integration app in Android Studio
+npm run build              # compile the module's TypeScript (expo-module build)
+npm run clean              # remove build artifacts
+npm run lint               # ESLint
+npm run backend:build      # bundle the embedded Node.js backend (backend/)
+npm run download:nodejs-mobile   # re-fetch the nodejs-mobile runtime + headers
+npm run open:ios           # open the integration app in Xcode
+npm run open:android       # open the integration app in Android Studio
 ```
+
+Building the test apps. Each app's `build:*` script runs `expo prebuild` then a
+**Release** build onto a connected simulator/emulator (after `npm run setup` has
+installed its deps and built the embedded backend in via the config plugin):
+
+```bash
+npm run e2e:ios                                  # e2e, iOS Release build + install (alias of apps/e2e build:ios)
+npm run e2e:android                              # e2e, Android Release build + install
+
+# the underlying per-app Release builds (each app has both):
+npm --prefix apps/e2e run build:ios              # e2e, iOS Release
+npm --prefix apps/e2e run build:android          # e2e, Android Release
+npm --prefix apps/integration run build:ios      # integration, iOS Release
+npm --prefix apps/integration run build:android  # integration, Android Release
+```
+
+`build:ios` (`expo run:ios --configuration Release`) and `build:android`
+(`expo run:android --variant release`) build the **Release** configuration onto
+a connected simulator/emulator — what the e2e suite drives locally (see below),
+and handy for release-only behaviour and FGS cold-start timing (debug is ~10×
+slower). They are *not* the BrowserStack artifacts: CI builds those separately in
+[e2e-reusable.yml](.github/workflows/e2e-reusable.yml) — Android via
+`gradlew assembleRelease` (an APK) and iOS via `xcodebuild archive` (an unsigned
+arm64 *device* `.ipa` that can't run on a simulator at all).
+
+For a plain dev/demo run with Metro and fast JS reload (not e2e — see
+[§"End-to-end locally"](#end-to-end-locally) for why a dev build doesn't help
+there), use an app's own `ios` / `android` / `start` scripts, e.g.
+`npm --prefix apps/integration run ios`.
 
 ## Tests
 
@@ -57,28 +100,55 @@ How the suites, workflows, and CI gating fit together (the merge queue, the
 e2e trust boundary, why some checks run where they do) is documented in
 [docs/TESTING.md](./docs/TESTING.md). This section is the short how-to.
 
-Native and integration suites are slower and platform-specific; the exact
-invocations live in the CI workflows, which are the source of truth:
+Each of the seven test layers (see [docs/TESTING.md §2](./docs/TESTING.md) for
+what each one verifies) has a root script:
 
-- iOS — [.github/workflows/ios-tests.yml](.github/workflows/ios-tests.yml). The
-  fast Swift-package suite runs on macOS without a simulator: `cd ios && swift test`.
-- Android — [.github/workflows/android-tests.yml](.github/workflows/android-tests.yml)
-  and `scripts/run-instrumented-tests.sh` for a local emulator run.
-- End-to-end — [.github/workflows/e2e-tests.yml](.github/workflows/e2e-tests.yml).
+| Layer | Command | Notes |
+|---|---|---|
+| JS lint | `npm run lint` | ESLint |
+| JS unit | `npm run test` | TypeScript unit tests (`src/__tests__/`) |
+| Backend unit | `npm run backend:test` | Node `--test` suite in `backend/` |
+| Swift package | `npm run test:swift` | macOS, no simulator (`cd ios && swift test`) |
+| JVM unit | `npm run test:android:unit` | no device |
+| Android instrumented | `npm run test:android` | needs a booted emulator / device |
+| iOS integration | `npm run test:ios` | needs the integration app prebuilt + a simulator |
+| End-to-end (local) | `npm run e2e:ios` / `e2e:android`, then `npm run e2e:test` | Release build + Maestro; see below |
 
-For fast local iteration you can run the e2e app on an iOS simulator directly:
-`cd apps/e2e && npx expo run:ios`. This signs with your Apple development team
-automatically, so the embedded Node backend's keychain access works and the
-in-app test harness runs on the simulator. To drive the suite with Maestro
-against that simulator, use [maestro/e2e.local.yaml](maestro/e2e.local.yaml)
-(`maestro test maestro/e2e.local.yaml`) — the dev-client variant of the CI flow.
-If the e2e app's Metro server isn't on the default port (e.g. another project is
-using it), start its own: `cd apps/e2e && npx expo start --port 8082`.
+The native/integration commands are slower and platform-specific. The CI
+workflows remain the source of truth for the exact flags and device matrix:
+[ios-tests.yml](.github/workflows/ios-tests.yml),
+[android-tests.yml](.github/workflows/android-tests.yml),
+[e2e-tests.yml](.github/workflows/e2e-tests.yml). `test:android` /
+`test:android:unit` wrap
+[`scripts/run-instrumented-tests.sh`](./scripts/run-instrumented-tests.sh) — call
+the script directly to pass `--class <TestClass>` or `--skip-build`.
 
-CI runs iOS e2e on real devices through BrowserStack instead. That path builds
-an unsigned device archive (`CODE_SIGNING_ALLOWED=NO`) for upload — which is a
-device binary and cannot run on a simulator regardless of signing, so don't try
-to run the BrowserStack artifact locally; use `expo run:ios` for the simulator.
+### End-to-end locally
+
+The e2e app runs its in-app suite on a local simulator/emulator — **including
+iOS**. Locally you drive a **Release** build with the exact `maestro/e2e.yaml`
+flow CI runs on BrowserStack:
+
+```bash
+npm run e2e:ios          # or: npm run e2e:android — Release build + install onto a sim/emulator
+npm run e2e:test         # drive it with Maestro (maestro/e2e.yaml)
+```
+
+A Release build disables the dev menu / LogBox overlays and loads its embedded
+JS bundle (no Metro), so the local run needs no dev-build workarounds and matches
+what CI tests. An `expo run:ios` Release build signs with your Apple development
+team, so the embedded Node backend's keychain access works. (CI instead runs iOS
+e2e on real BrowserStack devices from an unsigned device archive — a device
+binary that can't run on a simulator regardless of signing, so don't try to run
+the BrowserStack artifact locally.)
+
+There is deliberately no dev-client e2e variant. A dev build's only advantage is
+fast JS reload, but nearly all of this module is native + nodejs-mobile code that
+needs a full rebuild on change anyway — so the dev-build path buys nothing here,
+and the Release build is the one worth testing.
+
+For writing and debugging Maestro flows see the bundled
+[`maestro-mobile-e2e` skill](.claude/skills/maestro-mobile-e2e/SKILL.md).
 
 ### The native suites and the merge queue
 
