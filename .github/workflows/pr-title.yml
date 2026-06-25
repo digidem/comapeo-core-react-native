@@ -55,7 +55,7 @@ jobs:
       # Derives a changelog label from the conventional-commit PR title so devs
       # only need to write a good title; the label drives .github/release.yml.
       # Title-only — never checks out PR code, so pull_request_target is safe here.
-      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      - uses: actions/github-script@v9
         with:
           script: |
             const title = context.payload.pull_request.title;
