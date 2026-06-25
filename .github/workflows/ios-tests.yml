@@ -165,13 +165,24 @@ jobs:
       # `tee` redirection this step intermittently times out at ~15 min.
       - name: Run integration tests
         run: |
+          # pipefail: without it the step's exit code is tee's (always 0),
+          # so a failing or non-compiling xcodebuild is masked as green.
+          set -o pipefail
           cd apps/integration/ios
+          # Ad-hoc sign the simulator build (no team/profile needed) instead of
+          # CODE_SIGNING_ALLOWED=NO. The latter skips the codesign step that
+          # embeds entitlements, leaving the app with no keychain-access-group
+          # → the backend's Keychain rootkey load fails with -34018 on iOS 13+
+          # simulators and the test host crashes before any test runs. The sim
+          # doesn't verify the signature, only reads __TEXT,__entitlements.
           xcodebuild test \
             -workspace corereactnativeintegration.xcworkspace \
             -scheme corereactnativeintegration \
             -sdk iphonesimulator \
             -destination "id=${{ steps.simulator.outputs.udid }}" \
-            CODE_SIGNING_ALLOWED='NO' 2>&1 | tee xcodebuild-test.log
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES 2>&1 | tee xcodebuild-test.log
 
       - name: Surface xcodebuild failure summary
         if: failure()

@@ -9,7 +9,7 @@
     "build:android": "expo run:android --variant release --no-install",
     "test:android": "../../scripts/run-instrumented-tests.sh",
     "test:android:unit": "../../scripts/run-instrumented-tests.sh --unit-only",
-    "test:ios": "cd ios && xcodebuild test -workspace corereactnativeintegration.xcworkspace -scheme corereactnativeintegration -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' CODE_SIGNING_ALLOWED='NO'"
+    "test:ios": "cd ios && xcodebuild test -workspace corereactnativeintegration.xcworkspace -scheme corereactnativeintegration -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES"
   },
   "dependencies": {
     "@sentry/react-native": "^8.13.0",
