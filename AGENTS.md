@@ -93,13 +93,20 @@ Tests run in layers from cheap JS unit/lint up to the full e2e suite on real dev
 
 ## Bundled agent skills
 
-The repo ships a few Claude Code skills under `.claude/skills/` (committed for all
-contributors; auto-discovered by Claude Code). They encode the project-specific
-procedures that are easy to get wrong:
+The repo ships Claude Code skills under `.claude/skills/` (committed for all
+contributors; auto-discovered by Claude Code).
+
+Project-specific procedures that are easy to get wrong:
 
 - [`native-addon-loading`](.claude/skills/native-addon-loading/SKILL.md) — diagnosing native-addon load failures (the `__loadAddon` rewrite, `jniLibs` bare-name dlopen, iOS xcframework Embed & Sign, prebuild fetch).
 - [`android-instrumented-tests`](.claude/skills/android-instrumented-tests/SKILL.md) — running the Android test layers, single-class filters, and reading the `ComapeoCore` / `Comapeo:NodeJS` logcat tags.
 - [`maestro-mobile-e2e`](.claude/skills/maestro-mobile-e2e/SKILL.md) — writing/debugging Maestro e2e flows locally and in GitHub CI.
+
+Mirrored verbatim from Expo's official [`expo/skills`](https://github.com/expo/skills) plugin (v1.0.0, MIT) so agents in any environment get them without installing the plugin. Re-sync from upstream rather than hand-editing:
+
+- [`expo-module`](.claude/skills/expo-module/SKILL.md) — the Expo Modules API surface (module DSL, native views, config plugins, lifecycle hooks, autolinking). This repo *is* an Expo native module, so this is the primary one.
+- [`expo-dev-client`](.claude/skills/expo-dev-client/SKILL.md) — building/distributing the dev-client test apps locally and via TestFlight.
+- [`upgrading-expo`](.claude/skills/upgrading-expo/SKILL.md) — Expo SDK upgrades and the dependency/native fallout (the SDK-56 SPM + Xcode-floor class of problem this repo hits).
 
 ## Documentation map
 
