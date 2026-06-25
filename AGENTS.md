@@ -2,6 +2,12 @@
 
 An Expo module that integrates [CoMapeo Core](https://github.com/digidem/comapeo-core) into React Native applications. It runs CoMapeo Core in an embedded Node.js process and communicates with the React Native layer over IPC using Unix domain sockets.
 
+This file is the orientation map. The deep references live alongside it:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (process model, IPC, boot,
+lifecycle, errors), [`docs/BUILD.md`](docs/BUILD.md) (native build, addon
+packaging and loading), [`docs/TESTING.md`](docs/TESTING.md) (test layers and
+CI), and [`CONTRIBUTING.md`](./CONTRIBUTING.md) (setup, commands, conventions).
+
 ## What is CoMapeo?
 
 [CoMapeo](https://comapeo.app/) is a local-first, peer-to-peer mapping and territorial monitoring tool built by [Awana Digital](https://awana.digital/) (formerly Digital Democracy) in collaboration with Indigenous partners across the Amazon, East Africa, Southeast Asia, and the Pacific. It is used by frontline environmental defenders in over 90 countries to map, monitor, and protect land and forest.
@@ -21,279 +27,38 @@ CoMapeo is the successor to [Mapeo](https://docs.mapeo.app/), rebuilt from scrat
 
 This module is the bridge that lets `comapeo-mobile` use `@comapeo/core` (a Node.js library) from within React Native. The embedded Node.js entry point is a rolled-up backend bundle (`backend/`, built via `scripts/build-backend.ts`) that initialises a `MapeoManager` and wraps it with `createMapeoServer` from `@comapeo/ipc`. The React Native side uses `createMapeoClient` over the `messagePort` exported by this module.
 
-## Architecture overview
+## Architecture in brief
 
-The module runs CoMapeo Core inside an embedded Node.js runtime and communicates with the React Native layer via length-prefixed JSON messages over Unix domain sockets. The process model differs per platform:
+The module runs CoMapeo Core inside an embedded Node.js runtime and talks to the React Native layer over Unix domain sockets carrying length-prefixed JSON frames. The process model differs per platform:
 
-- **Android** uses a **dual-process** architecture: the UI runs in the main app process and Node.js runs in a separate `:ComapeoCore` foreground service process.
-- **iOS** runs Node.js **in-process** on a dedicated thread (via `nodejs-mobile`'s `NodeMobileStartNode`). iOS has no foreground-service equivalent, and `NodeMobileStartNode` is **once-per-process** — so Node.js is started on first foreground, continues running across background/foreground transitions, and only stops on `applicationWillTerminate`.
+- **Android** — dual-process: the UI runs in the main app process and Node.js runs in a separate `:ComapeoCore` `dataSync` foreground service, so sync survives backgrounding.
+- **iOS** — in-process on a dedicated thread (`nodejs-mobile`'s `NodeMobileStartNode`, which is **once-per-process**): Node.js starts on first foreground, stays alive across background/foreground transitions, and stops only on `applicationWillTerminate`.
 
-```
-┌──────────────────────────────────────────┐
-│  React Native (JavaScript)               │
-│  messagePort.postMessage() / addListener │
-└──────────────┬───────────────────────────┘
-               │ Expo Modules (JSI)
-┌──────────────▼───────────────────────────┐
-│  Native Module (Kotlin / Swift)          │
-│  ComapeoCoreModule                       │
-└──────────────┬───────────────────────────┘
-               │ Unix Domain Sockets
-               │ (length-prefixed JSON frames)
-┌──────────────▼───────────────────────────┐
-│  Node.js Process (separate OS process)   │
-│  CoMapeo Core + socket servers           │
-│  - comapeo.sock  (main RPC channel)      │
-│  - control.sock  (lifecycle/readiness)   │
-└──────────────────────────────────────────┘
-```
+Two sockets carry the traffic: `comapeo.sock` (main RPC, surfaced as `messagePort` in JS) and `control.sock` (lifecycle signals — `started`, `ready`, `shutdown`).
 
-### IPC protocol
+The JS-facing API (`src/`) is two singletons from `ComapeoCoreModule.ts`: `messagePort` (an EventEmitter — `postMessage()` to send, `"message"` events to receive) and `state` (`getState()` plus `"stateChange"` events). Both wrap the native module from `requireNativeModule("ComapeoCore")`.
 
-Messages are framed with a **4-byte little-endian length prefix** followed by a UTF-8 JSON payload. Both sides use this same protocol. On Android the Kotlin `NodeJSIPC` class implements the client side; on iOS the Swift `NodeJSIPC` class implements the same protocol. On the Node.js side, the `SocketMessagePort` class (wrapping `framed-stream`) implements the server side.
+For the full picture — IPC framing, the boot handshake, the per-component lifecycle state machines, error handling, and the native build/packaging/loading pipeline — read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/BUILD.md`](docs/BUILD.md).
 
-### Two socket channels
-
-| Socket | Purpose |
-|---|---|
-| `comapeo.sock` | Main RPC channel for application data (maps to `messagePort` in JS) |
-| `control.sock` | Control channel for lifecycle signals (`started`, `ready`, `shutdown`) |
-
-## Directory structure
+## Directory layout
 
 ```
-├── src/                          # TypeScript source (React Native side)
-│   ├── index.ts                  # Public API exports
-│   ├── ComapeoCoreModule.ts      # MessagePort + State wrappers around native module
-│   └── ComapeoCore.types.ts      # Type definitions for events and payloads
-│
-├── backend/                       # Node.js backend, rolled up by build-backend.ts
-│   ├── index.js                   # Entry — wires ComapeoRpcServer + control IPC
-│   ├── lib/
-│   │   ├── create-comapeo.js      # Constructs MapeoManager
-│   │   ├── comapeo-rpc.js         # Main RPC server (wraps @comapeo/ipc)
-│   │   ├── simple-rpc.js          # Control server: shutdown + readiness broadcasts
-│   │   ├── server-helper.js       # net.createServer wrapper with graceful close
-│   │   ├── message-port.js        # SocketMessagePort (framed JSON over sockets)
-│   │   ├── maps-stub.js           # iOS-only no-op for @comapeo/core's maps fastify plugin
-│   │   └── node-rs-crc32-shim.js  # Pure-JS shim for @node-rs/crc32 (can't be rolled up)
-│   ├── rollup.config.js           # Two outputs: dist/android, dist/ios
-│   ├── rollup-plugins/
-│   │   └── rollup-plugin-addon-loader.js  # Rewrites bindings/node-gyp-build/require.addon → __loadAddon
-│   └── patches/                   # patch-package patches applied at npm ci time
-│
-├── scripts/
-│   └── build-backend.ts           # Rolls up backend, fetches per-addon prebuilds,
-│                                  # emits jniLibs/<abi>/lib<name>__<version>.so (Android)
-│                                  # and ios/Frameworks/<name>__<version>.xcframework (iOS).
-│
-├── android/
-│   ├── src/main/java/com/comapeo/core/
-│   │   ├── ComapeoCoreModule.kt                       # Expo module definition
-│   │   ├── ComapeoCoreService.kt                      # Foreground service in :ComapeoCore process
-│   │   ├── NodeJSService.kt                           # JNI wrapper for Node.js
-│   │   ├── NodeJSIPC.kt                               # Unix socket IPC client
-│   │   ├── ComapeoCoreReactActivityLifecycleListener.kt
-│   │   ├── ComapeoCorePackage.kt
-│   │   ├── Actions.kt
-│   │   └── log.kt
-│   ├── src/main/cpp/
-│   │   ├── jni-bridge.cpp         # JNI bridge to libnode.so + stdout/stderr → logcat
-│   │   └── log.cpp / log.h
-│   ├── src/main/assets/nodejs-project/   # Generated; ESM bundle (index.mjs) + drizzle migrations + native pkg.json/binding.gyp
-│   ├── src/main/jniLibs/<abi>/    # Generated; lib<name>__<version>.so per native addon × ABI
-│   ├── src/main/AndroidManifest.xml      # extractNativeLibs="false" pairs with useLegacyPackaging=false
-│   ├── libnode/                   # Vendored libnode.so per ABI (nodejs-mobile)
-│   ├── build.gradle               # Android build config (Kotlin, CMake, NDK, jniLibs)
-│   └── CMakeLists.txt             # C++ build config
-│
-├── ios/
-│   ├── ComapeoCoreModule.swift              # Expo module definition
-│   ├── AppLifecycleDelegate.swift           # ExpoAppDelegateSubscriber, owns shared NodeJSService
-│   ├── NodeJSService.swift                  # Runs Node.js on a dedicated thread, manages lifecycle
-│   ├── NodeJSIPC.swift                      # Unix socket IPC client + waitForFile helper
-│   ├── NodeMobileBridge.{h,mm}              # Obj-C bridge to NodeMobile.xcframework
-│   ├── Log.swift
-│   ├── Package.swift                        # Swift Package for macOS-native tests
-│   ├── ComapeoCore.podspec                  # vendored_frameworks: NodeMobile + Frameworks/*.xcframework
-│   ├── nodejs-project/                      # Generated; ESM bundle + drizzle + native pkg.json (read-only inside .app bundle)
-│   ├── Frameworks/                          # Generated; one <name>__<version>.xcframework per native addon
-│   ├── NodeMobile.xcframework               # Vendored Node.js runtime
-│   └── Tests/                               # Swift Package test target (see Testing)
-│       ├── Helpers/
-│       │   ├── MockNodeServer.swift
-│       │   ├── MockNodeService.swift
-│       │   ├── TestPaths.swift              # Short-path /tmp dir helper (sockaddr_un limit)
-│       │   └── XCTestCase+Polling.swift     # waitUntil() helper — replaces Thread.sleep
-│       ├── MessageFramingTests.swift
-│       ├── WatchForFileTests.swift
-│       ├── NodeJSIPCTests.swift
-│       ├── NodeJSServiceTests.swift
-│       └── IPCLifecycleTests.swift
-│
-├── apps/                          # Test/dev apps (not published)
-│   ├── integration/               # Integration-test app: hosts the native test targets
-│   │   │                          # (iOS XCTest + Android androidTest), run by xcodebuild /
-│   │   │                          # Gradle. Also a runnable dev/benchmark app.
-│   │   ├── App.tsx
-│   │   ├── tests/                 # Source-of-truth native test files (re-injected at prebuild)
-│   │   │   ├── android/           #   ServiceLifecycleTest.kt, ShutdownPathTest.kt
-│   │   │   └── ios/               #   ComapeoCoreModuleTests.swift, ServiceLifecycleTest.swift, CoreManagerSmokeTest.swift, …
-│   │   └── plugins/               # App-only Expo config plugins. NOT shipped to consumers; they
-│   │       │                      # re-inject the test targets every time `expo prebuild`
-│   │       │                      # regenerates apps/integration/ios|android/.
-│   │       ├── with-ios-tests/    #   Copies tests/ios/*.swift, patches the Podfile, adds the Xcode test target
-│   │       └── with-android-tests/#   Injects androidTest sources + deps via mergeContents
-│   └── e2e/                       # End-to-end app: in-app JS suite (src/tests/) driven by
-│                                  # Maestro on BrowserStack — see maestro/e2e.yaml and docs/TESTING.md
-│
-├── maestro/                       # Maestro e2e flows that drive apps/e2e:
-│   ├── e2e.yaml                   #   BrowserStack flow (CI, release build)
-│   └── e2e.local.yaml             #   dev-client variant for local sim/emulator runs
-│
-├── docs/                          # Architecture references, the build-architecture plan,
-│                                  # and docs/TESTING.md (the testing/CI architecture)
+├── src/         # TypeScript (RN side): public API + MessagePort/State wrappers
+├── backend/     # Node.js backend, rolled up by scripts/build-backend.ts and embedded in the app
+├── scripts/     # Build tooling (build-backend.ts) + the local Android test runner
+├── android/     # Kotlin module + :ComapeoCore foreground service, JNI bridge, generated jniLibs/ + nodejs-project/
+├── ios/         # Swift module/service/IPC, NodeMobile bridge, generated Frameworks/ + nodejs-project/, Swift-package tests (ios/Tests/)
+├── apps/
+│   ├── integration/   # Hosts the native test targets (iOS XCTest + Android androidTest); also a dev/benchmark app
+│   └── e2e/           # End-to-end app: in-app JS suite (src/tests/) driven by Maestro
+├── maestro/     # Maestro e2e flows: e2e.yaml (suite), fgs-restart.yaml (Android FGS recovery)
+├── docs/        # ARCHITECTURE.md, BUILD.md, TESTING.md + design/plan docs
 ├── expo-module.config.json
 ├── package.json
 └── tsconfig.json
 ```
 
-## Key components
-
-### React Native side (`src/`)
-
-**`ComapeoCoreModule.ts`** — The main JS interface. Exports two singletons:
-
-- **`messagePort`** — A `MessagePort` class (EventEmitter) for bidirectional communication with the Node.js process. Call `postMessage(jsonValue)` to send; listen for `"message"` events to receive. Handles JSON serialization/deserialization automatically.
-- **`state`** — A `State` class (EventEmitter) that tracks the Node.js process state. Call `getState()` for current state; listen for `"stateChange"` events.
-
-Both classes wrap the native module loaded via Expo's `requireNativeModule("ComapeoCore")`.
-
-### Android native layer
-
-#### ComapeoCoreModule (`ComapeoCoreModule.kt`)
-The Expo module entry point. Creates a `NodeJSIPC` instance on module creation, forwards `postMessage()` calls to IPC, and emits received messages as events back to JavaScript. Manages lifecycle transitions (foreground/background) via `ComapeoCoreReactActivityLifecycleListener`.
-
-#### ComapeoCoreService (`ComapeoCoreService.kt`)
-An Android **foreground service** running in a separate process (`:ComapeoCore`). This is necessary because:
-1. Android kills background processes aggressively
-2. CoMapeo Core needs to keep syncing data even when the app is backgrounded
-3. The foreground service type is `dataSync` (6-hour limit per 24h, resets on foreground)
-
-State machine: `STOPPED → STARTING → STARTED → STOPPING → STOPPED`
-
-Responds to three actions:
-- `USER_FOREGROUND` — Start or resume the service
-- `USER_BACKGROUND` — Update notification to show "Stop" action
-- `STOP` — Gracefully shut down Node.js and the service
-
-#### NodeJSService (`NodeJSService.kt`)
-JNI wrapper that manages the embedded Node.js runtime. Responsibilities:
-- Copies the `nodejs-project` assets (the rolled-up `index.mjs` + drizzle migrations + native module `package.json`/`binding.gyp`) from the APK to `filesDir` on first launch / APK updates, gated on `lastUpdateTime`. Native `.so` files are not copied — they ship in `jniLibs/<abi>/` and Bionic mmaps them straight from the APK at `dlopen` time.
-- Launches Node.js via JNI `startNodeWithArguments(["node", "index.mjs", comapeoSocketPath, controlSocketPath, dataDir])`.
-- Sends `{"type":"shutdown"}` over `control.sock` for graceful shutdown.
-
-#### NodeJSIPC (`NodeJSIPC.kt`)
-Unix domain socket IPC client using Kotlin coroutines. Key behaviors:
-- Waits for socket file creation using `FileObserver`
-- Connects with exponential backoff retry (100ms → 5s, 5 attempts)
-- Reads/writes length-prefixed JSON frames
-- Separate coroutines for send and receive
-- Reuses fixed 1KB buffer for typical messages to reduce GC pressure
-
-State machine: `Disconnected → Connecting → Connected → Disconnecting → Disconnected`
-
-#### JNI Bridge (`jni-bridge.cpp`)
-C++ layer between Kotlin and `libnode.so` (the embedded Node.js binary). Also redirects Node.js stdout/stderr to Android logcat with the tag `Comapeo:NodeJS`.
-
-### Node.js side (`backend/`)
-
-The backend ships as a single rolled-up ESM bundle (`dist/<platform>/index.mjs`) produced by `backend/rollup.config.js` from `backend/index.js`. `scripts/build-backend.ts` runs `npm ci && npm run build` inside a temp copy of `backend/`, then stages the resulting bundle into `android/src/main/assets/nodejs-project/` and `ios/nodejs-project/` alongside the keep-listed non-JS files (drizzle migrations, native module `package.json`/`binding.gyp`, default-categories zip, fallback map).
-
-**`backend/index.js`** — Entry point. Creates `ComapeoRpcServer` on `comapeo.sock` (main RPC, wraps `@comapeo/ipc`'s `createMapeoServer` around a `MapeoManager`) and `SimpleRpcServer` on `control.sock` (listens for `{"type":"shutdown"}`, broadcasts `{"type":"started"}` / `{"type":"ready"}` to control clients with replay on late connect).
-
-**`backend/lib/create-comapeo.js`** — Constructs `MapeoManager` with `privateStorageDir` from argv: SQLite under `<dir>/sqlite-dbs/`, hypercore index under `<dir>/core-storage/`, custom maps under `<dir>/maps/`.
-
-**`backend/lib/message-port.js`** — `SocketMessagePort` wraps a socket in `framed-stream` for length-prefixed JSON messaging. States: `idle → active → closed`.
-
-**`backend/lib/maps-stub.js`** — iOS-only no-op for `@comapeo/core/src/fastify-plugins/maps.js`. Aliased in by the iOS rollup output because the real plugin imports `undici`, which calls `WebAssembly.compile` at module-init and crashes nodejs-mobile iOS (V8 runs `--jitless`). Tile fetching on iOS is broken until a non-WASM HTTP client is wired in (see issue #23).
-
-**`backend/rollup-plugins/rollup-plugin-addon-loader.js`** — Replaces every native-loader pattern (`require('bindings')(...)`, `require('node-gyp-build')(__dirname)`, `require.addon('.', __filename)`) with a call to a single injected `__loadAddon(name, version)` helper. The helper lives in each output's `output.banner` and dispatches per platform: Android does `process.dlopen(mod, 'lib<name>__<version>.so')` (bare filename — Bionic resolves it against the APK's mmap region); iOS does `process.dlopen(mod, NATIVE_LIB_DIR + '/' + key + '.framework/' + key)` against the Embed-&-Sign'd xcframework binary. Version-aware so multi-version dep graphs (e.g. `sodium-native@4.3.3` + `@5.1.0`) get the correct `.so`/framework per importer.
-
-### Native packaging
-
-`scripts/build-backend.ts` enumerates every `(name, version)` instance of the seven native modules from the backend's `node_modules` (top-level + nested) and emits per-platform artifacts:
-
-- **Android**: `android/src/main/jniLibs/<abi>/lib<name>__<version>.so` per ABI (`armeabi-v7a`, `arm64-v8a`, `x86_64`). The APK ships them uncompressed and aligned (`packagingOptions.jniLibs.useLegacyPackaging = false` in `android/build.gradle`, `android:extractNativeLibs="false"` in the manifest); Bionic mmaps them straight from the APK at `dlopen` time. **Bare-name `dlopen` only** — a full-path `dlopen` would fail because `nativeLibraryDir` contains nothing under this configuration.
-- **iOS**: `ios/Frameworks/<name>__<version>.xcframework` per native module, each containing a device slice (`ios-arm64`) and a fat simulator slice (`arm64+x86_64`). `ios/ComapeoCore.podspec` declares them via `s.vendored_frameworks` (glob). Xcode's standard Embed & Sign phase places `<name>__<version>.framework/` under `<App>.app/Frameworks/` at app build time and codesigns each. Swift exports `NATIVE_LIB_DIR=<bundlePath>/Frameworks` before `NodeMobileStartNode` so the JS-side `__loadAddon` helper resolves the right path.
-
-Per-addon prebuilds are downloaded by `build-backend.ts` from `digidem/<name>-nodejs-mobile` GitHub Releases (versions resolved from the backend's lockfile, not a hand-maintained list). The xcframework wrap step requires macOS Xcode tooling (`xcodebuild`, `lipo`, `install_name_tool`) and is skipped on Linux CI runners (Android workflow).
-
-### iOS native layer
-
-#### ComapeoCoreModule (`ComapeoCoreModule.swift`)
-The Expo module entry point. On `OnCreate` it creates a `NodeJSIPC` pointed at the shared `NodeJSService`'s `comapeo.sock` and forwards `"message"` events to JavaScript. `Function("postMessage")` forwards calls to the IPC; `Function("getState")` reflects the service state; `"stateChange"` events are emitted from the shared `NodeJSService.onStateChange` callback.
-
-#### AppLifecycleDelegate (`AppLifecycleDelegate.swift`)
-An `ExpoAppDelegateSubscriber` that owns a **single static** `NodeJSService` exposed as `AppLifecycleDelegate.nodeService`. `NodeMobileStartNode` can only be called once per process, so the service must be a process-wide singleton — Expo's autolinking instantiates its own delegate, every callsite that needs the service goes through the static, and a `#if DEBUG`-only `static let shared` exists for test code that needs to drive the lifecycle methods directly (e.g. invoking `applicationDidEnterBackground` from a regression test). The static is the API; the instance is incidental.
-
-Production callsites must access `AppLifecycleDelegate.nodeService` (the static), never `.shared.nodeService`. Lazy-initialising `.shared` from a non-main thread traps under Xcode 26 / Swift 6: the inherited `BaseExpoAppDelegateSubscriber.init()` derives from `UIResponder`, which is `@MainActor`-isolated, and Swift's runtime executor check (`_swift_task_checkIsolatedSwift`) SIGTRAPs when init runs off-main — exactly what `ComapeoCoreModule.OnCreate` does, since Expo runs it on the React Native JS thread. `.shared` stays gated to DEBUG so the surface area can't accidentally be reached from a release build.
-
-Lifecycle hooks:
-- `applicationDidBecomeActive` — `Self.nodeService.start()` (guarded by `state == .stopped`, so subsequent foregrounds are no-ops).
-- `applicationDidEnterBackground` — deliberately a **no-op**. Stopping on background would permanently break the app because we can't restart the Node.js runtime in the same process. iOS may suspend or terminate the app during long background windows, at which point the next launch is a fresh process.
-- `applicationWillTerminate` — synchronous `Self.nodeService.stop(timeout: 5)` as a final graceful-shutdown hook.
-
-#### NodeJSService (`NodeJSService.swift`)
-Runs Node.js on a dedicated 2 MB-stack thread (required by nodejs-mobile). Responsibilities:
-- Allocates `comapeo.sock` and `control.sock` under `socketDir` — `/tmp/comapeo-<pid>` on simulator (the host Mac's `/tmp`, namespaced by PID), or `NSTemporaryDirectory()` on device. The path budget is constrained by `sockaddr_un.sun_path`'s 104-byte limit; `init` enforces this loudly. See `AppLifecycleDelegate.resolveSocketDir()`.
-- Opens a `NodeJSIPC` against `control.sock` for lifecycle/control messages.
-- Calls the `NodeEntryPoint` closure (blocking call into `NodeMobileStartNode`) on the node thread.
-- On `stop()`, sends `{"type":"shutdown"}` over `control.sock` and waits on a completion semaphore signalled by the node thread's exit.
-- On `stop()` **timeout**, transitions to `.error` rather than `.stopped`, because the node thread is still alive and calling `start()` again would violate the once-per-process constraint. `cleanup(threadExited:)` takes the flag.
-
-State machine: `STOPPED → STARTING → STARTED → STOPPING → STOPPED`, with an additional `ERROR` terminal state reached only on timed-out shutdowns.
-
-`NodeEntryPoint` and `resolveJSEntryPoint` are injected so tests can substitute a blocking-semaphore fake for the real `NodeMobileStartNode` call.
-
-The file has no UIKit imports — it's compiled into the `ComapeoCore` Swift Package target so the macOS-native test suite can exercise it without a simulator.
-
-#### NodeJSIPC (`NodeJSIPC.swift`)
-Unix domain socket IPC client using `Darwin.socket`/`connect`/`read`/`write` with GCD queues. Key behaviors:
-- Waits for socket file creation with `waitForFile(atPath:timeoutSeconds:)` (50 ms polling — a `FileObserver` equivalent is not used).
-- Connects with exponential backoff (100 ms → 5 s, 5 attempts).
-- Reads/writes length-prefixed JSON frames.
-- `sendMessage` dispatches to a serial send queue; `sendMessageSync` is used during shutdown to guarantee the shutdown frame is written before the node thread exits.
-- `socket` is `internal` (not `private`) so tests can toggle `SO_SNDBUF`/`O_NONBLOCK` to exercise partial-write paths.
-
-State machine: `disconnected → connecting → connected → disconnecting → disconnected` (plus `error`).
-
-#### NodeMobileBridge (`NodeMobileBridge.{h,mm}`)
-Obj-C bridge exposing `NodeMobileStartNode` from the `NodeMobile.xcframework` to Swift.
-
-### iOS asset layout
-
-`ios/nodejs-project/` is generated by `build-backend.ts` and bundled into `<App>.app/nodejs-project/` as a read-only resource. iOS does not extract it on cold start — `resolveJSEntryPoint` hands `NodeMobileStartNode` the path inside the `.app` bundle directly. SQLite/blobs/indexes/custom maps that need write access go to `privateStorageDir` (Application Support) instead.
-
-Android extracts `nodejs-project/` from the APK to `filesDir` on cold install / app upgrade because the APK doesn't expose a filesystem-readable path to its assets the way `<App>.app/<name>/` does on iOS.
-
-## Data flow
-
-### Sending a message from React Native to Node.js
-
-1. `messagePort.postMessage({ key: "value" })` — JS serializes to JSON string
-2. `ComapeoCoreModule.postMessage(jsonString)` — Expo JSI call to native
-3. `NodeJSIPC.sendMessage(jsonString)` — Encodes as 4-byte length prefix + UTF-8 bytes
-4. Written to `comapeo.sock` Unix domain socket
-5. Node.js `SocketMessagePort` receives via `framed-stream`, parses JSON, emits `"message"` event
-
-### Receiving a message from Node.js in React Native
-
-1. Node.js `messagePort.postMessage(value)` — Writes length-prefixed JSON to socket
-2. `NodeJSIPC` receive coroutine reads length prefix, then message bytes
-3. Calls `onMessage` callback with raw string
-4. `ComapeoCoreModule` emits `"message"` event via Expo modules
-5. `MessagePort.#handleMessageEvent` parses JSON and emits `"message"` to JS listeners
+`apps/integration` and `apps/e2e`'s generated `ios/` and `android/` trees are gitignored and regenerated by `expo prebuild`; the source-of-truth native test files under `apps/integration/tests/` are re-injected by app-only config plugins. The per-file breakdown of every source tree is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Platform status
 
@@ -302,71 +67,6 @@ Android extracts `nodejs-project/` from the APK to `filesDir` on cold install / 
 | Android | Functional | Full implementation with foreground service, JNI, IPC |
 | iOS | Functional | In-process Node.js via `nodejs-mobile`, IPC, graceful shutdown |
 | Web | Not started | Declared in expo-module.config.json but no implementation |
-
-## Testing
-
-For the full picture — every test layer, the workflows, the merge queue and
-required checks, the e2e device suite, and the secrets/trust model — see
-[`docs/TESTING.md`](docs/TESTING.md). The summary below covers the Android and
-iOS native suites; the end-to-end suite runs the `apps/e2e` app on BrowserStack.
-
-### Android
-
-| Layer | Tool | Location |
-|---|---|---|
-| JVM unit tests | JUnit4 | `android/src/test/java/com/comapeo/core/` |
-| Instrumented IPC/file-watch tests | AndroidJUnit4 | `android/src/androidTest/java/com/comapeo/core/` |
-| Service lifecycle integration tests | AndroidJUnit4 on the integration app | `apps/integration/tests/android/` (injected into the prebuilt `apps/integration/android/` by the `with-android-tests` config plugin) |
-| Local runner | Shell script | `scripts/run-instrumented-tests.sh` |
-| CI | `.github/workflows/android-tests.yml` | |
-
-The integration app's generated `apps/integration/android/` and `apps/integration/ios/` trees are gitignored — they're regenerated by `npx expo prebuild` and their test targets are reinjected by the `with-android-tests` / `with-ios-tests` config plugins each time. The source of truth for platform-integration test code lives under `apps/integration/tests/android/` (Kotlin) and `apps/integration/tests/ios/` (Swift).
-
-### iOS
-
-Two test layers, two CI jobs:
-
-| Layer | Tool | Location | How it's run |
-|---|---|---|---|
-| Swift Package tests (mocked Node.js) | `swift test` on macOS | `ios/Tests/` | `package-tests` CI job — runs on macOS, no simulator |
-| Integration app tests (real Node.js) | `xcodebuild test` on the integration app workspace | `apps/integration/tests/ios/` | `integration-tests` CI job — iOS Simulator, requires `NodeMobile.xcframework` |
-| CI workflow | `.github/workflows/ios-tests.yml` | | |
-
-The integration app's test target isn't checked into `apps/integration/ios/` — it's injected at Expo prebuild time by the `with-ios-tests` config plugin (`apps/integration/plugins/with-ios-tests/`), which copies the Swift sources from `apps/integration/tests/ios/` into the prebuilt Xcode project, idempotently injects a CocoaPods test target into the `Podfile` via `mergeContents` (`# @generated begin/end with-ios-tests:test-target`), and registers the test target in the Xcode project via a Ruby script using the `xcodeproj` gem. This keeps the test sources under version control without committing the generated Xcode project.
-
-**Important:** this plugin is internal to the integration app — it is not part of the public surface of `@comapeo/core-react-native`. Module consumers do not import or register it; they configure their own test setup as they see fit. The Podfile mutation goes against Expo's general guidance ("don't modify the Podfile from a config plugin") because there's no first-class Expo mod for adding CocoaPods test targets — see the discussion in PR #6 review for the full reasoning.
-
-#### Swift Package tests (`ios/Tests/`)
-
-The `ComapeoCore` Swift Package target (`ios/Package.swift`) compiles only the UIKit-free files (`NodeJSIPC`, `NodeJSService`, `Log`), so the whole test suite runs on macOS via `swift test` — no simulator, no code signing, no NodeMobile. The full run is a few seconds.
-
-- `WatchForFileTests` — tests the `waitForFile` helper directly.
-- `NodeJSIPCTests` — connects `NodeJSIPC` to a real Unix domain socket via `MockNodeServer`. Covers framing, pre-connect buffering, partial-write handling, error-state recovery, and concurrent shutdown.
-- `NodeJSServiceTests` — drives `NodeJSService` with a mock `NodeEntryPoint` that blocks on a `DispatchSemaphore` until signalled, simulating the node runtime without calling `NodeMobileStartNode`.
-- `IPCLifecycleTests` — wires `NodeJSService` + `NodeJSIPC` + `MockNodeServer` for end-to-end mocked lifecycle scenarios.
-
-Shared helpers live in `ios/Tests/Helpers/`:
-
-- `MockNodeServer.swift` — Unix-socket mock server used by all three integration-style test files.
-- `MockNodeService.swift` — `makeMockNodeService(filesDir:)` factory returning `(NodeJSService, signalExit)`. Used by `NodeJSServiceTests` and `IPCLifecycleTests` to avoid duplicating the blocking-semaphore node entry point.
-- `TestPaths.swift` — `makeShortTempDir(prefix:)` centralises the `/tmp`-based short-path workaround for `sockaddr_un.sun_path`'s 104-byte limit, with the reasoning documented in one place.
-- `XCTestCase+Polling.swift` — `waitUntil(_ message:, _ condition:)` replaces `Thread.sleep` + `XCTAssert` in async-state-change tests. Sleeps are fragile under CI load; polling returns as soon as the condition flips and fails fast with a clear message when it doesn't.
-
-#### Integration app tests (`apps/integration/tests/ios/`)
-
-These run against the **real** `NodeMobileStartNode` inside the integration app target, so they're the only layer that exercises the actual Node.js runtime + JS entry point.
-
-- `ComapeoCoreModuleTests` — verifies two testable seams on `ComapeoCoreModule` (the IPC socket path matches `NodeJSService.comapeoSocketPath`; `stateString(for:ipc:)` reflects the service state).
-- `ServiceLifecycleTest` — a single `testFullServiceLifecycle` method that walks startup, steady-state assertions, background behaviour, and graceful shutdown as sequential phases wrapped in `XCTContext.runActivity(named:)` blocks. The phases can't run in isolation because `NodeMobileStartNode` is once-per-process; a monolithic method makes that constraint part of the code rather than a naming convention.
-- `CoreManagerSmokeTest` — boots the real backend, opens an IPC connection to `comapeo.sock`, and asserts `listProjects()` round-trips. Forces the JS side to construct `ComapeoManager` (drizzle migrations + `sodium-native` dlopen + `better-sqlite3` open + `@comapeo/core` constructor).
-
-#### Testable seams in production code
-
-- `NodeJSService.init(socketDir:privateStorageDir:nodeEntryPoint:resolveJSEntryPoint:)` accepts closures for node-runtime startup and JS entry resolution so unit tests never call `NodeMobileStartNode`.
-- `NodeJSService.cleanup(threadExited:)` lets callers signal whether the node thread actually exited — controls the `.stopped` vs `.error` transition.
-- `ComapeoCoreModule` exposes two internal statics (`resolveSocketPath()`, `stateString(for:ipc:)`) the integration-app tests assert on.
-- `NodeJSIPC.socket: Int32` is `internal` (not `private`) so `testLargeMessageIsDeliveredIntactUnderBackpressure` can set `SO_SNDBUF` / `O_NONBLOCK` to force partial writes.
-- `waitForFile(atPath:timeoutSeconds:)` is file-scope `internal` so `WatchForFileTests` can call it directly.
 
 ## Development
 
@@ -382,9 +82,14 @@ npm run open:ios     # open the integration app in Xcode
 npm run open:android # open the integration app in Android Studio
 ```
 
-`npm install` alone does **not** build the embedded backend — run `npm run setup` (or `npm run backend:build`) before any native build. Per-layer test scripts (`test:swift`, `test:android`, `test:android:unit`, `test:ios`, `backend:test`) and the e2e scripts (`e2e:ios` / `e2e:android` / `e2e:local`) are documented in [`CONTRIBUTING.md`](./CONTRIBUTING.md#tests).
+`npm install` alone does **not** build the embedded backend — run `npm run setup` (or `npm run backend:build`) before any native build. Per-layer test scripts (`test:swift`, `test:android`, `test:android:unit`, `test:ios`, `backend:test`) and the e2e scripts (`e2e:ios` / `e2e:android` Release build, then `e2e:test`) are documented in [`CONTRIBUTING.md`](./CONTRIBUTING.md#tests).
 
-`apps/integration/` is an Expo app that doubles as a manual demo/benchmark (message-throughput round-trip) and as the host for the native integration-test targets. `apps/e2e/` is the separate end-to-end app: its in-app suite runs on BrowserStack in CI and on a local simulator/emulator via `npm run e2e:local`. For writing and debugging Maestro flows (including the Expo dev-menu / LogBox handling that keeps local runs reliable) see the bundled [`maestro-mobile-e2e` skill](.claude/skills/maestro-mobile-e2e/SKILL.md). See [`docs/TESTING.md`](docs/TESTING.md) for the full testing/CI architecture.
+## Testing
+
+Tests run in layers from cheap JS unit/lint up to the full e2e suite on real devices; the merge queue, required checks, and the secrets/trust model are documented in [`docs/TESTING.md`](docs/TESTING.md). Two test apps with different mechanisms:
+
+- **`apps/integration`** hosts the compiled **native** test targets (iOS XCTest + Android `androidTest`/JVM), run by `xcodebuild` / Gradle. It also doubles as a dev/benchmark app.
+- **`apps/e2e`** runs an **in-app JS suite** that Maestro drives — on BrowserStack in CI and against a local Release build (`npm run e2e:ios`/`e2e:android`, then `npm run e2e:test`). For writing/debugging the flows see the [`maestro-mobile-e2e` skill](.claude/skills/maestro-mobile-e2e/SKILL.md).
 
 ## Bundled agent skills
 
@@ -395,6 +100,13 @@ procedures that are easy to get wrong:
 - [`native-addon-loading`](.claude/skills/native-addon-loading/SKILL.md) — diagnosing native-addon load failures (the `__loadAddon` rewrite, `jniLibs` bare-name dlopen, iOS xcframework Embed & Sign, prebuild fetch).
 - [`android-instrumented-tests`](.claude/skills/android-instrumented-tests/SKILL.md) — running the Android test layers, single-class filters, and reading the `ComapeoCore` / `Comapeo:NodeJS` logcat tags.
 - [`maestro-mobile-e2e`](.claude/skills/maestro-mobile-e2e/SKILL.md) — writing/debugging Maestro e2e flows locally and in GitHub CI.
+
+## Documentation map
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — process model, IPC channels and framing, boot handshake, lifecycle state machines, error handling, Sentry observability, alternatives considered.
+- [`docs/BUILD.md`](docs/BUILD.md) — the `build-backend.ts` pipeline, the versioned addon-filename scheme, runtime addon loading, the native-modules source-of-truth model.
+- [`docs/TESTING.md`](docs/TESTING.md) — the seven test layers, the workflows, the merge queue and required checks, the e2e device suite, the secrets/trust boundary.
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — setup, every `npm run` script, per-layer test commands, commit/PR/release conventions.
 
 ## Open follow-ups
 
