@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -216,6 +217,29 @@ class NodeJSIPC(
     fun sendMessage(message: String) {
         connect()
         sendChannel.trySend(message)
+    }
+
+    /**
+     * Synchronous, terminal teardown for JS reload (process stays alive, so the
+     * fd must be closed here or it leaks until process death). `shutdown` must
+     * precede `close`: the receive loop is parked in a blocking `readFully` that
+     * holds the socket open until it returns, so `close()` alone never reaches
+     * the peer — `shutdownInput` wakes the read, `shutdownOutput` sends FIN.
+     * Not reusable after close; construct a new instance.
+     */
+    fun close() {
+        scope.cancel()
+        sendChannel.close()
+        if (::socket.isInitialized) {
+            try { socket.shutdownInput() } catch (_: Exception) {}
+            try { socket.shutdownOutput() } catch (_: Exception) {}
+        }
+        try { dataOutputStream?.close() } catch (_: Exception) {}
+        try { dataInputStream?.close() } catch (_: Exception) {}
+        if (::socket.isInitialized) {
+            try { socket.close() } catch (_: Exception) {}
+        }
+        state.value = State.Disconnected
     }
 }
 
