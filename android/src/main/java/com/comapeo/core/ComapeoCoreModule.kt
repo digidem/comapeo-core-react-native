@@ -139,8 +139,13 @@ class ComapeoCoreModule : Module() {
         }
 
         OnDestroy {
-            ipc.disconnect()
-            controlIpc.disconnect()
+            // OnCreate/OnDestroy bind to the Expo AppContext (JS-runtime
+            // lifetime), so they fire on every JS reload while this process
+            // stays alive. Close synchronously: the backend must see EOF on the
+            // old socket before the next OnCreate connects, otherwise the FD
+            // lingers and rpc-reflector listeners leak onto MapeoManager.
+            ipc.close()
+            controlIpc.close()
         }
 
         OnActivityEntersForeground {
