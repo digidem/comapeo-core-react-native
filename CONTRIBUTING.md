@@ -69,9 +69,22 @@ setup`, then builds the embedded backend in via the config plugin):
 ```bash
 npm run e2e:ios            # build + install + run the e2e app on a simulator (dev client)
 npm run e2e:android        # build + install + run the e2e app on an emulator (dev client)
-npm --prefix apps/e2e run build:android          # e2e release APK (what CI ships to BrowserStack)
-npm --prefix apps/integration run build:android  # integration release APK
+
+# Release builds onto a local simulator/emulator (each app has both):
+npm --prefix apps/e2e run build:android          # e2e, Android release
+npm --prefix apps/e2e run build:ios              # e2e, iOS release
+npm --prefix apps/integration run build:android  # integration, Android release
+npm --prefix apps/integration run build:ios      # integration, iOS release
 ```
+
+`build:android` (`expo run:android --variant release`) and `build:ios`
+(`expo run:ios --configuration Release`) build the **Release** configuration onto
+a connected emulator/simulator — handy for release-only behaviour and FGS
+cold-start timing (debug is ~10× slower). They are *not* the BrowserStack
+artifacts: CI builds those separately in
+[e2e-reusable.yml](.github/workflows/e2e-reusable.yml) — Android via
+`gradlew assembleRelease` (an APK) and iOS via `xcodebuild archive` (an unsigned
+arm64 *device* `.ipa` that can't run on a simulator at all).
 
 ## Tests
 
