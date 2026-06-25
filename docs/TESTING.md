@@ -193,7 +193,7 @@ order):
 | `build-ios` (Build (iOS)) | **no** | **yes** | Builds the `apps/e2e` IPA |
 | `upload-android` (Upload Android app) | **yes** | no | Uploads the APK to BrowserStack |
 | `upload-ios` (Upload iOS app) | **yes** | no | Uploads the IPA to BrowserStack |
-| `upload-test-suite` (Upload test suite) | **yes** | no | Zips + uploads `maestro/e2e.yaml` |
+| `upload-test-suite` (Upload test suite) | **yes** | no | Zips + uploads the `maestro/` CI flows (`e2e.yaml`, `fgs-restart.yaml`, `rootkey-persistence.yaml`) |
 | `test-android` (Run tests (Android)) | **yes** | no (action from base ref) | Triggers + polls the Android device run |
 | `test-ios` (Run tests (iOS)) | **yes** | no (action from base ref) | Triggers + polls the iOS device run |
 | `gate` (Gate) | no | no | The single required check — always reports ([§4.2](#42-skipping-a-required-check-without-leaving-it-pending)) |
@@ -430,12 +430,17 @@ npx expo run:ios          # or: npx expo run:android — builds + installs a dev
 maestro test maestro/e2e.local.yaml
 ```
 
-Two flows live in `maestro/`: [`e2e.local.yaml`](../maestro/e2e.local.yaml) for a
-local Metro-backed dev-client build (it drops `clearState`, which would wipe the
-dev launcher's saved Metro URL), and [`e2e.yaml`](../maestro/e2e.yaml) for the
-standalone build CI uploads to BrowserStack. Keep their `Run tests` /
-`all-tests-*` steps in sync. [`CONTRIBUTING.md`](../CONTRIBUTING.md) has the
-Metro-port details for pointing the dev client at the right server.
+The flows live in `maestro/`. [`e2e.local.yaml`](../maestro/e2e.local.yaml) is
+for a local Metro-backed dev-client build (it drops `clearState`, which would
+wipe the dev launcher's saved Metro URL); [`e2e.yaml`](../maestro/e2e.yaml) is
+the standalone-build variant CI uploads to BrowserStack. Keep their `Run tests`
+/ `all-tests-*` steps in sync. CI also uploads two lifecycle flows that don't
+use the in-app suite: [`fgs-restart.yaml`](../maestro/fgs-restart.yaml) (the
+`:ComapeoCore` foreground service recovers after its process is force-stopped)
+and [`rootkey-persistence.yaml`](../maestro/rootkey-persistence.yaml) (the
+`deviceId` is unchanged after a force-stop + cold relaunch).
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) has the Metro-port details for pointing
+the dev client at the right server.
 
 ---
 
@@ -477,7 +482,10 @@ platform-specific code.
 - Composite action:
   [`run-browserstack-maestro`](../.github/actions/run-browserstack-maestro).
 - Maestro flows: [`maestro/e2e.yaml`](../maestro/e2e.yaml) (CI/BrowserStack),
-  [`maestro/e2e.local.yaml`](../maestro/e2e.local.yaml) (local simulator).
+  [`maestro/e2e.local.yaml`](../maestro/e2e.local.yaml) (local simulator),
+  [`maestro/fgs-restart.yaml`](../maestro/fgs-restart.yaml) and
+  [`maestro/rootkey-persistence.yaml`](../maestro/rootkey-persistence.yaml)
+  (CI/BrowserStack lifecycle flows).
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) — local setup, commands, commit/PR/
   release conventions.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — process model, IPC, lifecycle (what
