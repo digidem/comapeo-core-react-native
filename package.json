@@ -53,10 +53,15 @@
     }
   },
   "scripts": {
+    "setup": "npm run download:nodejs-mobile && npm run backend:build && npm --prefix apps/integration install && npm --prefix apps/e2e install",
     "build": "expo-module build --watch false",
     "clean": "expo-module clean",
     "lint": "expo-module lint --cache .",
     "test": "expo-module test",
+    "test:swift": "cd ios && swift test",
+    "test:android": "./scripts/run-instrumented-tests.sh",
+    "test:android:unit": "./scripts/run-instrumented-tests.sh --unit-only",
+    "test:ios": "npm --prefix apps/integration run test:ios",
     "prepare": "node scripts/write-version.mjs && node scripts/check-sentry-cocoa-pin.mjs && expo-module build --watch false",
     "prepublishOnly": "expo-module prepublishOnly",
     "prepack": "node scripts/write-version.mjs && npm run backend:build",
@@ -65,7 +70,11 @@
     "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh",
     "backend:install": "npm ci --no-dry-run --prefix backend",
     "prebackend:build": "npm run backend:install",
-    "backend:build": "node ./scripts/build-backend.ts"
+    "backend:build": "node ./scripts/build-backend.ts",
+    "backend:test": "npm --prefix backend test",
+    "e2e:ios": "npm --prefix apps/e2e run build:ios",
+    "e2e:android": "npm --prefix apps/e2e run build:android",
+    "e2e:test": "maestro test maestro/e2e.yaml"
   },
   "keywords": [
     "react-native",

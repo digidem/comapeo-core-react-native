@@ -1,0 +1,118 @@
+# @comapeo/core-react-native
+
+An Expo module that integrates [CoMapeo Core](https://github.com/digidem/comapeo-core) into React Native applications. It runs CoMapeo Core in an embedded Node.js process and communicates with the React Native layer over IPC using Unix domain sockets.
+
+This file is the orientation map. The deep references live alongside it:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (process model, IPC, boot,
+lifecycle, errors), [`docs/BUILD.md`](docs/BUILD.md) (native build, addon
+packaging and loading), [`docs/TESTING.md`](docs/TESTING.md) (test layers and
+CI), and [`CONTRIBUTING.md`](./CONTRIBUTING.md) (setup, commands, conventions).
+
+## What is CoMapeo?
+
+[CoMapeo](https://comapeo.app/) is a local-first, peer-to-peer mapping and territorial monitoring tool built by [Awana Digital](https://awana.digital/) (formerly Digital Democracy) in collaboration with Indigenous partners across the Amazon, East Africa, Southeast Asia, and the Pacific. It is used by frontline environmental defenders in over 90 countries to map, monitor, and protect land and forest.
+
+CoMapeo is the successor to [Mapeo](https://docs.mapeo.app/), rebuilt from scratch with encrypted peer-to-peer data storage, improved project management, GPS tracks, and a more maintainable architecture.
+
+### CoMapeo ecosystem
+
+| Package | Role |
+|---|---|
+| [`@comapeo/core`](https://github.com/digidem/comapeo-core) | Core library (Node.js) — `MapeoManager` API for projects, observations, sync |
+| [`@comapeo/ipc`](https://github.com/digidem/comapeo-ipc) | IPC wrappers (`createMapeoServer` / `createMapeoClient`) for cross-context communication |
+| **`@comapeo/core-react-native`** (this repo) | Expo module — runs `@comapeo/core` in an embedded Node.js thread |
+| [`comapeo-mobile`](https://github.com/digidem/comapeo-mobile) | React Native mobile app |
+| [`comapeo-desktop`](https://github.com/digidem/comapeo-desktop) | Electron desktop app |
+| [`comapeo-cloud`](https://github.com/digidem/comapeo-cloud) | Self-hosted cloud server |
+
+This module is the bridge that lets `comapeo-mobile` use `@comapeo/core` (a Node.js library) from within React Native. The embedded Node.js entry point is a rolled-up backend bundle (`backend/`, built via `scripts/build-backend.ts`) that initialises a `MapeoManager` and wraps it with `createMapeoServer` from `@comapeo/ipc`. The React Native side uses `createMapeoClient` over the `messagePort` exported by this module.
+
+## Architecture in brief
+
+The module runs CoMapeo Core inside an embedded Node.js runtime and talks to the React Native layer over Unix domain sockets carrying length-prefixed JSON frames. The process model differs per platform:
+
+- **Android** — dual-process: the UI runs in the main app process and Node.js runs in a separate `:ComapeoCore` `dataSync` foreground service, so sync survives backgrounding.
+- **iOS** — in-process on a dedicated thread (`nodejs-mobile`'s `NodeMobileStartNode`, which is **once-per-process**): Node.js starts on first foreground, stays alive across background/foreground transitions, and stops only on `applicationWillTerminate`.
+
+Two sockets carry the traffic: `comapeo.sock` (main RPC, surfaced as `messagePort` in JS) and `control.sock` (lifecycle signals — `started`, `ready`, `shutdown`).
+
+The JS-facing API (`src/`) is two singletons from `ComapeoCoreModule.ts`: `messagePort` (an EventEmitter — `postMessage()` to send, `"message"` events to receive) and `state` (`getState()` plus `"stateChange"` events). Both wrap the native module from `requireNativeModule("ComapeoCore")`.
+
+For the full picture — IPC framing, the boot handshake, the per-component lifecycle state machines, error handling, and the native build/packaging/loading pipeline — read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/BUILD.md`](docs/BUILD.md).
+
+## Directory layout
+
+```
+├── src/         # TypeScript (RN side): public API + MessagePort/State wrappers
+├── backend/     # Node.js backend, rolled up by scripts/build-backend.ts and embedded in the app
+├── scripts/     # Build tooling (build-backend.ts) + the local Android test runner
+├── android/     # Kotlin module + :ComapeoCore foreground service, JNI bridge, generated jniLibs/ + nodejs-project/
+├── ios/         # Swift module/service/IPC, NodeMobile bridge, generated Frameworks/ + nodejs-project/, Swift-package tests (ios/Tests/)
+├── apps/
+│   ├── integration/   # Hosts the native test targets (iOS XCTest + Android androidTest); also a dev/benchmark app
+│   └── e2e/           # End-to-end app: in-app JS suite (src/tests/) driven by Maestro
+├── maestro/     # Maestro e2e flows: e2e.yaml (suite), fgs-restart.yaml (Android FGS recovery)
+├── docs/        # ARCHITECTURE.md, BUILD.md, TESTING.md + design/plan docs
+├── expo-module.config.json
+├── package.json
+└── tsconfig.json
+```
+
+`apps/integration` and `apps/e2e`'s generated `ios/` and `android/` trees are gitignored and regenerated by `expo prebuild`; the source-of-truth native test files under `apps/integration/tests/` are re-injected by app-only config plugins. The per-file breakdown of every source tree is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Platform status
+
+| Platform | Status | Notes |
+|---|---|---|
+| Android | Functional | Full implementation with foreground service, JNI, IPC |
+| iOS | Functional | In-process Node.js via `nodejs-mobile`, IPC, graceful shutdown |
+| Web | Not supported | `expo-module.config.json` declares only `apple` and `android`; no web implementation |
+
+## Development
+
+[`CONTRIBUTING.md`](./CONTRIBUTING.md) is the authoritative setup/dev/test how-to (every `npm run` script, the per-layer test commands, the merge-queue/CI gating, and commit/PR/release conventions). The essentials:
+
+```bash
+npm install          # install module deps + build the module (prepare)
+npm run setup        # fetch nodejs-mobile, build the backend, install the test apps
+npm run build        # compile TypeScript
+npm run lint         # ESLint
+npm run test         # JS unit tests
+npm run open:ios     # open the integration app in Xcode
+npm run open:android # open the integration app in Android Studio
+```
+
+`npm install` alone does **not** build the embedded backend — run `npm run setup` (or `npm run backend:build`) before any native build. Per-layer test scripts (`test:swift`, `test:android`, `test:android:unit`, `test:ios`, `backend:test`) and the e2e scripts (`e2e:ios` / `e2e:android` Release build, then `e2e:test`) are documented in [`CONTRIBUTING.md`](./CONTRIBUTING.md#tests).
+
+## Testing
+
+Tests run in layers from cheap JS unit/lint up to the full e2e suite on real devices; the merge queue, required checks, and the secrets/trust model are documented in [`docs/TESTING.md`](docs/TESTING.md). Two test apps with different mechanisms:
+
+- **`apps/integration`** hosts the compiled **native** test targets (iOS XCTest + Android `androidTest`/JVM), run by `xcodebuild` / Gradle. It also doubles as a dev/benchmark app.
+- **`apps/e2e`** runs an **in-app JS suite** that Maestro drives — on BrowserStack in CI and against a local Release build (`npm run e2e:ios`/`e2e:android`, then `npm run e2e:test`). For writing/debugging the flows see the [`maestro-mobile-e2e` skill](.claude/skills/maestro-mobile-e2e/SKILL.md).
+
+## Bundled agent skills
+
+The repo ships Claude Code skills under `.claude/skills/` (committed for all
+contributors; auto-discovered by Claude Code).
+
+Project-specific procedures that are easy to get wrong:
+
+- [`native-addon-loading`](.claude/skills/native-addon-loading/SKILL.md) — diagnosing native-addon load failures (the `__loadAddon` rewrite, `jniLibs` bare-name dlopen, iOS xcframework Embed & Sign, prebuild fetch).
+- [`android-instrumented-tests`](.claude/skills/android-instrumented-tests/SKILL.md) — running the Android test layers, single-class filters, and reading the `ComapeoCore` / `Comapeo:NodeJS` logcat tags.
+- [`maestro-mobile-e2e`](.claude/skills/maestro-mobile-e2e/SKILL.md) — writing/debugging Maestro e2e flows locally and in GitHub CI.
+
+Mirrored verbatim from Expo's official [`expo/skills`](https://github.com/expo/skills) plugin (v1.0.0, MIT) so agents in any environment get them without installing the plugin. Re-sync from upstream rather than hand-editing:
+
+- [`expo-module`](.claude/skills/expo-module/SKILL.md) — the Expo Modules API surface (module DSL, native views, config plugins, lifecycle hooks, autolinking). This repo *is* an Expo native module, so this is the primary one.
+- [`expo-dev-client`](.claude/skills/expo-dev-client/SKILL.md) — building/distributing the dev-client test apps locally and via TestFlight.
+- [`upgrading-expo`](.claude/skills/upgrading-expo/SKILL.md) — Expo SDK upgrades and the dependency/native fallout (the SDK-56 SPM + Xcode-floor class of problem this repo hits).
+
+## Documentation map
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — process model, IPC channels and framing, boot handshake, lifecycle state machines, error handling, Sentry observability, alternatives considered.
+- [`docs/BUILD.md`](docs/BUILD.md) — the `build-backend.ts` pipeline, the versioned addon-filename scheme, runtime addon loading, the native-modules source-of-truth model.
+- [`docs/TESTING.md`](docs/TESTING.md) — the seven test layers, the workflows, the merge queue and required checks, the e2e device suite, the secrets/trust boundary.
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — setup, every `npm run` script, per-layer test commands, commit/PR/release conventions.
+
+Open work is tracked in [GitHub issues](https://github.com/digidem/comapeo-core-react-native/issues).
