@@ -66,7 +66,7 @@ For the full picture — IPC framing, the boot handshake, the per-component life
 |---|---|---|
 | Android | Functional | Full implementation with foreground service, JNI, IPC |
 | iOS | Functional | In-process Node.js via `nodejs-mobile`, IPC, graceful shutdown |
-| Web | Not started | Declared in expo-module.config.json but no implementation |
+| Web | Not supported | `expo-module.config.json` declares only `apple` and `android`; no web implementation |
 
 ## Development
 
@@ -108,16 +108,4 @@ procedures that are easy to get wrong:
 - [`docs/TESTING.md`](docs/TESTING.md) — the seven test layers, the workflows, the merge queue and required checks, the e2e device suite, the secrets/trust boundary.
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — setup, every `npm run` script, per-layer test commands, commit/PR/release conventions.
 
-## Open follow-ups
-
-Tracked as GitHub issues. Highlights:
-
-- Phase 3 — integrated assembled-backend smoke test (#25)
-- Phase 4 — `socket-transport.js` extraction for runtime-swap prep (#26)
-- Android JNI stdio drain race (#19)
-- iOS real-device runtime smoke test (#20) and TestFlight ritual (#21)
-- iOS `globalThis.fetch` polyfill (#22) and maps plugin re-introduction (#23, #24)
-- IPC backpressure / flow control (#27)
-- Android lifecycle-state parity with iOS + TS bindings (#29)
-- `abiFilters` from consuming app (#30); blobs/icons over UDS (#31); web platform (#32)
-- Rootkey storage migration from `expo-secure-store` (see `docs/root-key-storage-and-migration-plan.md`)
+Open work is tracked in [GitHub issues](https://github.com/digidem/comapeo-core-react-native/issues).
