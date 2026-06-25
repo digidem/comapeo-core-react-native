@@ -147,7 +147,9 @@ Messages are framed with a **4-byte little-endian length prefix** followed by a 
 │   └── e2e/                       # End-to-end app: in-app JS suite (src/tests/) driven by
 │                                  # Maestro on BrowserStack — see maestro/e2e.yaml and docs/TESTING.md
 │
-├── maestro/e2e.yaml               # BrowserStack Maestro flow that drives apps/e2e
+├── maestro/                       # Maestro e2e flows that drive apps/e2e:
+│   ├── e2e.yaml                   #   BrowserStack flow (CI, release build)
+│   └── e2e.local.yaml             #   dev-client variant for local sim/emulator runs
 │
 ├── docs/                          # Architecture references, the build-architecture plan,
 │                                  # and docs/TESTING.md (the testing/CI architecture)
@@ -368,16 +370,31 @@ These run against the **real** `NodeMobileStartNode` inside the integration app 
 
 ## Development
 
+[`CONTRIBUTING.md`](./CONTRIBUTING.md) is the authoritative setup/dev/test how-to (every `npm run` script, the per-layer test commands, the merge-queue/CI gating, and commit/PR/release conventions). The essentials:
+
 ```bash
-npm run build        # Compile TypeScript
-npm run clean        # Remove build artifacts
-npm run lint         # Run ESLint
-npm run test         # Run tests
-npm run open:ios     # Open in Xcode
-npm run open:android # Open in Android Studio
+npm install          # install module deps + build the module (prepare)
+npm run setup        # fetch nodejs-mobile, build the backend, install the test apps
+npm run build        # compile TypeScript
+npm run lint         # ESLint
+npm run test         # JS unit tests
+npm run open:ios     # open the integration app in Xcode
+npm run open:android # open the integration app in Android Studio
 ```
 
-`apps/integration/` is an Expo app that doubles as a manual demo/benchmark (message-throughput round-trip) and as the host for the native integration-test targets. `apps/e2e/` is the separate end-to-end app driven by Maestro on BrowserStack. See [`docs/TESTING.md`](docs/TESTING.md).
+`npm install` alone does **not** build the embedded backend — run `npm run setup` (or `npm run backend:build`) before any native build. Per-layer test scripts (`test:swift`, `test:android`, `test:android:unit`, `test:ios`, `backend:test`) and the e2e scripts (`e2e:ios` / `e2e:android` / `e2e:local`) are documented in [`CONTRIBUTING.md`](./CONTRIBUTING.md#tests).
+
+`apps/integration/` is an Expo app that doubles as a manual demo/benchmark (message-throughput round-trip) and as the host for the native integration-test targets. `apps/e2e/` is the separate end-to-end app: its in-app suite runs on BrowserStack in CI and on a local simulator/emulator via `npm run e2e:local`. For writing and debugging Maestro flows (including the Expo dev-menu / LogBox handling that keeps local runs reliable) see the bundled [`maestro-mobile-e2e` skill](.claude/skills/maestro-mobile-e2e/SKILL.md). See [`docs/TESTING.md`](docs/TESTING.md) for the full testing/CI architecture.
+
+## Bundled agent skills
+
+The repo ships a few Claude Code skills under `.claude/skills/` (committed for all
+contributors; auto-discovered by Claude Code). They encode the project-specific
+procedures that are easy to get wrong:
+
+- [`native-addon-loading`](.claude/skills/native-addon-loading/SKILL.md) — diagnosing native-addon load failures (the `__loadAddon` rewrite, `jniLibs` bare-name dlopen, iOS xcframework Embed & Sign, prebuild fetch).
+- [`android-instrumented-tests`](.claude/skills/android-instrumented-tests/SKILL.md) — running the Android test layers, single-class filters, and reading the `ComapeoCore` / `Comapeo:NodeJS` logcat tags.
+- [`maestro-mobile-e2e`](.claude/skills/maestro-mobile-e2e/SKILL.md) — writing/debugging Maestro e2e flows locally and in GitHub CI.
 
 ## Open follow-ups
 

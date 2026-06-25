@@ -5,7 +5,7 @@ development setup, how to run the tests, and the commit/PR/release conventions.
 
 For installation and usage of the published module see the [README](./README.md).
 For the architecture, process model, and directory-by-directory breakdown see
-[agents.md](./agents.md).
+[AGENTS.md](./AGENTS.md).
 
 ## Prerequisites
 
@@ -34,7 +34,7 @@ or touch the backend. The individual steps are also available on their own
 ## Repository layout
 
 This is a single published npm package with its build tooling and test apps in
-the same repo. The short version (full detail in [agents.md](./agents.md)):
+the same repo. The short version (full detail in [AGENTS.md](./AGENTS.md)):
 
 - `src/`, `android/`, `ios/` — the published module.
 - `backend/` — the Node.js backend rolled up by `scripts/build-backend.ts` and
