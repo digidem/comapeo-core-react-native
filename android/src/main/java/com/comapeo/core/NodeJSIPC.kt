@@ -189,11 +189,15 @@ class NodeJSIPC(
                     }
                 }
             }
+            // `shutdown` before `cancelAndJoin`: the receive loop is parked in a
+            // blocking `readFully` that `cancelAndJoin` cannot interrupt, so without
+            // first waking it the join blocks until the node backend sends a message
+            // or closes the socket — a deadlock when node is connected but idle.
+            // Same fix as close().
+            shutdownSocket()
             connectJob?.cancelAndJoin()
             connectJob = null
-            try { dataOutputStream?.close() } catch (_: Exception) {}
-            try { dataInputStream?.close() } catch (_: Exception) {}
-            try { socket.close() } catch (_: Exception) {}
+            closeStreamsAndSocket()
         }
         disconnectJob.invokeOnCompletion { cause ->
             state.value = when (cause) {
@@ -224,22 +228,38 @@ class NodeJSIPC(
      * fd must be closed here or it leaks until process death). `shutdown` must
      * precede `close`: the receive loop is parked in a blocking `readFully` that
      * holds the socket open until it returns, so `close()` alone never reaches
-     * the peer — `shutdownInput` wakes the read, `shutdownOutput` sends FIN.
+     * the node backend — `shutdownInput` wakes the read, `shutdownOutput` sends FIN.
      * Not reusable after close; construct a new instance.
      */
     fun close() {
         scope.cancel()
+        // Mark terminal before shutdownSocket() wakes the receive loop's blocking
+        // readFully: its IOException handler calls disconnect(), which then
+        // short-circuits on this state guard instead of relaunching teardown on
+        // the now-cancelled scope. Set after scope.cancel() so the (already
+        // cancelled) state collector still doesn't forward this transition,
+        // matching the prior terminal-close semantics.
+        state.value = State.Disconnected
         sendChannel.close()
+        shutdownSocket()
+        closeStreamsAndSocket()
+    }
+
+    // `shutdown` (not `close`) wakes the receive loop parked in a blocking
+    // readFully and sends FIN; it must precede closeStreamsAndSocket().
+    private fun shutdownSocket() {
         if (::socket.isInitialized) {
             try { socket.shutdownInput() } catch (_: Exception) {}
             try { socket.shutdownOutput() } catch (_: Exception) {}
         }
+    }
+
+    private fun closeStreamsAndSocket() {
         try { dataOutputStream?.close() } catch (_: Exception) {}
         try { dataInputStream?.close() } catch (_: Exception) {}
         if (::socket.isInitialized) {
             try { socket.close() } catch (_: Exception) {}
         }
-        state.value = State.Disconnected
     }
 }
 
