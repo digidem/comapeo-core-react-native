@@ -21,8 +21,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 class ComapeoCoreService : Service() {
@@ -35,11 +38,26 @@ class ComapeoCoreService : Service() {
     private var captureApplicationData: Boolean = false
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
+    /** Active self-terminate watchdog (see [onNodeStateChange]). Armed at most once
+     *  per service instance because ERROR is per-instance terminal. */
+    private var selfTerminateJob: Job? = null
+
     companion object {
         const val CHANNEL_ID = "ComapeoServiceChannel"
         const val NOTIFICATION_ID = 1
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
         const val CONTROL_SOCKET_FILENAME = "control.sock"
+
+        /**
+         * Grace between a terminal ERROR and the FGS killing its own process
+         * (see [onNodeStateChange]). Long enough that the normal teardown wins
+         * when it can — backend error frame → `process.exit(1)` → `onComplete` →
+         * `stopService` — and that the FGS-side `error-native` → `error` frame
+         * round-trip (~100ms–2s, ARCHITECTURE §5.7) reaches the main app process
+         * for precise attribution before the kill. Short enough that a hung
+         * process doesn't linger holding the runtime.
+         */
+        const val SELF_TERMINATE_GRACE_MS = 3_000L
 
         /** The runtime gate for the FGS notification on API 33+. Below 33
          *  `checkSelfPermission` reports the manifest-declared permission as
@@ -307,10 +325,53 @@ class ComapeoCoreService : Service() {
             nodeJSService.serviceStartElapsedMs = serviceStartElapsedMs
         }
         nodeJSService.bootKind = bootKind
+        // Arms the self-terminate watchdog on a terminal ERROR. Set before start()
+        // so an error during boot (rootkey, startup watchdog) is observed.
+        nodeJSService.onStateChange = ::onNodeStateChange
         Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
         nodeJSService.start(nodeJSServiceCallback)
         isServiceStarted = true
         return true
+    }
+
+    /**
+     * FGS self-terminate watchdog. `node::Start` is single-shot per process, so a
+     * NodeJSService that reaches a terminal ERROR can't be restarted in place. An
+     * ERROR where the node thread is still alive — e.g. a startup-watchdog timeout
+     * whose `error-native` frame was dropped — would otherwise pin the process
+     * indefinitely, leaving the main app process parked at STARTING because the
+     * control socket never closes (the unbounded wait noted in ARCHITECTURE §5.7).
+     *
+     * We converge every ERROR to a dead process so recovery is uniform: the app
+     * re-foregrounds (`ReactActivityLifecycleListener.onResume` → `USER_FOREGROUND`)
+     * and cold-starts a fresh process. We go through `stopService()` (which calls
+     * `stopSelf`) rather than a bare kill, so `START_STICKY` stays cancelled — the
+     * user re-foregrounding is the recovery, not an OS-paced sticky restart.
+     *
+     * Most ERRORs already self-resolve (backend `process.exit(1)` → `onComplete` →
+     * `stopService`); the grace delay lets that path win, and the fire-time
+     * `isServiceStarted` recheck makes us a no-op when it does. This watchdog is
+     * the backstop for the node-still-alive case. ERROR is per-instance terminal,
+     * so `onStateChange(ERROR)` fires at most once and the job is armed once.
+     */
+    private fun onNodeStateChange(state: NodeJSService.State) {
+        if (state != NodeJSService.State.ERROR || selfTerminateJob != null) return
+        selfTerminateJob = serviceScope.launch {
+            delay(SELF_TERMINATE_GRACE_MS)
+            // Node exited on its own → onComplete/onError already ran stopService.
+            if (!isServiceStarted) return@launch
+            logCapture(
+                SentryCategories.FGS,
+                "comapeo: FGS self-terminating after terminal ERROR",
+                level = "warning",
+                tags = mapOf(
+                    SentryTags.TIMEOUT to "selfTerminate",
+                    SentryTags.PHASE to SentryTags.PHASE_SELF_TERMINATE,
+                ),
+            )
+            // stopService touches the notification manager / stopSelf; keep it on main.
+            withContext(Dispatchers.Main) { stopService() }
+        }
     }
 
     private fun stopService() {

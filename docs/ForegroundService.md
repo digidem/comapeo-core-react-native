@@ -85,6 +85,66 @@ Test app behavior after the user stops the app:
 adb shell cmd activity stop-app PACKAGE_NAME
 ```
 
+### Crash recovery and restarting
+
+The embedded Node.js runtime (`node::Start`) is **single-shot per process** — once
+it has run in a process it cannot be re-launched there. So on Android "restart the
+backend" fundamentally means "kill the `:ComapeoCore` process and cold-start a
+fresh one." `ComapeoCoreService` already encodes this: every teardown path ends in
+`Process.killProcess(myPid())`.
+
+**There is no in-process restart API, by design.** Recovery is a **re-foreground of
+the app**: when the activity resumes, `ComapeoCoreReactActivityLifecycleListener`
+fires a `USER_FOREGROUND` intent that cold-starts a fresh FGS process, and the
+host-process IPC clients reconnect automatically (`OnActivityEntersForeground` →
+`ipc.connect()` / `controlIpc.connect()`). A background→foreground round-trip is
+enough; the user does not have to fully kill the app.
+
+**Self-termination on terminal `ERROR`.** To make that recovery path cover *every*
+failure, the FGS kills its own process a few seconds after it reaches a terminal
+`ERROR` from which the node thread didn't already exit (see
+`ComapeoCoreService.onNodeStateChange` / `SELF_TERMINATE_GRACE_MS`). Most errors
+already self-resolve (the backend calls `process.exit(1)`, the runtime thread
+returns, and the service stops itself); the watchdog is the backstop for the rare
+case where the node thread is left alive — e.g. a startup-watchdog timeout whose
+`error-native` frame was dropped. Without it, that process would pin itself
+indefinitely and the main app process would stay parked at `STARTING` because the
+control socket never closes. Converging to a dead process means foregrounding
+always recovers, and the JS layer reliably observes `ERROR` (via the control-socket
+disconnect) so the host can prompt the user.
+
+**The host owns the actual relaunch.** This module deliberately does not relaunch
+the app for you. When JS observes `state === "ERROR"` (see
+`state.addListener("stateChange", …)`), the host should surface UI that brings the
+app back to the foreground. Options:
+
+- **Prompt the user to reopen the app** — the simplest and most robust. On the next
+  foreground the FGS cold-starts.
+- **Programmatically relaunch** with a module that drives the Android activity
+  through `onResume` (or forks a fresh process):
+  - [`react-native-restart`](https://github.com/avishayil/react-native-restart) —
+    `RNRestart.restart()` recreates the activity, firing `onResume`.
+  - A native [ProcessPhoenix](https://github.com/JakeWharton/ProcessPhoenix)-style
+    restart (kills and relaunches the process) is the most thorough.
+
+  ⚠️ A **JS-bundle-only reload does not restart the service.** `expo-updates`
+  `Updates.reloadAsync()` recreates the React context without an `onPause`→`onResume`
+  activity transition, so `USER_FOREGROUND` never fires and the FGS is not
+  cold-started. Use it only alongside a real activity/process relaunch.
+
+**Apply backoff in the host.** The native side restarts at most once per
+foreground and has no loop protection of its own, so a backend that crashes on
+every boot will re-crash on every relaunch. Keep retry policy (exponential backoff,
+a max-attempts cap, then a hard-failure screen) in the host app.
+
+**iOS is different.** iOS runs Node.js in-process on a dedicated thread that is
+once-per-process and survives background/foreground (it stops only on
+`applicationWillTerminate`). A background→foreground round-trip therefore does
+**not** restart the backend on iOS — recovery requires a **full app termination and
+relaunch** (the user closing and reopening the app, or the OS terminating it). There
+is no separate process to self-terminate. Host crash-recovery UI on iOS should ask
+the user to fully close and reopen the app.
+
 ### Timeout behavior
 
 The system permits `dataSync` foreground services to run for a total of 6 hours

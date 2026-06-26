@@ -178,7 +178,12 @@ class NodeJSService(
      *  (`fgs-launch`, `extract-assets`, `node-spawn`, `rootkey-load`). */
     private val bootSpans = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
-    /** Single-slot state observer; FGS routes through here to broadcast on the control socket. */
+    /**
+     * Single-slot derived-state observer, invoked outside the state lock on each
+     * transition. [ComapeoCoreService] wires this to its self-terminate watchdog so
+     * a terminal ERROR converges the FGS process to a restartable dead state
+     * (see `ComapeoCoreService.onNodeStateChange`).
+     */
     @Volatile
     var onStateChange: ((State) -> Unit)? = null
 
