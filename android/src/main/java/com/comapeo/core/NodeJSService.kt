@@ -739,12 +739,43 @@ class NodeJSService(
 
     suspend fun stop() {
         // Strict guard: stop only valid from STARTING/STARTED. Refusing ERROR keeps
-        // ERROR per-instance terminal (callers use destroy() to release resources).
+        // ERROR per-instance terminal for the public API (callers use destroy() to
+        // release resources). The FGS teardown path uses [stopForTeardown] instead,
+        // which drains gracefully even from ERROR.
         val current = getState()
         if (current != State.STARTING && current != State.STARTED) {
             log("Cannot stop NodeJS service from state $current (not STARTING/STARTED)")
             return
         }
+        drainNode()
+    }
+
+    /**
+     * Best-effort graceful drain for FGS process teardown. Ships the shutdown
+     * frame and joins the node thread so the backend closes
+     * MapeoManager/SQLite/fastify/sockets and exits on its own, instead of being
+     * SIGKILLed by `Process.killProcess`.
+     *
+     * Unlike [stop] this has no lifecycle-state guard, so the self-terminate path
+     * — which fires from ERROR with the node thread still alive, whose event loop
+     * can still service the shutdown frame even while parked on `await initPromise`
+     * — drains gracefully too. The drain is skipped only when the runtime has
+     * already exited (crash / clean exit), where there is nothing left to drain.
+     * The caller ([ComapeoCoreService.onDestroy]) bounds this with a timeout and
+     * force-kills on expiry, so a wedged node can't block teardown.
+     */
+    suspend fun stopForTeardown() {
+        if (stateFlow.value.nodeRuntime !is NodeRuntimeState.Running) {
+            log("stopForTeardown: node runtime already exited, nothing to drain")
+            nodeJob = null
+            return
+        }
+        drainNode()
+    }
+
+    /** Ships `{type:"shutdown"}` and joins the node thread. Shared by the guarded
+     *  public [stop] and the guard-less [stopForTeardown]. */
+    private suspend fun drainNode() {
         if (nodeJob == null) {
             log("NodeJS service is not running, nothing to stop")
             return
@@ -759,7 +790,7 @@ class NodeJSService(
         } catch (e: Exception) {
             logCrumb(
                 SentryCategories.STATE,
-                "stop() failed: ${e.message}",
+                "drainNode() failed: ${e.message}",
                 level = "warning",
             )
             nodeJob?.cancel()

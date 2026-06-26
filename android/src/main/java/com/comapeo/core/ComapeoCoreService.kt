@@ -241,10 +241,13 @@ class ComapeoCoreService : Service() {
             // start path (e.g. an immediate STOP) leaves it uninitialised.
             if (::nodeJSService.isInitialized) {
                 try {
-                    // Graceful first: stop() ships the shutdown frame and joins the node
-                    // thread so the runtime exits cleanly whenever it can.
+                    // Graceful first: stopForTeardown() ships the shutdown frame and joins
+                    // the node thread so the runtime closes MapeoManager/SQLite/sockets and
+                    // exits cleanly whenever it can — including from ERROR (self-terminate),
+                    // where the guarded stop() would refuse. Bounded by withTimeout; on
+                    // expiry the catch below force-kills the process.
                     withTimeout(10_000) {
-                        nodeJSService.stop()
+                        nodeJSService.stopForTeardown()
                     }
                 } catch (e: Exception) {
                     // Capture before killProcess; the flush below is what gets it on the wire.

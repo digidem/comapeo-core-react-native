@@ -113,6 +113,13 @@ control socket never closes. Converging to a dead process means foregrounding
 always recovers, and the JS layer reliably observes `ERROR` (via the control-socket
 disconnect) so the host can prompt the user.
 
+Termination is **graceful-first**: it runs the normal `onDestroy` teardown, which
+ships the `shutdown` frame and joins the node thread so the backend can close
+MapeoManager / SQLite / fastify / sockets and exit on its own (`stopForTeardown`).
+That drain is bounded by the 10 s stop timeout; only if node doesn't exit in time
+is the process force-killed (`Process.killProcess`). So a self-terminate isn't a
+blunt SIGKILL — it gives the runtime a chance to shut down cleanly first.
+
 **The host owns the actual relaunch.** This module deliberately does not relaunch
 the app for you. When JS observes `state === "ERROR"` (see
 `state.addListener("stateChange", …)`), the host should surface UI that brings the

@@ -354,7 +354,11 @@ thread didn't already exit from (`ComapeoCoreService.onNodeStateChange`,
 process on their own (`handleFatal` → `process.exit(1)` → runtime thread
 returns → `onComplete` → `stopService`); the self-terminate watchdog is
 the backstop for the node-still-alive case (e.g. a `starting-timeout`
-whose `error-native` frame was dropped — §5.7). Either way the FGS dies
+whose `error-native` frame was dropped — §5.7). Self-termination is
+graceful-first: `onDestroy` runs `stopForTeardown()`, which ships the
+`shutdown` frame and joins the node thread (so the backend closes
+MapeoManager/SQLite/sockets and exits on its own) bounded by the 10 s
+stop timeout, and only force-kills on expiry. Either way the FGS dies
 *without* re-arming `START_STICKY` (it goes through `stopSelf`), so the
 single recovery path is the app re-foregrounding: `onResume` →
 `USER_FOREGROUND` cold-starts a fresh process. On **iOS** (single
@@ -507,7 +511,7 @@ codebases.
 | 6 | Android `ComapeoCoreService.onDestroy` `withTimeout` | 10 s | `nodeJSService.stop()` hangs | Catches `TimeoutCancellationException` → `Process.killProcess`. This is the only outer bound on Android `stop()` — it has no internal timeout |
 | 7 | Android `SEND_ERROR_NATIVE_TIMEOUT_MS` | 2 s | `ipcDeferred` never completes (FGS init threw before IPC was constructed) | Frame logged as dropped, no error thrown — the FGS still sets local `ERROR` regardless |
 | 8 | Android `connectWithRetry` (`NodeJSIPC`) | 30 s | Backend never binds the socket OR file exists but `accept()` never ready | IPC `State.Error` |
-| 11 | Android `SELF_TERMINATE_GRACE_MS` (`ComapeoCoreService`) | 3 s | Terminal `ERROR` with the node thread still alive (dropped `error-native`, hung `initPromise`) pinning the FGS process forever | `stopService()` → `onDestroy` → `killProcess`; the dead process is recovered by the next `USER_FOREGROUND`. Grace lets the normal `onComplete`→`stopService` win first and lets the `error` frame flush to the main process |
+| 11 | Android `SELF_TERMINATE_GRACE_MS` (`ComapeoCoreService`) | 3 s | Terminal `ERROR` with the node thread still alive (dropped `error-native`, hung `initPromise`) pinning the FGS process forever | `stopService()` → `onDestroy` → graceful `stopForTeardown()` drain (bounded by #6's 10 s) → `killProcess`; the dead process is recovered by the next `USER_FOREGROUND`. Grace lets the normal `onComplete`→`stopService` win first and lets the `error` frame flush to the main process |
 
 **Backend (Node):**
 

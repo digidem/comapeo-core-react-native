@@ -34,8 +34,8 @@ class ServiceLifecycleTest {
         private const val SERVICE_PROCESS = ":ComapeoCore"
         private const val STARTUP_TIMEOUT_MS = 15_000L
         private const val SHUTDOWN_TIMEOUT_MS = 10_000L
-        // SELF_TERMINATE_GRACE_MS (3s) + node teardown + Sentry flush (2s) + margin.
-        private const val SELF_TERMINATE_TIMEOUT_MS = 12_000L
+        // SELF_TERMINATE_GRACE_MS (3s) + graceful drain (≤10s) + Sentry flush (2s) + margin.
+        private const val SELF_TERMINATE_TIMEOUT_MS = 18_000L
         private const val POLL_INTERVAL_MS = 500L
     }
 
