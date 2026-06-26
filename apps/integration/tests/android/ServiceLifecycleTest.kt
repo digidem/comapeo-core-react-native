@@ -291,6 +291,14 @@ class ServiceLifecycleTest {
             "Service should recover (cold-start) after self-termination",
             waitForServiceRunning()
         )
+        // The recovered process must be a genuinely fresh fork, not the original
+        // one limping on — `waitForServiceStopped` already proved `initialPid` died,
+        // so a different pid confirms the cold-start.
+        val recoveredPid = getServiceProcessPid()
+        assertTrue(
+            "Recovered process should be a fresh cold-start (pid != $initialPid), got $recoveredPid",
+            recoveredPid != null && recoveredPid != initialPid
+        )
     }
 
     @Test
