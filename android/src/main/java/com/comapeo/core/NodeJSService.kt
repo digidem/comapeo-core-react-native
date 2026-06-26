@@ -3,6 +3,7 @@ package com.comapeo.core
 import android.content.ContextWrapper
 import android.util.Base64
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.core.content.edit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -565,6 +566,27 @@ class NodeJSService(
             // No socket cleanup here: the filenames are shared with a possible next
             // cold-started generation, whose delete-before-bind in init() owns cleanup.
             // Unlinking on the way out could remove sockets that generation just bound.
+        }
+    }
+
+    /**
+     * Test seam: drive the service to a terminal ERROR **without** exiting the
+     * node thread, reproducing the FGS-local failure shape (startup-watchdog
+     * timeout, rootkey load failure) that the self-terminate watchdog guards
+     * against. Leaves `nodeRuntime` as-is (`Running`), so derivation lands in
+     * ERROR while node stays alive — exactly the case where
+     * `ComapeoCoreService.onNodeStateChange` must kill the process.
+     *
+     * Reached only via the debug-gated `Actions.SIMULATE_FATAL_ERROR` intent
+     * (`BuildConfig.DEBUG`); not part of the production lifecycle. `otherwise =
+     * PACKAGE_PRIVATE` so Lint allows the same-package call from the debug intent
+     * handler in `ComapeoCoreService` while still flagging any wider production use.
+     */
+    @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
+    fun forceFatalErrorForTesting() {
+        val info = ErrorInfo("test-forced-error", "Forced fatal error (test seam)")
+        applyAndEmit(error = info) {
+            it.copy(backendState = BackendState.Error(info.phase, info.message))
         }
     }
 

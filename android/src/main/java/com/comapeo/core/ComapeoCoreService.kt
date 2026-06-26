@@ -182,6 +182,19 @@ class ComapeoCoreService : Service() {
                 stopService()
             }
 
+            // Debug-only test seam: force a terminal ERROR with the node thread
+            // alive so an instrumented test can assert the self-terminate watchdog
+            // kills the process and a USER_FOREGROUND recovers it. Compiled-out
+            // behaviour in release — the action is simply ignored.
+            Actions.SIMULATE_FATAL_ERROR.name -> {
+                if (BuildConfig.DEBUG && isServiceStarted && ::nodeJSService.isInitialized) {
+                    log("SIMULATE_FATAL_ERROR: forcing terminal ERROR (debug only)")
+                    nodeJSService.forceFatalErrorForTesting()
+                } else {
+                    log("Ignoring SIMULATE_FATAL_ERROR (release build or service not started)")
+                }
+            }
+
             null -> {
                 // System-driven restart (no intent): recover the foreground/background
                 // notification state from the app lifecycle.
