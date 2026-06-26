@@ -30,6 +30,12 @@ import kotlinx.coroutines.withTimeout
 
 class ComapeoCoreService : Service() {
 
+    // @Volatile: written from stopService() on both the main thread and the
+    // nodeJob's Dispatchers.Default callbacks (onComplete/onError), and read by the
+    // self-terminate watchdog coroutine (also Dispatchers.Default). Without it the
+    // watchdog could read a stale `true` after the normal teardown already won and
+    // fire a spurious self-terminate.
+    @Volatile
     private var isServiceStarted: Boolean = false
     private lateinit var nodeJSService: NodeJSService
     // Snapshotted in onCreate, consumed when the Node backend is built lazily in
@@ -39,7 +45,10 @@ class ComapeoCoreService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     /** Active self-terminate watchdog (see [onNodeStateChange]). Armed at most once
-     *  per service instance because ERROR is per-instance terminal. */
+     *  per service instance because ERROR is per-instance terminal. `@Volatile` for
+     *  cross-thread visibility (written from `applyAndEmit`'s background dispatchers),
+     *  mirroring `NodeJSService.startupWatchdogJob`. */
+    @Volatile
     private var selfTerminateJob: Job? = null
 
     companion object {
