@@ -117,26 +117,25 @@ describe("onRequestHook", () => {
     expect(rpcClientMetric.mock.calls[0][1]).toBe("error");
   });
 
-  test("debug=false + Sentry up: a rejecting RPC is still captured", async () => {
-    const { capturedHook, captureException } = setup({ debug: false });
-    const err = new Error("boom");
-    const next = jest.fn(() => Promise.reject(err));
-    capturedHook()({ method: ["someMethod"] }, next);
-    await flushMicrotasks();
-
-    expect(captureException).toHaveBeenCalledWith(err);
-  });
-
-  test("Sentry down: a rejecting RPC records the metric but is not captured", async () => {
-    const { capturedHook, captureException, rpcClientMetric } = setup({
-      debug: false,
-      sentryInitialized: false,
-    });
+  test("debug=false: a rejecting RPC records the error metric but is never captured", async () => {
+    const { capturedHook, captureException, rpcClientMetric } = setup({ debug: false });
     const next = jest.fn(() => Promise.reject(new Error("boom")));
     capturedHook()({ method: ["someMethod"] }, next);
     await flushMicrotasks();
 
     expect(rpcClientMetric).toHaveBeenCalledTimes(1);
+    expect(rpcClientMetric.mock.calls[0][1]).toBe("error");
+    // Capture is the caller's decision, not the hook's.
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  test("debug=true: a rejecting RPC marks the span errored but is never captured", async () => {
+    const { capturedHook, captureException, startSpan } = setup({ debug: true });
+    const next = jest.fn(() => Promise.reject(new Error("boom")));
+    capturedHook()({ method: ["someMethod"] }, next);
+    await flushMicrotasks();
+
+    expect(startSpan).toHaveBeenCalledTimes(1);
     expect(captureException).not.toHaveBeenCalled();
   });
 });

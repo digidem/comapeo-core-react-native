@@ -709,11 +709,11 @@ function makeSentryRequestHook() {
             await next(request);
             span.setStatus({ code: 1, message: "ok" });
           } catch (error) {
+            // Observe for tracing + metrics only — the hook does NOT capture
+            // an issue. An RPC rejection is often expected control flow (e.g.
+            // NotFound); whether it's worth reporting is the calling
+            // application's decision, at the call site.
             span.setStatus({ code: 2, message: "internal_error" });
-            Sentry.captureException(error, {
-              tags: { layer: "node", op: "rpc.server" },
-            });
-            throw error;
           }
         },
       ),
@@ -727,8 +727,11 @@ Notes:
 - The hook is only registered when Sentry is active; absent config,
   `createMapeoServer` is called without `onRequestHook` and there is zero
   overhead.
-- We rethrow after `captureException` so the IPC error path still returns a
-  rejection to the JS caller.
+- The hook is observational: it records duration/status metrics and (under
+  `debug`) a trace span, but never calls `captureException`. The RPC response
+  and its rejection flow back to the JS caller through rpc-reflector's own
+  channel independently of the hook, so swallowing the error here does not
+  affect the caller. Error *reporting* is left to the call site.
 - `request.args` is not serialised by default. In CoMapeo data the args can
   be project-scoped content (observation fields, attachments). Opt-in only
   via `rpcArgsBytes`.

@@ -333,11 +333,11 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
       typeof isInitialized !== "function" || isInitialized();
     const method = request.method.join(".");
 
-    // Always-on path. Records the per-call duration + status metric and
-    // captures the rejection as a Sentry issue regardless of `debug`; the
-    // metrics layer no-ops when Sentry is off and `captureException` is
-    // guarded on `sentryUp`, so this is safe even before init. Per-RPC
-    // traces (below) only run under `debug`.
+    // Metrics/tracing only — the hook never captures exceptions. An RPC
+    // rejection is often expected control flow (e.g. NotFound) that the
+    // caller may not want reported; deciding what's report-worthy is the
+    // caller's job, at the call site. The metric layer no-ops when Sentry is
+    // off. Per-RPC traces (below) only run under `debug`.
     const recordMetric = (start: number, status: string) => {
       rpcClientMetric(method, status, performance.now() - start);
     };
@@ -350,10 +350,7 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
       responsePromise
         .then(
           () => recordMetric(start, rpcStatusFor(null)),
-          (error: unknown) => {
-            recordMetric(start, rpcStatusFor(error));
-            if (sentryUp) Sentry.captureException(error);
-          },
+          (error: unknown) => recordMetric(start, rpcStatusFor(error)),
         )
         .catch(noop);
       return;
@@ -402,9 +399,10 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
             span.setStatus?.({ code: 1, message: "ok" });
             recordMetric(start, rpcStatusFor(null));
           } catch (error) {
+            // Mark the span errored for tracing, but do not capture an issue
+            // — see the metrics-only note on the non-debug path above.
             span.setStatus?.({ code: 2, message: "internal_error" });
             recordMetric(start, rpcStatusFor(error));
-            Sentry.captureException(error);
           }
         },
       );

@@ -147,7 +147,7 @@ test("debug OFF: rpcHook records the metric but creates no span/envelope", async
   await Sentry.close();
 });
 
-test("debug OFF: a rejecting RPC is still captured as a Sentry issue", async () => {
+test("debug OFF: a rejecting RPC records the error metric but captures no issue", async () => {
   initSentry({ ...baseArgv, debug: false });
   const rec = recordingMetricsSdk();
   metrics.init({
@@ -164,8 +164,8 @@ test("debug OFF: a rejecting RPC is still captured as a Sentry issue", async () 
   const hook = rpcHook();
   assert.ok(hook, "rpcHook returned undefined — Sentry didn't initialise");
 
-  // Error capture must NOT be gated on debug: a handler that throws still
-  // produces a Sentry issue on the always-on path.
+  // The hook observes errors for metrics only; capturing an issue is the
+  // caller's decision, so a rejection must NOT produce an envelope.
   await new Promise((resolve) => {
     hook(
       { method: ["read", "doc"], args: [], metadata: {} },
@@ -175,11 +175,16 @@ test("debug OFF: a rejecting RPC is still captured as a Sentry issue", async () 
       },
     );
   });
-  await flush(2000);
+  await flush(500);
 
+  assert.equal(
+    captured.length,
+    0,
+    "the hook must not capture RPC errors as Sentry issues",
+  );
   assert.ok(
-    captured.length > 0,
-    "debug-off rejection must still reach Sentry as a captured issue",
+    rec.distributions.some((d) => d.name === "comapeo.rpc.server.duration_ms"),
+    "the error path must still record the duration metric",
   );
 
   await Sentry.close();

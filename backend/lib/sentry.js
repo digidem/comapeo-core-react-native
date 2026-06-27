@@ -365,12 +365,13 @@ export function rpcHook() {
   return (request, next) => {
     const method = request.method.join(".");
 
-    // Always-on path. Records duration + status metrics AND captures the
-    // handler exception as a Sentry issue regardless of `debug` — error
-    // visibility is gated only on Sentry being initialised. The span block
-    // below adds per-RPC tracing under `debug` and wraps the same
-    // `next(request)`. The trailing `.catch` keeps a throw from a metrics
-    // call out of the unhandledRejection → handleFatal path.
+    // Metrics/tracing only — the hook never captures exceptions. An RPC
+    // rejection is often expected control flow (e.g. NotFound) that should
+    // not auto-create a Sentry issue; deciding what's report-worthy is the
+    // caller's job, at the call site. Records duration + status regardless of
+    // `debug`; the span block below adds per-RPC tracing under `debug`. The
+    // trailing `.catch` keeps a throw from a metrics call out of the
+    // unhandledRejection → handleFatal path.
     if (!debug) {
       const start = performance.now();
       Promise.resolve(next(request))
@@ -383,9 +384,6 @@ export function rpcHook() {
               performance.now() - start,
             );
             metrics.rpcServerError(method, errorClassFor(error));
-            sentryRef.captureException(error, {
-              tags: { layer: "node", op: "rpc.server" },
-            });
           },
         )
         .catch(() => {});
@@ -429,6 +427,8 @@ export function rpcHook() {
             span.setStatus({ code: 1, message: "ok" });
             metrics.rpcServer(method, "ok", performance.now() - start);
           } catch (error) {
+            // Mark the span errored for tracing, but do not capture an issue
+            // — see the metrics-only note on the non-debug path above.
             span.setStatus({ code: 2, message: "internal_error" });
             metrics.rpcServer(
               method,
@@ -436,9 +436,6 @@ export function rpcHook() {
               performance.now() - start,
             );
             metrics.rpcServerError(method, errorClassFor(error));
-            sentryRef.captureException(error, {
-              tags: { layer: "node", op: "rpc.server" },
-            });
           }
         },
       );
