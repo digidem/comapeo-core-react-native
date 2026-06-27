@@ -334,6 +334,9 @@ function startMemorySampler() {
  */
 function sampleStorageSize(dir) {
   if (!dir) return;
+  // The recursive stat-walk below is only worth running if its bucket
+  // metric will actually be recorded; skip it entirely when Sentry is off.
+  if (!metrics.isEnabled()) return;
   import("node:fs")
     .then(async ({ promises: fs }) => {
       let total = 0;

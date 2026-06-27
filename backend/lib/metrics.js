@@ -53,6 +53,12 @@ export function resetForTests() {
   config = null;
 }
 
+/** Whether `init` ran — lets callers skip work whose only output is a
+ *  metric that would otherwise be silently dropped when Sentry is off. */
+export function isEnabled() {
+  return Sentry !== null;
+}
+
 /** The only tag cheap enough to ride on every metric (§11.2.c). */
 function defaultTags() {
   return { platform: config?.platform ?? "unknown" };
