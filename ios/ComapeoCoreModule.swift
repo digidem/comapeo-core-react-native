@@ -50,6 +50,11 @@ public class ComapeoCoreModule: Module {
         }
 
         OnDestroy {
+            // Fires on every JS reload as of expo-modules-core SDK 53+ (weak
+            // MainValueConverter.appContext lets AppContext deinit; verified on
+            // 56). No iOS equivalent of the Android close() is needed: iOS
+            // disconnect() shutdown(2)s before joining the receive loop, so the
+            // backend sees EOF synchronously without the cancelAndJoin deadlock.
             self.ipc?.disconnect()
             self.ipc = nil
         }
