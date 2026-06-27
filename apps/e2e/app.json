@@ -19,7 +19,18 @@
 		},
 		"plugins": [
 			["expo-dev-client", { "launchMode": "most-recent" }],
-			"../../app.plugin.js",
+			[
+				"../../app.plugin.js",
+				{
+					"sentry": {
+						"dsn": "https://ad3e252833dbfde16a70f3c4f319b5fb@o4507148235702272.ingest.us.sentry.io/4511627783241728",
+						"environment": "e2e",
+						"tracesSampleRate": 1.0,
+						"captureApplicationDataDefault": true,
+						"enableLogs": true
+					}
+				}
+			],
 			"./plugins/withLoopbackProxyBypass"
 		]
 	}

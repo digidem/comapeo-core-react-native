@@ -65,7 +65,7 @@ Companion docs:
 ## 2. Why app-specific matters here
 
 `@comapeo/core-react-native` is a library with at least two different
-consumers (the CoMapeo Mobile app, the in-tree `apps/example` integration
+consumers (the CoMapeo Mobile app, the in-tree `apps/integration` integration
 harness, and potentially third-party apps building on the module). We cannot:
 
 - **Bundle a hard dependency on `@sentry/node` into the published Node
@@ -317,7 +317,7 @@ Plugin behaviour rules:
 
 - If the consumer registers the plugin without a `sentry` key, no meta-data /
   Info.plist entries are written. Native treats the absence as "Sentry off".
-  The example app under `apps/example/` ships unconfigured.
+  The example app under `apps/integration/` ships unconfigured.
 - If the consumer registers the plugin **with** a `sentry` key, the plugin
   validates that `dsn` and `environment` are present (throwing at prebuild
   time if they're not — fast failure beats a silently-misconfigured Sentry

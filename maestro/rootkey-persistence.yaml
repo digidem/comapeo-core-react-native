@@ -1,0 +1,48 @@
+# CI/BrowserStack flow: the deviceId — derived from the rootkey the backend
+# persists on first boot — survives an app restart. Cold-launch clean, wait for
+# the backend to reach STARTED, copy the rendered deviceId into the run, then
+# force-stop the whole app (which also kills the separate :ComapeoCore backend
+# process) and relaunch WITHOUT clearing data. After the backend comes back up
+# on the existing data dir, assert the deviceId is byte-for-byte the same — a
+# regenerated rootkey would change it. The `device-id` and `backend-state-*`
+# testIDs are rendered by the e2e app's DeviceIdIndicator / BackendStateIndicator.
+# `${maestro.copiedText}` survives stopApp because it lives in the Maestro run,
+# not the app. Keep launch conventions in sync with e2e.yaml and fgs-restart.yaml.
+appId: com.comapeo.core.e2e
+env:
+    TIMEOUT: 180000
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible:
+        id: "backend-state-STARTED"
+    timeout: ${TIMEOUT}
+# deviceId only renders once the backend resolves it, so wait for the element
+# before copying.
+- extendedWaitUntil:
+    visible:
+        id: "device-id"
+    timeout: ${TIMEOUT}
+- copyTextFrom:
+    id: "device-id"
+- takeScreenshot: rootkey-persistence-before
+# Force-stop the whole app (am force-stop), which also kills the separate
+# :ComapeoCore backend process — this exercises the FGS-restart path on Android.
+- stopApp
+# Relaunch without clearState so the backend recovers against the existing data
+# dir and re-derives the deviceId from the persisted rootkey.
+- launchApp
+- extendedWaitUntil:
+    visible:
+        id: "backend-state-STARTED"
+    timeout: ${TIMEOUT}
+- extendedWaitUntil:
+    visible:
+        id: "device-id"
+    timeout: ${TIMEOUT}
+- takeScreenshot: rootkey-persistence-after
+# The DeviceIdIndicator renders "deviceId: <id>"; copiedText holds that same
+# full string, so an exact-text assertion confirms the id is unchanged.
+- assertVisible:
+    text: ${maestro.copiedText}

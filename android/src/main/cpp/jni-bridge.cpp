@@ -103,14 +103,19 @@ public:
 
         // Convert Java string array to char* array for Node.js
         // node's libUV requires all arguments being on contiguous memory.
-        std::vector<char *> argv;
-        std::vector<std::string> argStrings;
         size_t size = arguments->size();
-
+        std::vector<std::string> argStrings;
+        argStrings.reserve(size);
         for (size_t i = 0; i < size; i++) {
-            auto jstr = arguments->getElement(i);
-            argStrings.push_back(jstr->toStdString());
-            argv.push_back(const_cast<char *>(argStrings.back().c_str()));
+            argStrings.push_back(arguments->getElement(i)->toStdString());
+        }
+
+        // Take c_str() pointers only after argStrings stops growing: a realloc
+        // moves SSO strings, dangling any char* captured mid-fill.
+        std::vector<char *> argv;
+        argv.reserve(size);
+        for (auto &arg : argStrings) {
+            argv.push_back(const_cast<char *>(arg.c_str()));
         }
 
         log("about to start redirection");

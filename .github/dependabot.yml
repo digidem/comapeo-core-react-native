@@ -1,0 +1,87 @@
+version: 2
+updates:
+  # Root + native/backend packages. These gate the shipped library.
+  # The example/e2e apps under apps/ are intentionally NOT managed here: they
+  # are Expo apps whose dependency versions are pinned by the installed Expo
+  # SDK (via `expo install`), not by "latest on npm". Bumping them with
+  # Dependabot produces SDK-incompatible PRs, so those updates are driven by
+  # `npx expo install --fix` at SDK-upgrade time instead.
+  - package-ecosystem: npm
+    directories:
+      - "/"
+      - "/backend"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    # Never adopt a release younger than 72h. A freshly published version is the
+    # window in which a compromised or broken release is live but not yet yanked;
+    # waiting it out trades 3 days of latency (incl. on security patches) for that
+    # safety. Applies to every update type via default-days.
+    cooldown:
+      default-days: 3
+    # `chore(deps)` / `chore(deps-dev)` so titles pass pr-title.yml and the
+    # `deps` scope maps to the `dependencies` changelog label.
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Majors are done by hand. We target Node 18 to match nodejs-mobile, so
+      # several deps can't move to their latest major (e.g. @types/node stays
+      # on 18.x); and a batched major PR we're not ready for is just noise.
+      # Security updates still come through regardless of this rule.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # React Native and Expo are version-coupled and gate the whole toolchain;
+      # a RN 0.85 -> 0.86 bump is a "minor" in semver but effectively a major
+      # upgrade. Take patch fixes only and do minor/SDK bumps deliberately.
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "expo"
+        update-types: ["version-update:semver-minor"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    # The 72h cooldown only gates Dependabot PRs, i.e. the SHA-pinned third-party
+    # actions below. First-party actions float on a major tag (see the pinning
+    # policy under `ignore`) and adopt new patches at run time with no PR, so the
+    # cooldown does NOT cover them — a bad actions/* patch lands immediately. This
+    # is a deliberate trade: GitHub already controls the runner and our token, so
+    # the marginal risk of an unvetted first-party patch is low, and we take it in
+    # exchange for no-noise auto-patching. Third-party actions, where a retagged
+    # release is a real supply-chain vector, keep both the SHA pin and the cooldown.
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      # All action bumps (incl. majors) in one PR — action majors are low-risk
+      # and reviewed together, so there's no reason to split them.
+      actions:
+        patterns:
+          - "*"
+    ignore:
+      # Pinning policy:
+      #   - First-party actions (actions/*, github/*) are pinned to a major tag
+      #     (e.g. actions/cache@v5) and float to the latest patch at run time, so
+      #     we don't want Dependabot patch/minor PRs for them — only a major bump
+      #     (v5 -> v6), which surfaces because it isn't ignored here.
+      #   - Third-party actions are pinned to a full SHA; Dependabot keeps those
+      #     SHAs current (any update type) and is intentionally NOT ignored.
+      - dependency-name: "actions/*"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+      - dependency-name: "github/*"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"

@@ -1,6 +1,6 @@
 {
   "name": "@comapeo/core-react-native",
-  "version": "1.0.0-pre.2",
+  "version": "1.0.0-pre.6",
   "description": "CoMapeo Core for React Native",
   "main": "build/index.js",
   "types": "build/index.d.ts",
@@ -53,19 +53,28 @@
     }
   },
   "scripts": {
+    "setup": "npm run download:nodejs-mobile && npm run backend:build && npm --prefix apps/integration install && npm --prefix apps/e2e install",
     "build": "expo-module build --watch false",
     "clean": "expo-module clean",
     "lint": "expo-module lint --cache .",
     "test": "expo-module test",
+    "test:swift": "cd ios && swift test",
+    "test:android": "./scripts/run-instrumented-tests.sh",
+    "test:android:unit": "./scripts/run-instrumented-tests.sh --unit-only",
+    "test:ios": "npm --prefix apps/integration run test:ios",
     "prepare": "node scripts/write-version.mjs && node scripts/check-sentry-cocoa-pin.mjs && expo-module build --watch false",
     "prepublishOnly": "expo-module prepublishOnly",
     "prepack": "node scripts/write-version.mjs && npm run backend:build",
-    "open:ios": "xed example/ios",
-    "open:android": "open -a \"Android Studio\" example/android",
+    "open:ios": "xed apps/integration/ios",
+    "open:android": "open -a \"Android Studio\" apps/integration/android",
     "download:nodejs-mobile": "./scripts/download-nodejs-mobile.sh",
-    "backend:install": "npm ci --ignore-scripts --prefix backend && npm --prefix backend run postinstall",
+    "backend:install": "npm ci --no-dry-run --prefix backend",
     "prebackend:build": "npm run backend:install",
-    "backend:build": "node ./scripts/build-backend.ts"
+    "backend:build": "node ./scripts/build-backend.ts",
+    "backend:test": "npm --prefix backend test",
+    "e2e:ios": "npm --prefix apps/e2e run build:ios",
+    "e2e:android": "npm --prefix apps/e2e run build:android",
+    "e2e:test": "maestro test maestro/e2e.yaml"
   },
   "keywords": [
     "react-native",
@@ -86,6 +95,7 @@
     "@sentry/react-native": "^8.13.0",
     "@types/node": "24.12.2",
     "@types/react": "19.2.14",
+    "babel-preset-expo": "^56.0.15",
     "eslint": "9.39.4",
     "execa": "9.6.1",
     "expo": "^56.0.12",

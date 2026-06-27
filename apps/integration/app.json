@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "core-react-native-integration",
+    "slug": "core-react-native-integration",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.comapeo.core.integration",
+      "entitlements": {
+        "keychain-access-groups": [
+          "$(AppIdentifierPrefix)$(CFBundleIdentifier)"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.comapeo.core.integration"
+    },
+    "plugins": [
+      "./plugins/with-android-tests",
+      "./plugins/with-ios-tests",
+      [
+        "../../app.plugin.js",
+        {
+          "sentry": {
+            "dsn": "https://e2b12d102f24a786ed183bdcea143bf2@o4507148235702272.ingest.us.sentry.io/4511348559708160",
+            "environment": "e2e",
+            "tracesSampleRate": 1.0,
+            "captureApplicationDataDefault": true,
+            "enableLogs": true
+          }
+        }
+      ]
+    ]
+  }
+}

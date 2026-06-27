@@ -632,6 +632,8 @@ class NodeJSService {
         // 4th positional: default config path, or "" when the app bundled
         // none. Always present so the `--sentry*` flags can't slip into it.
         let defaultConfigPath = resolveDefaultConfigPath() ?? ""
+        // 5th positional: consumer's online map style URL, or "" when unset.
+        let defaultOnlineStyleUrl = resolveDefaultOnlineStyleUrl() ?? ""
         var args: [String] = [
             "node",
             "--no-experimental-fetch",
@@ -640,6 +642,7 @@ class NodeJSService {
             controlSocketPath,
             privateStorageDir,
             defaultConfigPath,
+            defaultOnlineStyleUrl,
         ]
         args.append(contentsOf: buildSentryArgs())
         let exitCode = nodeEntryPoint(args)
@@ -670,6 +673,19 @@ class NodeJSService {
         }
 
         completionSem?.signal()
+    }
+
+    /// Info.plist key written by `app.plugin.js` when the consumer sets
+    /// `defaultOnlineStyleUrl`. Must stay in sync with the plugin's
+    /// `IOS_MAP_STYLE_URL_KEY`.
+    static let defaultOnlineStyleUrlPlistKey = "ComapeoCoreDefaultOnlineStyleUrl"
+
+    /// Consumer's online map style URL from Info.plist, or nil when unset.
+    private func resolveDefaultOnlineStyleUrl() -> String? {
+        let value = Bundle.main.object(
+            forInfoDictionaryKey: NodeJSService.defaultOnlineStyleUrlPlistKey
+        ) as? String
+        return value?.isEmpty == false ? value : nil
     }
 
     /// `--sentry*` argv flags consumed by `backend/loader.mjs`. Empty

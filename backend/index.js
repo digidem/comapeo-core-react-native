@@ -27,12 +27,20 @@ console.log("Starting Comapeo Node server...");
 
 // 4th positional is an optional path to the default project config
 // (presets/categories) the consuming app bundles via the Expo plugin.
-// Native always passes the slot (empty string when none) so the
-// `--sentry*` flags that follow can't land in it. Empty → undefined →
-// MapeoManager applies no default config to new projects.
-const [comapeoSocketPath, controlSocketPath, privateStorageDir, configArg] =
-  process.argv.slice(2);
+// 5th positional is an optional online map style URL the consuming app
+// sets via the Expo plugin. Native always passes both slots (empty
+// string when unset) so the `--sentry*` flags that follow can't land in
+// them. Empty 4th → undefined → MapeoManager applies no default config;
+// empty 5th → undefined → createComapeo falls back to its built-in URL.
+const [
+  comapeoSocketPath,
+  controlSocketPath,
+  privateStorageDir,
+  configArg,
+  styleUrlArg,
+] = process.argv.slice(2);
 const defaultConfigPath = configArg || undefined;
+const defaultOnlineStyleUrl = styleUrlArg || undefined;
 
 const fastify = Fastify();
 
@@ -235,6 +243,7 @@ async function withPhase(phase, fn) {
           fastify,
           migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
           defaultConfigPath,
+          defaultOnlineStyleUrl,
           rootKey,
         });
 
@@ -244,13 +253,26 @@ async function withPhase(phase, fn) {
         // failures to getUrl() callers only.
         fastify.listen({ host: "127.0.0.1", port: 0 }).catch(() => {});
 
-        mapServer = createMapServer({ privateStorageDir, rootKey });
-        // Map server is non-critical: boot still reaches "ready" if it fails.
-        // Attach a no-op catch so a listen() rejection surfaces only to
-        // getBaseUrl() callers and never trips the global unhandledRejection
-        // handler (which exits the process).
-        const mapServerListenPromise = mapServer.listen();
-        mapServerListenPromise.catch(() => {});
+        // Map server is non-critical: boot must still reach "ready" if it
+        // fails. Isolate construction *and* listen() inside one promise so any
+        // failure — a synchronous createMapServer() throw included — surfaces
+        // only to getBaseUrl() callers, never aborting the manager's boot or
+        // tripping the global unhandledRejection handler (which exits).
+        const mapServerListenPromise = Promise.resolve().then(() => {
+          mapServer = createMapServer({
+            privateStorageDir,
+            rootKey,
+            defaultOnlineStyleUrl,
+          });
+          return mapServer.listen();
+        });
+        mapServerListenPromise.catch((err) => {
+          sentry.captureFatal(
+            "map-server-init",
+            ensureError(err),
+            "create-map-server",
+          );
+        });
         /** @type {import("@comapeo/ipc/server.js").ComapeoServicesApi} */
         const comapeoServices = {
           mapServer: {

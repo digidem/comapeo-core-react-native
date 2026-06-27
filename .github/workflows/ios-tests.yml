@@ -1,23 +1,39 @@
 name: iOS Tests
 
+# Runs on PRs (pre-merge feedback) and in the merge queue (merge_group),
+# which is the gate before a PR lands. No secrets here, so it's safe on
+# fork/Dependabot PRs too.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  # Defer the slow integration + device-build jobs to the merge queue: skip them
+  # on a plain PR (they then report as skipped, which satisfies the required
+  # checks) and run them on merge_group, on manual dispatch, or on a PR labeled
+  # `run-e2e`. The fast Swift package tests below stay on every PR.
+  changes:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/detect-heavy-ci.yml
+
   package-tests:
     name: Swift Package Tests (macOS)
     runs-on: macos-26
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # sentry-cocoa 9.18.0 (pulled in by @sentry/react-native v8) ships a
       # swift-tools-version:6.0 manifest; Swift 5.10 (Xcode 15.4) can't parse
@@ -37,6 +53,8 @@ jobs:
 
   integration-tests:
     name: Integration Tests (Example App)
+    needs: [changes]
+    if: needs.changes.outputs.run == 'true'
     # Xcode 26 minimum: Expo SDK 56's ExpoModulesCore source uses
     # `@MainActor` on protocol conformances and other Swift Concurrency
     # constructs that fail to compile on Xcode 16.x (Swift 6.0/6.1) under
@@ -47,13 +65,13 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           # `scripts/build-backend.ts` runs as TS via Node's native type
           # stripping (>=22.6 with `--experimental-strip-types`, default-on
@@ -66,7 +84,7 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install dependencies
-        run: npm install && cd apps/example && npm install
+        run: npm install && cd apps/integration && npm install
 
       - name: Download NodeMobile
         # Both platforms: `scripts/build-backend.ts#getNodeJsMobileNodeVersions`
@@ -88,10 +106,10 @@ jobs:
         run: npm run backend:build
 
       - name: Expo prebuild
-        run: cd apps/example && npx expo prebuild --platform ios --no-install
+        run: cd apps/integration && npx expo prebuild --platform ios --no-install
 
       - name: Pod install
-        run: cd apps/example/ios && pod install
+        run: cd apps/integration/ios && pod install
 
       # Don't pin a specific device name (e.g. "iPhone 16"). GitHub-hosted
       # macos-26 runners *should* have iPhone 16 pre-installed for iOS 26 per
@@ -147,25 +165,38 @@ jobs:
       # `tee` redirection this step intermittently times out at ~15 min.
       - name: Run integration tests
         run: |
-          cd apps/example/ios
+          # pipefail: without it the step's exit code is tee's (always 0),
+          # so a failing or non-compiling xcodebuild is masked as green.
+          set -o pipefail
+          cd apps/integration/ios
+          # Ad-hoc sign the simulator build (no team/profile needed) instead of
+          # CODE_SIGNING_ALLOWED=NO. The latter skips the codesign step that
+          # embeds entitlements, leaving the app with no keychain-access-group
+          # → the backend's Keychain rootkey load fails with -34018 on iOS 13+
+          # simulators and the test host crashes before any test runs. The sim
+          # doesn't verify the signature, only reads __TEXT,__entitlements.
           xcodebuild test \
-            -workspace corereactnativeexample.xcworkspace \
-            -scheme corereactnativeexample \
+            -workspace corereactnativeintegration.xcworkspace \
+            -scheme corereactnativeintegration \
             -sdk iphonesimulator \
             -destination "id=${{ steps.simulator.outputs.udid }}" \
-            CODE_SIGNING_ALLOWED='NO' 2>&1 | tee xcodebuild-test.log
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES 2>&1 | tee xcodebuild-test.log
 
       - name: Surface xcodebuild failure summary
         if: failure()
         run: |
           echo "=== xcodebuild test failure summary ==="
-          grep -E "error:|FAIL|Test Case|Assertion|XCTAssert|timed out|fatal error" example/ios/xcodebuild-test.log | head -100 || true
+          grep -E "error:|FAIL|Test Case|Assertion|XCTAssert|timed out|fatal error" apps/integration/ios/xcodebuild-test.log | head -100 || true
           echo ""
           echo "=== last 300 lines of log ==="
-          tail -300 example/ios/xcodebuild-test.log || true
+          tail -300 apps/integration/ios/xcodebuild-test.log || true
 
   device-build:
     name: iOS Device Build (xcframework codesign verification)
+    needs: [changes]
+    if: needs.changes.outputs.run == 'true'
     # Phase 2 ships device + simulator slices in one xcframework per
     # addon. The simulator integration tests above exercise the runtime
     # path; this job verifies the device slice actually links and
@@ -183,13 +214,13 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: package.json
 
@@ -199,7 +230,7 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install dependencies
-        run: npm install && cd apps/example && npm install
+        run: npm install && cd apps/integration && npm install
 
       - name: Download NodeMobile
         run: npm run download:nodejs-mobile
@@ -208,17 +239,17 @@ jobs:
         run: npm run backend:build
 
       - name: Expo prebuild
-        run: cd apps/example && npx expo prebuild --platform ios --no-install
+        run: cd apps/integration && npx expo prebuild --platform ios --no-install
 
       - name: Pod install
-        run: cd apps/example/ios && pod install
+        run: cd apps/integration/ios && pod install
 
       - name: Build for iOS device (no run)
         run: |
-          cd apps/example/ios
+          cd apps/integration/ios
           xcodebuild build \
-            -workspace corereactnativeexample.xcworkspace \
-            -scheme corereactnativeexample \
+            -workspace corereactnativeintegration.xcworkspace \
+            -scheme corereactnativeintegration \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED='NO'

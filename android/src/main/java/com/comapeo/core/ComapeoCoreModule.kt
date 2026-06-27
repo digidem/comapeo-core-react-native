@@ -1,5 +1,8 @@
 package com.comapeo.core
 
+import android.Manifest
+import expo.modules.interfaces.permissions.Permissions
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
@@ -136,8 +139,13 @@ class ComapeoCoreModule : Module() {
         }
 
         OnDestroy {
-            ipc.disconnect()
-            controlIpc.disconnect()
+            // OnCreate/OnDestroy bind to the Expo AppContext (JS-runtime
+            // lifetime), so they fire on every JS reload while this process
+            // stays alive. Close synchronously: the backend must see EOF on the
+            // old socket before the next OnCreate connects, otherwise the FD
+            // lingers and rpc-reflector listeners leak onto MapeoManager.
+            ipc.close()
+            controlIpc.close()
         }
 
         OnActivityEntersForeground {
@@ -231,6 +239,28 @@ class ComapeoCoreModule : Module() {
                 )
             ComapeoPrefs.open(ctx).writeDebugEnabled(value)
             if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
+        }
+
+        // POST_NOTIFICATIONS is the runtime gate (API 33+) for the FGS
+        // notification. Below API 33 `checkSelfPermission` reports the
+        // manifest-declared permission as granted, so both helpers resolve
+        // `granted` without a dialog. The module only exposes these — the
+        // host app decides when to call them (rationale + settings deep-link
+        // UX live in the host). See docs/ForegroundService.md.
+        AsyncFunction("getNotificationPermissionsAsync") { promise: Promise ->
+            Permissions.getPermissionsWithPermissionsManager(
+                appContext.permissions,
+                promise,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
+        }
+
+        AsyncFunction("requestNotificationPermissionsAsync") { promise: Promise ->
+            Permissions.askForPermissionsWithPermissionsManager(
+                appContext.permissions,
+                promise,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
         }
     }
 }

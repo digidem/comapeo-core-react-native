@@ -50,6 +50,11 @@ public class ComapeoCoreModule: Module {
         }
 
         OnDestroy {
+            // Fires on every JS reload as of expo-modules-core SDK 53+ (weak
+            // MainValueConverter.appContext lets AppContext deinit; verified on
+            // 56). No iOS equivalent of the Android close() is needed: iOS
+            // disconnect() shutdown(2)s before joining the receive loop, so the
+            // backend sees EOF synchronously without the cancelAndJoin deadlock.
             self.ipc?.disconnect()
             self.ipc = nil
         }
@@ -120,5 +125,27 @@ public class ComapeoCoreModule: Module {
             ComapeoPrefs.open().writeDebugEnabled(value)
             if !value { ComapeoPrefs.wipeSentryOutbox() }
         }
+
+        // POST_NOTIFICATIONS gates the Android FGS notification only; iOS has
+        // no foreground service and no matching runtime gate, so both methods
+        // resolve `granted` to keep host code cross-platform. (User-facing
+        // notification permission on iOS is a separate concern handled via
+        // expo-notifications, not the FGS.)
+        AsyncFunction("getNotificationPermissionsAsync") { () -> [String: Any] in
+            ComapeoCoreModule.grantedPermissionResponse
+        }
+
+        AsyncFunction("requestNotificationPermissionsAsync") { () -> [String: Any] in
+            ComapeoCoreModule.grantedPermissionResponse
+        }
     }
+
+    // Testable seam: the constant value both notification AsyncFunctions
+    // resolve. iOS has no FGS runtime gate, so it's always `granted`.
+    static let grantedPermissionResponse: [String: Any] = [
+        "status": "granted",
+        "granted": true,
+        "canAskAgain": true,
+        "expires": "never",
+    ]
 }

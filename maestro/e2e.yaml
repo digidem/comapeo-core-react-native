@@ -1,3 +1,9 @@
+# Drives the e2e app: tap "Run tests", wait for the in-app suite, assert it
+# passed. Used unchanged in CI on BrowserStack (real devices) and locally
+# against a Release build on a simulator/emulator (`npm run e2e:ios|e2e:android`
+# to build + install, then `npm run e2e:test`). A Release build disables the dev
+# menu / LogBox overlays and loads its embedded JS bundle (no Metro), so no
+# dev-build workarounds are needed.
 appId: com.comapeo.core.e2e
 env:
     TIMEOUT: 300000

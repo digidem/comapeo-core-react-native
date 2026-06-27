@@ -1,11 +1,15 @@
 {
+	// Do NOT add a `paths` alias for "@comapeo/core-react-native" → "../../src/*".
+	// Expo's Metro honours tsconfig `paths`, but metro.config.js also resolves the
+	// package via a node_modules symlink (→ build/). With both present Metro loads
+	// the module twice (src + build), creating two `messagePort`/IPC-client
+	// singletons over one native socket, whose rpc-reflector msgIds collide and
+	// cross responses (e.g. createProject() resolving with the deviceId). Let the
+	// package resolve through node_modules only; run `npm run build` to pick up
+	// module src changes in this app.
 	"extends": "expo/tsconfig.base",
 	"compilerOptions": {
-		"strict": true,
-		"paths": {
-			"@comapeo/core-react-native": ["../../src/index"],
-			"@comapeo/core-react-native/*": ["../../src/*"]
-		}
+		"strict": true
 	},
 	"include": ["index.ts", "src", "types"],
 	"exclude": ["node_modules", "android", "ios"]

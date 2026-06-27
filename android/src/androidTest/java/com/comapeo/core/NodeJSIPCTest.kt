@@ -288,6 +288,45 @@ class NodeJSIPCTest {
         Thread.sleep(500)
     }
 
+    /**
+     * Pins the synchronous-close contract: after [NodeJSIPC.close] returns, the
+     * peer's blocking read has already observed EOF. A regression to the
+     * `disconnect()` teardown — which closes the socket behind
+     * `cancelAndJoin()` of a receive loop parked in a blocking `readFully` —
+     * would deadlock and leave the read blocked, leaking the FD across reloads.
+     */
+    @Test
+    fun closeReleasesSocketSynchronously() {
+        val connected = CountDownLatch(1)
+        val readResult = java.util.concurrent.atomic.AtomicInteger(Int.MIN_VALUE)
+        val readReturned = CountDownLatch(1)
+
+        startMockServer { input, _ ->
+            connected.countDown()
+            try {
+                readResult.set(input.read())
+            } catch (e: IOException) {
+                // Some kernels surface peer-close as IOException; treat as EOF.
+                readResult.set(-1)
+            }
+            readReturned.countDown()
+        }
+
+        val ipc = NodeJSIPC(socketFile) { msg -> receivedMessages.add(msg) }
+        assertTrue("Should connect within 10s", connected.await(10, TimeUnit.SECONDS))
+        // Let the receive loop settle so we test steady-state close, not a
+        // connect-cancel race.
+        Thread.sleep(200)
+
+        ipc.close()
+
+        assertTrue(
+            "Server-side read must unblock with EOF within 1s of close() returning",
+            readReturned.await(1, TimeUnit.SECONDS)
+        )
+        assertEquals(-1, readResult.get())
+    }
+
     @Test
     fun handlesServerDisconnect() {
         val connected = CountDownLatch(1)

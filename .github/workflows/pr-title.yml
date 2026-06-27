@@ -1,0 +1,108 @@
+name: PR Title
+"on":
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+  # Also run in the merge queue so the required `Lint conventional title` check
+  # reports there (as a no-op — the title was already validated on the PR, and
+  # the queue can't change it). Without this the check never runs on merge_group
+  # and, being required, would block the queue.
+  merge_group:
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    name: Lint conventional title
+    # Skip the optic release bot: its PR title (`[OPTIC-RELEASE-AUTOMATION]
+    # release/...`) is fixed and non-conventional, and that prefix is load-bearing
+    # for release.yml's post-merge publish detection, so it can't be made to pass.
+    # The `label` job needs this one, so it skips too — release PRs shouldn't get a
+    # changelog category anyway.
+    if: github.event_name == 'merge_group' || github.event.pull_request.user.login != 'optic-release-automation[bot]'
+    permissions:
+      pull-requests: read
+    steps:
+      # On merge_group there's no PR title to lint; the job just reports success.
+      - if: github.event_name != 'merge_group'
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            docs
+            refactor
+            test
+            chore
+            ci
+            build
+          requireScope: false
+
+  label:
+    runs-on: ubuntu-latest
+    name: Apply changelog label
+    needs: lint
+    # PR-only: there's no PR to label in the merge queue. Explicit success()
+    # check keeps the optic-bot skip (lint skipped → label skipped) intact.
+    if: needs.lint.result == 'success' && github.event_name != 'merge_group'
+    permissions:
+      pull-requests: write
+    steps:
+      # Derives a changelog label from the conventional-commit PR title so devs
+      # only need to write a good title; the label drives .github/release.yml.
+      # Title-only — never checks out PR code, so pull_request_target is safe here.
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const body = context.payload.pull_request.body || '';
+            const m = title.match(/^(\w+)(\(([\w$.\-*/ ]+)\))?(!)?:/);
+            if (!m) return;
+            const [, type, , scope, bang] = m;
+
+            const map = {
+              feat: 'feature',
+              fix: 'fix',
+              perf: 'performance',
+              docs: 'documentation',
+              refactor: 'maintenance',
+              test: 'maintenance',
+              chore: 'maintenance',
+              ci: 'maintenance',
+              build: 'maintenance',
+            };
+
+            // Conventional Commits: a `!` in the title or a `BREAKING CHANGE:`
+            // footer in the body both mark a breaking change.
+            const breakingFooter = /^BREAKING[ -]CHANGE:/m.test(body);
+
+            const wanted = new Set();
+            if (bang || breakingFooter) wanted.add('breaking');
+            if (scope && /^deps(-dev)?$/.test(scope)) wanted.add('dependencies');
+            else if (map[type]) wanted.add(map[type]);
+
+            const managed = new Set([
+              'feature', 'fix', 'performance', 'documentation',
+              'maintenance', 'breaking', 'dependencies',
+            ]);
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const current = context.payload.pull_request.labels.map(l => l.name);
+
+            for (const name of current) {
+              if (managed.has(name) && !wanted.has(name)) {
+                await github.rest.issues
+                  .removeLabel({ owner, repo, issue_number, name })
+                  .catch(() => {});
+              }
+            }
+
+            const toAdd = [...wanted].filter(l => !current.includes(l));
+            if (toAdd.length) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: toAdd });
+            }

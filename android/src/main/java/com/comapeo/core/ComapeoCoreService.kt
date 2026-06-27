@@ -1,11 +1,14 @@
 package com.comapeo.core
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -13,6 +16,7 @@ import android.os.Process
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +29,12 @@ class ComapeoCoreService : Service() {
 
     private var isServiceStarted: Boolean = false
     private lateinit var nodeJSService: NodeJSService
+    // Snapshotted in onCreate, consumed when the Node backend is built lazily in
+    // ensureBackendInitialized() after startForeground().
+    private var effectiveSentryConfig: SentryConfig? = null
+    private var applicationUsageData: Boolean = false
+    private var debug: Boolean = false
+    private var deviceTags: DeviceTags? = null
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     companion object {
@@ -33,38 +43,65 @@ class ComapeoCoreService : Service() {
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
         const val CONTROL_SOCKET_FILENAME = "control.sock"
 
-        /** Guards `Process.killProcess` from racing a stop→restart cycle that
-         *  reuses the same process and creates a new instance. */
-        @Volatile
-        private var activeInstanceCount = 0
+        /** The runtime gate for the FGS notification on API 33+. Below 33
+         *  `checkSelfPermission` reports the manifest-declared permission as
+         *  granted, so this returns `true` without a runtime grant. Pulled
+         *  into the companion as a testable seam (see `NotificationPermissionTest`). */
+        internal fun hasPostNotificationsPermission(context: Context): Boolean =
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
     }
 
     override fun onCreate() {
         super.onCreate()
-        activeInstanceCount++
 
         // Snapshot-at-boot: `diagnosticsEnabled = false` leaves the FGS bridge inert
         // AND zeroes the `--sentry*` argv passed to loader.mjs (backend short-circuits
         // its own Sentry.init on absent DSN). Restart-to-activate.
         val sentryConfig = SentryConfig.loadFromManifest(applicationContext)
         val prefs = ComapeoPrefs.open(applicationContext)
-        val effectiveConfig = if (prefs.readDiagnosticsEnabled()) sentryConfig else null
+        effectiveSentryConfig = if (prefs.readDiagnosticsEnabled()) sentryConfig else null
 
         // Read debug/usage prefs BEFORE SentryFgsBridge.init: readDebugEnabled()
         // may queue the §11.5 auto_disabled breadcrumb, and init drains the
         // DebugAutoOff queue (SentryFgsBridge.init → DebugAutoOff.consume). If
         // init ran first the crumb would be lost on the launch that performed
         // the auto-off. These reads are independent of the diagnostics gate.
-        val applicationUsageData = prefs.readApplicationUsageData()
-        val debug = prefs.readDebugEnabled()
+        applicationUsageData = prefs.readApplicationUsageData()
+        debug = prefs.readDebugEnabled()
 
-        effectiveConfig?.let { cfg ->
+        // Init the Sentry bridge here, not after startForeground: breadcrumbs no-op
+        // until it's initialised, so deferring it would drop the pre-start trail.
+        // It's cheap relative to the Node backend (libnode load), which is the only
+        // part deferred to ensureBackendInitialized() to keep off the FGS deadline.
+        effectiveSentryConfig?.let { cfg ->
             SentryFgsBridge.init(applicationContext, cfg)
         }
 
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
 
-        val deviceTags = DeviceTags.compute(applicationContext)
+        // Capture when process name detection fails, which results in react
+        // native being loaded in the foreground service process, which
+        // increases the risk of ANR on a slow device..
+        val detectedProcessName = ComapeoProcessGuard.detectProcessName()
+        val backendProcessName = ComapeoProcessGuard.backendProcessName(applicationContext)
+        if (detectedProcessName == null || detectedProcessName != backendProcessName) {
+            logCapture(
+                SentryCategories.FGS,
+                "comapeo: backend process-name detection failed",
+                level = "warning",
+                tags = mapOf(
+                    SentryTags.PHASE to SentryTags.PHASE_PROCESS_DETECTION,
+                    SentryTags.PROCESS_DETECT_NAME to (detectedProcessName ?: "null"),
+                    SentryTags.PROCESS_DETECT_EXPECTED to (backendProcessName ?: "null"),
+                    SentryTags.SDK_INT to Build.VERSION.SDK_INT.toString(),
+                ),
+            )
+        }
+
+        deviceTags = DeviceTags.compute(applicationContext)
         serviceScope.launch(Dispatchers.IO) {
             // Snapshot the previous FGS session's anchors before stamping
             // this run's — the decoder must see what was true at the old exit.
@@ -81,10 +118,16 @@ class ComapeoCoreService : Service() {
                 snapshot = snapshot,
             )
         }
+    }
 
+    /** Builds the Node backend. Deferred out of onCreate and called only after
+     *  startForeground(), so loading libnode via NodeJSService's static initializer
+     *  can't race the FGS deadline. */
+    private fun ensureBackendInitialized() {
+        if (::nodeJSService.isInitialized) return
         nodeJSService = NodeJSService(
             applicationContext,
-            sentryConfig = effectiveConfig,
+            sentryConfig = effectiveSentryConfig,
             applicationUsageData = applicationUsageData,
             debug = debug,
             deviceTags = deviceTags,
@@ -95,12 +138,10 @@ class ComapeoCoreService : Service() {
         // Forward the activity's `serviceStartTimeMs` stamp so
         // NodeJSService can backdate boot.fgs-launch. -1 means the
         // intent didn't carry one (system restart); we'll skip the
-        // backdated span in that case.
+        // backdated span in that case. Applied in startService(), once
+        // the backend exists.
         val serviceStartElapsedMs =
             intent?.getLongExtra(EXTRA_SERVICE_START_ELAPSED_MS, -1L) ?: -1L
-        if (serviceStartElapsedMs >= 0) {
-            nodeJSService.serviceStartElapsedMs = serviceStartElapsedMs
-        }
 
         logCrumb(
             SentryCategories.FGS,
@@ -113,12 +154,20 @@ class ComapeoCoreService : Service() {
 
         when (intent?.action) {
             Actions.USER_FOREGROUND.name -> {
-                startService()
-                updateNotification(true)
+                if (startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_USER_FOREGROUND)) {
+                    updateNotification(true)
+                }
             }
 
             Actions.USER_BACKGROUND.name -> {
+                // A USER_BACKGROUND intent can cold-start this process (the FGS was
+                // killed, then the app backgrounded). We were still launched via
+                // startForegroundService, so we must promote within the deadline —
+                // unless the OS forbids a background start, in which case startService
+                // stops us and we skip the notification update.
                 if (isServiceStarted) {
+                    updateNotification(false)
+                } else if (startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_USER_BACKGROUND)) {
                     updateNotification(false)
                 }
             }
@@ -133,8 +182,9 @@ class ComapeoCoreService : Service() {
                 val isAppInForeground = ProcessLifecycleOwner.get()
                     .lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
                 log("Service restarted by system - app in foreground: $isAppInForeground")
-                startService()
-                updateNotification(isAppInForeground)
+                if (startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_SYSTEM_RESTART)) {
+                    updateNotification(isAppInForeground)
+                }
             }
 
             else -> log("Unknown action in received intent: ${intent.action}")
@@ -167,54 +217,112 @@ class ComapeoCoreService : Service() {
         super.onDestroy()
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onDestroy")
         isServiceStarted = false
-        activeInstanceCount--
         serviceScope.launch {
-            try {
-                withTimeout(10_000) {
-                    nodeJSService.stop()
+            // nodeJSService is built lazily in startService(); a create→destroy with no
+            // start path (e.g. an immediate STOP) leaves it uninitialised.
+            if (::nodeJSService.isInitialized) {
+                try {
+                    // Graceful first: stop() ships the shutdown frame and joins the node
+                    // thread so the runtime exits cleanly whenever it can.
+                    withTimeout(10_000) {
+                        nodeJSService.stop()
+                    }
+                } catch (e: Exception) {
+                    // Capture before killProcess; the flush below is what gets it on the wire.
+                    logCapture(
+                        SentryCategories.FGS,
+                        "comapeo: FGS stop timeout fired",
+                        level = "error",
+                        tags = mapOf(
+                            SentryTags.TIMEOUT to "fgsStop",
+                            SentryTags.PHASE to SentryTags.PHASE_SHUTDOWN_TIMEOUT,
+                        ),
+                    )
                 }
-            } catch (e: Exception) {
-                // Capture before killProcess; the flush below is what gets it on the wire.
-                logCapture(
-                    SentryCategories.FGS,
-                    "comapeo: FGS stop timeout fired",
-                    level = "error",
-                    tags = mapOf(
-                        SentryTags.TIMEOUT to "fgsStop",
-                        SentryTags.PHASE to "shutdown-timeout",
-                    ),
-                )
+                // Release this instance's scope/IPC even on the timeout path — also
+                // cancels in-flight coroutines (watchdog, pending sends) so they can't
+                // fire during the flush window below.
+                nodeJSService.destroy()
             }
-            if (activeInstanceCount <= 0) {
-                logCrumb(SentryCategories.FGS, "killProcess: no active instances")
-                // 2s flush — long enough to deliver under typical network, short enough
-                // not to stall shutdown noticeably.
-                SentryFgsBridge.flush(2_000)
-                Process.killProcess(Process.myPid())
-            } else {
-                log("Skipping process kill — new service instance is active")
-            }
+            // node::Start is single-shot per process: the runtime can't be reused by a
+            // restart that reuses this process, so always tear the process down. The
+            // pending START_STICKY / restart intent cold-starts a fresh process with a
+            // clean runtime, sockets, and data dir.
+            logCrumb(SentryCategories.FGS, "killProcess: FGS destroyed")
+            // 2s flush — long enough to deliver under typical network, short enough
+            // not to stall shutdown noticeably.
+            SentryFgsBridge.flush(2_000)
+            Process.killProcess(Process.myPid())
         }
     }
 
-    private fun startService() {
+    /** @return true if the service is (or stays) promoted to the foreground; false if
+     *  a background-start restriction forced it to stop. */
+    private fun startService(serviceStartElapsedMs: Long, bootKind: String): Boolean {
         log("Starting the foreground service")
         val notification = createNotification(true)
-        // Android requires startForeground on every startForegroundService call.
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            notification,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            } else {
-                0
-            },
-        )
-        if (isServiceStarted) return
+        // On API 33+ the FGS notification is suppressed without a runtime
+        // POST_NOTIFICATIONS grant, which lets the system deprioritise or kill
+        // the service. The host app is responsible for requesting the grant
+        // (ComapeoCore.requestNotificationPermissionsAsync); here we only log
+        // so a missing grant degrades gracefully instead of crashing. See
+        // docs/ForegroundService.md.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !hasPostNotificationsPermission(this)
+        ) {
+            logCrumb(
+                SentryCategories.FGS,
+                "POST_NOTIFICATIONS not granted; FGS notification may be suppressed",
+                level = "warning",
+            )
+        }
+
+        // Promote to the foreground before building the Node backend: the
+        // startForeground deadline runs from the (cold-start) process fork, so the
+        // costly libnode load must come after. On failure we stop — see catch.
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                } else {
+                    0
+                },
+            )
+        } catch (e: Exception) {
+            // Broad: startForeground has OEM-specific failure modes and an uncaught
+            // throw kills the headless process. Whatever the cause, we never
+            // foregrounded — stop rather than run a non-foreground backend.
+            val (level, phase) = when (e) {
+                // ForegroundServiceStartNotAllowedException (API 31+): background start
+                // outside the grace period; recovers on the next USER_FOREGROUND.
+                is IllegalStateException -> "warning" to SentryTags.PHASE_FGS_START_NOT_ALLOWED
+                // Missing FGS-type permission: won't recover by returning to foreground.
+                is SecurityException -> "error" to SentryTags.PHASE_FGS_PERMISSION_DENIED
+                else -> "error" to SentryTags.PHASE_FGS_START_FAILED
+            }
+            logCapture(
+                SentryCategories.FGS,
+                "comapeo: startForeground failed: ${e.message}",
+                level = level,
+                tags = mapOf(SentryTags.PHASE to phase),
+            )
+            stopService()
+            return false
+        }
+        if (isServiceStarted) return true
+
+        ensureBackendInitialized()
+        if (serviceStartElapsedMs >= 0) {
+            nodeJSService.serviceStartElapsedMs = serviceStartElapsedMs
+        }
+        nodeJSService.bootKind = bootKind
         Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
         nodeJSService.start(nodeJSServiceCallback)
         isServiceStarted = true
+        return true
     }
 
     private fun stopService() {

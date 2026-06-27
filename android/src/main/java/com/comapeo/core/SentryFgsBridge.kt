@@ -28,6 +28,7 @@ import io.sentry.TransactionOptions
 import io.sentry.android.core.InternalSentrySdk
 import io.sentry.android.core.SentryAndroid
 import io.sentry.logger.SentryLogParameters
+import io.sentry.metrics.SentryMetricsParameters
 import io.sentry.protocol.SentryTransaction
 import org.json.JSONException
 import org.json.JSONObject
@@ -192,6 +193,29 @@ object SentryFgsBridge {
             Sentry.logger().log(parseLogLevel(level), params, message)
         } catch (t: Throwable) {
             Log.w(TAG, "log($level) threw", t)
+        }
+    }
+
+    /**
+     * Counter metric (always increments by 1). Metrics are not trace-sampled (unlike
+     * spans), so this yields complete fleet-wide counts. `attributes` are the
+     * filter/group dimensions. No-ops pre-init.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun countMetric(
+        name: String,
+        attributes: Map<String, String> = emptyMap(),
+    ) {
+        if (!initialized) return
+        try {
+            val attrs = attributes.entries
+                .map { (k, v) -> SentryAttribute.stringAttribute(k, v) }
+                .toTypedArray()
+            val params = SentryMetricsParameters.create(SentryAttributes.of(*attrs))
+            Sentry.metrics().count(name, 1.0, null, params)
+        } catch (t: Throwable) {
+            Log.w(TAG, "countMetric($name) threw", t)
         }
     }
 
