@@ -1,15 +1,9 @@
 name: Bump first-party dep
 
-# Opens a PR bumping one just-published first-party package, triggered by a
-# repository_dispatch from that package's release workflow. Updates wherever the
-# package appears in / and /backend: as a direct dep (rewrites the pinned range)
-# or only transitively (refreshes the lockfile). Lockfile-only — CI does the real
-# install. Dependabot (cooldown-exempt, daily) is the fallback if a dispatch is
-# ever missed.
-#
-# Opens the PR via the Awana PR bot app, not GITHUB_TOKEN: PRs opened with the
-# default token don't trigger other workflows, so the required checks / merge
-# queue wouldn't run on the bump PR.
+# Receiver for the first-party-release dispatch fired by our upstream repos when
+# they publish. The bump + rolling-PR logic lives in the shared reusable workflow;
+# this just forwards the package name. Dependabot (cooldown-exempt, daily) is the
+# fallback if a dispatch is ever missed.
 on:
   repository_dispatch:
     types: [first-party-release]
@@ -19,67 +13,10 @@ on:
         description: "Package to bump (e.g. @comapeo/core)"
         required: true
 
-concurrency:
-  group: bump-first-party-deps
-  cancel-in-progress: false
-
-permissions:
-  contents: read
-
 jobs:
   bump:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      PACKAGE: ${{ github.event.client_payload.package || inputs.package }}
-    steps:
-      - uses: actions/create-github-app-token@v3
-        id: app-token
-        with:
-          app-id: ${{ vars.PR_BOT_APP_ID }}
-          private-key: ${{ secrets.PR_BOT_PRIVATE_KEY }}
-
-      - uses: actions/checkout@v7
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: package.json
-
-      - name: Bump in lockfiles
-        run: |
-          set -euo pipefail
-          for dir in . backend; do
-            ( cd "$dir"
-              if npm ls "$PACKAGE" --depth=0 --package-lock-only >/dev/null 2>&1; then
-                # Direct dep: exact pins won't move under `npm update`, so reinstall
-                # at @latest. --save-exact keeps the pin style; --package-lock-only
-                # touches package.json + lockfile without installing node_modules.
-                npm install "$PACKAGE@latest" --save-exact --package-lock-only
-              elif npm ls "$PACKAGE" --package-lock-only >/dev/null 2>&1; then
-                # Transitive only: refresh it within its parents' ranges.
-                npm update "$PACKAGE" --package-lock-only
-              fi
-            )
-          done
-
-      - name: Open PR
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_USER_ID: ${{ vars.PR_BOT_USER_ID }}
-        run: |
-          set -euo pipefail
-          if git diff --quiet; then echo "${PACKAGE} already current; nothing to bump."; exit 0; fi
-          slug="${PACKAGE#@}"; slug="${slug//\//-}"
-          branch="deps/${slug}-${GITHUB_RUN_ID}"
-          subject="chore(deps): bump ${PACKAGE}"
-          git config user.name "${APP_SLUG}[bot]"
-          git config user.email "${BOT_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
-          git checkout -b "$branch"
-          git commit -am "$subject"
-          git push --force-with-lease origin "$branch"
-          gh pr create --base main --head "$branch" \
-            --title "$subject" \
-            --body "Automated bump of \`${PACKAGE}\` triggered by its release."
+    uses: digidem/.github/.github/workflows/bump-first-party-dep.yml@v1
+    with:
+      package: ${{ github.event.client_payload.package || inputs.package }}
+    secrets:
+      PR_BOT_PRIVATE_KEY: ${{ secrets.PR_BOT_PRIVATE_KEY }}
