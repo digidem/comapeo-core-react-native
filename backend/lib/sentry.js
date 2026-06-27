@@ -365,18 +365,30 @@ export function rpcHook() {
   return (request, next) => {
     const method = request.method.join(".");
 
-    // Always-on metric path. Records duration + status as a distribution
-    // metric regardless of `debug`; the span block below only runs under
-    // `debug` and wraps the same `next(request)`.
+    // Always-on path. Records duration + status metrics AND captures the
+    // handler exception as a Sentry issue regardless of `debug` — error
+    // visibility is gated only on Sentry being initialised. The span block
+    // below adds per-RPC tracing under `debug` and wraps the same
+    // `next(request)`. The trailing `.catch` keeps a throw from a metrics
+    // call out of the unhandledRejection → handleFatal path.
     if (!debug) {
       const start = performance.now();
-      Promise.resolve(next(request)).then(
-        () => metrics.rpcServer(method, "ok", performance.now() - start),
-        (error) => {
-          metrics.rpcServer(method, statusFor(error), performance.now() - start);
-          metrics.rpcServerError(method, errorClassFor(error));
-        },
-      );
+      Promise.resolve(next(request))
+        .then(
+          () => metrics.rpcServer(method, "ok", performance.now() - start),
+          (error) => {
+            metrics.rpcServer(
+              method,
+              statusFor(error),
+              performance.now() - start,
+            );
+            metrics.rpcServerError(method, errorClassFor(error));
+            sentryRef.captureException(error, {
+              tags: { layer: "node", op: "rpc.server" },
+            });
+          },
+        )
+        .catch(() => {});
       return;
     }
 

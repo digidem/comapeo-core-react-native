@@ -146,3 +146,41 @@ test("debug OFF: rpcHook records the metric but creates no span/envelope", async
 
   await Sentry.close();
 });
+
+test("debug OFF: a rejecting RPC is still captured as a Sentry issue", async () => {
+  initSentry({ ...baseArgv, debug: false });
+  const rec = recordingMetricsSdk();
+  metrics.init({
+    Sentry: rec.sdk,
+    platform: "android",
+    deviceClass: "mid",
+    osMajor: "android.14",
+    applicationUsageData: true,
+  });
+
+  const captured = [];
+  setSink((frame) => captured.push(frame));
+
+  const hook = rpcHook();
+  assert.ok(hook, "rpcHook returned undefined — Sentry didn't initialise");
+
+  // Error capture must NOT be gated on debug: a handler that throws still
+  // produces a Sentry issue on the always-on path.
+  await new Promise((resolve) => {
+    hook(
+      { method: ["read", "doc"], args: [], metadata: {} },
+      async () => {
+        setImmediate(resolve);
+        throw new Error("boom");
+      },
+    );
+  });
+  await flush(2000);
+
+  assert.ok(
+    captured.length > 0,
+    "debug-off rejection must still reach Sentry as a captured issue",
+  );
+
+  await Sentry.close();
+});

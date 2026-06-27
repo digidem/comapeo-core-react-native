@@ -21,6 +21,7 @@ function setup({ debug, diagnosticsEnabled = true, sentryInitialized = true }) {
   const rpcClientMetric = jest.fn();
   const rpcClientSendMetric = jest.fn();
   const rpcStatusFor = jest.fn((error) => (error ? "error" : "ok"));
+  const captureException = jest.fn();
 
   jest.resetModules();
 
@@ -56,7 +57,7 @@ function setup({ debug, diagnosticsEnabled = true, sentryInitialized = true }) {
     isInitialized: () => sentryInitialized,
     getActiveSpan: () => null,
     startSpan,
-    captureException: jest.fn(),
+    captureException,
   }));
 
   jest.doMock("@sentry/core", () => ({
@@ -71,7 +72,13 @@ function setup({ debug, diagnosticsEnabled = true, sentryInitialized = true }) {
   }));
 
   require("../ComapeoCoreModule");
-  return { capturedHook: () => capturedHook, startSpan, rpcClientMetric, rpcStatusFor };
+  return {
+    capturedHook: () => capturedHook,
+    startSpan,
+    rpcClientMetric,
+    rpcStatusFor,
+    captureException,
+  };
 }
 
 describe("onRequestHook", () => {
@@ -108,5 +115,28 @@ describe("onRequestHook", () => {
 
     expect(rpcStatusFor).toHaveBeenCalledWith(err);
     expect(rpcClientMetric.mock.calls[0][1]).toBe("error");
+  });
+
+  test("debug=false + Sentry up: a rejecting RPC is still captured", async () => {
+    const { capturedHook, captureException } = setup({ debug: false });
+    const err = new Error("boom");
+    const next = jest.fn(() => Promise.reject(err));
+    capturedHook()({ method: ["someMethod"] }, next);
+    await flushMicrotasks();
+
+    expect(captureException).toHaveBeenCalledWith(err);
+  });
+
+  test("Sentry down: a rejecting RPC records the metric but is not captured", async () => {
+    const { capturedHook, captureException, rpcClientMetric } = setup({
+      debug: false,
+      sentryInitialized: false,
+    });
+    const next = jest.fn(() => Promise.reject(new Error("boom")));
+    capturedHook()({ method: ["someMethod"] }, next);
+    await flushMicrotasks();
+
+    expect(rpcClientMetric).toHaveBeenCalledTimes(1);
+    expect(captureException).not.toHaveBeenCalled();
   });
 });
