@@ -82,11 +82,19 @@ describe("sentry-metrics", () => {
 
   test("forbidden tag VALUE and NAME are dropped", () => {
     const { __metricsInternals } = require("../sentry-metrics");
+    __metricsInternals.count("comapeo.x", { coord: "lat=12.34" }); // forbidden value shape
+    expect(calls).toHaveLength(0);
+    __metricsInternals.count("comapeo.x", { project_id: "p" }); // forbidden name
+    expect(calls).toHaveLength(0);
+    __metricsInternals.count("comapeo.x", { method: "read.doc" }); // allowed
+    expect(calls).toHaveLength(1);
+  });
+
+  // The broad base64-22 value rule is disabled pending a narrower design
+  // (see sentry-scrub.ts), so a bare token tag no longer drops the metric.
+  test("bare base64 tag values pass through while the broad rule is disabled", () => {
+    const { __metricsInternals } = require("../sentry-metrics");
     __metricsInternals.count("comapeo.x", { bucket: "bm90LWEtcmVhbC1rZXktMQ" });
-    expect(calls).toHaveLength(0);
-    __metricsInternals.count("comapeo.x", { project_id: "p" });
-    expect(calls).toHaveLength(0);
-    __metricsInternals.count("comapeo.x", { method: "read.doc" });
     expect(calls).toHaveLength(1);
   });
 

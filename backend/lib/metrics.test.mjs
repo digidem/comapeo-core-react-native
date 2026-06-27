@@ -123,18 +123,19 @@ test("before_metric_send filter drops a forbidden tag name routed through count(
   assert.equal(calls.count.length, 1, "a clean metric still records");
 });
 
-test("before_metric_send drops forbidden tag VALUES (base64-22 in storage bucket)", () => {
+test("before_metric_send drops forbidden tag VALUES (lat/lng shape)", () => {
   const { sdk, calls } = fakeSentry();
   initWith(sdk);
-  // A 22-char base64 string as a bucket value must be dropped by the
-  // forbidden-value filter even though `bucket` is an allowed tag name.
-  metrics.storageSizeBucket("bm90LWEtcmVhbC1rZXktMQ");
+  // A lat/lng-shaped value must be dropped by the forbidden-value filter
+  // even though `bucket` is an allowed tag name.
+  metrics.storageSizeBucket("lat=12.34");
   assert.equal(
     calls.count.length,
     0,
-    "metric carrying a base64-22 tag value must be dropped",
+    "metric carrying a lat/lng tag value must be dropped",
   );
-  // A normal bucket value passes.
+  // A normal bucket value passes. (The broad base64-22 value rule is disabled
+  // pending a narrower design — a bare token would also pass now.)
   metrics.storageSizeBucket("<10MB");
   assert.equal(calls.count.length, 1);
 });

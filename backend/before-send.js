@@ -8,23 +8,20 @@
 // the same scrubbing + drop behaviour runs on Node-side events before
 // they leave the FGS.
 //
-// False-positive trade-off (documented per §9b.1, mirrored from
-// `src/sentry-scrub.ts`): the base64 pattern redacts any isolated
-// base64url run of 22-or-more chars (rootKey at 22, keypair public keys
-// at 43, z-base-32 project ids at ~52) but also any unrelated long
-// base64 token (32-char Sentry event/trace ids, long path segments); we
-// accept the occasional over-redaction because leaking a real project
-// secret costs far more than a stray `[redacted]`. Object fields keyed
-// lat/lng/latitude/longitude are redacted regardless of value type.
-// lat/lng markers redact the trailing number. HTTP breadcrumb URLs
-// reduce to host-only.
+// Mirrored from `src/sentry-scrub.ts`. The broad base64-22 token rule (to
+// catch bare rootKeys / public keys / project ids) is intentionally NOT
+// enabled here either — it over-matched Sentry's own 32-hex trace_ids,
+// PascalCase exception type names, and error_class metric tags, redacting
+// data we need. Pending a narrower design agreed with the team; bare tokens
+// are unscrubbed until then. Object fields keyed
+// lat/lng/latitude/longitude are redacted regardless of value type; lat/lng
+// markers redact the trailing number; HTTP breadcrumb URLs reduce to host-only.
 
 const REDACTED = "[redacted]";
 
 /** @type {RegExp[]} */
 const SCRUB_PATTERNS = [
   /\broot[_-]?key\b\s*["']?\s*[:=]\s*\S+/gi,
-  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22,}(?![A-Za-z0-9_-])/g,
   /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
 
@@ -49,7 +46,6 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
 
 /** @type {RegExp[]} */
 const FORBIDDEN_METRIC_VALUE_PATTERNS = [
-  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22,}(?![A-Za-z0-9_-])/,
   /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/i,
 ];
 

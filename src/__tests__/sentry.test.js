@@ -227,7 +227,7 @@ describe("initSentry", () => {
     expect(result).toEqual({ original: true, hostMarker: true });
   });
 
-  test("beforeSend scrubber redacts base64-22, lat/lng, and rootKey before the host sees them", () => {
+  test("beforeSend scrubber redacts lat/lng and rootKey markers before the host sees them", () => {
     const seen = [];
     const hostBeforeSend = jest.fn((event) => {
       seen.push(JSON.stringify(event));
@@ -248,9 +248,10 @@ describe("initSentry", () => {
     );
     const payload = seen[0];
     expect(payload).toContain("[redacted]");
-    expect(payload).not.toContain("aGVsbG8td29ybGQtMTIzNA");
-    expect(payload).not.toContain("bm90LWEtcmVhbC1rZXktMQ");
-    expect(payload).not.toContain("-12.34");
+    expect(payload).not.toContain("aGVsbG8td29ybGQtMTIzNA"); // rootKey value gone
+    expect(payload).not.toContain("-12.34"); // lat/lng gone
+    // Broad base64-22 rule disabled: a bare token in `extra` currently survives.
+    expect(payload).toContain("bm90LWEtcmVhbC1rZXktMQ");
   });
 
   test("beforeBreadcrumb reduces HTTP URLs to host-only", () => {

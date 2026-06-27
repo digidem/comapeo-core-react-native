@@ -42,10 +42,12 @@ const REDACTED = "[redacted]";
 const SCRUB_PATTERNS: RegExp[] = [
   // Explicit rootKey markers (key=value, json, prose).
   /\broot[_-]?key\b\s*["']?\s*[:=]\s*\S+/gi,
-  // 22+-char URL-safe base64 (rootKey at 22, keypair public keys at 43,
-  // z-base-32 project ids at ~52). Bounded by non-base64 chars so we
-  // don't bite into longer strings mid-token.
-  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22,}(?![A-Za-z0-9_-])/g,
+  // NOTE: a broad 22+-char URL-safe base64 rule (to catch bare rootKeys at
+  // 22, public keys at 43, project ids at ~52) is intentionally NOT enabled
+  // — it also matched Sentry's own 32-hex trace_ids, PascalCase exception
+  // type names, and error_class metric tags, redacting data we need. Pending
+  // a narrower design agreed with the team; bare tokens are unscrubbed until
+  // then.
   // Latitude / longitude markers followed by a number.
   /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
@@ -70,9 +72,9 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
   "rootkey",
 ]);
 
-/** Reused for forbidden tag *values* — base64-22 / lat-lng shapes. */
+/** Forbidden tag *values* — lat/lng shapes. (The broad base64-22 rule is
+ *  held back here too; see the SCRUB_PATTERNS note above.) */
 const FORBIDDEN_METRIC_VALUE_PATTERNS: RegExp[] = [
-  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22,}(?![A-Za-z0-9_-])/,
   /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/i,
 ];
 

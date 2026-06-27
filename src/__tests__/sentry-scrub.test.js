@@ -18,16 +18,21 @@ const BASE64_43 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 const ZBASE32_52 = "ybybybybybybybybybybybybybybybybybybybybybybybybybyb";
 
 describe("scrubString", () => {
-  test("redacts base64-22, lat/lng markers, and rootKey", () => {
+  test("redacts rootKey markers and lat/lng markers", () => {
     expect(scrubString("rootKey=aGVsbG8td29ybGQtMTIzNA")).toMatch(/\[redacted\]/);
-    expect(scrubString("token bm90LWEtcmVhbC1rZXktMQ done")).toMatch(/\[redacted\]/);
     expect(scrubString("latitude: -12.345")).toMatch(/\[redacted\]/);
     expect(scrubString("hello world")).toBe("hello world");
   });
 
-  test("redacts base64url longer than 22 chars", () => {
-    expect(scrubString(BASE64_43)).toBe("[redacted]");
-    expect(scrubString(ZBASE32_52)).toBe("[redacted]");
+  // The broad base64-22 token rule is intentionally disabled pending a
+  // narrower design (it over-matched trace_ids / exception type names /
+  // metric tags). Until it returns, bare tokens pass through unredacted.
+  test("does NOT redact bare base64 tokens while the broad rule is disabled", () => {
+    expect(scrubString("token bm90LWEtcmVhbC1rZXktMQ done")).toBe(
+      "token bm90LWEtcmVhbC1rZXktMQ done",
+    );
+    expect(scrubString(BASE64_43)).toBe(BASE64_43);
+    expect(scrubString(ZBASE32_52)).toBe(ZBASE32_52);
   });
 });
 
@@ -57,18 +62,20 @@ describe("scrubEvent", () => {
     expect(event.breadcrumbs[0].data.url).toBe("https://cloud.comapeo.app");
   });
 
-  test("reduces request.url to host-only and scrubs query/headers", () => {
+  test("reduces request.url to host-only and scrubs marked query/headers", () => {
+    // Values carry an explicit rootKey marker so the active patterns catch
+    // them; a bare base64 token would currently pass through (broad rule off).
     const event = {
       request: {
         url: "https://cloud.comapeo.app/projects/abc?token=x",
-        query_string: `key=${BASE64_43}`,
-        headers: { "x-secret": BASE64_43 },
+        query_string: "rootKey=supersecretvalue",
+        headers: { "x-secret": "root_key: supersecretvalue" },
       },
     };
     scrubEvent(event);
     expect(event.request.url).toBe("https://cloud.comapeo.app");
     expect(event.request.query_string).toMatch(/\[redacted\]/);
-    expect(event.request.headers["x-secret"]).toBe("[redacted]");
+    expect(event.request.headers["x-secret"]).toMatch(/\[redacted\]/);
   });
 });
 
@@ -92,11 +99,14 @@ describe("scrubUrlToHost", () => {
 });
 
 describe("isForbiddenMetric", () => {
-  test("drops forbidden tag names and long base64 values", () => {
+  test("drops forbidden tag names and lat/lng-shaped values", () => {
     expect(isForbiddenMetric("comapeo.x", { project_id: "p" })).toBe(true);
     expect(isForbiddenMetric("project_id", { platform: "ios" })).toBe(true);
-    expect(isForbiddenMetric("comapeo.x", { bucket: BASE64_43 })).toBe(true);
-    expect(isForbiddenMetric("comapeo.x", { bucket: ZBASE32_52 })).toBe(true);
+    expect(isForbiddenMetric("comapeo.x", { coord: "lat=12.34" })).toBe(true);
+    // Broad base64-22 value rule disabled (see sentry-scrub.ts); bare tokens
+    // no longer drop the metric. Re-enable once a narrower rule lands.
+    expect(isForbiddenMetric("comapeo.x", { bucket: BASE64_43 })).toBe(false);
+    expect(isForbiddenMetric("comapeo.x", { bucket: ZBASE32_52 })).toBe(false);
     expect(
       isForbiddenMetric("comapeo.rpc.client.duration_ms", {
         method: "read.doc",
