@@ -36,7 +36,7 @@ jobs:
       - uses: actions/create-github-app-token@v3
         id: app-token
         with:
-          app-id: ${{ secrets.PR_BOT_APP_ID }}
+          app-id: ${{ vars.PR_BOT_APP_ID }}
           private-key: ${{ secrets.PR_BOT_PRIVATE_KEY }}
 
       - uses: actions/checkout@v7
@@ -68,7 +68,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_USER_ID: ${{ secrets.PR_BOT_USER_ID }}
+          BOT_USER_ID: ${{ vars.PR_BOT_USER_ID }}
         run: |
           set -euo pipefail
           if git diff --quiet; then echo "${PACKAGE} already current; nothing to bump."; exit 0; fi
