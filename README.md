@@ -318,22 +318,90 @@ From `@comapeo/core-react-native/sentry`:
 - `getCaptureApplicationData()` / `setCaptureApplicationData(value)` — the
   capture-application-data toggle (gates traces and richer payloads).
 
-### Sourcemaps
+### Uploading artifacts to Sentry
 
-The Node backend ships minified, so upload its sourcemaps for readable stack
-traces. The sourcemaps carry content-hashed Sentry debug IDs, so you don't need
-to align this module's version with your app's release:
+For readable stack traces, Sentry needs the symbolication artifacts that match
+each release. This module captures errors from **three** runtimes (the Node
+backend, the React Native JS layer, and native code — including the Android
+`:ComapeoCore` foreground-service process), and they don't all symbolicate from
+the same artifact. Split the upload responsibility this way:
+
+| Artifact | Covers | Who uploads it |
+| --- | --- | --- |
+| **Node backend sourcemaps** | The embedded Node.js bundle this module ships (minified) | This module's `comapeo-rn-upload-sourcemaps` CLI (below) |
+| **JS bundle sourcemaps** | Your app's React Native JS (Hermes) | Your standard `@sentry/react-native` setup |
+| **iOS dSYMs** | Native crashes (your code, `sentry-cocoa`, the in-process Node thread) | Your standard `@sentry/react-native` setup |
+| **Android ProGuard/R8 mapping + NDK debug symbols** | Native crashes in both the main and `:ComapeoCore` processes, minified Kotlin/Java | Your standard `@sentry/react-native` setup |
+
+This module owns the RN-side `Sentry.init` call (via [`initSentry`](#setup)),
+but it does **not** take over uploading your app's own JS/native artifacts.
+Because `initSentry` runs with `autoInitializeNativeSdk: false` and the module
+enables the native + FGS crash reporters, you still need the standard upload
+pipeline below or native crashes and JS errors arrive unsymbolicated.
+
+#### Node backend sourcemaps (this module)
+
+The Node backend ships minified, so upload its sourcemaps with the bundled CLI.
+The sourcemaps carry content-hashed Sentry debug IDs, so you don't need to align
+this module's version with your app's release:
 
 ```sh
 SENTRY_AUTH_TOKEN=… npx comapeo-rn-upload-sourcemaps \
   --org your-org --project your-project
 ```
 
+Run it from your release CI (after `eas build`, or wherever you build the app).
 Re-uploading is idempotent (Sentry de-dupes by debug ID). The CLI finds
-`@sentry/cli` via `@sentry/react-native`'s dependency chain. `--targets <list>`
-restricts the upload to a subset of `android-debug, android-main, ios`; `--url`
-points at self-hosted Sentry; `SENTRY_ORG` / `SENTRY_PROJECT` work in place of
-the flags.
+`@sentry/cli` via `@sentry/react-native`'s dependency chain — if you don't have
+`@sentry/react-native` installed, add `@sentry/cli` to your devDependencies.
+`--targets <list>` restricts the upload to a subset of
+`android-debug, android-main, ios`; `--url` points at self-hosted Sentry;
+`SENTRY_ORG` / `SENTRY_PROJECT` work in place of the flags.
+
+The backend sourcemaps live in sibling `nodejs-sourcemaps/` directories (not
+under the bundled `nodejs-project/` assets), so they are **not** shipped inside
+your APK/IPA — no exclusion step is needed to keep them off the device.
+
+#### JS bundle sourcemaps and native debug symbols (your app)
+
+These are uploaded by the standard `@sentry/react-native` tooling, exactly as
+for any Sentry-enabled Expo/React Native app — this module changes nothing about
+that pipeline. The most common path on Expo is to add the
+[`@sentry/react-native/expo`](https://docs.sentry.io/platforms/react-native/manual-setup/expo/)
+config plugin alongside this one, which wires up JS sourcemap and native
+debug-symbol upload during `eas build`:
+
+```js
+// app.config.js
+export default {
+  expo: {
+    plugins: [
+      ["@comapeo/core-react-native", { sentry: { /* … */ } }],
+      ["@sentry/react-native/expo", {
+        organization: process.env.SENTRY_ORG,
+        project: process.env.SENTRY_PROJECT,
+      }],
+    ],
+  },
+};
+```
+
+Adding the Sentry Expo plugin for artifact upload does **not** conflict with
+this module owning `Sentry.init` — the plugin only configures the build-time
+upload and Metro, it does not call `Sentry.init`. Still initialise Sentry
+through [`initSentry`](#setup), not `Sentry.init` directly.
+
+Provide `SENTRY_AUTH_TOKEN` (with `project:releases` and `org:read` scope) to
+the build so the upload can run. For a bare React Native project, follow
+Sentry's [manual source-maps](https://docs.sentry.io/platforms/react-native/sourcemaps/)
+and [dSYM/NDK](https://docs.sentry.io/platforms/react-native/upload-debug/) docs
+instead of the Expo plugin.
+
+Keep your app's Sentry `release` aligned with what this module's plugin bakes
+in — by default `versionName + "+" + versionCode` (Android) /
+`CFBundleShortVersionString + "+" + CFBundleVersion` (iOS), or whatever you pass
+as the plugin's `release` option — so every layer's events resolve against the
+same release in Sentry.
 
 See [`docs/sentry-integration-plan.md`](./docs/sentry-integration-plan.md) for
 the design and [`docs/ARCHITECTURE.md` §7](./docs/ARCHITECTURE.md) for the
