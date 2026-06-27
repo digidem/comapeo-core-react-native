@@ -2,8 +2,9 @@ name: Bump first-party dep
 
 # Receiver for the first-party-release dispatch fired by our upstream repos when
 # they publish. The bump + rolling-PR logic lives in the shared reusable workflow;
-# this just forwards the package name. Dependabot (cooldown-exempt, daily) is the
-# fallback if a dispatch is ever missed.
+# this forwards the package name and fans out over our two package trees (root +
+# backend). Dependabot (cooldown-exempt, daily) is the fallback if a dispatch is
+# ever missed.
 on:
   repository_dispatch:
     types: [first-party-release]
@@ -15,8 +16,12 @@ on:
 
 jobs:
   bump:
+    strategy:
+      matrix:
+        path: [".", "backend"]
     uses: digidem/actions-bump-first-party-dep/.github/workflows/bump.yml@v1
     with:
       package: ${{ github.event.client_payload.package || inputs.package }}
+      path: ${{ matrix.path }}
     secrets:
       PR_BOT_PRIVATE_KEY: ${{ secrets.PR_BOT_PRIVATE_KEY }}
