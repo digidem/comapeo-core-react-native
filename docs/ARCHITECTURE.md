@@ -338,13 +338,35 @@ The model addresses three previously-broken paths:
 
 - `stopRequested` is set by `stop()` synchronously, before any I/O.
 
-`ERROR` is **observable but does not tear down the node thread**.
-Recovery is the application's responsibility (restart the FGS on
-Android, re-create the service on iOS, prompt the user, log a report).
-`ERROR` remains **per-instance terminal**: `start()` and `stop()`
-are refused; only `destroy()` (Android) or `cleanup()` (iOS) clears
-the slate, and after that a fresh `NodeJSService` instance is
-required.
+`ERROR` is **observable** and **per-instance terminal**: `start()` and
+`stop()` are refused; only `destroy()` (Android) or `cleanup()` (iOS)
+clears the slate, and after that a fresh `NodeJSService` instance is
+required. `ERROR` does not tear down the node *thread* in
+`NodeJSService` itself — but on Android the surrounding FGS goes one
+step further (see below).
+
+Because `node::Start` is single-shot per process, an `ERROR`'d
+`NodeJSService` can't be restarted in place; recovery means a fresh
+process. On **Android** the FGS makes that uniform by **self-terminating
+its own process** a short grace period after a terminal `ERROR` the node
+thread didn't already exit from (`ComapeoCoreService.onNodeStateChange`,
+`SELF_TERMINATE_GRACE_MS`). Most errors already converge to a dead
+process on their own (`handleFatal` → `process.exit(1)` → runtime thread
+returns → `onComplete` → `stopService`); the self-terminate watchdog is
+the backstop for the node-still-alive case (e.g. a `starting-timeout`
+whose `error-native` frame was dropped — §5.7). Self-termination is
+graceful-first: `onDestroy` runs `stopForTeardown()`, which ships the
+`shutdown` frame and joins the node thread (so the backend closes
+MapeoManager/SQLite/sockets and exits on its own) bounded by the 10 s
+stop timeout, and only force-kills on expiry. Either way the FGS dies
+*without* re-arming `START_STICKY` (it goes through `stopSelf`), so the
+single recovery path is the app re-foregrounding: `onResume` →
+`USER_FOREGROUND` cold-starts a fresh process. On **iOS** (single
+process, once-per-process runtime) there is nothing to self-terminate;
+recovery is a full app relaunch. In all cases the JS layer keeps
+observing `ERROR` so the host can prompt the user, apply backoff, and log
+a report — see [`ForegroundService.md`](./ForegroundService.md) "Crash
+recovery and restarting".
 
 ### 5.3 JS-visible state
 
@@ -486,9 +508,10 @@ codebases.
 | 3 | iOS `waitForFile` (`NodeJSIPC`) | 30 s | Backend never binds the socket | IPC `.error` |
 | 4 | iOS `connectWithRetry` | ~1.5 s budget (5 attempts, 100→200→400→800 ms) | File exists but `accept()` not yet ready | IPC `.error` |
 | 5 | Android `startupTimeoutMs` | 30 s | Mirrors #1 | Sends `error-native` to backend (best-effort; see #7) **and** sets local `BackendState.Error(starting-timeout)` |
-| 6 | Android `ComapeoCoreService.onDestroy` `withTimeout` | 10 s | `nodeJSService.stop()` hangs | Catches `TimeoutCancellationException` → `Process.killProcess`. This is the only outer bound on Android `stop()` — it has no internal timeout |
+| 6 | Android `ComapeoCoreService.onDestroy` `withTimeout` | 10 s | `nodeJSService.stopForTeardown()` drain hangs | Catches `TimeoutCancellationException` → `Process.killProcess`. This is the only outer bound on the Android teardown drain — it has no internal timeout |
 | 7 | Android `SEND_ERROR_NATIVE_TIMEOUT_MS` | 2 s | `ipcDeferred` never completes (FGS init threw before IPC was constructed) | Frame logged as dropped, no error thrown — the FGS still sets local `ERROR` regardless |
 | 8 | Android `connectWithRetry` (`NodeJSIPC`) | 30 s | Backend never binds the socket OR file exists but `accept()` never ready | IPC `State.Error` |
+| 11 | Android `SELF_TERMINATE_GRACE_MS` (`ComapeoCoreService`) | 3 s | Terminal `ERROR` with the node thread still alive (dropped `error-native`, hung `initPromise`) pinning the FGS process forever | `stopService()` → `onDestroy` → graceful `stopForTeardown()` drain (bounded by #6's 10 s) → `killProcess`; the dead process is recovered by the next `USER_FOREGROUND`. Grace lets the normal `onComplete`→`stopService` win first and lets the `error` frame flush to the main process |
 
 **Backend (Node):**
 
@@ -502,10 +525,16 @@ codebases.
 - **Backend `await initPromise` (`backend/index.js`).** No timeout on
   the rootkey-receive step. Relies on the native watchdog (#1 / #5)
   to break it via `error-native` → `process.exit(1)`. If both the
-  watchdog and `error-native` fail, Node parks indefinitely and the
-  main-app process sees `STARTING` until the OS kills the process.
-  Defense-in-depth would be a 60–120 s `initPromise` timeout in the
-  backend; not currently implemented.
+  watchdog and `error-native` fail, Node parks indefinitely. On
+  Android the FGS self-terminate watchdog (#11) bounds this: the
+  startup watchdog (#5) has already set local `ERROR`, so the FGS
+  kills its own process within `SELF_TERMINATE_GRACE_MS`, the control
+  socket closes, and the main-app process converges from `STARTING`
+  to `ERROR` (synthetic `node-runtime-unexpected`) instead of hanging.
+  iOS has no equivalent self-terminate, so there the main path is
+  still the OS killing the process. Defense-in-depth would be a
+  60–120 s `initPromise` timeout in the backend; not currently
+  implemented.
 
 - **Backend `await comapeo.close()` in the `shutdown` handler.**
   Bounded only by the caller-side stop timeout (#2 / #6). If
@@ -556,8 +585,12 @@ gaps. The remaining ones are inherent to the platform or out of scope:
   (a very narrow window — the IPC connect runs in the FGS service's
   init block alongside Node startup), the frame is dropped and the
   main-app process falls back to the synthetic
-  `node-runtime-unexpected` phase. This is no worse than the
-  pre-refactor baseline.
+  `node-runtime-unexpected` phase. Only *attribution* degrades, not
+  liveness: the FGS self-terminate watchdog (§5.7 #11) still kills the
+  process within its grace window, so the main-app process converges
+  to `ERROR` rather than hanging at `STARTING`. This is no worse than
+  the pre-refactor baseline on attribution and strictly better on the
+  hang.
 
 ---
 
@@ -742,10 +775,10 @@ this table.
 |---|---|---|
 | `proc` | `main` (host UI process) · `fgs` (Android `:ComapeoCore`) | Process-level on FGS-side init; per-call on iOS, RN, and main-process Android |
 | `layer` | `rn` · `native` · `node` (Phase 3) | Same as `proc` |
-| `comapeo.phase` | `rootkey` · `node-runtime` · `starting-timeout` · `shutdown-timeout` · `node-runtime-unexpected` · `ipc` · `listen-control` · `init` · `construct` · `runtime` · `errorNativeForward` | Captured exceptions and timeout messages |
+| `comapeo.phase` | `rootkey` · `node-runtime` · `starting-timeout` · `shutdown-timeout` · `self-terminate` · `node-runtime-unexpected` · `ipc` · `listen-control` · `init` · `construct` · `runtime` · `errorNativeForward` | Captured exceptions and timeout messages |
 | `comapeo.state` | `STOPPED` · `STARTING` · `STARTED` · `STOPPING` · `ERROR` | ERROR captureExceptions only |
 | `source` | `control-socket` · `rootkey-store` · `startNodeWithArguments` · `comapeo-core` (Phase 3) | Captured exceptions, narrows the origin within a phase |
-| `timeout` | `startup` · `shutdown` · `fgsStop` · `errorNativeForward` · `waitForFile` · `connectRetry` | `captureMessage` events for timeout firings |
+| `timeout` | `startup` · `shutdown` · `fgsStop` · `selfTerminate` · `errorNativeForward` · `waitForFile` · `connectRetry` | `captureMessage` events for timeout firings |
 | `boot.kind` | `user-foreground` · `system-restart` | On `comapeo.boot` transactions (Android FGS only). `user-foreground` when the activity lifecycle initiated the start (stamped `serviceStartTimeMs`); `system-restart` when Android brought the FGS back without an intent — no `boot.fgs-launch` span and the timeline starts at `NodeJSService.start()`. |
 
 #### Breadcrumb categories
@@ -794,6 +827,7 @@ single timeline in Sentry's Trace view. Cross-layer with the RN-side
 | `comapeo: startup timeout fired` | `error` | `timeout:startup`, `comapeo.phase:starting-timeout` |
 | `comapeo: stop timeout fired` (iOS) / `comapeo: FGS stop timeout fired` (Android) | `error` | `timeout:shutdown` (iOS) / `timeout:fgsStop` (Android), `comapeo.phase:shutdown-timeout` |
 | `comapeo: error-native frame dropped` (Android FGS) | `warning` | `timeout:errorNativeForward`, `comapeo.phase:<inner>` |
+| `comapeo: FGS self-terminating after terminal ERROR` (Android FGS) | `warning` | `timeout:selfTerminate`, `comapeo.phase:self-terminate` |
 
 #### Standard captureException tag sets
 

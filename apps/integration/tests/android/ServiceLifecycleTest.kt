@@ -34,6 +34,8 @@ class ServiceLifecycleTest {
         private const val SERVICE_PROCESS = ":ComapeoCore"
         private const val STARTUP_TIMEOUT_MS = 15_000L
         private const val SHUTDOWN_TIMEOUT_MS = 10_000L
+        // SELF_TERMINATE_GRACE_MS (3s) + graceful drain (≤10s) + Sentry flush (2s) + margin.
+        private const val SELF_TERMINATE_TIMEOUT_MS = 18_000L
         private const val POLL_INTERVAL_MS = 500L
     }
 
@@ -255,6 +257,46 @@ class ServiceLifecycleTest {
         assertTrue(
             "Service should restart after being stopped",
             waitForServiceRunning()
+        )
+    }
+
+    /**
+     * Verifies the FGS self-terminate watchdog: a terminal ERROR with the node
+     * thread still alive (driven by the debug-only SIMULATE_FATAL_ERROR seam, which
+     * mimics a dropped `error-native` on a startup-watchdog/rootkey failure) must
+     * make the `:ComapeoCore` process die on its own, and a subsequent
+     * USER_FOREGROUND must cold-start a fresh process. Without the watchdog the
+     * process would stay alive in ERROR and `waitForServiceStopped` would time out.
+     */
+    @Test
+    fun selfTerminatesAfterForcedErrorThenRecovers() {
+        startServiceWithAction(Actions.USER_FOREGROUND)
+        assertTrue("Service should start", waitForServiceRunning())
+        // Let Node.js finish booting so the error is forced from a live runtime.
+        Thread.sleep(5000)
+        val initialPid = getServiceProcessPid()
+        assertTrue("Service process should be running before the forced error", initialPid != null)
+
+        // Force a terminal ERROR with node left alive; the watchdog should kill the
+        // process within SELF_TERMINATE_GRACE_MS (3s) + teardown.
+        startServiceWithAction(Actions.SIMULATE_FATAL_ERROR)
+        assertTrue(
+            "Service should self-terminate within ${SELF_TERMINATE_TIMEOUT_MS}ms after a forced error",
+            waitForServiceStopped(SELF_TERMINATE_TIMEOUT_MS)
+        )
+
+        // Recovery: a fresh foreground cold-starts a new process.
+        startServiceWithAction(Actions.USER_FOREGROUND)
+        assertTrue(
+            "Service should recover (cold-start) after self-termination",
+            waitForServiceRunning()
+        )
+        // The recovered process must be a genuinely fresh fork (node::Start is
+        // single-shot per process), not the original survivor.
+        val recoveredPid = getServiceProcessPid()
+        assertTrue(
+            "Recovered process should be a fresh cold-start (pid != $initialPid), got $recoveredPid",
+            recoveredPid != null && recoveredPid != initialPid
         )
     }
 

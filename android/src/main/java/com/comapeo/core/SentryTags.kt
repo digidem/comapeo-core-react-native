@@ -68,6 +68,10 @@ object SentryTags {
     // free-form strings.)
     const val PHASE_PROCESS_DETECTION = "process-detection"
     const val PHASE_SHUTDOWN_TIMEOUT = "shutdown-timeout"
+    /** FGS killed itself after a terminal ERROR the node thread didn't exit from
+     *  (e.g. a startup-watchdog timeout whose error-native frame was dropped), so
+     *  the process converges to a restartable dead state. See ComapeoCoreService. */
+    const val PHASE_SELF_TERMINATE = "self-terminate"
     const val PHASE_FGS_START_NOT_ALLOWED = "fgs-start-not-allowed"
     const val PHASE_FGS_PERMISSION_DENIED = "fgs-permission-denied"
     const val PHASE_FGS_START_FAILED = "fgs-start-failed"
