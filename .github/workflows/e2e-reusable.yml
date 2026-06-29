@@ -149,7 +149,7 @@ jobs:
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
@@ -220,7 +220,7 @@ jobs:
 
       - name: Cache nodejs-mobile binaries
         id: cache-ios-framework
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           # android/libnode is needed even on iOS builds:
           # `readNodeJsMobileVersions()` in scripts/lib/node-versions.ts
