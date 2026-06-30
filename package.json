@@ -114,7 +114,7 @@
     "react-native": "*"
   },
   "dependencies": {
-    "@comapeo/ipc": "^9.0.0-pre.2"
+    "@comapeo/ipc": "9.0.0"
   },
   "allowScripts": {
     "@sentry/cli": false,
