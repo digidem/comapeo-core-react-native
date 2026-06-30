@@ -38,15 +38,23 @@ const IOS_NODEJS_PROJECT_DIR = join(PROJECT_ROOT, "ios/nodejs-project");
 // APK/IPA. The relocate-sourcemaps rolldown plugin moves `*.map` here
 // after writeBundle. Consumed by `comapeo-rn-upload-sourcemaps` at
 // the consumer's CI step.
-const ANDROID_DEBUG_SOURCEMAPS_DIR = join(
-  PROJECT_ROOT,
-  "android/src/debug/nodejs-sourcemaps",
-);
+//
+// The Android *debug* output has no relocation target: its map stays
+// colocated with the bundle in `src/debug/assets/nodejs-project/` (shipped
+// only in debug variants) so Node can remap stacks in-process. See
+// `backend/rolldown.config.ts`.
 const ANDROID_MAIN_SOURCEMAPS_DIR = join(
   PROJECT_ROOT,
   "android/src/main/nodejs-sourcemaps",
 );
-const IOS_SOURCEMAPS_DIR = join(PROJECT_ROOT, "ios/nodejs-sourcemaps");
+// iOS maps are laid out under a `nodejs-project/` dir so the Debug-only
+// `ComapeoCoreSourcemaps` companion pod can ship them as a `nodejs-project`
+// resource that merges next to the bundle in the app (see that podspec and
+// `app.plugin.js`'s `withDebugSourcemapsIos`).
+const IOS_SOURCEMAPS_DIR = join(
+  PROJECT_ROOT,
+  "ios/nodejs-sourcemaps/nodejs-project",
+);
 // One xcframework per native module instance. CocoaPods picks them up
 // via `vendored_frameworks` in ComapeoCore.podspec; Xcode's standard
 // Embed & Sign phase places + codesigns them into <App>.app/Frameworks/
@@ -90,7 +98,6 @@ await $({
     OUTPUT_DIR_ANDROID_DEBUG: ANDROID_DEBUG_NODEJS_PROJECT_DIR,
     OUTPUT_DIR_ANDROID_MAIN: ANDROID_MAIN_NODEJS_PROJECT_DIR,
     OUTPUT_DIR_IOS: IOS_NODEJS_PROJECT_DIR,
-    SOURCEMAPS_DIR_ANDROID_DEBUG: ANDROID_DEBUG_SOURCEMAPS_DIR,
     SOURCEMAPS_DIR_ANDROID_MAIN: ANDROID_MAIN_SOURCEMAPS_DIR,
     SOURCEMAPS_DIR_IOS: IOS_SOURCEMAPS_DIR,
   },

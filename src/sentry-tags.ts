@@ -24,6 +24,15 @@ export const SentryTags = {
 } as const;
 
 /**
+ * Key under which `initSentry` records init ownership on `globalThis`.
+ * It outlives a JS-bundle reload alongside the Sentry SDK's own global
+ * carrier, letting a post-reload re-entry tell "we already init'd" apart
+ * from a host's foreign `Sentry.init`. Shared so the test can clear it.
+ */
+export const SENTRY_OWNED_GLOBAL_KEY =
+  "__comapeoCoreReactNativeSentryInitialized";
+
+/**
  * Breadcrumb category names. Single source of truth for the
  * dot-separated category strings so a typo can't silently route
  * crumbs to the wrong dashboard filter.
