@@ -1,6 +1,7 @@
 {
   "platforms": ["apple", "android"],
   "apple": {
+    "podspecPath": "ios/ComapeoCore.podspec",
     "modules": [
       "ComapeoCoreModule"
     ],

@@ -27,7 +27,8 @@ import configPlugins from "@expo/config-plugins";
 import { createRequire } from "node:module";
 import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 const { withAndroidManifest } = configPlugins;
 const { withMainApplication } = configPlugins;
 const { withInfoPlist } = configPlugins;
@@ -95,6 +96,12 @@ function withComapeoCore(config, props) {
   config = withSentryAndroid(config, sentry, moduleIdent);
   config = withSentryIos(config, sentry);
   config = withSentryLibraryEvolution(config);
+  // iOS Debug builds: ship the backend sourcemaps next to the bundle so
+  // Node's `--enable-source-maps` (passed by NodeJSService under #if DEBUG)
+  // symbolicates backend errors in-process — no Sentry upload needed.
+  // Release builds skip the copy (the bundle's map stays out of the IPA).
+  // Android handles the debug case via its `src/debug/` asset tree instead.
+  config = withDebugSourcemapsIos(config);
   // Optional default project config (presets/categories) supplied by the
   // consuming app. The module no longer ships @comapeo/default-categories;
   // when this prop is absent, new projects get no default config.
@@ -406,6 +413,37 @@ function withSentryLibraryEvolution(config) {
       src: cfg.modResults.contents,
       newSrc: SENTRY_LIBRARY_EVOLUTION_HOOK,
       anchor: /post_install do \|installer\|/,
+      offset: 1,
+      comment: "#",
+    }).contents;
+    return cfg;
+  });
+}
+
+// Adds the Debug-only `ComapeoCoreSourcemaps` companion pod to the consumer's
+// Podfile. `:configurations => ['Debug']` makes CocoaPods copy its resources
+// (the backend `.map` files, shaped as a `nodejs-project` dir) only in Debug
+// builds — they merge next to the bundle in the `.app`, where Node resolves
+// them via `--enable-source-maps` (passed by NodeJSService under #if DEBUG).
+// Release builds never include the pod, so the IPA stays lean.
+//
+// The pod is added explicitly here, never autolinked — see
+// `ComapeoCoreSourcemaps.podspec` and the pinned `apple.podspecPath` in
+// `expo-module.config.json`. `:path` is computed per-consumer so it survives
+// monorepo node_modules hoisting.
+function withDebugSourcemapsIos(config) {
+  return withPodfile(config, (cfg) => {
+    const podDir = join(dirname(fileURLToPath(import.meta.url)), "ios");
+    const relPodPath =
+      relative(cfg.modRequest.platformProjectRoot, podDir) || ".";
+    const podLine =
+      `  pod 'ComapeoCoreSourcemaps', :path => '${relPodPath}', ` +
+      `:configurations => ['Debug']`;
+    cfg.modResults.contents = mergeContents({
+      tag: "comapeo-core-debug-sourcemaps",
+      src: cfg.modResults.contents,
+      newSrc: podLine,
+      anchor: /use_expo_modules!/,
       offset: 1,
       comment: "#",
     }).contents;

@@ -355,12 +355,15 @@ Re-uploading is idempotent (Sentry de-dupes by debug ID). The CLI finds
 `@sentry/cli` via `@sentry/react-native`'s dependency chain — if you don't have
 `@sentry/react-native` installed, add `@sentry/cli` to your devDependencies.
 `--targets <list>` restricts the upload to a subset of
-`android-debug, android-main, ios`; `--url` points at self-hosted Sentry;
+`android-main, ios`; `--url` points at self-hosted Sentry;
 `SENTRY_ORG` / `SENTRY_PROJECT` work in place of the flags.
 
-The backend sourcemaps live in sibling `nodejs-sourcemaps/` directories (not
-under the bundled `nodejs-project/` assets), so they are **not** shipped inside
-your APK/IPA — no exclusion step is needed to keep them off the device.
+Only **release** builds need this upload. Debug builds ship the backend
+sourcemap alongside the bundle and enable Node's `--enable-source-maps`, so
+backend errors are symbolicated in-process — no upload or Sentry auth token
+required. In release builds the maps live in sibling `nodejs-sourcemaps/`
+directories (not under the bundled `nodejs-project/` assets), so they are
+**not** shipped inside your release APK/IPA.
 
 #### JS bundle sourcemaps and native debug symbols (your app)
 
