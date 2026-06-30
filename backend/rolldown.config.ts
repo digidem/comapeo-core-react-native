@@ -47,10 +47,11 @@ const IOS_OUT = process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
  * For the production build these are passed by `scripts/build-backend.ts`;
  * the fallbacks keep the standalone `cd backend && npm run build` case
  * working — maps land in `<outDir>-sourcemaps/` next to the bundle dir.
+ *
+ * Note: the Android *debug* output is deliberately absent — its map stays
+ * colocated with the bundle (shipped in debug-only `src/debug/` for
+ * in-process symbolication), so there's nothing to relocate.
  */
-const ANDROID_SOURCEMAPS_DEBUG =
-  process.env.SOURCEMAPS_DIR_ANDROID_DEBUG ?? `${ANDROID_OUT_DEBUG}-sourcemaps`;
-
 const ANDROID_SOURCEMAPS_MAIN =
   process.env.SOURCEMAPS_DIR_ANDROID_MAIN ?? `${ANDROID_OUT_MAIN}-sourcemaps`;
 
@@ -316,11 +317,13 @@ const config: RolldownOptions[] = [
         outDir: ANDROID_OUT_DEBUG,
         debugIdMap: androidDebugDebugIds,
       }),
-      relocateSourcemapsPlugin(
-        ANDROID_OUT_DEBUG,
-        ANDROID_SOURCEMAPS_DEBUG,
-        androidDebugDebugIds,
-      ),
+      // Debug output keeps its `.map` colocated with the bundle (no
+      // relocate). `src/debug/` is merged only into debug variants, so the
+      // map ships in debug APKs but never in release. With native passing
+      // `--enable-source-maps` under `BuildConfig.DEBUG`, Node remaps
+      // backend stacks in-process — symbolicated errors reach Sentry with
+      // no upload or auth token. Release uses `src/main` (relocated +
+      // consumer-uploaded).
     ],
   },
   {
