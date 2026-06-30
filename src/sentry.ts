@@ -23,7 +23,7 @@ import {
   setCaptureApplicationDataNative,
 } from "./ComapeoCoreModule";
 import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types";
-import { SentryTags } from "./sentry-tags";
+import { SentryTags, SENTRY_OWNED_GLOBAL_KEY } from "./sentry-tags";
 import {
   BACKEND_MODULES,
   COMAPEO_MODULE_VERSION_LABEL,
@@ -151,10 +151,29 @@ let initialized = false;
 // keeps logs and tests clean.
 let sentryReady = false;
 
+// Marker on the JS global. Our module-level `initialized` is reset
+// whenever the JS bundle is torn down and re-created (dev reload, an
+// OTA update applying a new bundle), but a reload that leaves the live
+// Sentry SDK in place leaves this marker in place too — both live on
+// `globalThis`, so they share fate with `Sentry.isInitialized()`. That
+// lets a post-reload re-entry tell "we already init'd Sentry" (benign,
+// idempotent) apart from "the host called `Sentry.init` directly"
+// (which has the SDK up but no marker → the migration error still
+// fires). The key lives in `sentry-tags.ts` so the test can clear it.
+function sentryOwnedByUs(): boolean {
+  return (
+    (globalThis as Record<string, unknown>)[SENTRY_OWNED_GLOBAL_KEY] === true
+  );
+}
+
+function markSentryOwned(): void {
+  (globalThis as Record<string, unknown>)[SENTRY_OWNED_GLOBAL_KEY] = true;
+}
+
 /**
- * Initialise Sentry for the host app. Must be called exactly once at
- * app entry (before any code that captures). The module reads its
- * persisted preferences and either:
+ * Initialise Sentry for the host app. Call once at app entry (before
+ * any code that captures). The module reads its persisted preferences
+ * and either:
  *
  *   - skips `Sentry.init` entirely (diagnosticsEnabled is false) —
  *     every emit path in this module no-ops;
@@ -162,6 +181,15 @@ let sentryReady = false;
  *     (we own the init lifecycle now); or
  *   - calls `Sentry.init` with locked options merged with the host's
  *     allowlisted extensions.
+ *
+ * Idempotent: a second call is a no-op that returns without touching
+ * the live client. The "second call" the host can't avoid is a JS
+ * bundle reload (dev fast-refresh, or an OTA update swapping the
+ * bundle) — from the native side the entry runs again, but the Sentry
+ * SDK from the first run is still alive. Re-running `Sentry.init`
+ * there would replace a live client mid-flight, so we skip it. The
+ * options passed to a second call are ignored (the client is already
+ * configured); to change configuration, fully restart the app.
  *
  * Locked options:
  * - `dsn`, `release`, `environment`, `sampleRate`, `enableLogs` —
@@ -173,21 +201,6 @@ let sentryReady = false;
  *   lands in the subsequent phase) runs before any host `beforeSend`.
  */
 export function initSentry(options: InitSentryOptions = {}): void {
-  if (initialized) {
-    throw new Error(
-      "initSentry called twice. This module owns the Sentry init " +
-        "lifecycle; call it exactly once at app entry.",
-    );
-  }
-
-  // Refuse to run if the host called Sentry.init themselves. Checked
-  // BEFORE the `initialized` flag flips so that a host who catches
-  // and retries this error gets the diagnostic message again rather
-  // than the less-specific "called twice" on the second attempt.
-  // The wrapper exists precisely so the host can't independently
-  // configure DSN / user.id / sample rates — having two competing
-  // SentryClients would defeat the gating.
-  //
   // `isInitialized` isn't on `@sentry/react-native`'s public type
   // surface (it lives in `@sentry/core`'s utilities and is exposed
   // through the namespace at runtime). Defensive accessor handles
@@ -195,7 +208,32 @@ export function initSentry(options: InitSentryOptions = {}): void {
   const maybeIsInitialized = (Sentry as unknown as {
     isInitialized?: () => boolean;
   }).isInitialized;
-  if (typeof maybeIsInitialized === "function" && maybeIsInitialized()) {
+  const sdkInitialized =
+    typeof maybeIsInitialized === "function" && maybeIsInitialized();
+
+  // Idempotent re-entry. Either `initSentry` already ran in this JS
+  // context (a duplicate call, or a fast-refresh that re-ran the host
+  // entry while our module state survived), or a bundle reload tore
+  // down our module state but left the live SDK and our global marker
+  // in place. Both are benign: the client is already configured and
+  // must not be replaced. Re-arm the in-context `sentryReady` gate — a
+  // reload reset it at module load, and the state listeners (also
+  // re-attached at module load) need it true again to keep reporting
+  // against the surviving client.
+  if (initialized || sentryOwnedByUs()) {
+    initialized = true;
+    sentryReady = sdkInitialized;
+    return;
+  }
+
+  // The SDK is up but our marker is absent → the host called
+  // `Sentry.init` directly, before us. The wrapper exists precisely so
+  // the host can't independently configure DSN / user.id / sample
+  // rates; two competing SentryClients would defeat the gating, so
+  // refuse. Checked BEFORE the `initialized` flag flips so a host who
+  // catches and retries gets this actionable message again rather than
+  // silently falling into the idempotent no-op above.
+  if (sdkInitialized) {
     throw new Error(
       "@comapeo/core-react-native: detected an existing Sentry.init " +
         "call before initSentry() ran. This module now owns the " +
@@ -266,6 +304,7 @@ export function initSentry(options: InitSentryOptions = {}): void {
     beforeBreadcrumb: chainedBeforeBreadcrumb as never,
   } as never);
 
+  markSentryOwned();
   sentryReady = true;
 
   // Scope-default tags via global scope (survives later forks).

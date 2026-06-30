@@ -72,7 +72,6 @@ ios/.swiftpm/
 backend/dist
 nodejs-assets
 android/src/debug/assets/
-android/src/debug/nodejs-sourcemaps/
 android/src/main/assets/
 android/src/main/jniLibs/
 android/src/main/nodejs-sourcemaps/

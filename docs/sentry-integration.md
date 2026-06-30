@@ -1390,6 +1390,21 @@ reads its prefs and the plugin-supplied `sentryConfig` and either:
   error pointing at `initSentry`); or
 - calls `Sentry.init` with locked options + allowlisted host extensions.
 
+`initSentry` is idempotent: a second call is a no-op. The host can't
+fully avoid a second call because a JS-bundle reload (dev fast-refresh,
+or an OTA update swapping the bundle) re-runs the entry point while the
+Sentry SDK from the first run is still alive — re-running `Sentry.init`
+there would replace a live client mid-flight. The re-entry is told apart
+from a host's own `Sentry.init` by a `globalThis` ownership marker that
+shares fate with the SDK's own global carrier: SDK up **with** our marker
+→ benign reload, skip; SDK up **without** it → the host's foreign init,
+migration error. Options passed to a second call are ignored (the client
+is already configured); changing configuration requires a full app
+restart. There's deliberately no config-diff check on re-entry — the only
+host-supplied options are functions (`integrations`, `beforeSend`,
+`beforeBreadcrumb`), whose identities differ on every reload, so a
+comparison would false-positive on the exact reload it's meant to allow.
+
 ```ts
 // Host's app entry:
 import * as Sentry from "@sentry/react-native";
