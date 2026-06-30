@@ -194,10 +194,20 @@ final class IPCLifecycleTests: XCTestCase {
         XCTAssertEqual(receivedMessages.count, messageCount)
         receiveLock.unlock()
 
-        // Now shut down
+        // Now shut down. stop() blocks until the node thread exits, so run
+        // it off the main thread and only signal the exit once the backend
+        // has observed the shutdown frame. Signalling before stop() marks
+        // stopRequested would race the exit-classification, which would then
+        // tag the exit `.unexpected` and derive ERROR instead of STOPPED.
         appIPC.disconnect()
+        let stopReturned = expectation(description: "stop() returned")
+        DispatchQueue.global().async {
+            service.stop(timeout: 5)
+            stopReturned.fulfill()
+        }
+        XCTAssertTrue(backend.waitForShutdown(timeout: 5), "Backend should observe shutdown frame")
         signalNodeExit()
-        service.stop(timeout: 2)
+        wait(for: [stopReturned], timeout: 5)
         XCTAssertEqual(service.state, .stopped)
     }
 
@@ -236,8 +246,23 @@ final class IPCLifecycleTests: XCTestCase {
             appIPC.disconnect()
             close(clientFd)
             comapeoServer.stop()
+
+            // stop() blocks until the node thread exits, so run it off the
+            // main thread and only signal the exit once the backend has
+            // observed the shutdown frame. Signalling before stop() marks
+            // stopRequested would race the exit-classification, tagging the
+            // exit `.unexpected` and deriving ERROR instead of STOPPED.
+            let stopReturned = expectation(description: "stop() returned cycle \(cycle)")
+            DispatchQueue.global().async {
+                service.stop(timeout: 5)
+                stopReturned.fulfill()
+            }
+            XCTAssertTrue(
+                backend.waitForShutdown(timeout: 5),
+                "Backend should observe shutdown frame cycle \(cycle)"
+            )
             signalNodeExit()
-            service.stop(timeout: 1)
+            wait(for: [stopReturned], timeout: 5)
             backend.stop()
 
             XCTAssertEqual(service.state, .stopped, "Cycle \(cycle) should end stopped")
