@@ -306,24 +306,26 @@ async function withPhase(phase, fn) {
 })();
 
 /**
- * 60s gauge sampler for backend memory + uptime + event-loop delay.
- * `unref()` so the timer never keeps the process alive past shutdown.
- * No-op when Sentry is off — everything it does is emit metrics, so skip
- * the timer entirely rather than firing a perpetual no-op wakeup.
+ * 60s sampler for backend heap + event-loop delay. `unref()` so the timer
+ * never keeps the process alive past shutdown. No-op when Sentry is off —
+ * everything it does is emit metrics, so skip the timer entirely rather than
+ * firing a perpetual no-op wakeup.
  *
  * Event-loop delay comes from `monitorEventLoopDelay` (a real high-res
- * histogram), so a genuine <60s stall registers and, unlike the old
- * "how late did the 60s timer fire" proxy, an iOS background suspension
- * no longer reports the whole gap as delay — we report the interval mean
- * and reset each tick.
+ * histogram). We report the window **max** — the worst single stall in the
+ * interval — because that's what surfaces a stall; the mean buried a brief
+ * 800ms stall in ~6000 samples. Reset each tick so windows are independent.
+ * `monitorEventLoopDelay` is pure libuv (no native addon / worker / inspector),
+ * so it works in nodejs-mobile; and because its own sampling timer freezes when
+ * iOS suspends the app, a background suspension is correctly NOT counted as delay.
  */
 function startMemorySampler() {
   if (!metrics.isEnabled()) return;
-  const eld = monitorEventLoopDelay({ resolution: 20 });
+  const eld = monitorEventLoopDelay({ resolution: 10 });
   eld.enable();
   const timer = setInterval(() => {
     metrics.backendMemorySample();
-    metrics.eventLoopDelaySample(eld.mean / 1e6);
+    metrics.eventLoopDelaySample(eld.max / 1e6);
     eld.reset();
   }, MEMORY_SAMPLE_INTERVAL_MS);
   timer.unref?.();

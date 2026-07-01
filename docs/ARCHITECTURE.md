@@ -853,7 +853,7 @@ by `isForbiddenMetric`.
 | `comapeo.boot.outcome` | count | `outcome` (`started`/`error`), `error_phase?` | Node — once per boot | Boot success-vs-failure rate and which phase fails — the backend reliability signal. |
 | `comapeo.storage.size_bucket` | count | `bucket` (`<10MB`/`10-100MB`/`100MB-1GB`/`>1GB`) | Node — one-shot at STARTED (recursive size of the private storage dir) | The population's storage-footprint distribution — context for correlating large DBs with slow sync/query. Coarse, one-shot: context, not an alerting signal. |
 | `comapeo.backend.heap_used_bytes` | gauge · byte | — | Node — 60s sampler (V8 JS heap; `rss` is omitted, it measures the whole process) | Backend JS-heap ceiling, and across a session's samples a heap-growth (leak) signal. Coarse on iOS, where the runtime suspends in the background. |
-| `comapeo.backend.event_loop_delay_ms` | gauge · ms | — | Node — 60s sampler (interval mean from `monitorEventLoopDelay`) | Whether the backend event loop is congested (sync work blocking async I/O). The 60s *mean* is blunt — a brief stall barely moves it; sampling strategy under review. |
+| `comapeo.backend.event_loop_delay_ms` | distribution · ms | `device_class`, `os_major` | Node — 60s sampler; each emission is the window **max** from `monitorEventLoopDelay` | The worst event-loop stall per minute (sync work blocking async I/O). As a distribution, Sentry gives fleet percentiles of the per-minute worst stall, sliceable by device class. |
 | `comapeo.sync.session.duration_ms` | distribution · ms | `outcome`, `device_class`, `os_major` | Node — **scaffolding, not yet wired** | (When wired) sync-session latency by outcome and device — core sync performance. |
 | `comapeo.sync.session.peers_bucket` | count | `bucket` (usage-gated) | Node — **scaffolding, not yet wired** | (When wired) collaboration scale — how many peers took part in a sync. |
 | `comapeo.sync.bytes_bucket` | count | `bucket` (usage-gated) | Node — **scaffolding, not yet wired** | (When wired) data volume moved per sync. |
@@ -874,10 +874,24 @@ frequency); `comapeo.rpc.client.send_ms` (redundant with the
 `comapeo.state.transitions` (started/error overlapped `boot.outcome`,
 the rest was routine lifecycle noise).
 
-**Under review.** `comapeo.backend.event_loop_delay_ms` stays, but the
-60s *mean* is a blunt instrument — a brief stall barely moves it. The
-sampling strategy (percentile vs mean, and whether a stall is better
-captured as an event than a metric) is being reworked.
+`comapeo.backend.event_loop_delay_ms` reports the per-window **max**
+(worst stall per minute) rather than the mean, which buried brief
+stalls. `monitorEventLoopDelay` is pure libuv (no addon / worker /
+inspector), so it's the one mechanism that definitely runs on device.
+
+Capturing a stall as an *event with a stack trace* (Sentry's ANR /
+event-loop-block integrations) isn't available off the shelf. The
+deprecated `anrIntegration` captures the stack via `node:inspector`,
+which [nodejs-mobile doesn't ship](https://nodejs-mobile.github.io/docs/api/differences/)
+("The V8 inspector is not available … due to a dependency on the `intl`
+module"), so it's out. The current `eventLoopBlockIntegration` is a
+native `@sentry/node-native` addon: no prebuilt binary targets the
+nodejs-mobile ABIs, but this repo already builds addons for those
+targets, so it's buildable *in principle* — gated on two unverified
+questions (does its C++ compile against nodejs-mobile's headers, and
+does its own stack capture avoid the absent inspector?). A stack-on-stall
+event is a viable follow-up if that spike pans out; the max metric is the
+always-on signal in the meantime.
 
 **Viewing.** In Sentry, open **Metrics** (Explore → Metrics),
 filter by the metric name, and group by an attribute (`method`,

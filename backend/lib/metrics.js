@@ -212,9 +212,20 @@ export function backendMemorySample() {
   gauge("comapeo.backend.heap_used_bytes", mem.heapUsed, "byte", {});
 }
 
-/** @param {number} delayMs Event-loop delay sample in milliseconds. */
-export function eventLoopDelaySample(delayMs) {
-  gauge("comapeo.backend.event_loop_delay_ms", delayMs, "millisecond", {});
+/**
+ * Per-window worst event-loop stall, in ms. A distribution (not a gauge) so
+ * Sentry can compute fleet-level percentiles of the per-minute worst stall,
+ * sliced by device class — "the loop stalls on device X". Carries device tags.
+ *
+ * @param {number} maxMs Worst event-loop delay in the sampling window (ms).
+ */
+export function eventLoopDelaySample(maxMs) {
+  distribution(
+    "comapeo.backend.event_loop_delay_ms",
+    maxMs,
+    "millisecond",
+    deviceTags(),
+  );
 }
 
 // ── Storage / IPC ───────────────────────────────────────────────
