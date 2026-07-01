@@ -10,16 +10,11 @@
  * sensitive data at the call site. This net catches a malicious or
  * buggy host (and our own mistakes) before a payload leaves the device.
  *
- * False-positive trade-off:
- *   - The base64 pattern redacts any isolated base64url run of 22-or-more
- *     chars (16-byte rootKey at 22, 32-byte keypair public keys at 43,
- *     z-base-32 project ids at ~52), but ALSO any unrelated long base64
- *     token — including 32-char Sentry event/trace ids and long
- *     path/filename segments. We accept the occasional over-redaction
- *     because the cost of leaking a real project secret is far higher
- *     than the cost of a `[redacted]` in a log line. Example matches:
- *       "aGVsbG8td29ybGQtMTIzNA"  → redacted (real rootkey shape)
- *       "bm90LWEtcmVhbC1rZXktMQ"  → redacted (harmless, false positive)
+ * What it redacts (and the false-positive trade-off):
+ *   - Explicit `rootKey=…` markers (key=value / json / prose). A broad
+ *     "any 22+-char base64url run" rule is deliberately NOT enabled — see
+ *     the SCRUB_PATTERNS note below — so bare rootKeys/keys/project-ids
+ *     with no marker are currently unscrubbed.
  *   - Object fields whose KEY is lat/lng/latitude/longitude are redacted
  *     regardless of value type — a numeric `{latitude: 12.3}` is the most
  *     likely capture shape and value-only scrubbing would miss it.
@@ -40,8 +35,10 @@ const REDACTED = "[redacted]";
  * scrubbed.
  */
 const SCRUB_PATTERNS: RegExp[] = [
-  // Explicit rootKey markers (key=value, json, prose).
-  /\broot[_-]?key\b\s*["']?\s*[:=]\s*\S+/gi,
+  // Explicit rootKey markers (key=value, json, prose). The value stops at a
+  // field delimiter (whitespace, `,;&`, quote) so co-located fields in a
+  // compact string like `rootKey=abc,method=x` survive.
+  /\broot[_-]?key\b\s*["']?\s*[:=]\s*[^\s,;&"']+/gi,
   // NOTE: a broad 22+-char URL-safe base64 rule (to catch bare rootKeys at
   // 22, public keys at 43, project ids at ~52) is intentionally NOT enabled
   // — it also matched Sentry's own 32-hex trace_ids, PascalCase exception
@@ -92,24 +89,48 @@ export function scrubUrlToHost(url: string): string {
     const parsed = new URL(url);
     return `${parsed.protocol}//${parsed.host}`;
   } catch {
-    // Not a parseable URL — fall back to the string scrubber.
-    return scrubString(url);
+    // Relative/opaque URL (no scheme/host) — new URL() throws. Drop the query
+    // + fragment (where tokens ride), then string-scrub what remains. A plain
+    // non-URL string has neither and passes through the string scrubber.
+    return scrubString(url.replace(/[?#].*$/s, ""));
   }
 }
 
 type Json = unknown;
 
+/** Max nesting depth walked before we stop (backstop against deep/hostile data). */
+const MAX_SCRUB_DEPTH = 20;
+
 function scrubValue(value: Json): Json {
+  return scrubValueInner(value, new WeakSet(), 0);
+}
+
+function scrubValueInner(
+  value: Json,
+  seen: WeakSet<object>,
+  depth: number,
+): Json {
   if (typeof value === "string") return scrubString(value);
-  if (Array.isArray(value)) return value.map(scrubValue);
-  if (value && typeof value === "object") {
-    const out: Record<string, Json> = {};
+  if (value === null || typeof value !== "object") return value;
+  // Breadcrumb data is scrubbed at add-time, before Sentry normalises cycles,
+  // so guard against self-referential/over-deep data ourselves.
+  if (seen.has(value)) return "[Circular]";
+  if (depth >= MAX_SCRUB_DEPTH) return "[Truncated]";
+  seen.add(value);
+  let out: Json;
+  if (Array.isArray(value)) {
+    out = value.map((v) => scrubValueInner(v, seen, depth + 1));
+  } else {
+    const record: Record<string, Json> = {};
     for (const [k, v] of Object.entries(value as Record<string, Json>)) {
-      out[k] = SENSITIVE_KEY_PATTERN.test(k) ? REDACTED : scrubValue(v);
+      record[k] = SENSITIVE_KEY_PATTERN.test(k)
+        ? REDACTED
+        : scrubValueInner(v, seen, depth + 1);
     }
-    return out;
+    out = record;
   }
-  return value;
+  seen.delete(value);
+  return out;
 }
 
 type AnyRecord = Record<string, unknown>;
@@ -202,6 +223,24 @@ export function scrubBreadcrumb(crumb: AnyRecord): AnyRecord {
     crumb.data = scrubValue(crumb.data) as AnyRecord;
   }
   return crumb;
+}
+
+/**
+ * Scrub a structured log (the `Sentry.logger.*` channel): message
+ * string-scrubbed, attributes recursively scrubbed. Wired as
+ * `beforeSendLog` so logs get the same net as events/breadcrumbs.
+ * Mutates and returns the log.
+ */
+export function scrubLog<T extends { message?: unknown; attributes?: unknown }>(
+  log: T,
+): T {
+  if (typeof log.message === "string") {
+    log.message = scrubString(log.message);
+  }
+  if (log.attributes && typeof log.attributes === "object") {
+    log.attributes = scrubValue(log.attributes);
+  }
+  return log;
 }
 
 /**

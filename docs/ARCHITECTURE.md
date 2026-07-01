@@ -641,7 +641,7 @@ rates. At `expo prebuild` it writes:
 - **Android**: meta-data on the main `<application>` tag
   (`com.comapeo.core.sentry.dsn`, `…environment`, `…release`,
   `…sampleRate`, `…tracesSampleRate`, `…rpcArgsBytes`,
-  `…captureApplicationDataDefault`). meta-data is shared across
+  `…applicationUsageDataDefault`, `…debugDefault`). meta-data is shared across
   processes within the package, so both the main process and
   the `:ComapeoCore` FGS process read the same values.
 - **iOS**: keys in `Info.plist` with the `ComapeoCore` prefix
@@ -669,7 +669,7 @@ The same plugin-baked subset is also exported as `sentryConfig` for
 read-only inspection — empty `{}` when the plugin isn't registered.
 It is NOT meant to be spread into a separate `Sentry.init` call;
 `initSentry` is the supported entrypoint. Plugin-internal fields
-(`rpcArgsBytes`, `captureApplicationDataDefault`) stay on the
+(`rpcArgsBytes`, `applicationUsageDataDefault`, `debugDefault`) stay on the
 native-side `SentryConfig` only.
 
 The FGS process's Sentry SDK is initialised in
@@ -726,7 +726,7 @@ classpath, and the two halves were merged back into a single
 - **PII capture**. Per the plan §7.4.9, observation contents,
   precise location, peer identities, raw project IDs, and
   user-entered text are never captured even with the
-  capture-application-data toggle on.
+  application-usage-data toggle on.
 
 ### 7.5 Metadata reference
 
@@ -806,9 +806,70 @@ single timeline in Sentry's Trace view. Cross-layer with the RN-side
 
 The plan's §7.4.9 never-capture list is enforced at every emit
 site (no observation contents, precise location, peer
-identities, raw project IDs, or user-entered text). Phase 5's
-`before_send` processor will add a defensive substring scrub
-on top.
+identities, raw project IDs, or user-entered text). The
+`before_send`/`beforeBreadcrumb`/`beforeSendLog` scrubbers
+(`src/sentry-scrub.ts` + the mirrored `backend/before-send.js`)
+add a defensive substring scrub on top.
+
+#### Metrics
+
+The metrics layer (`src/sentry-metrics.ts` on RN, the mirrored
+`backend/lib/metrics.js` on Node) emits aggregate counters /
+distributions / gauges via `Sentry.metrics.*`. It is the
+always-on day-to-day performance signal, distinct from the
+per-RPC and boot **traces**, which are investigation-only and
+gated behind the `debug` toggle.
+
+Two privacy tiers gate what ships:
+
+- **Diagnostic (always-on)** — ships whenever `diagnosticsEnabled`
+  is on (the default). Bounded, low-cardinality: no per-`method`
+  breakdown, only the `.by_device` mirrors.
+- **Usage-gated** — the dimensions that reveal *what* the user
+  does (the RPC `method` breakdown, sync collaboration/volume
+  buckets). Ship only when the opt-in `applicationUsageData`
+  toggle is on (default off).
+
+Every metric carries `platform` (`ios`/`android`). The `.by_device`
+mirrors additionally carry the low-cardinality `device_class`
+(`low`/`mid`/`high`) and `os_major` (`<platform>.<major>`) tags —
+the cardinality split is enforced in the metrics layer so a hot
+call site can't attach device tags to the high-volume primary.
+The full forbidden-tag list (`device.*`, `locale`, `project_id`,
+`peer_id`, raw coordinates, …) is dropped defensively by
+`isForbiddenMetric`.
+
+| Metric | Type · unit | Key tags | Tier | Emitted by / when |
+|---|---|---|---|---|
+| `comapeo.rpc.client.duration_ms` | distribution · ms | `method`, `status` | usage-gated | RN request hook — end-to-end client-observed RPC latency (IPC + serialize + handler + response delivery) |
+| `comapeo.rpc.client.duration_ms.by_device` | distribution · ms | `status`, `device_class`, `os_major` | always-on | RN request hook — same latency, device-class breakdown |
+| `comapeo.rpc.client.send_ms` | distribution · ms | `method` (usage-gated) | always-on | RN request hook — sync-send slice (JSI hop + UDS write to Node) |
+| `comapeo.rpc.server.duration_ms.by_device` | distribution · ms | `status`, `device_class`, `os_major` | always-on | Node request hook — server-side handler latency. No per-method primary: the client metric owns the `method` breakdown |
+| `comapeo.boot.phase_duration_ms` (+ `.by_device`) | distribution · ms | `phase` (+ device tags on mirror) | always-on | Node — per boot phase |
+| `comapeo.boot.outcome` | count | `outcome` (`started`/`error`), `error_phase?` | always-on | Node — once per boot |
+| `comapeo.state.transitions` | count | `from`, `to` | always-on | Node — each backend state transition |
+| `comapeo.storage.size_bucket` | count | `bucket` (`<10MB`/`10-100MB`/`100MB-1GB`/`>1GB`) | always-on | Node — one-shot at STARTED (recursive size of the private storage dir) |
+| `comapeo.backend.heap_used_bytes` | gauge · byte | — | always-on | Node — 60s sampler (V8 JS heap; `rss` is omitted, it measures the whole process) |
+| `comapeo.fgs.uptime_s` | gauge · second | — | always-on | Node — 60s sampler |
+| `comapeo.backend.event_loop_delay_ms` | gauge · ms | — | always-on | Node — 60s sampler (interval mean from `monitorEventLoopDelay`) |
+| `comapeo.sync.session.duration_ms` (+ `.by_device`) | distribution · ms | `outcome` | always-on | Node — **scaffolding, not yet wired** |
+| `comapeo.sync.session.peers_bucket` | count | `bucket` | usage-gated | Node — **scaffolding, not yet wired** |
+| `comapeo.sync.bytes_bucket` | count | `bucket` | usage-gated | Node — **scaffolding, not yet wired** |
+| `comapeo.shutdown.phase_duration_ms` | distribution · ms | `phase` | always-on | Node — **scaffolding, not yet wired** |
+| `comapeo.ipc.errors` | count | `error_class` | always-on | Node — **scaffolding, not yet wired** |
+| `comapeo.telemetry.forwarding_failures` | count | — | always-on | Node — **scaffolding, not yet wired** |
+
+Rows marked *scaffolding, not yet wired* have a metrics-layer
+function and tests but no production call site yet — the meaning
+is fixed so the emit point can be added without a dashboard
+change.
+
+**Viewing.** In Sentry, open **Metrics** (or Explore → Metrics),
+filter by the metric name, and split by a tag (`status`,
+`phase`, `bucket`). For device-class comparisons use the
+`.by_device` series and group by `device_class` / `os_major`.
+The per-RPC and boot **traces** (spans above) live under
+Explore → Traces and only exist while `debug` is on.
 
 ### 7.6 When to log, when to breadcrumb, when to capture
 

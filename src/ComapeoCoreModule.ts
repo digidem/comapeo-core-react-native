@@ -336,7 +336,7 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
       rpcClientSendMetric(method, performance.now() - sendStart);
       responsePromise
         .then(
-          () => recordMetric(start, rpcStatusFor(null)),
+          () => recordMetric(start, "ok"),
           (error: unknown) => recordMetric(start, rpcStatusFor(error)),
         )
         .catch(noop);
@@ -384,7 +384,7 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
             rpcClientSendMetric(method, sendMs);
             await responsePromise;
             span.setStatus?.({ code: 1, message: "ok" });
-            recordMetric(start, rpcStatusFor(null));
+            recordMetric(start, "ok");
           } catch (error) {
             // Mark the span errored for tracing, but do not capture an issue
             // — see the metrics-only note on the non-debug path above.

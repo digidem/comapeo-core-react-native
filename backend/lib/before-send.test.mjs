@@ -6,38 +6,40 @@ import {
   scrubUrlToHost,
   scrubEvent,
   scrubBreadcrumb,
+  scrubLog,
   isForbiddenMetric,
 } from "../before-send.js";
 
+import {
+  scrubStringCases,
+  scrubUrlToHostCases,
+  forbiddenMetricCases,
+} from "../../test-support/scrubber-cases.js";
+
 /**
  * Node-side scrubber + forbidden-metric filter.
- * Symmetric with the RN-side `src/sentry-scrub.ts` — keep both in sync.
+ * Symmetric with the RN-side `src/sentry-scrub.ts` — the data-driven cases
+ * come from the shared `test-support/scrubber-cases.js` table, run against
+ * both copies so the two regex lists can't drift.
  */
 
-test("scrubString redacts rootKey markers and lat/lng markers", () => {
-  assert.match(scrubString("rootKey=aGVsbG8td29ybGQtMTIzNA"), /\[redacted\]/);
-  assert.match(scrubString("latitude: -12.345"), /\[redacted\]/);
-  assert.match(scrubString("lng=120.5"), /\[redacted\]/);
-  // A normal sentence with no markers is left intact.
-  assert.equal(scrubString("hello world"), "hello world");
-});
+for (const { name, input, expect } of scrubStringCases) {
+  test(`scrubString: ${name}`, () => {
+    assert.equal(scrubString(input), expect);
+  });
+}
 
-// The broad base64-22 token rule is intentionally disabled pending a narrower
-// design (it over-matched trace_ids / exception type names / metric tags).
-test("scrubString does NOT redact bare base64 tokens while the broad rule is disabled", () => {
-  assert.equal(
-    scrubString("token bm90LWEtcmVhbC1rZXktMQ done"),
-    "token bm90LWEtcmVhbC1rZXktMQ done",
-  );
-  assert.equal(
-    scrubString("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"),
-    "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
-  );
-  assert.equal(
-    scrubString("ybybybybybybybybybybybybybybybybybybybybybybybybybyb"),
-    "ybybybybybybybybybybybybybybybybybybybybybybybybybyb",
-  );
-});
+for (const { name, input, expect } of scrubUrlToHostCases) {
+  test(`scrubUrlToHost: ${name}`, () => {
+    assert.equal(scrubUrlToHost(input), expect);
+  });
+}
+
+for (const { name, metricName, attributes, expect } of forbiddenMetricCases) {
+  test(`isForbiddenMetric: ${name}`, () => {
+    assert.equal(isForbiddenMetric(metricName, attributes), expect);
+  });
+}
 
 test("scrubEvent redacts numeric lat/lng stored as object fields", () => {
   const event = {
@@ -52,8 +54,6 @@ test("scrubEvent redacts numeric lat/lng stored as object fields", () => {
 });
 
 test("scrubEvent reduces request.url to host-only and scrubs marked query/headers", () => {
-  // Values carry an explicit rootKey marker so the active patterns catch them;
-  // a bare base64 token would currently pass through (broad rule off).
   const event = {
     request: {
       url: "https://cloud.comapeo.app/projects/abc?token=x",
@@ -65,15 +65,6 @@ test("scrubEvent reduces request.url to host-only and scrubs marked query/header
   assert.equal(event.request.url, "https://cloud.comapeo.app");
   assert.match(event.request.query_string, /\[redacted\]/);
   assert.match(event.request.headers["x-secret"], /\[redacted\]/);
-});
-
-test("scrubUrlToHost drops path + query", () => {
-  assert.equal(
-    scrubUrlToHost("https://cloud.comapeo.app/projects/abc?token=secret"),
-    "https://cloud.comapeo.app",
-  );
-  // Non-URL falls back to string scrubbing.
-  assert.equal(scrubUrlToHost("not a url"), "not a url");
 });
 
 test("scrubEvent walks message, exception, extra, breadcrumbs, spans", () => {
@@ -111,34 +102,21 @@ test("scrubBreadcrumb reduces http URL to host only", () => {
   assert.equal(crumb.data.url, "https://tiles.example.com");
 });
 
-test("isForbiddenMetric drops forbidden tag names and lat/lng-shaped values", () => {
-  assert.equal(isForbiddenMetric("comapeo.x", { project_id: "p" }), true);
-  assert.equal(isForbiddenMetric("project_id", { platform: "ios" }), true);
-  assert.equal(isForbiddenMetric("comapeo.x", { coord: "lat=12.34" }), true);
-  // Broad base64-22 value rule disabled (see before-send.js); bare tokens no
-  // longer drop the metric. Re-enable these once a narrower rule lands.
-  assert.equal(
-    isForbiddenMetric("comapeo.x", { bucket: "bm90LWEtcmVhbC1rZXktMQ" }),
-    false,
-  );
-  assert.equal(
-    isForbiddenMetric("comapeo.x", {
-      bucket: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
-    }),
-    false,
-  );
-  assert.equal(
-    isForbiddenMetric("comapeo.x", {
-      bucket: "ybybybybybybybybybybybybybybybybybybybybybybybybybyb",
-    }),
-    false,
-  );
-  assert.equal(
-    isForbiddenMetric("comapeo.rpc.server.duration_ms", {
-      method: "read.doc",
-      status: "ok",
-      platform: "ios",
-    }),
-    false,
-  );
+test("scrubBreadcrumb does not stack-overflow on circular data", () => {
+  const data = { a: 1 };
+  data.self = data; // cycle
+  const crumb = { category: "custom", data };
+  assert.doesNotThrow(() => scrubBreadcrumb(crumb));
+  assert.equal(crumb.data.self, "[Circular]");
+});
+
+test("scrubLog scrubs the message and attributes of a structured log", () => {
+  const log = {
+    message: "rootKey=supersecretvalue",
+    attributes: { note: "latitude: 12.3", ok: "fine" },
+  };
+  scrubLog(log);
+  assert.match(log.message, /\[redacted\]/);
+  assert.equal(log.attributes.note, "[redacted]");
+  assert.equal(log.attributes.ok, "fine");
 });

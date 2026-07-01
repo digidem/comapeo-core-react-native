@@ -130,25 +130,26 @@ describe("initSentry", () => {
     expect(opts.environment).toBe("test");
     expect(opts.release).toBe("1.0+1");
     expect(opts.sendDefaultPii).toBe(false);
-    // debug=false → traces forced to 0 (per-RPC traces are debug-only;
-    // the plugin's configured rate no longer applies).
-    expect(opts.tracesSampleRate).toBe(0);
+    // debug=false → the plugin-configured rate (0.5) applies. Native folds the
+    // debug window into the backend's rate; RN applies the same formula.
+    expect(opts.tracesSampleRate).toBe(0.5);
     expect(opts.enableLogs).toBe(true);
   });
 
-  test("tracesSampleRate is 1.0 when debug is on, 0 otherwise", () => {
+  test("tracesSampleRate is 1.0 when debug is on, else the configured rate", () => {
     preferences.debug = true;
     const { initSentry } = require("../sentry");
     initSentry();
     expect(initSpy.mock.calls[0][0].tracesSampleRate).toBe(1.0);
   });
 
-  test("applicationUsageData does NOT drive tracesSampleRate (debug does)", () => {
+  test("applicationUsageData does NOT drive tracesSampleRate (debug + config do)", () => {
     preferences.applicationUsageData = true;
     preferences.debug = false;
     const { initSentry } = require("../sentry");
     initSentry();
-    expect(initSpy.mock.calls[0][0].tracesSampleRate).toBe(0);
+    // Usage tier is irrelevant to tracing; the non-debug rate is the config (0.5).
+    expect(initSpy.mock.calls[0][0].tracesSampleRate).toBe(0.5);
   });
 
   test("autoInitializeNativeSdk=false on iOS so AppLifecycleDelegate's native init isn't replaced", () => {

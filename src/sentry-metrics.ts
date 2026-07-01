@@ -14,24 +14,34 @@
 import { Platform } from "react-native";
 import * as Sentry from "@sentry/react-native";
 
-import { sentryConfig } from "./sentry";
-import { readSentryPreferences } from "./ComapeoCoreModule";
+import { readSentryConfig, readSentryPreferences } from "./ComapeoCoreModule";
+import type { SentryDeviceTags } from "./sentry";
 import { isForbiddenMetric } from "./sentry-scrub";
 
 type MetricAttributes = Record<string, string | number | boolean>;
 
 const platformTag = Platform.OS;
 
+// Device tags + usage tier are snapshot-at-boot (native Constants that can't
+// change in-process), memoised lazily on first metric so nothing reads the
+// native module at import time — this file is imported by ComapeoCoreModule
+// before its `nativeModule` binding is initialised.
+let deviceTagsSnapshot: SentryDeviceTags | null | undefined;
+let usageDataSnapshot: boolean | undefined;
+
 /**
  * Opt-in tier for usage-revealing dimensions (the RPC `method` breakdown).
- * Snapshot-at-boot like the rest of the prefs; restart-to-activate.
+ * Snapshot-at-boot; restart-to-activate.
  */
 function usageDataEnabled(): boolean {
-  return readSentryPreferences().applicationUsageData;
+  return (usageDataSnapshot ??= readSentryPreferences().applicationUsageData);
 }
 
 function deviceTags(): { device_class: string; os_major: string } {
-  const tags = sentryConfig.deviceTags;
+  if (deviceTagsSnapshot === undefined) {
+    deviceTagsSnapshot = readSentryConfig().deviceTags ?? null;
+  }
+  const tags = deviceTagsSnapshot;
   return {
     device_class: tags?.deviceClass ?? "unknown",
     os_major: tags?.osMajor ?? `${platformTag}.0`,
@@ -103,15 +113,16 @@ function gauge(
 }
 
 /**
- * Map an RPC outcome to the bounded `status` tag (`ok` /
- * `error` / `timeout`). A timeout is distinguished by name so the
- * dashboard can separate "slow path" from "failed path".
+ * Classify an RPC *failure* into the bounded `status` tag (`error` /
+ * `timeout`) — a timeout is distinguished by name so the dashboard can
+ * separate "slow path" from "failed path". Only call this on the reject
+ * path; the success path records `"ok"` directly. A falsy rejection
+ * reason still counts as a failure (never `ok`).
  */
 export function rpcStatusFor(error: unknown): string {
-  if (!error) return "ok";
   const name =
     error instanceof Error ? error.name : String((error as { name?: string })?.name);
-  if (typeof name === "string" && /timeout/i.test(name)) return "timeout";
+  if (/timeout/i.test(name)) return "timeout";
   return "error";
 }
 

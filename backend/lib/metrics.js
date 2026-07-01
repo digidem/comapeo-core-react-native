@@ -117,23 +117,37 @@ function gauge(name, value, unit, attributes) {
   metrics.gauge?.(name, value, { unit, attributes: attrs });
 }
 
+/**
+ * Emit a distribution plus its `…by_device` mirror (device tags attached).
+ * `mirrorAttrs` defaults to `attrs`; pass a narrower set when the primary
+ * carries dimensions the mirror should not.
+ *
+ * @param {string} name
+ * @param {number} value
+ * @param {string} unit
+ * @param {Record<string, string | number | boolean>} attrs
+ * @param {Record<string, string | number | boolean>} [mirrorAttrs]
+ */
+function distributionMirrored(name, value, unit, attrs, mirrorAttrs = attrs) {
+  distribution(name, value, unit, attrs);
+  distribution(`${name}.by_device`, value, unit, {
+    ...mirrorAttrs,
+    ...deviceTags(),
+  });
+}
+
 // ── RPC ─────────────────────────────────────────────────────────
 
 /**
- * Primary `…duration_ms{method,status}` + `…by_device{status}` mirror.
+ * Server-side handler latency, `…duration_ms.by_device{status}` only. The
+ * per-method primary was dropped: the client-side end-to-end metric already
+ * carries the `method` breakdown, so a second server-side per-method series
+ * doubled cardinality for little extra signal.
  *
- * @param {string} method
  * @param {string} status
  * @param {number} ms
  */
-export function rpcServer(method, status, ms) {
-  // method dimension is usage-gated; the by_device mirror (status only) is always-on.
-  if (config?.applicationUsageData) {
-    distribution("comapeo.rpc.server.duration_ms", ms, "millisecond", {
-      method,
-      status,
-    });
-  }
+export function rpcServer(status, ms) {
   distribution(
     "comapeo.rpc.server.duration_ms.by_device",
     ms,
@@ -151,15 +165,9 @@ export function rpcServer(method, status, ms) {
  * @param {number} ms
  */
 export function bootPhase(phase, ms) {
-  distribution("comapeo.boot.phase_duration_ms", ms, "millisecond", {
+  distributionMirrored("comapeo.boot.phase_duration_ms", ms, "millisecond", {
     phase,
   });
-  distribution(
-    "comapeo.boot.phase_duration_ms.by_device",
-    ms,
-    "millisecond",
-    { phase, ...deviceTags() },
-  );
 }
 
 /**
@@ -195,15 +203,9 @@ export function shutdownPhase(phase, ms) {
  * @param {string} bytesBucket
  */
 export function syncSession(outcome, ms, peersBucket, bytesBucket) {
-  distribution("comapeo.sync.session.duration_ms", ms, "millisecond", {
+  distributionMirrored("comapeo.sync.session.duration_ms", ms, "millisecond", {
     outcome,
   });
-  distribution(
-    "comapeo.sync.session.duration_ms.by_device",
-    ms,
-    "millisecond",
-    { outcome, ...deviceTags() },
-  );
   // collaboration-scale + data-volume buckets are usage-gated; duration is always-on.
   if (config?.applicationUsageData) {
     count("comapeo.sync.session.peers_bucket", { bucket: peersBucket });
@@ -213,12 +215,16 @@ export function syncSession(outcome, ms, peersBucket, bytesBucket) {
 
 // ── Backend health (60s sampler) ────────────────────────────────
 
-/** Three gauges from `process.memoryUsage()` + an uptime gauge. */
+/**
+ * Heap-used + uptime gauges. `rss` is intentionally omitted: node's `rss` is
+ * the whole OS process, which on iOS is the entire app (node runs in-process),
+ * so it wouldn't measure "the backend". `heapUsed` is the V8 JS heap and is
+ * meaningful on both platforms.
+ */
 export function backendMemorySample() {
   const metrics = api();
   if (!metrics) return;
   const mem = process.memoryUsage();
-  gauge("comapeo.backend.memory_rss_bytes", mem.rss, "byte", {});
   gauge("comapeo.backend.heap_used_bytes", mem.heapUsed, "byte", {});
   gauge("comapeo.fgs.uptime_s", process.uptime(), "second", {});
 }

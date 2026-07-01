@@ -1,3 +1,4 @@
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import ensureError from "ensure-error";
 import Fastify from "fastify";
@@ -308,19 +309,24 @@ async function withPhase(phase, fn) {
 
 /**
  * 60s gauge sampler for backend memory + uptime + event-loop delay.
- * `unref()` so the timer never keeps the process alive past
- * shutdown. No-op metric calls when Sentry is off.
+ * `unref()` so the timer never keeps the process alive past shutdown.
+ * No-op when Sentry is off — everything it does is emit metrics, so skip
+ * the timer entirely rather than firing a perpetual no-op wakeup.
+ *
+ * Event-loop delay comes from `monitorEventLoopDelay` (a real high-res
+ * histogram), so a genuine <60s stall registers and, unlike the old
+ * "how late did the 60s timer fire" proxy, an iOS background suspension
+ * no longer reports the whole gap as delay — we report the interval mean
+ * and reset each tick.
  */
 function startMemorySampler() {
-  let last = performance.now();
+  if (!metrics.isEnabled()) return;
+  const eld = monitorEventLoopDelay({ resolution: 20 });
+  eld.enable();
   const timer = setInterval(() => {
-    // Event-loop delay: how late did this 60s timer actually fire? The
-    // overshoot past the scheduled interval is a cheap delay proxy.
-    const now = performance.now();
-    const delay = Math.max(0, now - last - MEMORY_SAMPLE_INTERVAL_MS);
-    last = now;
     metrics.backendMemorySample();
-    metrics.eventLoopDelaySample(delay);
+    metrics.eventLoopDelaySample(eld.mean / 1e6);
+    eld.reset();
   }, MEMORY_SAMPLE_INTERVAL_MS);
   timer.unref?.();
 }

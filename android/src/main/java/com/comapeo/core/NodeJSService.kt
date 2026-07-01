@@ -369,7 +369,11 @@ class NodeJSService(
             args += "--sentryEnvironment=${cfg.environment}"
             args += "--sentryRelease=${cfg.release}"
             cfg.sampleRate?.let { args += "--sentrySampleRate=$it" }
-            cfg.tracesSampleRate?.let { args += "--sentryTracesSampleRate=$it" }
+            // Native owns the trace-sampling decision: full while the debug
+            // window is on, else the plugin-configured cap (0 if unset). The
+            // backend mirrors this value rather than re-deciding.
+            val effectiveTracesSampleRate = if (debug) 1.0 else (cfg.tracesSampleRate ?: 0.0)
+            args += "--sentryTracesSampleRate=$effectiveTracesSampleRate"
             cfg.rpcArgsBytes?.let { args += "--sentryRpcArgsBytes=$it" }
             if (cfg.enableLogs == true) args += "--sentryEnableLogs"
             if (applicationUsageData) args += "--applicationUsageData"

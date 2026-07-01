@@ -42,7 +42,7 @@ beforeEach(() => metrics.resetForTests());
 
 test("no-ops entirely when Sentry is off (init never ran)", () => {
   // No init → no SDK. Calls must not throw and record nothing.
-  metrics.rpcServer("read.doc", "ok", 12);
+  metrics.rpcServer("ok", 12);
   metrics.backendMemorySample();
   metrics.stateTransition("starting", "started");
   // Nothing to assert beyond "did not throw"; the absence of an SDK is
@@ -50,35 +50,28 @@ test("no-ops entirely when Sentry is off (init never ran)", () => {
   assert.ok(true);
 });
 
-test("rpcServer injects platform and splits the by_device mirror", () => {
+test("rpcServer emits only the by_device mirror (status + device tags, no method)", () => {
   const { sdk, calls } = fakeSentry();
   initWith(sdk);
-  metrics.rpcServer("observation.create", "ok", 42);
+  metrics.rpcServer("ok", 42);
 
-  assert.equal(calls.distribution.length, 2);
-  const [primary, mirror] = calls.distribution;
-
-  assert.equal(primary.name, "comapeo.rpc.server.duration_ms");
-  assert.equal(primary.unit, "millisecond");
-  assert.equal(primary.attributes.method, "observation.create");
-  assert.equal(primary.attributes.status, "ok");
-  assert.equal(primary.attributes.platform, "android");
-  // Primary metric must NOT carry device tags (cardinality split).
-  assert.equal(primary.attributes.device_class, undefined);
-
+  // The per-method primary was dropped — the client end-to-end metric owns
+  // the method breakdown, so the server side is the by_device mirror only.
+  assert.equal(calls.distribution.length, 1);
+  const [mirror] = calls.distribution;
   assert.equal(mirror.name, "comapeo.rpc.server.duration_ms.by_device");
+  assert.equal(mirror.unit, "millisecond");
+  assert.equal(mirror.attributes.status, "ok");
+  assert.equal(mirror.attributes.platform, "android");
   assert.equal(mirror.attributes.device_class, "mid");
   assert.equal(mirror.attributes.os_major, "android.14");
-  assert.equal(mirror.attributes.platform, "android");
-  // Mirror drops the question-specific `method` dimension.
   assert.equal(mirror.attributes.method, undefined);
 });
 
-test("rpcServer omits the per-method primary unless applicationUsageData is on", () => {
+test("rpcServer emits the same single mirror regardless of applicationUsageData", () => {
   const off = fakeSentry();
   initWith(off.sdk, { applicationUsageData: false });
-  metrics.rpcServer("observation.create", "ok", 42);
-  // Usage off: only the by_device mirror (no method dimension) emits.
+  metrics.rpcServer("ok", 42);
   assert.equal(off.calls.distribution.length, 1);
   assert.equal(
     off.calls.distribution[0].name,
@@ -88,14 +81,12 @@ test("rpcServer omits the per-method primary unless applicationUsageData is on",
   metrics.resetForTests();
   const on = fakeSentry();
   initWith(on.sdk, { applicationUsageData: true });
-  metrics.rpcServer("observation.create", "ok", 42);
-  // Usage on: both the per-method primary and the mirror emit.
-  assert.equal(on.calls.distribution.length, 2);
-  const names = on.calls.distribution.map((d) => d.name);
-  assert.deepEqual(names, [
-    "comapeo.rpc.server.duration_ms",
+  metrics.rpcServer("ok", 42);
+  assert.equal(on.calls.distribution.length, 1);
+  assert.equal(
+    on.calls.distribution[0].name,
     "comapeo.rpc.server.duration_ms.by_device",
-  ]);
+  );
 });
 
 test("syncSession gates the peers/bytes buckets but always emits duration", () => {
@@ -121,18 +112,19 @@ test("syncSession gates the peers/bytes buckets but always emits duration", () =
   );
 });
 
-test("backendMemorySample emits three gauges with byte/second units", () => {
+test("backendMemorySample emits heap-used + uptime gauges with byte/second units", () => {
   const { sdk, calls } = fakeSentry();
   initWith(sdk);
   metrics.backendMemorySample();
   const names = calls.gauge.map((g) => g.name);
+  // rss is intentionally omitted (it measures the whole process, misleading
+  // on iOS where node runs in-process).
   assert.deepEqual(names, [
-    "comapeo.backend.memory_rss_bytes",
     "comapeo.backend.heap_used_bytes",
     "comapeo.fgs.uptime_s",
   ]);
   assert.equal(calls.gauge[0].unit, "byte");
-  assert.equal(calls.gauge[2].unit, "second");
+  assert.equal(calls.gauge[1].unit, "second");
 });
 
 test("before_metric_send filter drops a forbidden tag name routed through count()", () => {

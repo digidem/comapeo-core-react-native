@@ -37,14 +37,11 @@ describe("sentry-metrics", () => {
       },
     }));
 
-    jest.doMock("../sentry", () => ({
-      sentryConfig: {
-        deviceTags: { deviceClass: "mid", osMajor: "android.14" },
-      },
-    }));
-
     jest.doMock("../ComapeoCoreModule", () => ({
       readSentryPreferences: () => prefs,
+      readSentryConfig: () => ({
+        deviceTags: { deviceClass: "mid", osMajor: "android.14" },
+      }),
     }));
   });
 
@@ -81,15 +78,21 @@ describe("sentry-metrics", () => {
     expect(calls[0].status).toBe("ok");
   });
 
-  test("rpcClientSendMetric: method tag is usage-gated", () => {
+  test("rpcClientSendMetric: method tag is usage-gated (snapshot at boot)", () => {
+    // Usage off → no method dimension.
     const { rpcClientSendMetric } = require("../sentry-metrics");
     rpcClientSendMetric("read.doc", 5);
     expect(calls).toHaveLength(1);
     expect(calls[0].name).toBe("comapeo.rpc.client.send_ms");
     expect(calls[0].method).toBeUndefined();
 
+    // The usage tier is snapshot at boot, so a fresh module with usage on
+    // carries the method tag. (Flipping the pref mid-process is intentionally
+    // inert — restart-to-activate.)
+    jest.resetModules();
     prefs.applicationUsageData = true;
-    rpcClientSendMetric("read.doc", 5);
+    const fresh = require("../sentry-metrics");
+    fresh.rpcClientSendMetric("read.doc", 5);
     expect(calls[1].method).toBe("read.doc");
   });
 
@@ -128,12 +131,16 @@ describe("sentry-metrics", () => {
     expect(calls).toHaveLength(0);
   });
 
-  test("rpcStatusFor maps outcomes to bounded status tags", () => {
+  test("rpcStatusFor classifies failures (never ok, even for a falsy reason)", () => {
     const { rpcStatusFor } = require("../sentry-metrics");
-    expect(rpcStatusFor(null)).toBe("ok");
+    // Only the reject path calls this; the success path records "ok" directly.
     expect(rpcStatusFor(Object.assign(new Error("x"), { name: "TimeoutError" }))).toBe(
       "timeout",
     );
     expect(rpcStatusFor(new Error("boom"))).toBe("error");
+    // A falsy rejection reason is still a failure, not a silent "ok".
+    expect(rpcStatusFor(null)).toBe("error");
+    expect(rpcStatusFor(0)).toBe("error");
+    expect(rpcStatusFor("")).toBe("error");
   });
 });

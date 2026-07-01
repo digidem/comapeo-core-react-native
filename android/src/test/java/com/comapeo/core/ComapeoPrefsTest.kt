@@ -9,10 +9,10 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 /**
- * JVM-only unit tests for [ComapeoPrefs]. Uses the constructor's
- * lambda seam so we don't depend on a real `SharedPreferences`
- * (unmocked on the JVM unit-test classpath). Same pattern as
- * [SentryConfigTest] and [ControlFrameTest].
+ * JVM-only unit tests for [ComapeoPrefs]. Backs the [ComapeoPrefs.Store]
+ * seam with an in-memory map so we don't depend on a real
+ * `SharedPreferences` (unmocked on the JVM unit-test classpath). Same
+ * pattern as [SentryConfigTest] and [ControlFrameTest].
  *
  * Coverage rationale: this is the privacy toggle's persistence
  * layer. A regression that loses or mis-merges the default-fallback
@@ -22,17 +22,16 @@ import java.io.File
  */
 class ComapeoPrefsTest {
 
-    /** Backing HashMap stand-in for the SharedPreferences file. */
-    private class FakeStore {
+    /** In-memory [ComapeoPrefs.Store] stand-in for the SharedPreferences file. */
+    private class FakeStore : ComapeoPrefs.Store {
         private val bools = mutableMapOf<String, Boolean>()
         private val longs = mutableMapOf<String, Long>()
-        val readBool: (String) -> Boolean? = { key -> bools[key] }
-        val writeBool: (String, Boolean) -> Unit = { key, value -> bools[key] = value }
-        val readLong: (String) -> Long? = { key -> longs[key] }
-        val writeLong: (String, Long) -> Unit = { key, value -> longs[key] = value }
-        val remove: (String) -> Unit = { key -> bools.remove(key); longs.remove(key) }
+        override fun getBoolean(key: String): Boolean? = bools[key]
+        override fun putBoolean(key: String, value: Boolean) { bools[key] = value }
+        override fun getLong(key: String): Long? = longs[key]
+        override fun putLong(key: String, value: Long) { longs[key] = value }
+        override fun remove(key: String) { bools.remove(key); longs.remove(key) }
         fun has(key: String) = bools.containsKey(key) || longs.containsKey(key)
-        fun putBool(key: String, value: Boolean) { bools[key] = value }
     }
 
     private fun prefs(
@@ -42,11 +41,7 @@ class ComapeoPrefsTest {
         debugDefault: Boolean = ComapeoPrefs.DEFAULT_DEBUG,
         now: () -> Long = { 0L },
     ): ComapeoPrefs = ComapeoPrefs(
-        readBool = store.readBool,
-        writeBool = store.writeBool,
-        readLong = store.readLong,
-        writeLong = store.writeLong,
-        removeKey = store.remove,
+        store = store,
         defaults = ComapeoPrefs.Defaults(
             diagnosticsEnabled = diagnosticsDefault,
             applicationUsageData = usageDefault,
@@ -95,21 +90,21 @@ class ComapeoPrefsTest {
 
     @Test
     fun debugAutoOffBoundaries() {
-        // fresh enable true; +23h59m true; +24h01m false + cleared.
+        // fresh enable true; just within window true; just past window false + cleared.
         val store = FakeStore()
         var clock = 1_000_000L
         val p = prefs(store, now = { clock })
         p.writeDebugEnabled(true)
         assertTrue("fresh enable reads true", p.readDebugEnabled())
 
-        clock += ComapeoPrefs.DEBUG_MAX_AGE_MS - 60_000 // +23h59m
-        assertTrue("within 24h reads true", p.readDebugEnabled())
+        clock += ComapeoPrefs.DEBUG_MAX_AGE_MS - 60_000 // one minute before expiry
+        assertTrue("within window reads true", p.readDebugEnabled())
 
-        clock += 120_000 // now past 24h since enable
-        assertFalse("past 24h auto-disables", p.readDebugEnabled())
+        clock += 120_000 // now past the window since enable
+        assertFalse("past window auto-disables", p.readDebugEnabled())
         assertFalse(
             "auto-off clears the value",
-            store.readBool(ComapeoPrefs.KEY_DEBUG)!!,
+            store.getBoolean(ComapeoPrefs.KEY_DEBUG)!!,
         )
         assertFalse(
             "auto-off clears the timestamp",
@@ -120,16 +115,32 @@ class ComapeoPrefsTest {
     }
 
     @Test
+    fun debugExpiresWhenClockMovesBackwardPastEnable() {
+        // Backward wall-clock change must not extend debug: an enable
+        // timestamp in the future (age < 0) auto-disables rather than
+        // keeping debug on indefinitely.
+        val store = FakeStore()
+        var clock = 10_000_000L
+        val p = prefs(store, now = { clock })
+        p.writeDebugEnabled(true)
+        assertTrue(p.readDebugEnabled())
+
+        clock -= 5_000_000L // clock moved back before the enable stamp
+        assertFalse("backward clock past enable auto-disables", p.readDebugEnabled())
+        assertFalse(store.has(ComapeoPrefs.KEY_DEBUG_ENABLED_AT_MS))
+    }
+
+    @Test
     fun debugReEnableRefreshesWindow() {
         val store = FakeStore()
         var clock = 0L
         val p = prefs(store, now = { clock })
         p.writeDebugEnabled(true)
         clock += ComapeoPrefs.DEBUG_MAX_AGE_MS - 60_000
-        // Re-enable at 23h59m → fresh 24h window.
+        // Re-enable just before expiry → fresh full window.
         p.writeDebugEnabled(true)
         clock += ComapeoPrefs.DEBUG_MAX_AGE_MS - 60_000
-        assertTrue("re-enable should reset the 24h clock", p.readDebugEnabled())
+        assertTrue("re-enable should reset the window clock", p.readDebugEnabled())
     }
 
     @Test
@@ -137,10 +148,10 @@ class ComapeoPrefsTest {
         // Older install: debug=true cell exists, no timestamp. Treat as
         // "enabled now" and stamp on first read.
         val store = FakeStore()
-        store.putBool(ComapeoPrefs.KEY_DEBUG, true)
+        store.putBoolean(ComapeoPrefs.KEY_DEBUG, true)
         val p = prefs(store, now = { 500L })
         assertTrue(p.readDebugEnabled())
-        assertEquals(500L, store.readLong(ComapeoPrefs.KEY_DEBUG_ENABLED_AT_MS))
+        assertEquals(500L, store.getLong(ComapeoPrefs.KEY_DEBUG_ENABLED_AT_MS))
     }
 
     @Test

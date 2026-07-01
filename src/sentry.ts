@@ -25,7 +25,7 @@ import {
 } from "./ComapeoCoreModule";
 import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types";
 import { SentryTags } from "./sentry-tags";
-import { scrubEvent, scrubBreadcrumb } from "./sentry-scrub";
+import { scrubEvent, scrubBreadcrumb, scrubLog } from "./sentry-scrub";
 import {
   BACKEND_MODULES,
   COMAPEO_MODULE_VERSION_LABEL,
@@ -250,15 +250,17 @@ export function initSentry(options: InitSentryOptions = {}): void {
     return;
   }
 
-  // Per-RPC traces are an investigation-only mode behind `debug`:
-  // full sample while on (the window is user-bounded), 0 otherwise.
-  // Day-to-day perf signal rides the always-on metrics layer instead.
+  // Same trace-sampling decision the native side folds into the backend's
+  // rate: full while the `debug` window is on, else the plugin-configured cap
+  // (0 if unset). Day-to-day perf signal rides the always-on metrics layer.
   // Locked — the host extension API can't override this.
-  const effectiveTracesSampleRate = preferences.debug ? 1.0 : 0;
+  const effectiveTracesSampleRate = preferences.debug
+    ? 1.0
+    : (sentryConfig.tracesSampleRate ?? 0);
 
-  // PII scrubber — substring scan for rootKey, base64-22-char, and
-  // lat/lng markers across every text field. Runs BEFORE any host
-  // `beforeSend` so a buggy or malicious host never sees a raw payload.
+  // PII scrubber — substring scan for rootKey + lat/lng markers across
+  // every text field. Runs BEFORE any host `beforeSend` so a buggy or
+  // malicious host never sees a raw payload.
   const ourBeforeSend: BeforeSendHook = (event) => scrubEvent(event);
   // URL-scrubbing breadcrumb hook: HTTP breadcrumbs reduced to
   // host-only so request paths/queries don't leak.
@@ -295,6 +297,11 @@ export function initSentry(options: InitSentryOptions = {}): void {
       options.integrations ? options.integrations(defaults) : defaults,
     beforeSend: chainedBeforeSend as never,
     beforeBreadcrumb: chainedBeforeBreadcrumb as never,
+    // Structured logs (`Sentry.logger.*`) bypass beforeSend/beforeBreadcrumb,
+    // so scrub them on their own hook — our state/message-error logs and any
+    // host logs.
+    beforeSendLog: (log: { message?: unknown; attributes?: unknown }) =>
+      scrubLog(log),
   } as never);
 
   sentryReady = true;

@@ -13,33 +13,18 @@ import XCTest
 /// regression). Both are silent if the tests don't catch them.
 final class ComapeoPrefsTests: XCTestCase {
 
-    /// Backing dictionary stand-in for the UserDefaults file. Wrapped
-    /// in a class so the lambdas share mutable state with `has(_:)`.
-    /// Box the dict in a reference holder so the lambdas can mutate
-    /// without capturing `self` and tripping ARC's deallocation
-    /// guard when the closure outlives this instance.
-    private final class FakeStore {
-        private final class Box {
-            var bools: [String: Bool] = [:]
-            var doubles: [String: Double] = [:]
-        }
-        private let box = Box()
-        lazy var readBool: (String) -> Bool? = { [box] key in box.bools[key] }
-        lazy var writeBool: (String, Bool) -> Void = { [box] key, value in
-            box.bools[key] = value
-        }
-        lazy var readDouble: (String) -> Double? = { [box] key in box.doubles[key] }
-        lazy var writeDouble: (String, Double) -> Void = { [box] key, value in
-            box.doubles[key] = value
-        }
-        lazy var remove: (String) -> Void = { [box] key in
-            box.bools[key] = nil
-            box.doubles[key] = nil
-        }
+    /// In-memory `ComapeoPrefs.Store` stand-in for the UserDefaults file.
+    private final class FakeStore: ComapeoPrefs.Store {
+        private var bools: [String: Bool] = [:]
+        private var doubles: [String: Double] = [:]
+        func getBool(_ key: String) -> Bool? { bools[key] }
+        func setBool(_ key: String, _ value: Bool) { bools[key] = value }
+        func getDouble(_ key: String) -> Double? { doubles[key] }
+        func setDouble(_ key: String, _ value: Double) { doubles[key] = value }
+        func remove(_ key: String) { bools[key] = nil; doubles[key] = nil }
         func has(_ key: String) -> Bool {
-            box.bools[key] != nil || box.doubles[key] != nil
+            bools[key] != nil || doubles[key] != nil
         }
-        func putBool(_ key: String, _ value: Bool) { box.bools[key] = value }
     }
 
     private final class Clock {
@@ -54,11 +39,7 @@ final class ComapeoPrefsTests: XCTestCase {
         clock: Clock = Clock()
     ) -> ComapeoPrefs {
         return ComapeoPrefs(
-            readBool: store.readBool,
-            writeBool: store.writeBool,
-            readDouble: store.readDouble,
-            writeDouble: store.writeDouble,
-            removeKey: store.remove,
+            store: store,
             defaults: ComapeoPrefs.Defaults(
                 diagnosticsEnabled: diagnosticsDefault,
                 applicationUsageData: usageDefault,
@@ -100,7 +81,7 @@ final class ComapeoPrefsTests: XCTestCase {
     }
 
     func testDebugAutoOffBoundaries() {
-        // fresh enable true; +23h59m true; +24h01m false + cleared.
+        // fresh enable true; just within window true; just past window false + cleared.
         let store = FakeStore()
         let clock = Clock()
         clock.nowMs = 1_000_000
@@ -108,13 +89,13 @@ final class ComapeoPrefsTests: XCTestCase {
         p.writeDebugEnabled(true)
         XCTAssertTrue(p.readDebugEnabled(), "fresh enable reads true")
 
-        clock.nowMs += ComapeoPrefs.debugMaxAgeMs - 60_000 // +23h59m
-        XCTAssertTrue(p.readDebugEnabled(), "within 24h reads true")
+        clock.nowMs += ComapeoPrefs.debugMaxAgeMs - 60_000 // one minute before expiry
+        XCTAssertTrue(p.readDebugEnabled(), "within window reads true")
 
-        clock.nowMs += 120_000 // now past 24h since enable
-        XCTAssertFalse(p.readDebugEnabled(), "past 24h auto-disables")
+        clock.nowMs += 120_000 // now past the window since enable
+        XCTAssertFalse(p.readDebugEnabled(), "past window auto-disables")
         XCTAssertEqual(
-            store.readBool(ComapeoPrefs.Key.debug), false,
+            store.getBool(ComapeoPrefs.Key.debug), false,
             "auto-off clears the value"
         )
         XCTAssertFalse(
@@ -124,25 +105,41 @@ final class ComapeoPrefsTests: XCTestCase {
         XCTAssertFalse(p.readDebugEnabled(), "subsequent read is stable")
     }
 
+    func testDebugExpiresWhenClockMovesBackwardPastEnable() {
+        // Backward wall-clock change must not extend debug: an enable
+        // timestamp in the future (age < 0) auto-disables rather than
+        // keeping debug on indefinitely.
+        let store = FakeStore()
+        let clock = Clock()
+        clock.nowMs = 10_000_000
+        let p = prefs(store: store, clock: clock)
+        p.writeDebugEnabled(true)
+        XCTAssertTrue(p.readDebugEnabled())
+
+        clock.nowMs -= 5_000_000 // clock moved back before the enable stamp
+        XCTAssertFalse(p.readDebugEnabled(), "backward clock past enable auto-disables")
+        XCTAssertFalse(store.has(ComapeoPrefs.Key.debugEnabledAtMs))
+    }
+
     func testDebugReEnableRefreshesWindow() {
         let store = FakeStore()
         let clock = Clock()
         let p = prefs(store: store, clock: clock)
         p.writeDebugEnabled(true)
         clock.nowMs += ComapeoPrefs.debugMaxAgeMs - 60_000
-        p.writeDebugEnabled(true) // refresh at 23h59m
+        p.writeDebugEnabled(true) // refresh just before expiry
         clock.nowMs += ComapeoPrefs.debugMaxAgeMs - 60_000
-        XCTAssertTrue(p.readDebugEnabled(), "re-enable should reset the 24h clock")
+        XCTAssertTrue(p.readDebugEnabled(), "re-enable should reset the window clock")
     }
 
     func testDebugTrueWithoutTimestampStampsAndStaysOn() {
         let store = FakeStore()
-        store.putBool(ComapeoPrefs.Key.debug, true)
+        store.setBool(ComapeoPrefs.Key.debug, true)
         let clock = Clock()
         clock.nowMs = 500
         let p = prefs(store: store, clock: clock)
         XCTAssertTrue(p.readDebugEnabled())
-        XCTAssertEqual(store.readDouble(ComapeoPrefs.Key.debugEnabledAtMs), 500)
+        XCTAssertEqual(store.getDouble(ComapeoPrefs.Key.debugEnabledAtMs), 500)
     }
 
     func testWriteFalsePersistsExplicitlyNotJustClears() {

@@ -1,7 +1,10 @@
 /**
  * RN-side scrubber + forbidden-metric filter.
  * Symmetric with the Node-side `backend/before-send.js` — keep both in
- * sync. Plain JS so expo-module-scripts' babel-jest picks it up.
+ * sync. The data-driven cases come from the shared
+ * `test-support/scrubber-cases.js` table, run against both copies so the
+ * two regex lists can't drift. Plain JS so expo-module-scripts'
+ * babel-jest picks it up.
  */
 
 const {
@@ -9,31 +12,31 @@ const {
   scrubUrlToHost,
   scrubEvent,
   scrubBreadcrumb,
+  scrubLog,
   isForbiddenMetric,
 } = require("../sentry-scrub");
 
-// 32-byte keypair public key (43 base64url chars).
-const BASE64_43 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
-// ~52-char z-base-32 project id.
-const ZBASE32_52 = "ybybybybybybybybybybybybybybybybybybybybybybybybybyb";
+const {
+  scrubStringCases,
+  scrubUrlToHostCases,
+  forbiddenMetricCases,
+} = require("../../test-support/scrubber-cases");
 
-describe("scrubString", () => {
-  test("redacts rootKey markers and lat/lng markers", () => {
-    expect(scrubString("rootKey=aGVsbG8td29ybGQtMTIzNA")).toMatch(/\[redacted\]/);
-    expect(scrubString("latitude: -12.345")).toMatch(/\[redacted\]/);
-    expect(scrubString("hello world")).toBe("hello world");
+describe("shared scrubber cases (mirror of backend/before-send.js)", () => {
+  test.each(scrubStringCases)("scrubString: $name", ({ input, expect: want }) => {
+    expect(scrubString(input)).toBe(want);
   });
 
-  // The broad base64-22 token rule is intentionally disabled pending a
-  // narrower design (it over-matched trace_ids / exception type names /
-  // metric tags). Until it returns, bare tokens pass through unredacted.
-  test("does NOT redact bare base64 tokens while the broad rule is disabled", () => {
-    expect(scrubString("token bm90LWEtcmVhbC1rZXktMQ done")).toBe(
-      "token bm90LWEtcmVhbC1rZXktMQ done",
-    );
-    expect(scrubString(BASE64_43)).toBe(BASE64_43);
-    expect(scrubString(ZBASE32_52)).toBe(ZBASE32_52);
+  test.each(scrubUrlToHostCases)("scrubUrlToHost: $name", ({ input, expect: want }) => {
+    expect(scrubUrlToHost(input)).toBe(want);
   });
+
+  test.each(forbiddenMetricCases)(
+    "isForbiddenMetric: $name",
+    ({ metricName, attributes, expect: want }) => {
+      expect(isForbiddenMetric(metricName, attributes)).toBe(want);
+    },
+  );
 });
 
 describe("scrubEvent", () => {
@@ -63,8 +66,6 @@ describe("scrubEvent", () => {
   });
 
   test("reduces request.url to host-only and scrubs marked query/headers", () => {
-    // Values carry an explicit rootKey marker so the active patterns catch
-    // them; a bare base64 token would currently pass through (broad rule off).
     const event = {
       request: {
         url: "https://cloud.comapeo.app/projects/abc?token=x",
@@ -88,31 +89,25 @@ describe("scrubBreadcrumb", () => {
     scrubBreadcrumb(crumb);
     expect(crumb.data.url).toBe("https://tiles.example.com");
   });
-});
 
-describe("scrubUrlToHost", () => {
-  test("drops path + query", () => {
-    expect(scrubUrlToHost("https://cloud.comapeo.app/projects/abc?token=x")).toBe(
-      "https://cloud.comapeo.app",
-    );
+  test("does not stack-overflow on circular breadcrumb data", () => {
+    const data = { a: 1 };
+    data.self = data; // cycle
+    const crumb = { category: "custom", data };
+    expect(() => scrubBreadcrumb(crumb)).not.toThrow();
+    expect(crumb.data.self).toBe("[Circular]");
   });
 });
 
-describe("isForbiddenMetric", () => {
-  test("drops forbidden tag names and lat/lng-shaped values", () => {
-    expect(isForbiddenMetric("comapeo.x", { project_id: "p" })).toBe(true);
-    expect(isForbiddenMetric("project_id", { platform: "ios" })).toBe(true);
-    expect(isForbiddenMetric("comapeo.x", { coord: "lat=12.34" })).toBe(true);
-    // Broad base64-22 value rule disabled (see sentry-scrub.ts); bare tokens
-    // no longer drop the metric. Re-enable once a narrower rule lands.
-    expect(isForbiddenMetric("comapeo.x", { bucket: BASE64_43 })).toBe(false);
-    expect(isForbiddenMetric("comapeo.x", { bucket: ZBASE32_52 })).toBe(false);
-    expect(
-      isForbiddenMetric("comapeo.rpc.client.duration_ms", {
-        method: "read.doc",
-        status: "ok",
-        platform: "ios",
-      }),
-    ).toBe(false);
+describe("scrubLog", () => {
+  test("scrubs the message and attributes of a structured log", () => {
+    const log = {
+      message: "rootKey=supersecretvalue",
+      attributes: { note: "latitude: 12.3", ok: "fine" },
+    };
+    scrubLog(log);
+    expect(log.message).toMatch(/\[redacted\]/);
+    expect(log.attributes.note).toBe("[redacted]");
+    expect(log.attributes.ok).toBe("fine");
   });
 });

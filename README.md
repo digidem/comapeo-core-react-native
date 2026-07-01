@@ -264,10 +264,11 @@ Info.plist keys at prebuild.
 | `environment` | yes | Sentry environment (e.g. `production`, `staging`). |
 | `release` | no | Release tag. Defaults to the app's version (`versionName`+`versionCode` / `CFBundleShortVersionString`+`CFBundleVersion`). |
 | `sampleRate` | no | Error sample rate (0–1). |
-| `tracesSampleRate` | no | Performance trace sample rate. Default 0.1 when capture-application-data is on; 0 when off. |
+| `tracesSampleRate` | no | Performance trace sample rate (0–1) for the non-`debug` baseline. The `debug` toggle forces full (1.0) sampling while its window is on; day-to-day performance signal rides the always-on metrics layer, so this can stay 0. |
 | `rpcArgsBytes` | no | Max bytes of RPC arguments captured on spans. |
 | `diagnosticsEnabledDefault` | no | Fresh-install default for the diagnostics toggle. |
-| `captureApplicationDataDefault` | no | Fresh-install default for the capture-application-data toggle. Keep off in production. |
+| `applicationUsageDataDefault` | no | Fresh-install default for the application-usage-data toggle. Keep off in production. |
+| `debugDefault` | no | Fresh-install default for the debug toggle (per-RPC traces + richer capture, auto-expires 72h after enable). Keep off in production. |
 | `enableLogs` | no | Forward Sentry structured logs from the backend process. Pair with `enableLogs: true` in your host `Sentry.init` setup. |
 
 Omitting `sentry` (or removing it on a re-prebuild) strips all keys this plugin
@@ -320,9 +321,7 @@ From `@comapeo/core-react-native/sentry`:
   setting `false` also wipes the on-disk envelope cache.
 - `getDebugEnabled()` / `setDebugEnabled(value)` — opt-in debug mode (per-RPC
   traces, `@comapeo/core` OTel spans, richer capture). Restart-to-activate and
-  auto-expires 24h after the most recent enable.
-- `recordUsage.screen(name)` / `recordUsage.feature(name)` — record a
-  feature-usage metric. No-op unless application-usage data is enabled.
+  auto-expires 72h after the most recent enable.
 
 ### Uploading artifacts to Sentry
 

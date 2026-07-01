@@ -12,7 +12,7 @@ import { initSentry } from "@comapeo/core-react-native/sentry";
 // enableLogs all flow through the Expo plugin in `app.json` (and
 // `app.plugin.js`); the host doesn't pass them here. `initSentry`
 // owns `Sentry.init` so the privacy toggles (`diagnosticsEnabled`,
-// `captureApplicationData`) can gate the call in one place.
+// `applicationUsageData`) can gate the call in one place.
 //
 // The `integrations` extension hook receives the SDK defaults and
 // returns the final list. Default `appStartIntegration` attaches the

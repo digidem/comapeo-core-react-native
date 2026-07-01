@@ -103,7 +103,9 @@ test("debug ON: rpcHook produces an envelope AND records the rpc metric", async 
     "no envelope frame reached the sink — debug span not created",
   );
   assert.ok(
-    rec.distributions.some((d) => d.name === "comapeo.rpc.server.duration_ms"),
+    rec.distributions.some(
+      (d) => d.name === "comapeo.rpc.server.duration_ms.by_device",
+    ),
     "rpc.server metric not recorded while the debug span was active",
   );
 
@@ -140,7 +142,9 @@ test("debug OFF: rpcHook records the metric but creates no span/envelope", async
     "debug-off must not create an rpc.server transaction envelope",
   );
   assert.ok(
-    rec.distributions.some((d) => d.name === "comapeo.rpc.server.duration_ms"),
+    rec.distributions.some(
+      (d) => d.name === "comapeo.rpc.server.duration_ms.by_device",
+    ),
     "rpc.server metric must be recorded on the debug-off path",
   );
 
@@ -183,7 +187,9 @@ test("debug OFF: a rejecting RPC records the duration metric but captures no iss
     "the hook must not capture RPC errors as Sentry issues",
   );
   assert.ok(
-    rec.distributions.some((d) => d.name === "comapeo.rpc.server.duration_ms"),
+    rec.distributions.some(
+      (d) => d.name === "comapeo.rpc.server.duration_ms.by_device",
+    ),
     "the error path must still record the duration metric",
   );
 

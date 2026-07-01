@@ -21,7 +21,9 @@ const REDACTED = "[redacted]";
 
 /** @type {RegExp[]} */
 const SCRUB_PATTERNS = [
-  /\broot[_-]?key\b\s*["']?\s*[:=]\s*\S+/gi,
+  // Value stops at a field delimiter (whitespace, `,;&`, quote) so co-located
+  // fields in a compact `rootKey=abc,method=x` string survive.
+  /\broot[_-]?key\b\s*["']?\s*[:=]\s*[^\s,;&"']+/gi,
   /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
 
@@ -64,23 +66,50 @@ export function scrubUrlToHost(url) {
     const parsed = new URL(url);
     return `${parsed.protocol}//${parsed.host}`;
   } catch {
-    return scrubString(url);
+    // Relative/opaque URL (no scheme/host) — new URL() throws. Drop the query
+    // + fragment (where tokens ride), then string-scrub what remains. A plain
+    // non-URL string has neither and passes through the string scrubber.
+    return scrubString(url.replace(/[?#].*$/s, ""));
   }
 }
 
+/** Max nesting depth walked before we stop (backstop against deep/hostile data). */
+const MAX_SCRUB_DEPTH = 20;
+
 /** @param {unknown} value @returns {unknown} */
 function scrubValue(value) {
+  return scrubValueInner(value, new WeakSet(), 0);
+}
+
+/**
+ * @param {unknown} value
+ * @param {WeakSet<object>} seen
+ * @param {number} depth
+ * @returns {unknown}
+ */
+function scrubValueInner(value, seen, depth) {
   if (typeof value === "string") return scrubString(value);
-  if (Array.isArray(value)) return value.map(scrubValue);
-  if (value && typeof value === "object") {
+  if (value === null || typeof value !== "object") return value;
+  // scrubEvent runs as an addEventProcessor, BEFORE Sentry normalises cycles,
+  // so guard against self-referential/over-deep data ourselves.
+  if (seen.has(value)) return "[Circular]";
+  if (depth >= MAX_SCRUB_DEPTH) return "[Truncated]";
+  seen.add(value);
+  let out;
+  if (Array.isArray(value)) {
+    out = value.map((v) => scrubValueInner(v, seen, depth + 1));
+  } else {
     /** @type {Record<string, unknown>} */
-    const out = {};
+    const record = {};
     for (const [k, v] of Object.entries(value)) {
-      out[k] = SENSITIVE_KEY_PATTERN.test(k) ? REDACTED : scrubValue(v);
+      record[k] = SENSITIVE_KEY_PATTERN.test(k)
+        ? REDACTED
+        : scrubValueInner(v, seen, depth + 1);
     }
-    return out;
+    out = record;
   }
-  return value;
+  seen.delete(value);
+  return out;
 }
 
 /**
@@ -172,6 +201,26 @@ export function scrubBreadcrumb(crumb) {
     crumb.data = scrubValue(crumb.data);
   }
   return crumb;
+}
+
+/**
+ * Scrub a structured log (the `Sentry.logger.*` channel): message
+ * string-scrubbed, attributes recursively scrubbed. Wired as
+ * `beforeSendLog` so logs get the same net as events/breadcrumbs.
+ * Mutates and returns the log.
+ *
+ * @template {{ message?: unknown, attributes?: unknown }} T
+ * @param {T} log
+ * @returns {T}
+ */
+export function scrubLog(log) {
+  if (typeof log.message === "string") {
+    log.message = scrubString(log.message);
+  }
+  if (log.attributes && typeof log.attributes === "object") {
+    log.attributes = scrubValue(log.attributes);
+  }
+  return log;
 }
 
 /**

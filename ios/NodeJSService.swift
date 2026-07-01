@@ -700,9 +700,11 @@ class NodeJSService {
         if let r = cfg.sampleRate {
             out.append("--sentrySampleRate=\(r)")
         }
-        if let r = cfg.tracesSampleRate {
-            out.append("--sentryTracesSampleRate=\(r)")
-        }
+        // Native owns the trace-sampling decision: full while the debug window
+        // is on, else the plugin-configured cap (0 if unset). The backend
+        // mirrors this value rather than re-deciding.
+        let effectiveTracesSampleRate = debug ? 1.0 : (cfg.tracesSampleRate ?? 0.0)
+        out.append("--sentryTracesSampleRate=\(effectiveTracesSampleRate)")
         if let b = cfg.rpcArgsBytes {
             out.append("--sentryRpcArgsBytes=\(b)")
         }

@@ -6,7 +6,7 @@
 
 /** @typedef {import("./sentry-frame.js").SentryFrame} SentryFrame */
 
-import { scrubEvent } from "../before-send.js";
+import { scrubEvent, scrubLog } from "../before-send.js";
 import * as metrics from "./metrics.js";
 
 /**
@@ -135,13 +135,18 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
     environment: argv.sentryEnvironment,
     release: argv.sentryRelease,
     sampleRate: numericArg(argv.sentrySampleRate),
-    // Per-RPC / boot traces are investigation-only behind `--debug`:
-    // 1.0 while on, 0 otherwise. Day-to-day perf signal rides
-    // the always-on metrics layer.
-    tracesSampleRate: config.debug ? 1.0 : 0,
+    // Native (Kotlin/Swift) owns the trace-sampling decision and forwards the
+    // already-resolved rate — it folds in the `debug` window (full sampling
+    // while on) and any plugin-configured cap. Mirror it verbatim here; absent
+    // means 0. Day-to-day perf signal rides the always-on metrics layer.
+    tracesSampleRate: argv.sentryTracesSampleRate
+      ? numericArg(argv.sentryTracesSampleRate)
+      : 0,
     // v9 moved this out of `_experiments` — keep the CLI flag name so
     // native doesn't have to change.
     enableLogs: argv.sentryEnableLogs,
+    // Structured logs bypass the scrubEvent processor, so scrub them here.
+    beforeSendLog: scrubLog,
     // We register no OTel auto-instrumentations, so the iitm loader
     // thread that `@sentry/node-core`'s `initializeEsmLoader` would
     // spin up has nothing to hook. Disabling it lets us drop iitm
@@ -361,13 +366,9 @@ export function rpcHook() {
       const start = performance.now();
       Promise.resolve(next(request))
         .then(
-          () => metrics.rpcServer(method, "ok", performance.now() - start),
+          () => metrics.rpcServer("ok", performance.now() - start),
           (error) => {
-            metrics.rpcServer(
-              method,
-              statusFor(error),
-              performance.now() - start,
-            );
+            metrics.rpcServer(statusFor(error), performance.now() - start);
           },
         )
         .catch(() => {});
@@ -409,16 +410,12 @@ export function rpcHook() {
           try {
             await next(request);
             span.setStatus({ code: 1, message: "ok" });
-            metrics.rpcServer(method, "ok", performance.now() - start);
+            metrics.rpcServer("ok", performance.now() - start);
           } catch (error) {
             // Mark the span errored for tracing, but do not capture an issue
             // — see the metrics-only note on the non-debug path above.
             span.setStatus({ code: 2, message: "internal_error" });
-            metrics.rpcServer(
-              method,
-              statusFor(error),
-              performance.now() - start,
-            );
+            metrics.rpcServer(statusFor(error), performance.now() - start);
           }
         },
       );

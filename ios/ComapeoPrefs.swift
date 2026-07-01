@@ -5,66 +5,72 @@ import Foundation
 /// toggle to `false` also wipes the sentry-cocoa cache so queued events
 /// don't ship. Mirrors `ComapeoPrefs.kt`.
 ///
-/// Constructor takes read/write closures so unit tests don't need a
-/// real `UserDefaults`.
+/// Persistence goes through a `Store` so unit tests can back it with a
+/// plain dictionary instead of a real `UserDefaults`.
 final class ComapeoPrefs {
+    /// Minimal persistence surface. `nil` from a getter means "key
+    /// absent" (so the caller falls back to a default). Production wraps
+    /// `UserDefaults`; tests use an in-memory dictionary.
+    protocol Store {
+        func getBool(_ key: String) -> Bool?
+        func setBool(_ key: String, _ value: Bool)
+        func getDouble(_ key: String) -> Double?
+        func setDouble(_ key: String, _ value: Double)
+        func remove(_ key: String)
+    }
+
     struct Defaults {
         let diagnosticsEnabled: Bool
         let applicationUsageData: Bool
         let debug: Bool
     }
 
-    private let readBool: (String) -> Bool?
-    private let writeBool: (String, Bool) -> Void
-    private let readDouble: (String) -> Double?
-    private let writeDouble: (String, Double) -> Void
-    private let removeKey: (String) -> Void
+    private let store: Store
     private let defaults: Defaults
-    /// Wall clock; injectable so 24h-auto-off tests don't depend on real time.
+    /// Wall clock; injectable so the debug-auto-off tests don't depend on real time.
     private let now: () -> Double
 
     init(
-        readBool: @escaping (String) -> Bool?,
-        writeBool: @escaping (String, Bool) -> Void,
-        readDouble: @escaping (String) -> Double?,
-        writeDouble: @escaping (String, Double) -> Void,
-        removeKey: @escaping (String) -> Void,
+        store: Store,
         defaults: Defaults,
         now: @escaping () -> Double = { Date().timeIntervalSince1970 * 1000 }
     ) {
-        self.readBool = readBool
-        self.writeBool = writeBool
-        self.readDouble = readDouble
-        self.writeDouble = writeDouble
-        self.removeKey = removeKey
+        self.store = store
         self.defaults = defaults
         self.now = now
     }
 
     func readDiagnosticsEnabled() -> Bool {
-        readBool(Key.diagnosticsEnabled) ?? defaults.diagnosticsEnabled
+        store.getBool(Key.diagnosticsEnabled) ?? defaults.diagnosticsEnabled
     }
 
     func readApplicationUsageData() -> Bool {
-        readBool(Key.applicationUsageData) ?? defaults.applicationUsageData
+        store.getBool(Key.applicationUsageData) ?? defaults.applicationUsageData
     }
 
-    /// Read the `debug` toggle, applying the 24h auto-off: if debug was
-    /// switched on more than `debugMaxAgeMs` ago, flip it off, clear the
+    /// Read the `debug` toggle, applying the `debugMaxAgeMs` auto-off: if
+    /// debug was switched on longer ago than that, flip it off, clear the
     /// timestamp, queue a `comapeo.debug.auto_disabled` breadcrumb, and
     /// return `false`. A `debug=true` cell with no timestamp (e.g. enabled
     /// via the configured default) is treated as "enabled now" and stamped
     /// on first read.
+    ///
+    /// The window is wall-clock based (it must survive process restarts),
+    /// so a backward clock change is treated conservatively: an enable
+    /// timestamp in the future expires debug rather than extending it. This
+    /// is a best-effort privacy window on the user's own device, not a
+    /// security boundary.
     func readDebugEnabled() -> Bool {
-        let stored = readBool(Key.debug) ?? defaults.debug
+        let stored = store.getBool(Key.debug) ?? defaults.debug
         if !stored { return false }
-        guard let enabledAt = readDouble(Key.debugEnabledAtMs) else {
-            writeDouble(Key.debugEnabledAtMs, now())
+        guard let enabledAt = store.getDouble(Key.debugEnabledAtMs) else {
+            store.setDouble(Key.debugEnabledAtMs, now())
             return true
         }
-        if now() - enabledAt > Self.debugMaxAgeMs {
-            writeBool(Key.debug, false)
-            removeKey(Key.debugEnabledAtMs)
+        let age = now() - enabledAt
+        if age < 0 || age > Self.debugMaxAgeMs {
+            store.setBool(Key.debug, false)
+            store.remove(Key.debugEnabledAtMs)
             DebugAutoOff.queueBreadcrumb()
             return false
         }
@@ -72,21 +78,21 @@ final class ComapeoPrefs {
     }
 
     func writeDiagnosticsEnabled(_ value: Bool) {
-        writeBool(Key.diagnosticsEnabled, value)
+        store.setBool(Key.diagnosticsEnabled, value)
     }
 
     func writeApplicationUsageData(_ value: Bool) {
-        writeBool(Key.applicationUsageData, value)
+        store.setBool(Key.applicationUsageData, value)
     }
 
     /// Write `debug`, stamping (true) or clearing (false) the enable
     /// timestamp synchronously. Re-writing `true` refreshes the window.
     func writeDebugEnabled(_ value: Bool) {
-        writeBool(Key.debug, value)
+        store.setBool(Key.debug, value)
         if value {
-            writeDouble(Key.debugEnabledAtMs, now())
+            store.setDouble(Key.debugEnabledAtMs, now())
         } else {
-            removeKey(Key.debugEnabledAtMs)
+            store.remove(Key.debugEnabledAtMs)
         }
     }
 
@@ -97,8 +103,8 @@ final class ComapeoPrefs {
         static let debugEnabledAtMs = "sentry.debugEnabledAtMs"
     }
 
-    /// 24h in milliseconds.
-    static let debugMaxAgeMs: Double = 24 * 60 * 60 * 1000
+    /// 72h in milliseconds — debug mode auto-disables this long after enable.
+    static let debugMaxAgeMs: Double = 72 * 60 * 60 * 1000
 
     /// Privacy model treats baseline error visibility as on.
     static let defaultDiagnosticsEnabled: Bool = true
@@ -115,34 +121,22 @@ final class ComapeoPrefs {
                 ?? defaultApplicationUsageData,
             debug: sentryConfig?.debugDefault ?? defaultDebug
         )
-        let store = UserDefaults.standard
-        let readBool: (String) -> Bool? = { key in
-            // `object(forKey:)` distinguishes absent from explicit
-            // `false`; `bool(forKey:)` collapses them, which would
-            // silently re-enable diagnostics on every user `false`.
-            store.object(forKey: key) as? Bool
-        }
-        let writeBool: (String, Bool) -> Void = { key, value in
-            store.set(value, forKey: key)
-        }
-        let readDouble: (String) -> Double? = { key in
-            store.object(forKey: key) as? Double
-        }
-        let writeDouble: (String, Double) -> Void = { key, value in
-            store.set(value, forKey: key)
-        }
-        let removeKey: (String) -> Void = { key in
-            store.removeObject(forKey: key)
-        }
-
         return ComapeoPrefs(
-            readBool: readBool,
-            writeBool: writeBool,
-            readDouble: readDouble,
-            writeDouble: writeDouble,
-            removeKey: removeKey,
+            store: UserDefaultsStore(defaults: UserDefaults.standard),
             defaults: defaults
         )
+    }
+
+    /// `UserDefaults`-backed [Store]. `object(forKey:)` distinguishes absent
+    /// from an explicit `false`; `bool(forKey:)` collapses them, which would
+    /// silently re-enable diagnostics on every user `false`.
+    private struct UserDefaultsStore: Store {
+        let defaults: UserDefaults
+        func getBool(_ key: String) -> Bool? { defaults.object(forKey: key) as? Bool }
+        func setBool(_ key: String, _ value: Bool) { defaults.set(value, forKey: key) }
+        func getDouble(_ key: String) -> Double? { defaults.object(forKey: key) as? Double }
+        func setDouble(_ key: String, _ value: Double) { defaults.set(value, forKey: key) }
+        func remove(_ key: String) { defaults.removeObject(forKey: key) }
     }
 
     /// Recursively delete sentry-cocoa's on-disk cache root at
@@ -167,7 +161,7 @@ final class ComapeoPrefs {
     }
 }
 
-/// Holds the `comapeo.debug.auto_disabled` breadcrumb queued by the 24h
+/// Holds the `comapeo.debug.auto_disabled` breadcrumb queued by the debug
 /// auto-off. `readDebugEnabled()` runs before `SentrySDK.start`,
 /// so the breadcrumb can't be added directly; it's drained once the SDK
 /// is up.
