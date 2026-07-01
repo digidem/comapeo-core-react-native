@@ -634,16 +634,24 @@ class NodeJSService {
         let defaultConfigPath = resolveDefaultConfigPath() ?? ""
         // 5th positional: consumer's online map style URL, or "" when unset.
         let defaultOnlineStyleUrl = resolveDefaultOnlineStyleUrl() ?? ""
-        var args: [String] = [
-            "node",
-            "--no-experimental-fetch",
+        var args: [String] = ["node", "--no-experimental-fetch"]
+        // Debug builds ship the backend's `.map` next to the bundle via the
+        // Debug-only `ComapeoCoreSourcemaps` companion pod. `--enable-source-maps`
+        // (a Node runtime flag, so it precedes the script path) makes Node
+        // remap stacks to original positions in-process, so Sentry events
+        // are symbolicated without a map upload. Release omits it and relies
+        // on consumer-uploaded maps (debug-ID matched, symbolicated by Sentry).
+        #if DEBUG
+        args.append("--enable-source-maps")
+        #endif
+        args.append(contentsOf: [
             jsPath,
             comapeoSocketPath,
             controlSocketPath,
             privateStorageDir,
             defaultConfigPath,
             defaultOnlineStyleUrl,
-        ]
+        ])
         args.append(contentsOf: buildSentryArgs())
         let exitCode = nodeEntryPoint(args)
         logCrumb(

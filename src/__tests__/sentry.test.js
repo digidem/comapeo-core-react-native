@@ -15,6 +15,10 @@
  * decorative here — the test logic stands on its own.
  */
 
+// Dependency-free constants module, safe to require before the per-test
+// mocks are registered (it pulls in no RN / native code).
+const { SENTRY_OWNED_GLOBAL_KEY } = require("../sentry-tags");
+
 describe("initSentry", () => {
   let preferences;
   let livePreferences;
@@ -42,6 +46,12 @@ describe("initSentry", () => {
     addEventProcessorSpy = jest.fn();
 
     jest.resetModules();
+
+    // `initSentry` records ownership on a `globalThis` marker so a
+    // post-reload re-entry (module state gone, SDK alive) stays
+    // idempotent. `jest.resetModules()` doesn't touch globals, so clear
+    // it here to keep each test isolated.
+    delete globalThis[SENTRY_OWNED_GLOBAL_KEY];
 
     jest.doMock("../ComapeoCoreModule", () => ({
       state: { addListener: jest.fn() },
@@ -190,10 +200,29 @@ describe("initSentry", () => {
     expect(() => initSentry()).toThrow(/initSentry/);
   });
 
-  test("throws on a normal duplicate init (host called initSentry twice)", () => {
+  test("is idempotent on a duplicate init in the same context (no throw, no re-init)", () => {
     const { initSentry } = require("../sentry");
     initSentry();
-    expect(() => initSentry()).toThrow(/called twice/);
+    expect(initSpy).toHaveBeenCalledTimes(1);
+    expect(() => initSentry()).not.toThrow();
+    // The live client must not be replaced.
+    expect(initSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("is idempotent across a JS-bundle reload (SDK + global marker survive, module state reset)", () => {
+    const first = require("../sentry");
+    first.initSentry();
+    expect(initSpy).toHaveBeenCalledTimes(1);
+
+    // Reload: the SDK and our globalThis marker outlive the bundle, but
+    // our module-level state (`initialized`, `sentryReady`) is torn down
+    // and rebuilt. The re-entry must NOT re-init or hit the migration
+    // throw — it's our own prior init, not a host `Sentry.init`.
+    isInitializedFlag = true;
+    jest.resetModules();
+    const second = require("../sentry");
+    expect(() => second.initSentry()).not.toThrow();
+    expect(initSpy).toHaveBeenCalledTimes(1);
   });
 
   test("host integrations function is applied to the SDK defaults", () => {

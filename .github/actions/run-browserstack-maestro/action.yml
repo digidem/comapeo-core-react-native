@@ -74,7 +74,7 @@ runs:
         TIMEOUT: ${{ fromJson(inputs.timeout) }}
         MAX_ATTEMPTS: ${{ fromJson(inputs.max_attempts) }}
       shell: bash
-      run: |
+      run: | #shell
         set -o pipefail
 
         API="https://api-cloud.browserstack.com/app-automate/maestro/v2"
@@ -256,7 +256,7 @@ runs:
         BROWSERSTACK_USERNAME: ${{ inputs.browserstack_username }}
         BROWSERSTACK_ACCESS_KEY: ${{ inputs.browserstack_access_key }}
       shell: bash
-      run: |
+      run: | #shell
         [[ "$BUILD_ID" == "null" ]] && exit 0
         echo "Stopping BrowserStack build $BUILD_ID"
         curl --show-error -s -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \

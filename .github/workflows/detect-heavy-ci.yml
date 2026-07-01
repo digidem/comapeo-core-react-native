@@ -27,7 +27,7 @@ jobs:
       - uses: actions/github-script@v9
         id: script
         with:
-          script: |
+          script: | #js
             const ev = context.eventName;
             // Manual dispatch is an explicit request — run unconditionally.
             if (ev === 'workflow_dispatch') {
