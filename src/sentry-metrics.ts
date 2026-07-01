@@ -146,15 +146,5 @@ export function rpcClientMetric(
   distribution("comapeo.rpc.client.duration_ms", ms, "millisecond", attrs);
 }
 
-/**
- * Sync-send slice (`comapeo.rpc.client.send_ms`) — the JSI hop + UDS write to
- * Node. Device tags always flow; the `method` breakdown is usage-gated.
- */
-export function rpcClientSendMetric(method: string, ms: number): void {
-  const attrs: MetricAttributes = { ...deviceTags() };
-  if (usageDataEnabled()) attrs.method = method;
-  distribution("comapeo.rpc.client.send_ms", ms, "millisecond", attrs);
-}
-
 /** Exposed for tests + the gauge/count primitives if a host needs them. */
 export const __metricsInternals = { distribution, count, gauge };

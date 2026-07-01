@@ -296,13 +296,11 @@ async function withPhase(phase, fn) {
 
     controlIpcServer.setReadinessPhase("ready");
     metrics.bootOutcome("started");
-    metrics.stateTransition("starting", "started");
     startMemorySampler();
     sampleStorageSize(privateStorageDir);
   } catch (error) {
     const phase = getStringProp(error, "phase") || "boot";
     metrics.bootOutcome("error", phase);
-    metrics.stateTransition("starting", "error");
     handleFatal(phase, error);
   }
 })();

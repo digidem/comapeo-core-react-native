@@ -200,9 +200,9 @@ export function syncSession(outcome, ms, peersBucket, bytesBucket) {
 // ── Backend health (60s sampler) ────────────────────────────────
 
 /**
- * Heap-used + uptime gauges. `rss` is intentionally omitted: node's `rss` is
- * the whole OS process, which on iOS is the entire app (node runs in-process),
- * so it wouldn't measure "the backend". `heapUsed` is the V8 JS heap and is
+ * Heap-used gauge. `rss` is intentionally omitted: node's `rss` is the whole
+ * OS process, which on iOS is the entire app (node runs in-process), so it
+ * wouldn't measure "the backend". `heapUsed` is the V8 JS heap and is
  * meaningful on both platforms.
  */
 export function backendMemorySample() {
@@ -210,7 +210,6 @@ export function backendMemorySample() {
   if (!metrics) return;
   const mem = process.memoryUsage();
   gauge("comapeo.backend.heap_used_bytes", mem.heapUsed, "byte", {});
-  gauge("comapeo.fgs.uptime_s", process.uptime(), "second", {});
 }
 
 /** @param {number} delayMs Event-loop delay sample in milliseconds. */
@@ -218,15 +217,7 @@ export function eventLoopDelaySample(delayMs) {
   gauge("comapeo.backend.event_loop_delay_ms", delayMs, "millisecond", {});
 }
 
-// ── State / storage / IPC ───────────────────────────────────────
-
-/**
- * @param {string} from
- * @param {string} to
- */
-export function stateTransition(from, to) {
-  count("comapeo.state.transitions", { from, to });
-}
+// ── Storage / IPC ───────────────────────────────────────────────
 
 /** @param {string} bucket `<10MB` / `10-100MB` / `100MB-1GB` / `>1GB` */
 export function storageSizeBucket(bucket) {

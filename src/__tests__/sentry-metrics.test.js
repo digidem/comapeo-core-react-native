@@ -74,26 +74,6 @@ describe("sentry-metrics", () => {
     expect(calls[0].os_major).toBe("android.14");
   });
 
-  test("rpcClientSendMetric: device tags always, method usage-gated (snapshot at boot)", () => {
-    // Usage off → device tags present, no method dimension.
-    const { rpcClientSendMetric } = require("../sentry-metrics");
-    rpcClientSendMetric("read.doc", 5);
-    expect(calls).toHaveLength(1);
-    expect(calls[0].name).toBe("comapeo.rpc.client.send_ms");
-    expect(calls[0].device_class).toBe("mid");
-    expect(calls[0].method).toBeUndefined();
-
-    // The usage tier is snapshot at boot, so a fresh module with usage on
-    // carries the method tag. (Flipping the pref mid-process is intentionally
-    // inert — restart-to-activate.)
-    jest.resetModules();
-    prefs.applicationUsageData = true;
-    const fresh = require("../sentry-metrics");
-    fresh.rpcClientSendMetric("read.doc", 5);
-    expect(calls[1].method).toBe("read.doc");
-    expect(calls[1].device_class).toBe("mid");
-  });
-
   test("platform is injected on every primitive", () => {
     const { __metricsInternals } = require("../sentry-metrics");
     __metricsInternals.count("comapeo.x", { a: "1" });

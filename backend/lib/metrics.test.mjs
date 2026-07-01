@@ -44,7 +44,7 @@ test("no-ops entirely when Sentry is off (init never ran)", () => {
   // No init → no SDK. Calls must not throw and record nothing.
   metrics.rpcServer("read.doc", "ok", 12);
   metrics.backendMemorySample();
-  metrics.stateTransition("starting", "started");
+  metrics.storageSizeBucket("<10MB");
   // Nothing to assert beyond "did not throw"; the absence of an SDK is
   // the whole point.
   assert.ok(true);
@@ -102,19 +102,16 @@ test("syncSession emits one duration metric; peers/bytes buckets are usage-gated
   );
 });
 
-test("backendMemorySample emits heap-used + uptime gauges with byte/second units", () => {
+test("backendMemorySample emits the heap-used gauge in bytes", () => {
   const { sdk, calls } = fakeSentry();
   initWith(sdk);
   metrics.backendMemorySample();
   const names = calls.gauge.map((g) => g.name);
   // rss is intentionally omitted (it measures the whole process, misleading
-  // on iOS where node runs in-process).
-  assert.deepEqual(names, [
-    "comapeo.backend.heap_used_bytes",
-    "comapeo.fgs.uptime_s",
-  ]);
+  // on iOS where node runs in-process); uptime was dropped (a sampled
+  // monotonic gauge has no actionable aggregate).
+  assert.deepEqual(names, ["comapeo.backend.heap_used_bytes"]);
   assert.equal(calls.gauge[0].unit, "byte");
-  assert.equal(calls.gauge[1].unit, "second");
 });
 
 test("before_metric_send filter drops a forbidden tag name routed through count()", () => {

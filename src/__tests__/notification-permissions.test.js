@@ -52,7 +52,6 @@ describe("notification permission wrappers", () => {
     // don't touch it, so stub it out like the other transitive deps.
     jest.doMock("../sentry-metrics", () => ({
       rpcClientMetric: jest.fn(),
-      rpcClientSendMetric: jest.fn(),
       rpcStatusFor: jest.fn(() => "ok"),
     }));
 

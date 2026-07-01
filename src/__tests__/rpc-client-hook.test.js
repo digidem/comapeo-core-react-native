@@ -19,7 +19,6 @@ function setup({ debug, diagnosticsEnabled = true, sentryInitialized = true }) {
     cb({ setAttribute: jest.fn(), setStatus: jest.fn() }),
   );
   const rpcClientMetric = jest.fn();
-  const rpcClientSendMetric = jest.fn();
   const rpcStatusFor = jest.fn((error) => (error ? "error" : "ok"));
   const captureException = jest.fn();
 
@@ -67,7 +66,6 @@ function setup({ debug, diagnosticsEnabled = true, sentryInitialized = true }) {
 
   jest.doMock("../sentry-metrics", () => ({
     rpcClientMetric,
-    rpcClientSendMetric,
     rpcStatusFor,
   }));
 
