@@ -42,7 +42,7 @@ beforeEach(() => metrics.resetForTests());
 
 test("no-ops entirely when Sentry is off (init never ran)", () => {
   // No init → no SDK. Calls must not throw and record nothing.
-  metrics.rpcServer("ok", 12);
+  metrics.rpcServer("read.doc", "ok", 12);
   metrics.backendMemorySample();
   metrics.stateTransition("starting", "started");
   // Nothing to assert beyond "did not throw"; the absence of an SDK is
@@ -50,62 +50,52 @@ test("no-ops entirely when Sentry is off (init never ran)", () => {
   assert.ok(true);
 });
 
-test("rpcServer emits only the by_device mirror (status + device tags, no method)", () => {
-  const { sdk, calls } = fakeSentry();
-  initWith(sdk);
-  metrics.rpcServer("ok", 42);
-
-  // The per-method primary was dropped — the client end-to-end metric owns
-  // the method breakdown, so the server side is the by_device mirror only.
-  assert.equal(calls.distribution.length, 1);
-  const [mirror] = calls.distribution;
-  assert.equal(mirror.name, "comapeo.rpc.server.duration_ms.by_device");
-  assert.equal(mirror.unit, "millisecond");
-  assert.equal(mirror.attributes.status, "ok");
-  assert.equal(mirror.attributes.platform, "android");
-  assert.equal(mirror.attributes.device_class, "mid");
-  assert.equal(mirror.attributes.os_major, "android.14");
-  assert.equal(mirror.attributes.method, undefined);
-});
-
-test("rpcServer emits the same single mirror regardless of applicationUsageData", () => {
-  const off = fakeSentry();
-  initWith(off.sdk, { applicationUsageData: false });
-  metrics.rpcServer("ok", 42);
-  assert.equal(off.calls.distribution.length, 1);
-  assert.equal(
-    off.calls.distribution[0].name,
-    "comapeo.rpc.server.duration_ms.by_device",
-  );
-
-  metrics.resetForTests();
+test("rpcServer emits one metric with status + device tags; method is usage-gated", () => {
+  // Usage on: `method` rides on the single metric.
   const on = fakeSentry();
   initWith(on.sdk, { applicationUsageData: true });
-  metrics.rpcServer("ok", 42);
+  metrics.rpcServer("observation.create", "ok", 42);
+
   assert.equal(on.calls.distribution.length, 1);
-  assert.equal(
-    on.calls.distribution[0].name,
-    "comapeo.rpc.server.duration_ms.by_device",
-  );
+  const [m] = on.calls.distribution;
+  assert.equal(m.name, "comapeo.rpc.server.duration_ms");
+  assert.equal(m.unit, "millisecond");
+  assert.equal(m.attributes.status, "ok");
+  assert.equal(m.attributes.platform, "android");
+  assert.equal(m.attributes.device_class, "mid");
+  assert.equal(m.attributes.os_major, "android.14");
+  assert.equal(m.attributes.method, "observation.create");
+
+  // Usage off: same single metric, but `method` is dropped (privacy gate).
+  metrics.resetForTests();
+  const off = fakeSentry();
+  initWith(off.sdk, { applicationUsageData: false });
+  metrics.rpcServer("observation.create", "ok", 42);
+
+  assert.equal(off.calls.distribution.length, 1);
+  assert.equal(off.calls.distribution[0].name, "comapeo.rpc.server.duration_ms");
+  assert.equal(off.calls.distribution[0].attributes.method, undefined);
+  assert.equal(off.calls.distribution[0].attributes.device_class, "mid");
 });
 
-test("syncSession gates the peers/bytes buckets but always emits duration", () => {
+test("syncSession emits one duration metric; peers/bytes buckets are usage-gated", () => {
   const off = fakeSentry();
   initWith(off.sdk, { applicationUsageData: false });
   metrics.syncSession("complete", 1200, "1-3", "1-10M");
-  // Duration + by_device mirror always emit; the buckets are usage-gated.
-  assert.equal(off.calls.distribution.length, 2);
-  assert.deepEqual(
-    off.calls.distribution.map((d) => d.name),
-    ["comapeo.sync.session.duration_ms", "comapeo.sync.session.duration_ms.by_device"],
+  // One duration distribution (with device tags); no buckets when usage off.
+  assert.equal(off.calls.distribution.length, 1);
+  assert.equal(
+    off.calls.distribution[0].name,
+    "comapeo.sync.session.duration_ms",
   );
+  assert.equal(off.calls.distribution[0].attributes.device_class, "mid");
   assert.equal(off.calls.count.length, 0);
 
   metrics.resetForTests();
   const on = fakeSentry();
   initWith(on.sdk, { applicationUsageData: true });
   metrics.syncSession("complete", 1200, "1-3", "1-10M");
-  assert.equal(on.calls.distribution.length, 2);
+  assert.equal(on.calls.distribution.length, 1);
   assert.deepEqual(
     on.calls.count.map((c) => c.name),
     ["comapeo.sync.session.peers_bucket", "comapeo.sync.bytes_bucket"],

@@ -3,9 +3,12 @@
 // Thin wrappers around `Sentry.metrics.*` that:
 //   - inject the shared `platform` attribute on every metric so a call
 //     site can never forget it;
-//   - attach `device_class` / `os_major` only on the `.by_device`
-//     mirror metrics (the cardinality split is enforced here, at the
-//     API boundary);
+//   - attach the low-cardinality `device_class` / `os_major` tags to the
+//     duration metrics (Sentry Application Metrics bills by volume, not
+//     cardinality, so one metric with all the attributes you'd slice by
+//     beats a primary + `.by_device` split — group-by does the slicing at
+//     query time). `method` and the sync buckets stay usage-gated for
+//     privacy, not cardinality;
 //   - no-op entirely when Sentry is off (`init` never ran);
 //   - run a defensive `before_metric_send` filter that drops any
 //     emission carrying a forbidden attribute.
@@ -117,56 +120,36 @@ function gauge(name, value, unit, attributes) {
   metrics.gauge?.(name, value, { unit, attributes: attrs });
 }
 
-/**
- * Emit a distribution plus its `…by_device` mirror (device tags attached).
- * `mirrorAttrs` defaults to `attrs`; pass a narrower set when the primary
- * carries dimensions the mirror should not.
- *
- * @param {string} name
- * @param {number} value
- * @param {string} unit
- * @param {Record<string, string | number | boolean>} attrs
- * @param {Record<string, string | number | boolean>} [mirrorAttrs]
- */
-function distributionMirrored(name, value, unit, attrs, mirrorAttrs = attrs) {
-  distribution(name, value, unit, attrs);
-  distribution(`${name}.by_device`, value, unit, {
-    ...mirrorAttrs,
-    ...deviceTags(),
-  });
-}
-
 // ── RPC ─────────────────────────────────────────────────────────
 
 /**
- * Server-side handler latency, `…duration_ms.by_device{status}` only. The
- * per-method primary was dropped: the client-side end-to-end metric already
- * carries the `method` breakdown, so a second server-side per-method series
- * doubled cardinality for little extra signal.
+ * Server-side handler latency. One distribution carrying `status` + device
+ * tags, plus `method` when the usage tier is on. Sentry Application Metrics
+ * bills by volume, not cardinality, so a single high-cardinality series is
+ * cheaper and more queryable than a primary + `.by_device` split — slice by
+ * `method` or `device_class` (or both) with group-by at query time. `method`
+ * stays usage-gated for privacy, not cardinality.
  *
+ * @param {string} method
  * @param {string} status
  * @param {number} ms
  */
-export function rpcServer(status, ms) {
-  distribution(
-    "comapeo.rpc.server.duration_ms.by_device",
-    ms,
-    "millisecond",
-    { status, ...deviceTags() },
-  );
+export function rpcServer(method, status, ms) {
+  const attrs = { status, ...deviceTags() };
+  if (config?.applicationUsageData) attrs.method = method;
+  distribution("comapeo.rpc.server.duration_ms", ms, "millisecond", attrs);
 }
 
 // ── Boot / shutdown ─────────────────────────────────────────────
 
 /**
- * Primary `…phase_duration_ms{phase}` + `…by_device{phase}` mirror.
- *
  * @param {string} phase
  * @param {number} ms
  */
 export function bootPhase(phase, ms) {
-  distributionMirrored("comapeo.boot.phase_duration_ms", ms, "millisecond", {
+  distribution("comapeo.boot.phase_duration_ms", ms, "millisecond", {
     phase,
+    ...deviceTags(),
   });
 }
 
@@ -194,8 +177,8 @@ export function shutdownPhase(phase, ms) {
 // ── Sync session ────────────────────────────────────────────────
 
 /**
- * Three writes: duration distribution + by_device mirror, peers bucket
- * counter, bytes bucket counter.
+ * One duration distribution (`outcome` + device tags), plus the usage-gated
+ * peers/bytes bucket counters.
  *
  * @param {string} outcome
  * @param {number} ms
@@ -203,10 +186,11 @@ export function shutdownPhase(phase, ms) {
  * @param {string} bytesBucket
  */
 export function syncSession(outcome, ms, peersBucket, bytesBucket) {
-  distributionMirrored("comapeo.sync.session.duration_ms", ms, "millisecond", {
+  distribution("comapeo.sync.session.duration_ms", ms, "millisecond", {
     outcome,
+    ...deviceTags(),
   });
-  // collaboration-scale + data-volume buckets are usage-gated; duration is always-on.
+  // collaboration-scale + data-volume buckets are usage-gated (privacy).
   if (config?.applicationUsageData) {
     count("comapeo.sync.session.peers_bucket", { bucket: peersBucket });
     count("comapeo.sync.bytes_bucket", { bucket: bytesBucket });

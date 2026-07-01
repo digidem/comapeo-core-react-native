@@ -4,9 +4,11 @@
  * Thin wrappers around `Sentry.metrics.*` that:
  *   - inject the shared `platform` attribute on every metric so a call
  *     site can never forget it;
- *   - attach `device_class` / `os_major` only on the `.by_device`
- *     mirror metrics (the cardinality split is enforced here, at the
- *     API boundary);
+ *   - attach the low-cardinality `device_class` / `os_major` tags to the
+ *     duration metrics (Application Metrics bills by volume, not
+ *     cardinality, so one metric with all the attributes you'd slice by
+ *     beats a primary + `.by_device` split — group-by slices at query
+ *     time). `method` stays usage-gated for privacy, not cardinality;
  *   - no-op entirely when Sentry is off;
  *   - run a defensive `beforeSendMetric` filter that drops any emission
  *     carrying a forbidden attribute.
@@ -127,36 +129,31 @@ export function rpcStatusFor(error: unknown): string {
 }
 
 /**
- * Record an RPC client call. The `…by_device{status,device_class,os_major}`
- * mirror always flows (diagnostic latency); the `…duration_ms{method,status}`
- * primary carries the per-method breakdown and is usage-gated.
+ * Record an RPC client call — end-to-end client-observed latency. One
+ * distribution carrying `status` + device tags, plus `method` when the usage
+ * tier is on. Sentry Application Metrics bills by volume, not cardinality, so a
+ * single high-cardinality series beats a primary + `.by_device` split: slice by
+ * `method` or `device_class` (or both) with group-by at query time. `method`
+ * stays usage-gated for privacy, not cardinality.
  */
 export function rpcClientMetric(
   method: string,
   status: string,
   ms: number,
 ): void {
-  if (usageDataEnabled()) {
-    distribution("comapeo.rpc.client.duration_ms", ms, "millisecond", {
-      method,
-      status,
-    });
-  }
-  distribution(
-    "comapeo.rpc.client.duration_ms.by_device",
-    ms,
-    "millisecond",
-    { status, ...deviceTags() },
-  );
+  const attrs: MetricAttributes = { status, ...deviceTags() };
+  if (usageDataEnabled()) attrs.method = method;
+  distribution("comapeo.rpc.client.duration_ms", ms, "millisecond", attrs);
 }
 
 /**
- * Sync-send slice (`comapeo.rpc.client.send_ms`). The aggregate flows at
- * the diagnostic tier; the `method` breakdown is usage-gated.
+ * Sync-send slice (`comapeo.rpc.client.send_ms`) — the JSI hop + UDS write to
+ * Node. Device tags always flow; the `method` breakdown is usage-gated.
  */
 export function rpcClientSendMetric(method: string, ms: number): void {
-  const attributes: MetricAttributes = usageDataEnabled() ? { method } : {};
-  distribution("comapeo.rpc.client.send_ms", ms, "millisecond", attributes);
+  const attrs: MetricAttributes = { ...deviceTags() };
+  if (usageDataEnabled()) attrs.method = method;
+  distribution("comapeo.rpc.client.send_ms", ms, "millisecond", attrs);
 }
 
 /** Exposed for tests + the gauge/count primitives if a host needs them. */

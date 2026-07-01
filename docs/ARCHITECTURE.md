@@ -815,61 +815,66 @@ add a defensive substring scrub on top.
 
 The metrics layer (`src/sentry-metrics.ts` on RN, the mirrored
 `backend/lib/metrics.js` on Node) emits aggregate counters /
-distributions / gauges via `Sentry.metrics.*`. It is the
-always-on day-to-day performance signal, distinct from the
-per-RPC and boot **traces**, which are investigation-only and
-gated behind the `debug` toggle.
+distributions / gauges via `Sentry.metrics.*` (Sentry Application
+Metrics). It is the always-on day-to-day performance signal,
+distinct from the per-RPC and boot **traces**, which are
+investigation-only and gated behind the `debug` toggle.
 
-Two privacy tiers gate what ships:
+**One metric per measurement, sliced by attributes.** Application
+Metrics bills by ingested volume, not cardinality (high cardinality
+is the default, not a limit), so each measurement is a single
+high-cardinality metric carrying every dimension you'd slice by —
+`status`, `phase`, and the device tags all ride together, and you
+break down with group-by / filter at query time (e.g. `p95 group by
+device_class`, or `group by method, device_class`). There is no
+primary + `.by_device` split: that would double the emitted volume
+for no cardinality saving and make the method × device query
+impossible.
 
-- **Diagnostic (always-on)** — ships whenever `diagnosticsEnabled`
-  is on (the default). Bounded, low-cardinality: no per-`method`
-  breakdown, only the `.by_device` mirrors.
-- **Usage-gated** — the dimensions that reveal *what* the user
-  does (the RPC `method` breakdown, sync collaboration/volume
-  buckets). Ship only when the opt-in `applicationUsageData`
-  toggle is on (default off).
+**Privacy tiers.** `diagnosticsEnabled` (default on) gates whether
+anything ships. The opt-in `applicationUsageData` toggle (default
+off) gates the dimensions that reveal *what* the user does — the RPC
+`method` attribute and the sync collaboration/volume bucket counters.
+Those are gated for privacy, not cardinality.
 
-Every metric carries `platform` (`ios`/`android`). The `.by_device`
-mirrors additionally carry the low-cardinality `device_class`
-(`low`/`mid`/`high`) and `os_major` (`<platform>.<major>`) tags —
-the cardinality split is enforced in the metrics layer so a hot
-call site can't attach device tags to the high-volume primary.
-The full forbidden-tag list (`device.*`, `locale`, `project_id`,
-`peer_id`, raw coordinates, …) is dropped defensively by
-`isForbiddenMetric`.
+Every metric carries `platform` (`ios`/`android`). Latency/duration
+metrics also carry the low-cardinality `device_class`
+(`low`/`mid`/`high`) and `os_major` (`<platform>.<major>`) tags,
+attached only inside the metrics layer so a hot call site can't emit
+raw device data. The forbidden-tag list (`device.*`, `locale`,
+`project_id`, `peer_id`, raw coordinates, …) is dropped defensively
+by `isForbiddenMetric`.
 
-| Metric | Type · unit | Key tags | Tier | Emitted by / when |
-|---|---|---|---|---|
-| `comapeo.rpc.client.duration_ms` | distribution · ms | `method`, `status` | usage-gated | RN request hook — end-to-end client-observed RPC latency (IPC + serialize + handler + response delivery) |
-| `comapeo.rpc.client.duration_ms.by_device` | distribution · ms | `status`, `device_class`, `os_major` | always-on | RN request hook — same latency, device-class breakdown |
-| `comapeo.rpc.client.send_ms` | distribution · ms | `method` (usage-gated) | always-on | RN request hook — sync-send slice (JSI hop + UDS write to Node) |
-| `comapeo.rpc.server.duration_ms.by_device` | distribution · ms | `status`, `device_class`, `os_major` | always-on | Node request hook — server-side handler latency. No per-method primary: the client metric owns the `method` breakdown |
-| `comapeo.boot.phase_duration_ms` (+ `.by_device`) | distribution · ms | `phase` (+ device tags on mirror) | always-on | Node — per boot phase |
-| `comapeo.boot.outcome` | count | `outcome` (`started`/`error`), `error_phase?` | always-on | Node — once per boot |
-| `comapeo.state.transitions` | count | `from`, `to` | always-on | Node — each backend state transition |
-| `comapeo.storage.size_bucket` | count | `bucket` (`<10MB`/`10-100MB`/`100MB-1GB`/`>1GB`) | always-on | Node — one-shot at STARTED (recursive size of the private storage dir) |
-| `comapeo.backend.heap_used_bytes` | gauge · byte | — | always-on | Node — 60s sampler (V8 JS heap; `rss` is omitted, it measures the whole process) |
-| `comapeo.fgs.uptime_s` | gauge · second | — | always-on | Node — 60s sampler |
-| `comapeo.backend.event_loop_delay_ms` | gauge · ms | — | always-on | Node — 60s sampler (interval mean from `monitorEventLoopDelay`) |
-| `comapeo.sync.session.duration_ms` (+ `.by_device`) | distribution · ms | `outcome` | always-on | Node — **scaffolding, not yet wired** |
-| `comapeo.sync.session.peers_bucket` | count | `bucket` | usage-gated | Node — **scaffolding, not yet wired** |
-| `comapeo.sync.bytes_bucket` | count | `bucket` | usage-gated | Node — **scaffolding, not yet wired** |
-| `comapeo.shutdown.phase_duration_ms` | distribution · ms | `phase` | always-on | Node — **scaffolding, not yet wired** |
-| `comapeo.ipc.errors` | count | `error_class` | always-on | Node — **scaffolding, not yet wired** |
-| `comapeo.telemetry.forwarding_failures` | count | — | always-on | Node — **scaffolding, not yet wired** |
+| Metric | Type · unit | Attributes | Emitted by / when |
+|---|---|---|---|
+| `comapeo.rpc.client.duration_ms` | distribution · ms | `status`, `device_class`, `os_major`, `method` (usage-gated) | RN request hook — end-to-end client-observed RPC latency (IPC + serialize + handler + response delivery) |
+| `comapeo.rpc.client.send_ms` | distribution · ms | `device_class`, `os_major`, `method` (usage-gated) | RN request hook — sync-send slice (JSI hop + UDS write to Node) |
+| `comapeo.rpc.server.duration_ms` | distribution · ms | `status`, `device_class`, `os_major`, `method` (usage-gated) | Node request hook — server-side handler latency (pairs with the client metric to separate handler vs IPC) |
+| `comapeo.boot.phase_duration_ms` | distribution · ms | `phase`, `device_class`, `os_major` | Node — per boot phase |
+| `comapeo.boot.outcome` | count | `outcome` (`started`/`error`), `error_phase?` | Node — once per boot |
+| `comapeo.state.transitions` | count | `from`, `to` | Node — each backend state transition |
+| `comapeo.storage.size_bucket` | count | `bucket` (`<10MB`/`10-100MB`/`100MB-1GB`/`>1GB`) | Node — one-shot at STARTED (recursive size of the private storage dir) |
+| `comapeo.backend.heap_used_bytes` | gauge · byte | — | Node — 60s sampler (V8 JS heap; `rss` is omitted, it measures the whole process) |
+| `comapeo.fgs.uptime_s` | gauge · second | — | Node — 60s sampler |
+| `comapeo.backend.event_loop_delay_ms` | gauge · ms | — | Node — 60s sampler (interval mean from `monitorEventLoopDelay`) |
+| `comapeo.sync.session.duration_ms` | distribution · ms | `outcome`, `device_class`, `os_major` | Node — **scaffolding, not yet wired** |
+| `comapeo.sync.session.peers_bucket` | count | `bucket` (usage-gated) | Node — **scaffolding, not yet wired** |
+| `comapeo.sync.bytes_bucket` | count | `bucket` (usage-gated) | Node — **scaffolding, not yet wired** |
+| `comapeo.shutdown.phase_duration_ms` | distribution · ms | `phase` | Node — **scaffolding, not yet wired** |
+| `comapeo.ipc.errors` | count | `error_class` | Node — **scaffolding, not yet wired** |
+| `comapeo.telemetry.forwarding_failures` | count | — | Node — **scaffolding, not yet wired** |
 
 Rows marked *scaffolding, not yet wired* have a metrics-layer
 function and tests but no production call site yet — the meaning
 is fixed so the emit point can be added without a dashboard
 change.
 
-**Viewing.** In Sentry, open **Metrics** (or Explore → Metrics),
-filter by the metric name, and split by a tag (`status`,
-`phase`, `bucket`). For device-class comparisons use the
-`.by_device` series and group by `device_class` / `os_major`.
-The per-RPC and boot **traces** (spans above) live under
-Explore → Traces and only exist while `debug` is on.
+**Viewing.** In Sentry, open **Metrics** (Explore → Metrics),
+filter by the metric name, and group by an attribute (`method`,
+`status`, `phase`, `device_class`, …) — one metric can be sliced
+along any dimension it carries. The per-RPC and boot **traces**
+(spans above) live under Explore → Traces and only exist while
+`debug` is on.
 
 ### 7.6 When to log, when to breadcrumb, when to capture
 

@@ -45,7 +45,7 @@ export type SentryInitConfig = {
   enableLogs?: boolean;
   /**
    * Device-classification tags computed once at native process start.
-   * Rides on the `.by_device` mirror metrics only — see
+   * Attached to the duration metrics as low-cardinality attributes — see
    * `sentry-metrics.ts`. Absent in test contexts / pre-attach.
    */
   deviceTags?: SentryDeviceTags;

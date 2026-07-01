@@ -2,9 +2,9 @@
  * RN-side metrics layer (`src/sentry-metrics.ts`)
  * — the mirror of the tested backend `metrics.js`. A fake
  * `Sentry.metrics` records every emission so we can assert on the shared
- * `platform` injection, the `.by_device` cardinality split, the
- * forbidden-tag filter (exercising the REAL `isForbiddenMetric`), and
- * the off-switch.
+ * `platform` injection, the single-metric device tags + usage-gated
+ * `method` attribute, the forbidden-tag filter (exercising the REAL
+ * `isForbiddenMetric`), and the off-switch.
  *
  * Plain JS so expo-module-scripts' babel-jest picks it up. Per-test
  * module reset because the layer reads `Platform.OS` and `sentryConfig`
@@ -45,45 +45,42 @@ describe("sentry-metrics", () => {
     }));
   });
 
-  test("rpcClientMetric: usage on → primary(method) + by_device(device tags)", () => {
+  test("rpcClientMetric: usage on → one metric with method + status + device tags", () => {
     prefs.applicationUsageData = true;
     const { rpcClientMetric } = require("../sentry-metrics");
     rpcClientMetric("read.doc", "ok", 42);
 
-    expect(calls).toHaveLength(2);
-    const [primary, mirror] = calls;
-
-    expect(primary.name).toBe("comapeo.rpc.client.duration_ms");
-    expect(primary.platform).toBe("android");
-    expect(primary.method).toBe("read.doc");
-    expect(primary.status).toBe("ok");
-    expect(primary.device_class).toBeUndefined();
-    expect(primary.os_major).toBeUndefined();
-
-    expect(mirror.name).toBe("comapeo.rpc.client.duration_ms.by_device");
-    expect(mirror.platform).toBe("android");
-    expect(mirror.status).toBe("ok");
-    expect(mirror.device_class).toBe("mid");
-    expect(mirror.os_major).toBe("android.14");
-    expect(mirror.method).toBeUndefined();
+    // One high-cardinality metric — no primary/mirror split. Slice by method
+    // OR device_class (or both) with group-by at query time.
+    expect(calls).toHaveLength(1);
+    const [m] = calls;
+    expect(m.name).toBe("comapeo.rpc.client.duration_ms");
+    expect(m.platform).toBe("android");
+    expect(m.status).toBe("ok");
+    expect(m.method).toBe("read.doc");
+    expect(m.device_class).toBe("mid");
+    expect(m.os_major).toBe("android.14");
   });
 
-  test("rpcClientMetric: usage off → only the method-less by_device mirror", () => {
+  test("rpcClientMetric: usage off → same metric, method dropped (privacy gate)", () => {
     const { rpcClientMetric } = require("../sentry-metrics");
     rpcClientMetric("read.doc", "ok", 42);
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].name).toBe("comapeo.rpc.client.duration_ms.by_device");
+    expect(calls[0].name).toBe("comapeo.rpc.client.duration_ms");
     expect(calls[0].method).toBeUndefined();
     expect(calls[0].status).toBe("ok");
+    expect(calls[0].device_class).toBe("mid");
+    expect(calls[0].os_major).toBe("android.14");
   });
 
-  test("rpcClientSendMetric: method tag is usage-gated (snapshot at boot)", () => {
-    // Usage off → no method dimension.
+  test("rpcClientSendMetric: device tags always, method usage-gated (snapshot at boot)", () => {
+    // Usage off → device tags present, no method dimension.
     const { rpcClientSendMetric } = require("../sentry-metrics");
     rpcClientSendMetric("read.doc", 5);
     expect(calls).toHaveLength(1);
     expect(calls[0].name).toBe("comapeo.rpc.client.send_ms");
+    expect(calls[0].device_class).toBe("mid");
     expect(calls[0].method).toBeUndefined();
 
     // The usage tier is snapshot at boot, so a fresh module with usage on
@@ -94,6 +91,7 @@ describe("sentry-metrics", () => {
     const fresh = require("../sentry-metrics");
     fresh.rpcClientSendMetric("read.doc", 5);
     expect(calls[1].method).toBe("read.doc");
+    expect(calls[1].device_class).toBe("mid");
   });
 
   test("platform is injected on every primitive", () => {

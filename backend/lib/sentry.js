@@ -181,7 +181,7 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
   Sentry.addEventProcessor(scrubEvent);
 
   // Wire the metrics layer with the live SDK + resolved device tags so
-  // every emission carries `platform` and the `.by_device` mirrors carry
+  // every emission carries `platform` and the duration metrics carry
   // `device_class` / `os_major`.
   metrics.init({
     Sentry,
@@ -366,9 +366,13 @@ export function rpcHook() {
       const start = performance.now();
       Promise.resolve(next(request))
         .then(
-          () => metrics.rpcServer("ok", performance.now() - start),
+          () => metrics.rpcServer(method, "ok", performance.now() - start),
           (error) => {
-            metrics.rpcServer(statusFor(error), performance.now() - start);
+            metrics.rpcServer(
+              method,
+              statusFor(error),
+              performance.now() - start,
+            );
           },
         )
         .catch(() => {});
@@ -410,12 +414,16 @@ export function rpcHook() {
           try {
             await next(request);
             span.setStatus({ code: 1, message: "ok" });
-            metrics.rpcServer("ok", performance.now() - start);
+            metrics.rpcServer(method, "ok", performance.now() - start);
           } catch (error) {
             // Mark the span errored for tracing, but do not capture an issue
             // — see the metrics-only note on the non-debug path above.
             span.setStatus({ code: 2, message: "internal_error" });
-            metrics.rpcServer(statusFor(error), performance.now() - start);
+            metrics.rpcServer(
+              method,
+              statusFor(error),
+              performance.now() - start,
+            );
           }
         },
       );
