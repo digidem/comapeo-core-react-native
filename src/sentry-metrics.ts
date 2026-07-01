@@ -16,7 +16,10 @@
 import { Platform } from "react-native";
 import * as Sentry from "@sentry/react-native";
 
-import { readSentryConfig, readSentryPreferences } from "./ComapeoCoreModule";
+import {
+  readSentryConfig,
+  readSentryPreferencesAtLaunch,
+} from "./ComapeoCoreModule";
 import type { SentryDeviceTags } from "./sentry";
 import { isForbiddenMetric } from "./sentry-scrub";
 
@@ -36,7 +39,8 @@ let usageDataSnapshot: boolean | undefined;
  * Snapshot-at-boot; restart-to-activate.
  */
 function usageDataEnabled(): boolean {
-  return (usageDataSnapshot ??= readSentryPreferences().applicationUsageData);
+  return (usageDataSnapshot ??=
+    readSentryPreferencesAtLaunch().applicationUsageData);
 }
 
 function deviceTags(): { device_class: string; os_major: string } {

@@ -38,7 +38,7 @@ describe("sentry-metrics", () => {
     }));
 
     jest.doMock("../ComapeoCoreModule", () => ({
-      readSentryPreferences: () => prefs,
+      readSentryPreferencesAtLaunch: () => prefs,
       readSentryConfig: () => ({
         deviceTags: { deviceClass: "mid", osMajor: "android.14" },
       }),

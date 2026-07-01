@@ -18,11 +18,12 @@ import * as Sentry from "@sentry/react-native";
 import {
   state,
   readSentryConfig,
-  readSentryPreferences,
-  readSentryPreferencesLive,
+  readSentryPreferencesAtLaunch,
+  readCurrentSentryPreferences,
   setDiagnosticsEnabledNative,
   setApplicationUsageDataNative,
   setDebugEnabledNative,
+  type SentryPreferences,
 } from "./ComapeoCoreModule";
 import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types";
 import { SentryTags } from "./sentry-tags";
@@ -117,16 +118,29 @@ export interface InitSentryOptions {
 
 // ── Public toggle API ───────────────────────────────────────────
 
+// In-memory view of the current saved preferences. Seeded lazily from the
+// native current-value read (one synchronous native call, not once per
+// render), then kept in sync by the setters so a settings screen can read a
+// toggle back mid-session without its own state. Module-level, so a JS reload
+// drops it and it re-seeds from the native read — reflecting any change made
+// since the native process launched. Distinct from the launch snapshot the
+// module's own behaviour is pinned to (see [initSentry]).
+let currentPreferences: SentryPreferences | undefined;
+
+function livePreferences(): SentryPreferences {
+  return (currentPreferences ??= readCurrentSentryPreferences());
+}
+
 /**
  * The user's current saved value (or the plugin/baked default if unset).
- * Reads live, so it reflects a [setDiagnosticsEnabled] made earlier this
- * session and survives a JS reload — a settings screen can read it back
- * without keeping its own copy. Note this is the *saved* value, which is
- * restart-to-activate: the value governing whether Sentry actually emits
- * this session is fixed at launch (see [initSentry]).
+ * Reflects a [setDiagnosticsEnabled] made earlier this session and survives a
+ * JS reload, so a settings screen can read it back without keeping its own
+ * copy. This is the *saved* value, which is restart-to-activate: the value
+ * governing whether Sentry actually emits this session is fixed at launch
+ * (see [initSentry]).
  */
 export function getDiagnosticsEnabled(): boolean {
-  return readSentryPreferencesLive().diagnosticsEnabled;
+  return livePreferences().diagnosticsEnabled;
 }
 
 /**
@@ -138,41 +152,44 @@ export function getDiagnosticsEnabled(): boolean {
  * upload.
  */
 export function setDiagnosticsEnabled(value: boolean): Promise<void> {
+  livePreferences().diagnosticsEnabled = value;
   return setDiagnosticsEnabledNative(value);
 }
 
 /**
  * The user's current saved application-usage-data preference (or the
- * plugin/baked default if unset). Reads live — see [getDiagnosticsEnabled]
- * for the saved-vs-active distinction.
+ * plugin/baked default if unset). See [getDiagnosticsEnabled] for the
+ * saved-vs-active distinction.
  */
 export function getApplicationUsageData(): boolean {
-  return readSentryPreferencesLive().applicationUsageData;
+  return livePreferences().applicationUsageData;
 }
 
 /** Persist the toggle. See [setDiagnosticsEnabled] for semantics. */
 export function setApplicationUsageData(value: boolean): Promise<void> {
+  livePreferences().applicationUsageData = value;
   return setApplicationUsageDataNative(value);
 }
 
 /**
  * The user's current saved `debug` value (or the plugin/baked default if
- * unset). Reads live — see [getDiagnosticsEnabled] for the saved-vs-active
- * distinction. This is the raw saved toggle; the 72h auto-off is applied
- * natively at launch, so a still-`true` value here means "on, pending the
- * next-launch expiry check". `debug` gates per-RPC traces, `@comapeo/core`
- * OTel spans, backend `consoleIntegration`, and `rpc.args` capture.
+ * unset). See [getDiagnosticsEnabled] for the saved-vs-active distinction.
+ * This is the raw saved toggle; the 72h auto-off is applied natively at
+ * launch, so a still-`true` value here means "on, pending the next-launch
+ * expiry check". `debug` gates per-RPC traces, `@comapeo/core` OTel spans,
+ * backend `consoleIntegration`, and `rpc.args` capture.
  */
 export function getDebugEnabled(): boolean {
-  return readSentryPreferencesLive().debug;
+  return livePreferences().debug;
 }
 
 /**
- * Persist the `debug` toggle. Writing `true` (re)starts the 24h
+ * Persist the `debug` toggle. Writing `true` (re)starts the 72h
  * auto-off window. See [setDiagnosticsEnabled] for the
  * restart-to-activate semantics.
  */
 export function setDebugEnabled(value: boolean): Promise<void> {
+  livePreferences().debug = value;
   return setDebugEnabledNative(value);
 }
 
@@ -241,7 +258,7 @@ export function initSentry(options: InitSentryOptions = {}): void {
 
   initialized = true;
 
-  const preferences = readSentryPreferences();
+  const preferences = readSentryPreferencesAtLaunch();
   if (!preferences.diagnosticsEnabled) {
     // User opted out. Skip Sentry.init; state listeners (attached at
     // module load below) stay no-op via `sentryReady`.

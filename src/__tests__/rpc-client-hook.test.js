@@ -36,7 +36,11 @@ function setup({ debug, diagnosticsEnabled = true, sentryInitialized = true }) {
       EventEmitter,
       requireNativeModule: () => ({
         sentryConfig: {},
-        sentryPreferences: { diagnosticsEnabled, applicationUsageData: false, debug },
+        sentryPreferencesAtLaunch: {
+          diagnosticsEnabled,
+          applicationUsageData: false,
+          debug,
+        },
         postMessage: jest.fn(),
         addListener: jest.fn(),
         removeListener: jest.fn(),

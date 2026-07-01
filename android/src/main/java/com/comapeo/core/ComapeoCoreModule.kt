@@ -181,9 +181,11 @@ class ComapeoCoreModule : Module() {
             } ?: emptyMap<String, Any>()
         }
 
-        // `sentryPreferences` — snapshot-at-boot; toggle changes take effect on next
-        // launch. Returns baked-in defaults pre-attach so JS can spread unconditionally.
-        Constant("sentryPreferences") {
+        // `sentryPreferencesAtLaunch` — the snapshot in effect this session; toggle
+        // changes take effect on next launch. Returns baked-in defaults pre-attach so
+        // JS can spread unconditionally. For the current saved value use
+        // `getCurrentSentryPreferences`.
+        Constant("sentryPreferencesAtLaunch") {
             val ctx = appContext.reactContext
             if (ctx == null) {
                 mapOf(
@@ -202,11 +204,11 @@ class ComapeoCoreModule : Module() {
         }
 
         // Live read of the current persisted values — reflects a `setX` made this
-        // session and survives a JS reload (unlike the snapshot-at-boot
-        // `sentryPreferences` Constant), so a settings screen can read the user's
-        // choice without keeping its own copy. Raw `debug` (no 24h/72h auto-off
-        // side effect — that's applied by readDebugEnabled at launch).
-        Function("getSentryPreferences") {
+        // session and survives a JS reload (unlike the `sentryPreferencesAtLaunch`
+        // Constant), so a settings screen can read the user's choice without keeping
+        // its own copy. Raw `debug` (no 72h auto-off side effect — that's applied by
+        // readDebugEnabled at launch).
+        Function("getCurrentSentryPreferences") {
             val ctx = appContext.reactContext
             if (ctx == null) {
                 mapOf(

@@ -90,10 +90,11 @@ public class ComapeoCoreModule: Module {
                 .toSentryInitMap(deviceTags: DeviceTags.compute()) ?? [:]
         }
 
-        // Snapshot-at-launch. Toggle changes take effect on next launch
-        // (see `setDiagnosticsEnabled` / `setApplicationUsageData` /
-        // `setDebugEnabled`).
-        Constant("sentryPreferences") { () -> [String: Any] in
+        // The snapshot in effect this session. Toggle changes take effect on
+        // next launch (see `setDiagnosticsEnabled` / `setApplicationUsageData`
+        // / `setDebugEnabled`). For the current saved value use
+        // `getCurrentSentryPreferences`.
+        Constant("sentryPreferencesAtLaunch") { () -> [String: Any] in
             let prefs = ComapeoPrefs.open()
             return [
                 "diagnosticsEnabled": prefs.readDiagnosticsEnabled(),
@@ -103,11 +104,11 @@ public class ComapeoCoreModule: Module {
         }
 
         // Live read of the current persisted values — reflects a `setX` made
-        // this session and survives a JS reload (unlike the snapshot-at-launch
-        // `sentryPreferences` Constant), so a settings screen can read the
-        // user's choice without keeping its own copy. Raw `debug` (no 72h
+        // this session and survives a JS reload (unlike the
+        // `sentryPreferencesAtLaunch` Constant), so a settings screen can read
+        // the user's choice without keeping its own copy. Raw `debug` (no 72h
         // auto-off side effect — that's applied by readDebugEnabled at launch).
-        Function("getSentryPreferences") { () -> [String: Any] in
+        Function("getCurrentSentryPreferences") { () -> [String: Any] in
             let prefs = ComapeoPrefs.open()
             return [
                 "diagnosticsEnabled": prefs.readDiagnosticsEnabled(),
