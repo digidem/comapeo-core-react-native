@@ -19,6 +19,7 @@ import {
   state,
   readSentryConfig,
   readSentryPreferences,
+  readSentryPreferencesLive,
   setDiagnosticsEnabledNative,
   setApplicationUsageDataNative,
   setDebugEnabledNative,
@@ -117,11 +118,15 @@ export interface InitSentryOptions {
 // ── Public toggle API ───────────────────────────────────────────
 
 /**
- * User's saved value (or the plugin/baked default if unset).
- * Restart-to-activate — see [setDiagnosticsEnabled].
+ * The user's current saved value (or the plugin/baked default if unset).
+ * Reads live, so it reflects a [setDiagnosticsEnabled] made earlier this
+ * session and survives a JS reload — a settings screen can read it back
+ * without keeping its own copy. Note this is the *saved* value, which is
+ * restart-to-activate: the value governing whether Sentry actually emits
+ * this session is fixed at launch (see [initSentry]).
  */
 export function getDiagnosticsEnabled(): boolean {
-  return readSentryPreferences().diagnosticsEnabled;
+  return readSentryPreferencesLive().diagnosticsEnabled;
 }
 
 /**
@@ -137,12 +142,12 @@ export function setDiagnosticsEnabled(value: boolean): Promise<void> {
 }
 
 /**
- * User's saved application-usage-data preference (or the plugin/baked
- * default if unset). Persisted for opt-in telemetry that gates on it;
- * restart-to-activate — see [setDiagnosticsEnabled].
+ * The user's current saved application-usage-data preference (or the
+ * plugin/baked default if unset). Reads live — see [getDiagnosticsEnabled]
+ * for the saved-vs-active distinction.
  */
 export function getApplicationUsageData(): boolean {
-  return readSentryPreferences().applicationUsageData;
+  return readSentryPreferencesLive().applicationUsageData;
 }
 
 /** Persist the toggle. See [setDiagnosticsEnabled] for semantics. */
@@ -151,14 +156,15 @@ export function setApplicationUsageData(value: boolean): Promise<void> {
 }
 
 /**
- * User's saved `debug` value (or the plugin/baked default if unset).
- * `debug` gates per-RPC traces, `@comapeo/core` OTel spans, backend
- * `consoleIntegration`, and `rpc.args` capture. Restart-to-activate.
- * Auto-expires 24h after the most recent enable, enforced natively on
- * the next launch.
+ * The user's current saved `debug` value (or the plugin/baked default if
+ * unset). Reads live — see [getDiagnosticsEnabled] for the saved-vs-active
+ * distinction. This is the raw saved toggle; the 72h auto-off is applied
+ * natively at launch, so a still-`true` value here means "on, pending the
+ * next-launch expiry check". `debug` gates per-RPC traces, `@comapeo/core`
+ * OTel spans, backend `consoleIntegration`, and `rpc.args` capture.
  */
 export function getDebugEnabled(): boolean {
-  return readSentryPreferences().debug;
+  return readSentryPreferencesLive().debug;
 }
 
 /**

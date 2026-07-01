@@ -132,6 +132,28 @@ final class ComapeoPrefsTests: XCTestCase {
         XCTAssertTrue(p.readDebugEnabled(), "re-enable should reset the window clock")
     }
 
+    func testReadDebugStoredIsRawWithNoAutoOff() {
+        // The live settings read must return the raw saved toggle and never
+        // mutate: past the window, readDebugEnabled auto-disables + writes,
+        // but readDebugStored still reads true and leaves disk untouched.
+        let store = FakeStore()
+        let clock = Clock()
+        clock.nowMs = 1_000
+        let p = prefs(store: store, clock: clock)
+        p.writeDebugEnabled(true)
+        clock.nowMs += ComapeoPrefs.debugMaxAgeMs + 60_000
+
+        XCTAssertTrue(p.readDebugStored(), "raw read returns stored value")
+        XCTAssertEqual(
+            store.getBool(ComapeoPrefs.Key.debug), true,
+            "raw read does not clear the stored value"
+        )
+        XCTAssertTrue(
+            store.has(ComapeoPrefs.Key.debugEnabledAtMs),
+            "raw read runs no auto-off (timestamp intact)"
+        )
+    }
+
     func testDebugTrueWithoutTimestampStampsAndStaysOn() {
         let store = FakeStore()
         store.setBool(ComapeoPrefs.Key.debug, true)

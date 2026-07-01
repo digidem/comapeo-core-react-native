@@ -48,6 +48,14 @@ final class ComapeoPrefs {
         store.getBool(Key.applicationUsageData) ?? defaults.applicationUsageData
     }
 
+    /// Raw stored `debug` value with no auto-off side effect — the user's saved
+    /// toggle for a live settings read. `readDebugEnabled()` applies the 72h
+    /// auto-off (and its disk mutation) at launch; this must not, so a getter
+    /// never writes.
+    func readDebugStored() -> Bool {
+        store.getBool(Key.debug) ?? defaults.debug
+    }
+
     /// Read the `debug` toggle, applying the `debugMaxAgeMs` auto-off: if
     /// debug was switched on longer ago than that, flip it off, clear the
     /// timestamp, queue a `comapeo.debug.auto_disabled` breadcrumb, and

@@ -144,6 +144,28 @@ class ComapeoPrefsTest {
     }
 
     @Test
+    fun readDebugStoredIsRawWithNoAutoOff() {
+        // The live settings read must return the raw saved toggle and never
+        // mutate: past the window, readDebugEnabled auto-disables + writes,
+        // but readDebugStored still reads true and leaves disk untouched.
+        val store = FakeStore()
+        var clock = 1_000L
+        val p = prefs(store, now = { clock })
+        p.writeDebugEnabled(true)
+        clock += ComapeoPrefs.DEBUG_MAX_AGE_MS + 60_000
+
+        assertTrue("raw read returns stored value", p.readDebugStored())
+        assertTrue(
+            "raw read does not clear the stored value",
+            store.getBoolean(ComapeoPrefs.KEY_DEBUG)!!,
+        )
+        assertTrue(
+            "raw read runs no auto-off (timestamp intact)",
+            store.has(ComapeoPrefs.KEY_DEBUG_ENABLED_AT_MS),
+        )
+    }
+
+    @Test
     fun debugTrueWithoutTimestampStampsAndStaysOn() {
         // Older install: debug=true cell exists, no timestamp. Treat as
         // "enabled now" and stamp on first read.

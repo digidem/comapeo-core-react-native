@@ -50,6 +50,15 @@ internal class ComapeoPrefs(
     fun readApplicationUsageData(): Boolean =
         store.getBoolean(KEY_APPLICATION_USAGE_DATA) ?: defaults.applicationUsageData
 
+    /**
+     * Raw stored `debug` value with no auto-off side effect — the user's saved
+     * toggle for a live settings read. [readDebugEnabled] applies the 72h
+     * auto-off (and its disk mutation) at launch; this must not, so a getter
+     * never writes.
+     */
+    fun readDebugStored(): Boolean =
+        store.getBoolean(KEY_DEBUG) ?: defaults.debug
+
     fun writeApplicationUsageData(value: Boolean) {
         store.putBoolean(KEY_APPLICATION_USAGE_DATA, value)
     }

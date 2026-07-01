@@ -17,6 +17,7 @@
 
 describe("initSentry", () => {
   let preferences;
+  let livePreferences;
   let configDsn;
   let isInitializedFlag;
   let initSpy;
@@ -30,6 +31,9 @@ describe("initSentry", () => {
       applicationUsageData: false,
       debug: false,
     };
+    // The live view starts equal to the boot snapshot; tests mutate it to
+    // simulate a `setX` made after launch.
+    livePreferences = { ...preferences };
     configDsn = "https://x@sentry.io/1";
     isInitializedFlag = false;
     initSpy = jest.fn();
@@ -52,6 +56,7 @@ describe("initSentry", () => {
         enableLogs: true,
       }),
       readSentryPreferences: () => preferences,
+      readSentryPreferencesLive: () => livePreferences,
       setDiagnosticsEnabledNative: jest.fn(),
       setApplicationUsageDataNative: jest.fn(),
       setDebugEnabledNative: jest.fn(),
@@ -303,5 +308,24 @@ describe("initSentry", () => {
         ["env", "staging"],
       ]),
     );
+  });
+
+  test("toggle getters read the live value, not the boot snapshot", () => {
+    const {
+      getDiagnosticsEnabled,
+      getApplicationUsageData,
+      getDebugEnabled,
+    } = require("../sentry");
+    // Simulate a setX made after launch: the live view diverges from the
+    // boot snapshot. The getters must reflect the live view so a settings
+    // screen reads back the user's just-made choice.
+    livePreferences.diagnosticsEnabled = false;
+    livePreferences.applicationUsageData = true;
+    livePreferences.debug = true;
+    expect(getDiagnosticsEnabled()).toBe(false);
+    expect(getApplicationUsageData()).toBe(true);
+    expect(getDebugEnabled()).toBe(true);
+    // The boot snapshot (what governs this session) is untouched.
+    expect(preferences.diagnosticsEnabled).toBe(true);
   });
 });

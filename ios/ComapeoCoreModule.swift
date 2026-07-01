@@ -102,6 +102,20 @@ public class ComapeoCoreModule: Module {
             ]
         }
 
+        // Live read of the current persisted values — reflects a `setX` made
+        // this session and survives a JS reload (unlike the snapshot-at-launch
+        // `sentryPreferences` Constant), so a settings screen can read the
+        // user's choice without keeping its own copy. Raw `debug` (no 72h
+        // auto-off side effect — that's applied by readDebugEnabled at launch).
+        Function("getSentryPreferences") { () -> [String: Any] in
+            let prefs = ComapeoPrefs.open()
+            return [
+                "diagnosticsEnabled": prefs.readDiagnosticsEnabled(),
+                "applicationUsageData": prefs.readApplicationUsageData(),
+                "debug": prefs.readDebugStored(),
+            ]
+        }
+
         // Restart-to-activate. On `false`, wipe the sentry-cocoa outbox
         // so events queued this session never ship; the current process
         // keeps emitting in-memory until next launch.

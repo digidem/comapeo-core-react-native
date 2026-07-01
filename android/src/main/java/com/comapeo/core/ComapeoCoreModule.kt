@@ -201,6 +201,29 @@ class ComapeoCoreModule : Module() {
             }
         }
 
+        // Live read of the current persisted values — reflects a `setX` made this
+        // session and survives a JS reload (unlike the snapshot-at-boot
+        // `sentryPreferences` Constant), so a settings screen can read the user's
+        // choice without keeping its own copy. Raw `debug` (no 24h/72h auto-off
+        // side effect — that's applied by readDebugEnabled at launch).
+        Function("getSentryPreferences") {
+            val ctx = appContext.reactContext
+            if (ctx == null) {
+                mapOf(
+                    "diagnosticsEnabled" to ComapeoPrefs.DEFAULT_DIAGNOSTICS_ENABLED,
+                    "applicationUsageData" to ComapeoPrefs.DEFAULT_APPLICATION_USAGE_DATA,
+                    "debug" to ComapeoPrefs.DEFAULT_DEBUG,
+                )
+            } else {
+                val prefs = ComapeoPrefs.open(ctx)
+                mapOf(
+                    "diagnosticsEnabled" to prefs.readDiagnosticsEnabled(),
+                    "applicationUsageData" to prefs.readApplicationUsageData(),
+                    "debug" to prefs.readDebugStored(),
+                )
+            }
+        }
+
         // Restart-to-activate: writes to disk; on `false`, wipes the sentry-android
         // envelope cache so queued events never ship. The current process keeps
         // emitting in-memory until next launch.

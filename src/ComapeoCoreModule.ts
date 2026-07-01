@@ -63,11 +63,23 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
    */
   readonly sentryConfig: SentryInitConfig;
   /**
-   * User-persisted preferences, read at module construction.
-   * Snapshot-at-boot — `setDiagnosticsEnabled` / `setApplicationUsageData`
-   * / `setDebugEnabled` writes only take effect on the next launch.
+   * User-persisted preferences as read at native module construction —
+   * the **boot snapshot** that governs this session's Sentry behaviour
+   * (whether `initSentry` emits, the metrics usage tier, debug tracing).
+   * Immutable this session; `setX` writes only take effect on the next
+   * launch. For the current saved value (e.g. a settings screen reading
+   * back a just-made toggle) use `getSentryPreferences()`.
    */
   readonly sentryPreferences: SentryPreferences;
+  /**
+   * Live read of the current persisted preferences — reflects a `setX`
+   * made this session and survives a JS reload (unlike the
+   * `sentryPreferences` boot snapshot). `debug` is the raw stored value,
+   * without the launch-time 24h/72h auto-off side effect. Backs the
+   * public `getDiagnosticsEnabled` / `getApplicationUsageData` /
+   * `getDebugEnabled` getters.
+   */
+  getSentryPreferences(): SentryPreferences;
   /**
    * Persist `diagnosticsEnabled` and (on a transition to false) wipe
    * the on-disk Sentry envelope cache so queued events from the
@@ -135,6 +147,25 @@ export function readSentryPreferences(): SentryPreferences {
       debug: false,
     };
   }
+  return normalizePreferences(raw);
+}
+
+/**
+ * Live read of the current persisted preferences — reflects a `setX` made
+ * this session and survives a JS reload, so a settings screen can read back
+ * the user's choice without maintaining its own copy. `readSentryPreferences`
+ * (the boot snapshot) is what the module's own session behaviour is pinned
+ * to; this is the current on-disk value. Falls back to the snapshot when the
+ * native live getter isn't available (older native / test contexts).
+ */
+export function readSentryPreferencesLive(): SentryPreferences {
+  const live = nativeModule.getSentryPreferences?.() as
+    | SentryPreferences
+    | undefined;
+  return live ? normalizePreferences(live) : readSentryPreferences();
+}
+
+function normalizePreferences(raw: SentryPreferences): SentryPreferences {
   return {
     diagnosticsEnabled: raw.diagnosticsEnabled,
     applicationUsageData: raw.applicationUsageData ?? false,
