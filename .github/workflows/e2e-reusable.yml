@@ -61,7 +61,7 @@ jobs:
       - uses: actions/github-script@v9
         id: classify
         with:
-          script: |
+          script: | #js
             const ev = context.eventName;
             // Manual dispatch is an explicit request — run unconditionally.
             if (ev === 'workflow_dispatch') {
@@ -262,7 +262,7 @@ jobs:
 
       - name: Build .ipa
         working-directory: apps/e2e/ios
-        run: |
+        run: | #shell
           xcodebuild archive \
             -workspace corereactnativee2e.xcworkspace \
             -scheme corereactnativee2e \
@@ -304,7 +304,7 @@ jobs:
         env:
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
-        run: |
+        run: | #shell
           RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
             -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
@@ -343,7 +343,7 @@ jobs:
         env:
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
-        run: |
+        run: | #shell
           RESPONSE=$(curl --show-error -sS -w '\n%{http_code}' \
             -u "$BROWSERSTACK_USERNAME:$BROWSERSTACK_ACCESS_KEY" \
             -X POST "https://api-cloud.browserstack.com/app-automate/upload" \
@@ -388,7 +388,7 @@ jobs:
         env:
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME_TESTS }}
-        run: |
+        run: | #shell
           ZIP_NAME="flows.zip"
 
           zip -r "$ZIP_NAME" maestro/e2e.yaml maestro/fgs-restart.yaml maestro/rootkey-persistence.yaml
@@ -509,7 +509,7 @@ jobs:
           UPLOAD_SUITE: ${{ needs.upload-test-suite.result }}
           TEST_ANDROID: ${{ needs.test-android.result }}
           TEST_IOS: ${{ needs.test-ios.result }}
-        run: |
+        run: | #shell
           set -euo pipefail
           echo "changes=$CHANGES run_e2e=$RUN_E2E"
           echo "build: android=$BUILD_ANDROID ios=$BUILD_IOS"

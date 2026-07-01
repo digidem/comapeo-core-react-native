@@ -36,7 +36,7 @@ jobs:
       - uses: actions/create-github-app-token@v3
         id: app-token
         with:
-          app-id: ${{ vars.PR_BOT_APP_ID }}
+          client-id: ${{ vars.PR_BOT_CLIENT_ID }}
           private-key: ${{ secrets.PR_BOT_PRIVATE_KEY }}
 
       - uses: actions/checkout@v7
@@ -48,7 +48,7 @@ jobs:
           node-version-file: package.json
 
       - name: Bump in lockfiles
-        run: |
+        run: | #shell
           set -euo pipefail
           for dir in . backend; do
             ( cd "$dir"
@@ -69,7 +69,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           BOT_USER_ID: ${{ vars.PR_BOT_USER_ID }}
-        run: |
+        run: | #shell
           set -euo pipefail
           if git diff --quiet; then echo "${PACKAGE} already current; nothing to bump."; exit 0; fi
           slug="${PACKAGE#@}"; slug="${slug//\//-}"
