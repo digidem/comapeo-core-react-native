@@ -57,7 +57,7 @@ jobs:
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
@@ -156,7 +156,7 @@ jobs:
       # job — previously Gradle auto-installed it mid-build with no retry.
       - name: Cache Android NDK
         id: cache-ndk
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           # ANDROID_HOME on GitHub-hosted ubuntu runners; the install step below
           # uses $ANDROID_HOME directly, which resolves to the same location.
@@ -185,7 +185,7 @@ jobs:
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
