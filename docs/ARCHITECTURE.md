@@ -845,29 +845,55 @@ raw device data. The forbidden-tag list (`device.*`, `locale`,
 `project_id`, `peer_id`, raw coordinates, …) is dropped defensively
 by `isForbiddenMetric`.
 
-| Metric | Type · unit | Attributes | Emitted by / when |
-|---|---|---|---|
-| `comapeo.rpc.client.duration_ms` | distribution · ms | `status`, `device_class`, `os_major`, `method` (usage-gated) | RN request hook — end-to-end client-observed RPC latency (IPC + serialize + handler + response delivery) |
-| `comapeo.rpc.client.send_ms` | distribution · ms | `device_class`, `os_major`, `method` (usage-gated) | RN request hook — sync-send slice (JSI hop + UDS write to Node) |
-| `comapeo.rpc.server.duration_ms` | distribution · ms | `status`, `device_class`, `os_major`, `method` (usage-gated) | Node request hook — server-side handler latency (pairs with the client metric to separate handler vs IPC) |
-| `comapeo.boot.phase_duration_ms` | distribution · ms | `phase`, `device_class`, `os_major` | Node — per boot phase |
-| `comapeo.boot.outcome` | count | `outcome` (`started`/`error`), `error_phase?` | Node — once per boot |
-| `comapeo.state.transitions` | count | `from`, `to` | Node — each backend state transition |
-| `comapeo.storage.size_bucket` | count | `bucket` (`<10MB`/`10-100MB`/`100MB-1GB`/`>1GB`) | Node — one-shot at STARTED (recursive size of the private storage dir) |
-| `comapeo.backend.heap_used_bytes` | gauge · byte | — | Node — 60s sampler (V8 JS heap; `rss` is omitted, it measures the whole process) |
-| `comapeo.fgs.uptime_s` | gauge · second | — | Node — 60s sampler |
-| `comapeo.backend.event_loop_delay_ms` | gauge · ms | — | Node — 60s sampler (interval mean from `monitorEventLoopDelay`) |
-| `comapeo.sync.session.duration_ms` | distribution · ms | `outcome`, `device_class`, `os_major` | Node — **scaffolding, not yet wired** |
-| `comapeo.sync.session.peers_bucket` | count | `bucket` (usage-gated) | Node — **scaffolding, not yet wired** |
-| `comapeo.sync.bytes_bucket` | count | `bucket` (usage-gated) | Node — **scaffolding, not yet wired** |
-| `comapeo.shutdown.phase_duration_ms` | distribution · ms | `phase` | Node — **scaffolding, not yet wired** |
-| `comapeo.ipc.errors` | count | `error_class` | Node — **scaffolding, not yet wired** |
-| `comapeo.telemetry.forwarding_failures` | count | — | Node — **scaffolding, not yet wired** |
+| Metric | Type · unit | Attributes | Emitted by / when | What it tells us |
+|---|---|---|---|---|
+| `comapeo.rpc.client.duration_ms` | distribution · ms | `status`, `device_class`, `os_major`, `method` (usage-gated) | RN request hook — end-to-end client-observed RPC latency (IPC + serialize + handler + response delivery) | The primary UX-latency signal: how slow core operations feel end-to-end, which device classes are sluggish, and (usage tier) which methods are slowest. |
+| `comapeo.rpc.client.send_ms` | distribution · ms | `device_class`, `os_major`, `method` (usage-gated) | RN request hook — sync-send slice (JSI hop + UDS write to Node) | What fraction of client latency is the synchronous send (JS-thread contention on cold boot) vs the round-trip. **Weak/redundant — see drop list.** |
+| `comapeo.rpc.server.duration_ms` | distribution · ms | `status`, `device_class`, `os_major`, `method` (usage-gated) | Node request hook — server-side handler latency (pairs with the client metric to separate handler vs IPC) | Handler-only cost. Paired with the client metric it separates "the core operation is slow" from "IPC / serialization / JS-thread overhead". |
+| `comapeo.boot.phase_duration_ms` | distribution · ms | `phase`, `device_class`, `os_major` | Node — per boot phase | Where boot time goes (which phase dominates), per device class — the input to boot- and ANR-margin optimisation. |
+| `comapeo.boot.outcome` | count | `outcome` (`started`/`error`), `error_phase?` | Node — once per boot | Boot success-vs-failure rate and which phase fails — the backend reliability signal. |
+| `comapeo.state.transitions` | count | `from`, `to` | Node — each backend state transition | Lifecycle churn and how often the backend reaches ERROR. **Overlaps `boot.outcome` — see drop list.** |
+| `comapeo.storage.size_bucket` | count | `bucket` (`<10MB`/`10-100MB`/`100MB-1GB`/`>1GB`) | Node — one-shot at STARTED (recursive size of the private storage dir) | The population's storage-footprint distribution — context for correlating large DBs with slow sync/query. Coarse, one-shot: context, not an alerting signal. |
+| `comapeo.backend.heap_used_bytes` | gauge · byte | — | Node — 60s sampler (V8 JS heap; `rss` is omitted, it measures the whole process) | Backend JS-heap ceiling, and across a session's samples a heap-growth (leak) signal. Coarse on iOS, where the runtime suspends in the background. |
+| `comapeo.fgs.uptime_s` | gauge · second | — | Node — 60s sampler | Intended as backend process lifetime, but a 60s-sampled monotonic gauge has no actionable aggregate. **Weakest metric — see drop list.** |
+| `comapeo.backend.event_loop_delay_ms` | gauge · ms | — | Node — 60s sampler (interval mean from `monitorEventLoopDelay`) | Whether the backend event loop is congested (sync work blocking async I/O). The 60s *mean* is blunt — a brief stall barely moves it; p99 would be sharper. |
+| `comapeo.sync.session.duration_ms` | distribution · ms | `outcome`, `device_class`, `os_major` | Node — **scaffolding, not yet wired** | (When wired) sync-session latency by outcome and device — core sync performance. |
+| `comapeo.sync.session.peers_bucket` | count | `bucket` (usage-gated) | Node — **scaffolding, not yet wired** | (When wired) collaboration scale — how many peers took part in a sync. |
+| `comapeo.sync.bytes_bucket` | count | `bucket` (usage-gated) | Node — **scaffolding, not yet wired** | (When wired) data volume moved per sync. |
+| `comapeo.shutdown.phase_duration_ms` | distribution · ms | `phase` | Node — **scaffolding, not yet wired** | (When wired) shutdown timing — guards the stop-path ANR / timeout margin. |
+| `comapeo.ipc.errors` | count | `error_class` | Node — **scaffolding, not yet wired** | (When wired) IPC failure rate by class — a transport-reliability signal distinct from backend errors. |
+| `comapeo.telemetry.forwarding_failures` | count | — | Node — **scaffolding, not yet wired** | (When wired) whether our own telemetry sink is dropping/failing — a self-health check on the metrics pipeline. |
 
 Rows marked *scaffolding, not yet wired* have a metrics-layer
 function and tests but no production call site yet — the meaning
 is fixed so the emit point can be added without a dashboard
 change.
+
+**Candidates to reconsider.** A few of the wired metrics emit data
+whose aggregate is weak or redundant — flagged here for a future
+prune, not yet dropped:
+
+- **`comapeo.fgs.uptime_s`** — the strongest drop candidate. It's a
+  monotonically-increasing counter sampled every 60s, so its average
+  is meaningless (it depends on when sampling happened to land) and
+  its max is just ≈ session length, which is better derived from boot
+  frequency. If backend lifetime / FGS-eviction is worth tracking,
+  measure it as an explicit process-exit event, not a sampled gauge.
+- **`comapeo.rpc.client.send_ms`** — the debug-gated client span
+  already records this exact slice as the `rn.send.syncMs` attribute,
+  and the number is only meaningful as a fraction of
+  `duration_ms`. Consider dropping the always-on metric and reading
+  the sub-slice from the debug trace when actually investigating a
+  cold-boot contention question.
+- **`comapeo.state.transitions`** — the started/error information
+  overlaps `boot.outcome` and the ERROR issues, and the remaining
+  transitions (`STARTING→STARTED`, `STARTED→STOPPING→STOPPED`) are
+  routine lifecycle noise. Consider narrowing to error transitions
+  only, or dropping it.
+- **`comapeo.backend.event_loop_delay_ms`** — keep, but the 60s
+  *mean* is a blunt instrument. `monitorEventLoopDelay` already
+  computes percentiles; reporting `p99` (instead of or alongside the
+  mean) would actually surface a stall.
 
 **Viewing.** In Sentry, open **Metrics** (Explore → Metrics),
 filter by the metric name, and group by an attribute (`method`,
