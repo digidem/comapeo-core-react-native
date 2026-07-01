@@ -84,7 +84,7 @@ jobs:
       - name: Remove safe-to-test label on new commits
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
+        run: | #shell
           gh pr edit "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" \
             --remove-label safe-to-test || true

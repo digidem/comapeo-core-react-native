@@ -1,6 +1,6 @@
 {
   "name": "@comapeo/core-react-native",
-  "version": "1.0.0-pre.6",
+  "version": "1.0.0-pre.8",
   "description": "CoMapeo Core for React Native",
   "main": "build/index.js",
   "types": "build/index.d.ts",
@@ -34,6 +34,7 @@
     "ios/*.{h,m,mm,swift,hpp,cpp}",
     "!ios/Package.swift",
     "ios/ComapeoCore.podspec",
+    "ios/ComapeoCoreSourcemaps.podspec",
     "ios/NodeMobile.xcframework",
     "ios/Frameworks/",
     "ios/nodejs-project/",
@@ -114,7 +115,7 @@
     "react-native": "*"
   },
   "dependencies": {
-    "@comapeo/ipc": "^9.0.0-pre.2"
+    "@comapeo/ipc": "9.0.0"
   },
   "allowScripts": {
     "@sentry/cli": false,

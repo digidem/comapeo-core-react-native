@@ -31,6 +31,23 @@ Re-run `npm run setup` after pulling changes that bump the nodejs-mobile version
 or touch the backend. The individual steps are also available on their own
 (`npm run download:nodejs-mobile`, `npm run backend:build`).
 
+### Backend sourcemaps
+
+`backend:build` symbolicates backend errors two ways, split by build type so
+release artifacts stay lean:
+
+- **Debug builds** ship the bundle's sourcemap colocated with it and pass Node's
+  `--enable-source-maps` flag (Android `BuildConfig.DEBUG`, iOS `#if DEBUG`), so
+  errors are remapped to original positions in-process and reach Sentry already
+  symbolicated — no upload or Sentry auth token needed. On Android the map rides
+  the `src/debug/` asset tree (debug variants only); on iOS the config plugin
+  adds a Debug-only `ComapeoCoreSourcemaps` companion pod
+  (`:configurations => ['Debug']`) whose maps merge next to the bundle in the
+  app — no custom build phase.
+- **Release builds** keep the map out of the app entirely; the consuming app
+  uploads it to Sentry from CI with `comapeo-rn-upload-sourcemaps` (debug-ID
+  matched, symbolicated server-side).
+
 ## Repository layout
 
 This is a single published npm package with its build tooling and test apps in
