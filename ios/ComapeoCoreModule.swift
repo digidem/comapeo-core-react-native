@@ -115,12 +115,6 @@ public class ComapeoCoreModule: Module {
             if !value { ComapeoPrefs.wipeSentryOutbox() }
         }
 
-        // Deprecated alias for `setApplicationUsageData`; kept for one minor (§11.7).
-        AsyncFunction("setCaptureApplicationData") { (value: Bool) in
-            ComapeoPrefs.open().writeApplicationUsageData(value)
-            if !value { ComapeoPrefs.wipeSentryOutbox() }
-        }
-
         AsyncFunction("setDebugEnabled") { (value: Bool) in
             ComapeoPrefs.open().writeDebugEnabled(value)
             if !value { ComapeoPrefs.wipeSentryOutbox() }

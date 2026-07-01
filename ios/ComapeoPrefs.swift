@@ -6,7 +6,7 @@ import Foundation
 /// don't ship. Mirrors `ComapeoPrefs.kt`.
 ///
 /// Constructor takes read/write closures so unit tests don't need a
-/// real `UserDefaults`. `open()` runs the one-shot key migration.
+/// real `UserDefaults`.
 final class ComapeoPrefs {
     struct Defaults {
         let diagnosticsEnabled: Bool
@@ -49,11 +49,12 @@ final class ComapeoPrefs {
         readBool(Key.applicationUsageData) ?? defaults.applicationUsageData
     }
 
-    /// Read the `debug` toggle, applying the §11.5 24h auto-off: if debug
-    /// was switched on more than `debugMaxAgeMs` ago, flip it off, clear
-    /// the timestamp, queue a `comapeo.debug.auto_disabled` breadcrumb, and
-    /// return `false`. A `debug=true` cell with no timestamp (older install)
-    /// is treated as "enabled now" and stamped on first read.
+    /// Read the `debug` toggle, applying the 24h auto-off: if debug was
+    /// switched on more than `debugMaxAgeMs` ago, flip it off, clear the
+    /// timestamp, queue a `comapeo.debug.auto_disabled` breadcrumb, and
+    /// return `false`. A `debug=true` cell with no timestamp (e.g. enabled
+    /// via the configured default) is treated as "enabled now" and stamped
+    /// on first read.
     func readDebugEnabled() -> Bool {
         let stored = readBool(Key.debug) ?? defaults.debug
         if !stored { return false }
@@ -92,13 +93,11 @@ final class ComapeoPrefs {
     enum Key {
         static let diagnosticsEnabled = "sentry.diagnosticsEnabled"
         static let applicationUsageData = "sentry.applicationUsageData"
-        /// Deprecated pre-Phase-11 key, migrated to `applicationUsageData`.
-        static let captureApplicationData = "sentry.captureApplicationData"
         static let debug = "sentry.debug"
         static let debugEnabledAtMs = "sentry.debugEnabledAtMs"
     }
 
-    /// 24h in milliseconds (§11.5).
+    /// 24h in milliseconds.
     static let debugMaxAgeMs: Double = 24 * 60 * 60 * 1000
 
     /// Privacy model treats baseline error visibility as on.
@@ -106,23 +105,6 @@ final class ComapeoPrefs {
     /// Off until user opts in.
     static let defaultApplicationUsageData: Bool = false
     static let defaultDebug: Bool = false
-
-    /// One-shot rename migration (§11.7): if the old
-    /// `captureApplicationData` key is present and the new
-    /// `applicationUsageData` key is absent, copy the value across and
-    /// delete the old key. Idempotent — deletes its own input. Pure-closure
-    /// form so it's unit-testable without `UserDefaults`.
-    static func migrateLegacyKeys(
-        readBool: (String) -> Bool?,
-        writeBool: (String, Bool) -> Void,
-        removeKey: (String) -> Void
-    ) {
-        guard let legacy = readBool(Key.captureApplicationData) else { return }
-        if readBool(Key.applicationUsageData) == nil {
-            writeBool(Key.applicationUsageData, legacy)
-        }
-        removeKey(Key.captureApplicationData)
-    }
 
     static func open() -> ComapeoPrefs {
         let sentryConfig = SentryConfig.loadFromMainBundle()
@@ -152,8 +134,6 @@ final class ComapeoPrefs {
         let removeKey: (String) -> Void = { key in
             store.removeObject(forKey: key)
         }
-
-        migrateLegacyKeys(readBool: readBool, writeBool: writeBool, removeKey: removeKey)
 
         return ComapeoPrefs(
             readBool: readBool,
@@ -188,7 +168,7 @@ final class ComapeoPrefs {
 }
 
 /// Holds the `comapeo.debug.auto_disabled` breadcrumb queued by the 24h
-/// auto-off (§11.5). `readDebugEnabled()` runs before `SentrySDK.start`,
+/// auto-off. `readDebugEnabled()` runs before `SentrySDK.start`,
 /// so the breadcrumb can't be added directly; it's drained once the SDK
 /// is up.
 enum DebugAutoOff {

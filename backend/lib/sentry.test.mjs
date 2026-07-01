@@ -8,7 +8,7 @@ import { rpcHook, setSink, flush } from "./sentry.js";
 import * as metrics from "./metrics.js";
 
 /**
- * Phase 11 debug-on / debug-off branching of `rpcHook` (§11.3):
+ * debug-on / debug-off branching of `rpcHook`:
  *   - debug OFF ⇒ no span (no envelope reaches the sink), but the metric
  *                 IS recorded.
  *   - debug ON  ⇒ span created (envelope reaches the sink) AND metric
@@ -147,7 +147,7 @@ test("debug OFF: rpcHook records the metric but creates no span/envelope", async
   await Sentry.close();
 });
 
-test("debug OFF: a rejecting RPC records the error metric but captures no issue", async () => {
+test("debug OFF: a rejecting RPC records the duration metric but captures no issue", async () => {
   initSentry({ ...baseArgv, debug: false });
   const rec = recordingMetricsSdk();
   metrics.init({

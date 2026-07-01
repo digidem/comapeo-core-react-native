@@ -60,7 +60,7 @@ class SentryConfigTest {
     fun pluginReleaseOverridesDefault() {
         // When the consumer passes `release` to the plugin, that
         // value wins over versionName+versionCode. Used to embed git
-        // SHAs from EAS_BUILD_GIT_COMMIT_HASH (plan §4.1).
+        // SHAs from EAS_BUILD_GIT_COMMIT_HASH.
         val config = SentryConfig.load(
             mapGetter(
                 mapOf(
@@ -182,22 +182,6 @@ class SentryConfigTest {
     }
 
     @Test
-    fun deprecatedCaptureApplicationDataDefaultStillReadAsUsage() {
-        // §11.7: the old meta key feeds the new field for one minor.
-        val config = SentryConfig.load(
-            mapGetter(
-                mapOf(
-                    SentryConfig.META_DSN to "https://x@sentry.io/1",
-                    SentryConfig.META_ENVIRONMENT to "qa",
-                    SentryConfig.META_CAPTURE_APPLICATION_DATA_DEFAULT to "true",
-                ),
-            ),
-            DEFAULT_RELEASE,
-        )!!
-        assertEquals(true, config.applicationUsageDataDefault)
-    }
-
-    @Test
     fun debugDefaultParses() {
         val on = SentryConfig.load(
             mapGetter(
@@ -273,7 +257,7 @@ class SentryConfigTest {
 
     @Test
     fun missingEnvironmentReturnsNullNotThrow() {
-        // The plugin refuses to prebuild without environment (§4.1),
+        // The plugin refuses to prebuild without environment,
         // but a stale prebuild from before that validation was added
         // would still ship. The original "throw" behaviour crashed
         // every cold start with no way to recover. Now we log loud

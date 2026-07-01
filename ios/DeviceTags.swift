@@ -3,7 +3,7 @@ import Foundation
 import UIKit
 #endif
 
-/// Low-cardinality device classification (§11.2.b). Buckets the device
+/// Low-cardinality device classification. Buckets the device
 /// into low/mid/high by RAM + CPU cores so a metric like
 /// "low-end devices are 4× slower at observation.create" is a dashboard
 /// query rather than a per-model cardinality explosion. Computed once at
@@ -24,7 +24,7 @@ struct DeviceTags: Equatable {
 
     private static let gb: UInt64 = 1024 * 1024 * 1024
 
-    /// Thresholds (§11.2.b):
+    /// Thresholds:
     ///   low:  < 3 GB RAM OR < 4 cores
     ///   mid:  3–6 GB AND 4–6 cores
     ///   high: ≥ 6 GB AND ≥ 6 cores
@@ -43,7 +43,7 @@ struct DeviceTags: Equatable {
         return classLow
     }
 
-    /// `ios.<major>` from a system-version string (§11.2.b).
+    /// `ios.<major>` from a system-version string.
     static func osMajor(systemVersion: String) -> String {
         let major = systemVersion.split(separator: ".").first.map(String.init)
         let safe = (major?.isEmpty == false) ? major! : "0"

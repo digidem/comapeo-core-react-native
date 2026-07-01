@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import * as metrics from "./metrics.js";
 
 /**
- * Unit tests for the backend metrics layer (§11.2 / §11.8). A fake
+ * Unit tests for the backend metrics layer. A fake
  * `Sentry.metrics` records every call so we can assert on metric names,
  * units, shared-attribute injection, the cardinality split, no-op when
  * off, and the forbidden-tag filter — without standing up the real SDK.
@@ -33,7 +33,7 @@ function initWith(sdk, overrides = {}) {
     platform: "android",
     deviceClass: "mid",
     osMajor: "android.14",
-    applicationUsageData: false,
+    applicationUsageData: true,
     ...overrides,
   });
 }
@@ -63,7 +63,7 @@ test("rpcServer injects platform and splits the by_device mirror", () => {
   assert.equal(primary.attributes.method, "observation.create");
   assert.equal(primary.attributes.status, "ok");
   assert.equal(primary.attributes.platform, "android");
-  // Primary metric must NOT carry device tags (cardinality split §11.2.c).
+  // Primary metric must NOT carry device tags (cardinality split).
   assert.equal(primary.attributes.device_class, undefined);
 
   assert.equal(mirror.name, "comapeo.rpc.server.duration_ms.by_device");
@@ -72,6 +72,53 @@ test("rpcServer injects platform and splits the by_device mirror", () => {
   assert.equal(mirror.attributes.platform, "android");
   // Mirror drops the question-specific `method` dimension.
   assert.equal(mirror.attributes.method, undefined);
+});
+
+test("rpcServer omits the per-method primary unless applicationUsageData is on", () => {
+  const off = fakeSentry();
+  initWith(off.sdk, { applicationUsageData: false });
+  metrics.rpcServer("observation.create", "ok", 42);
+  // Usage off: only the by_device mirror (no method dimension) emits.
+  assert.equal(off.calls.distribution.length, 1);
+  assert.equal(
+    off.calls.distribution[0].name,
+    "comapeo.rpc.server.duration_ms.by_device",
+  );
+
+  metrics.resetForTests();
+  const on = fakeSentry();
+  initWith(on.sdk, { applicationUsageData: true });
+  metrics.rpcServer("observation.create", "ok", 42);
+  // Usage on: both the per-method primary and the mirror emit.
+  assert.equal(on.calls.distribution.length, 2);
+  const names = on.calls.distribution.map((d) => d.name);
+  assert.deepEqual(names, [
+    "comapeo.rpc.server.duration_ms",
+    "comapeo.rpc.server.duration_ms.by_device",
+  ]);
+});
+
+test("syncSession gates the peers/bytes buckets but always emits duration", () => {
+  const off = fakeSentry();
+  initWith(off.sdk, { applicationUsageData: false });
+  metrics.syncSession("complete", 1200, "1-3", "1-10M");
+  // Duration + by_device mirror always emit; the buckets are usage-gated.
+  assert.equal(off.calls.distribution.length, 2);
+  assert.deepEqual(
+    off.calls.distribution.map((d) => d.name),
+    ["comapeo.sync.session.duration_ms", "comapeo.sync.session.duration_ms.by_device"],
+  );
+  assert.equal(off.calls.count.length, 0);
+
+  metrics.resetForTests();
+  const on = fakeSentry();
+  initWith(on.sdk, { applicationUsageData: true });
+  metrics.syncSession("complete", 1200, "1-3", "1-10M");
+  assert.equal(on.calls.distribution.length, 2);
+  assert.deepEqual(
+    on.calls.count.map((c) => c.name),
+    ["comapeo.sync.session.peers_bucket", "comapeo.sync.bytes_bucket"],
+  );
 });
 
 test("backendMemorySample emits three gauges with byte/second units", () => {
@@ -86,21 +133,6 @@ test("backendMemorySample emits three gauges with byte/second units", () => {
   ]);
   assert.equal(calls.gauge[0].unit, "byte");
   assert.equal(calls.gauge[2].unit, "second");
-});
-
-test("usage metrics no-op unless applicationUsageData is on", () => {
-  const { sdk, calls } = fakeSentry();
-  initWith(sdk, { applicationUsageData: false });
-  metrics.usageScreen("ObservationList");
-  assert.equal(calls.count.length, 0);
-
-  metrics.resetForTests();
-  const second = fakeSentry();
-  initWith(second.sdk, { applicationUsageData: true });
-  metrics.usageScreen("ObservationList");
-  assert.equal(second.calls.count.length, 1);
-  assert.equal(second.calls.count[0].name, "comapeo.usage.screen");
-  assert.equal(second.calls.count[0].attributes.screen, "ObservationList");
 });
 
 test("before_metric_send filter drops a forbidden tag name routed through count()", () => {

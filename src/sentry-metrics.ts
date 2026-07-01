@@ -1,18 +1,15 @@
 /**
- * RN-side Sentry metrics layer (Phase 11 §11.2 / §11.6).
+ * RN-side Sentry metrics layer.
  *
  * Thin wrappers around `Sentry.metrics.*` that:
  *   - inject the shared `platform` attribute on every metric so a call
  *     site can never forget it;
  *   - attach `device_class` / `os_major` only on the `.by_device`
  *     mirror metrics (the cardinality split is enforced here, at the
- *     API boundary — see §11.2.c);
+ *     API boundary);
  *   - no-op entirely when Sentry is off;
  *   - run a defensive `beforeSendMetric` filter that drops any emission
- *     carrying a forbidden attribute (§11.8).
- *
- * `recordUsage.{screen,feature}` additionally no-op unless
- * `applicationUsageData` is on.
+ *     carrying a forbidden attribute.
  */
 import { Platform } from "react-native";
 import * as Sentry from "@sentry/react-native";
@@ -24,6 +21,14 @@ import { isForbiddenMetric } from "./sentry-scrub";
 type MetricAttributes = Record<string, string | number | boolean>;
 
 const platformTag = Platform.OS;
+
+/**
+ * Opt-in tier for usage-revealing dimensions (the RPC `method` breakdown).
+ * Snapshot-at-boot like the rest of the prefs; restart-to-activate.
+ */
+function usageDataEnabled(): boolean {
+  return readSentryPreferences().applicationUsageData;
+}
 
 function deviceTags(): { device_class: string; os_major: string } {
   const tags = sentryConfig.deviceTags;
@@ -98,7 +103,7 @@ function gauge(
 }
 
 /**
- * Map an RPC outcome to the bounded `status` tag (§11.8: `ok` /
+ * Map an RPC outcome to the bounded `status` tag (`ok` /
  * `error` / `timeout`). A timeout is distinguished by name so the
  * dashboard can separate "slow path" from "failed path".
  */
@@ -111,19 +116,21 @@ export function rpcStatusFor(error: unknown): string {
 }
 
 /**
- * Record an RPC client call: the primary `…duration_ms{method,status}`
- * distribution plus the `…by_device{status,device_class,os_major}`
- * mirror. One call site, two writes (§11.2.a).
+ * Record an RPC client call. The `…by_device{status,device_class,os_major}`
+ * mirror always flows (diagnostic latency); the `…duration_ms{method,status}`
+ * primary carries the per-method breakdown and is usage-gated.
  */
 export function rpcClientMetric(
   method: string,
   status: string,
   ms: number,
 ): void {
-  distribution("comapeo.rpc.client.duration_ms", ms, "millisecond", {
-    method,
-    status,
-  });
+  if (usageDataEnabled()) {
+    distribution("comapeo.rpc.client.duration_ms", ms, "millisecond", {
+      method,
+      status,
+    });
+  }
   distribution(
     "comapeo.rpc.client.duration_ms.by_device",
     ms,
@@ -132,44 +139,13 @@ export function rpcClientMetric(
   );
 }
 
-/** Split out the sync-send slice (§11.2.a `comapeo.rpc.client.send_ms`). */
-export function rpcClientSendMetric(method: string, ms: number): void {
-  distribution("comapeo.rpc.client.send_ms", ms, "millisecond", { method });
-}
-
 /**
- * Feature-usage helpers (§11.4). No-op unless `applicationUsageData` is
- * on. Each emits a breadcrumb (crash-context) and a counter (aggregate
- * cohort analysis). The module ships these; the consumer chooses which
- * screens/features to instrument.
+ * Sync-send slice (`comapeo.rpc.client.send_ms`). The aggregate flows at
+ * the diagnostic tier; the `method` breakdown is usage-gated.
  */
-export const recordUsage = {
-  screen(name: string): void {
-    if (!usageEnabled()) return;
-    Sentry.addBreadcrumb({
-      category: "comapeo.usage.screen",
-      type: "navigation",
-      level: "info",
-      message: name,
-    });
-    count("comapeo.usage.screen", { screen: name });
-  },
-  feature(name: string): void {
-    if (!usageEnabled()) return;
-    Sentry.addBreadcrumb({
-      category: "comapeo.usage.feature",
-      type: "default",
-      level: "info",
-      message: name,
-    });
-    count("comapeo.usage.feature", { feature: name });
-  },
-};
-
-function usageEnabled(): boolean {
-  if (!sentryUp()) return false;
-  const prefs = readSentryPreferences();
-  return prefs.diagnosticsEnabled && prefs.applicationUsageData;
+export function rpcClientSendMetric(method: string, ms: number): void {
+  const attributes: MetricAttributes = usageDataEnabled() ? { method } : {};
+  distribution("comapeo.rpc.client.send_ms", ms, "millisecond", attributes);
 }
 
 /** Exposed for tests + the gauge/count primitives if a host needs them. */

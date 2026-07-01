@@ -56,8 +56,7 @@ final class SentryConfigTests: XCTestCase {
     func testPluginReleaseOverridesDefault() {
         // When the consumer passes `release` to the plugin, that
         // value wins over CFBundleShortVersionString+CFBundleVersion.
-        // Used to embed git SHAs from EAS_BUILD_GIT_COMMIT_HASH
-        // (plan §4.1).
+        // Used to embed git SHAs from EAS_BUILD_GIT_COMMIT_HASH.
         let config = SentryConfig.load(
             from: [
                 SentryConfig.Key.dsn: "https://x@sentry.io/1",
@@ -182,19 +181,6 @@ final class SentryConfigTests: XCTestCase {
         XCTAssertEqual(off?.applicationUsageDataDefault, false)
     }
 
-    func testDeprecatedCaptureApplicationDataDefaultStillReadAsUsage() {
-        // §11.7: the old plist key feeds the new field for one minor.
-        let config = SentryConfig.load(
-            from: [
-                SentryConfig.Key.dsn: "https://x@sentry.io/1",
-                SentryConfig.Key.environment: "production",
-                SentryConfig.Key.captureApplicationDataDefault: true,
-            ],
-            defaultRelease: defaultRelease
-        )
-        XCTAssertEqual(config?.applicationUsageDataDefault, true)
-    }
-
     func testDebugDefaultParses() {
         let config = SentryConfig.load(
             from: [
@@ -224,7 +210,7 @@ final class SentryConfigTests: XCTestCase {
     }
 
     func testMissingEnvironmentReturnsNilNotFatal() {
-        // The plugin refuses to prebuild without environment (§4.1),
+        // The plugin refuses to prebuild without environment,
         // but a stale prebuild from before that validation was added
         // would still ship. The original `fatalError` behaviour
         // crashed every cold start with no way to recover. Now we

@@ -222,16 +222,6 @@ class ComapeoCoreModule : Module() {
             if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
         }
 
-        // Deprecated alias for `setApplicationUsageData`; kept for one minor (§11.7).
-        AsyncFunction("setCaptureApplicationData") { value: Boolean ->
-            val ctx = appContext.reactContext
-                ?: throw IllegalStateException(
-                    "setCaptureApplicationData called before native context attached",
-                )
-            ComapeoPrefs.open(ctx).writeApplicationUsageData(value)
-            if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
-        }
-
         AsyncFunction("setDebugEnabled") { value: Boolean ->
             val ctx = appContext.reactContext
                 ?: throw IllegalStateException(

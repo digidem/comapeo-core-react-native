@@ -1,14 +1,14 @@
-// Backend Sentry metrics layer (Phase 11 §11.2 / §11.6).
+// Backend Sentry metrics layer.
 //
 // Thin wrappers around `Sentry.metrics.*` that:
 //   - inject the shared `platform` attribute on every metric so a call
 //     site can never forget it;
 //   - attach `device_class` / `os_major` only on the `.by_device`
 //     mirror metrics (the cardinality split is enforced here, at the
-//     API boundary — see §11.2.c);
+//     API boundary);
 //   - no-op entirely when Sentry is off (`init` never ran);
 //   - run a defensive `before_metric_send` filter that drops any
-//     emission carrying a forbidden attribute (§11.8).
+//     emission carrying a forbidden attribute.
 //
 // Populated by `sentry.js`'s `init()`, which has the live SDK + the
 // resolved device tags from argv. No static dep on `@sentry/node-core`
@@ -59,7 +59,7 @@ export function isEnabled() {
   return Sentry !== null;
 }
 
-/** The only tag cheap enough to ride on every metric (§11.2.c). */
+/** The only tag cheap enough to ride on every metric. */
 function defaultTags() {
   return { platform: config?.platform ?? "unknown" };
 }
@@ -127,24 +127,19 @@ function gauge(name, value, unit, attributes) {
  * @param {number} ms
  */
 export function rpcServer(method, status, ms) {
-  distribution("comapeo.rpc.server.duration_ms", ms, "millisecond", {
-    method,
-    status,
-  });
+  // method dimension is usage-gated; the by_device mirror (status only) is always-on.
+  if (config?.applicationUsageData) {
+    distribution("comapeo.rpc.server.duration_ms", ms, "millisecond", {
+      method,
+      status,
+    });
+  }
   distribution(
     "comapeo.rpc.server.duration_ms.by_device",
     ms,
     "millisecond",
     { status, ...deviceTags() },
   );
-}
-
-/**
- * @param {string} method
- * @param {string} errorClass
- */
-export function rpcServerError(method, errorClass) {
-  count("comapeo.rpc.server.errors", { method, error_class: errorClass });
 }
 
 // ── Boot / shutdown ─────────────────────────────────────────────
@@ -209,8 +204,11 @@ export function syncSession(outcome, ms, peersBucket, bytesBucket) {
     "millisecond",
     { outcome, ...deviceTags() },
   );
-  count("comapeo.sync.session.peers_bucket", { bucket: peersBucket });
-  count("comapeo.sync.bytes_bucket", { bucket: bytesBucket });
+  // collaboration-scale + data-volume buckets are usage-gated; duration is always-on.
+  if (config?.applicationUsageData) {
+    count("comapeo.sync.session.peers_bucket", { bucket: peersBucket });
+    count("comapeo.sync.bytes_bucket", { bucket: bytesBucket });
+  }
 }
 
 // ── Backend health (60s sampler) ────────────────────────────────
@@ -255,20 +253,6 @@ export function telemetryForwardingFailure() {
   count("comapeo.telemetry.forwarding_failures", {});
 }
 
-// ── Usage (gated on applicationUsageData) ───────────────────────
-
-/** @param {string} name */
-export function usageScreen(name) {
-  if (!config?.applicationUsageData) return;
-  count("comapeo.usage.screen", { screen: name });
-}
-
-/** @param {string} name */
-export function usageFeature(name) {
-  if (!config?.applicationUsageData) return;
-  count("comapeo.usage.feature", { feature: name });
-}
-
 // ── Bucketing helpers (shared so RN + Node bucket identically) ───
 
 /** @param {number} peers @returns {string} */
@@ -294,5 +278,5 @@ export function storageBucket(bytes) {
   return ">1GB";
 }
 
-/** Test-only seam: drive a forbidden NAME through the wrappers (§11.8). */
+/** Test-only seam: drive a forbidden NAME through the wrappers. */
 export const __testInternals = { count, distribution, gauge };

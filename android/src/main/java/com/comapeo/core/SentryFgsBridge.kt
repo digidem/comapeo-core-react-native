@@ -105,7 +105,7 @@ object SentryFgsBridge {
 
             initialized = true
 
-            // Drain a `debug` 24h auto-off (§11.5) queued by the prefs
+            // Drain a `debug` 24h auto-off queued by the prefs
             // reader, which runs before the SDK is up and so couldn't emit.
             if (DebugAutoOff.consume()) {
                 Sentry.addBreadcrumb(

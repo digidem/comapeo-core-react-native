@@ -5,7 +5,7 @@ import android.content.Context
 import android.os.Build
 
 /**
- * Low-cardinality device classification (§11.2.b). Buckets the device
+ * Low-cardinality device classification. Buckets the device
  * into low/mid/high by RAM + CPU cores so a metric like
  * "low-end devices are 4× slower at observation.create" is a dashboard
  * query rather than a 2,000-model cardinality explosion. Computed once
@@ -29,7 +29,7 @@ data class DeviceTags(
         private const val GB = 1024L * 1024 * 1024
 
         /**
-         * Thresholds (§11.2.b):
+         * Thresholds:
          *   low:  < 3 GB RAM OR < 4 cores
          *   mid:  3–6 GB AND 4–6 cores
          *   high: ≥ 6 GB AND ≥ 6 cores
@@ -55,7 +55,7 @@ data class DeviceTags(
             }
         }
 
-        /** `android.<major>` from `Build.VERSION.RELEASE` (§11.2.b). */
+        /** `android.<major>` from `Build.VERSION.RELEASE`. */
         @JvmStatic
         fun osMajor(release: String?): String {
             val major = release?.split(".")?.firstOrNull()?.takeIf { it.isNotEmpty() }

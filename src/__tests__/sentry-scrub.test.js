@@ -1,5 +1,5 @@
 /**
- * RN-side scrubber (§9b.1 / §9b.5) + forbidden-metric filter (§11.8).
+ * RN-side scrubber + forbidden-metric filter.
  * Symmetric with the Node-side `backend/before-send.js` — keep both in
  * sync. Plain JS so expo-module-scripts' babel-jest picks it up.
  */

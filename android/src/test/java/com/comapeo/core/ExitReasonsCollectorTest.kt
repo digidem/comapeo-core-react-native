@@ -24,11 +24,11 @@ class ExitReasonsCollectorTest {
 
     /** Snapshots [anchors] at call time — seed anchors first, like production
      *  snapshots before stamping the current run's values. */
-    private fun collector(procKey: String = MAIN, captureApplicationData: Boolean = true) =
+    private fun collector(procKey: String = MAIN, applicationUsageData: Boolean = true) =
         ExitReasonsCollector(
             anchors = anchors,
             snapshot = AnchorSnapshot.from(anchors, procKey),
-            captureApplicationData = captureApplicationData,
+            applicationUsageData = applicationUsageData,
             nowMs = { now },
         )
 
@@ -51,8 +51,8 @@ class ExitReasonsCollectorTest {
         procKey: String = MAIN,
         processName: String = MAIN_PROC_NAME,
         records: List<ExitRecord>,
-        captureApplicationData: Boolean = true,
-    ) = collector(procKey, captureApplicationData).collect(processName, procKey, records).metrics
+        applicationUsageData: Boolean = true,
+    ) = collector(procKey, applicationUsageData).collect(processName, procKey, records).metrics
 
     // ── First run / high-water behaviour ───────────────────────────
 
@@ -288,7 +288,7 @@ class ExitReasonsCollectorTest {
     //
     // Coarse buckets are aggregate-resolution data and flow at the
     // diagnostic tier; exact millisecond durations are usage-shape data
-    // and only flow when capture-application-data is on.
+    // and only flow when application-usage-data is on.
 
     @Test
     fun diagnosticTierKeepsBucketsButOmitsExactDurations() {
@@ -300,7 +300,7 @@ class ExitReasonsCollectorTest {
             procKey = FGS,
             processName = FGS_PROC_NAME,
             records = listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)),
-            captureApplicationData = false,
+            applicationUsageData = false,
         ).single().attributes
         assertEquals("1-5m", attrs[SentryTags.UPTIME_BUCKET])
         assertEquals("5-15m", attrs[SentryTags.BG_DURATION_BUCKET])
@@ -316,7 +316,7 @@ class ExitReasonsCollectorTest {
         anchors.writeProcessStartedAtMs(MAIN, exitAt - 120_000)
         val attrs = collectMetrics(
             records = listOf(record(timestampMs = exitAt)),
-            captureApplicationData = true,
+            applicationUsageData = true,
         ).single().attributes
         assertEquals(120_000L, attrs["alive_for_ms"])
     }

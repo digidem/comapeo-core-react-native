@@ -1,7 +1,7 @@
 import XCTest
 @testable import ComapeoCore
 
-/// Classification boundary cases (§11.2.b). Mirrors `DeviceTagsTest.kt`.
+/// Classification boundary cases. Mirrors `DeviceTagsTest.kt`.
 /// `classify` takes raw RAM bytes + core count so no `ProcessInfo` mock
 /// is needed — pure value tests, simulator-free.
 final class DeviceTagsTests: XCTestCase {

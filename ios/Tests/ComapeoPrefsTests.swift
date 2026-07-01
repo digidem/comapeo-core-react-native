@@ -99,38 +99,8 @@ final class ComapeoPrefsTests: XCTestCase {
         XCTAssertTrue(p.readApplicationUsageData())
     }
 
-    func testMigrationCopiesLegacyKeyThenDeletesIt() {
-        // §11.7 one-shot rename: captureApplicationData=true present,
-        // applicationUsageData absent → new key true, old key deleted.
-        let store = FakeStore()
-        store.putBool(ComapeoPrefs.Key.captureApplicationData, true)
-        ComapeoPrefs.migrateLegacyKeys(
-            readBool: store.readBool,
-            writeBool: store.writeBool,
-            removeKey: store.remove
-        )
-        XCTAssertEqual(store.readBool(ComapeoPrefs.Key.applicationUsageData), true)
-        XCTAssertFalse(
-            store.has(ComapeoPrefs.Key.captureApplicationData),
-            "old key must be deleted after migration"
-        )
-    }
-
-    func testMigrationIsNoOpWhenNewKeyAlreadySet() {
-        let store = FakeStore()
-        store.putBool(ComapeoPrefs.Key.captureApplicationData, true)
-        store.putBool(ComapeoPrefs.Key.applicationUsageData, false)
-        ComapeoPrefs.migrateLegacyKeys(
-            readBool: store.readBool,
-            writeBool: store.writeBool,
-            removeKey: store.remove
-        )
-        XCTAssertEqual(store.readBool(ComapeoPrefs.Key.applicationUsageData), false)
-        XCTAssertFalse(store.has(ComapeoPrefs.Key.captureApplicationData))
-    }
-
     func testDebugAutoOffBoundaries() {
-        // §11.5: fresh enable true; +23h59m true; +24h01m false + cleared.
+        // fresh enable true; +23h59m true; +24h01m false + cleared.
         let store = FakeStore()
         let clock = Clock()
         clock.nowMs = 1_000_000
@@ -200,10 +170,6 @@ final class ComapeoPrefsTests: XCTestCase {
         XCTAssertEqual(
             ComapeoPrefs.Key.applicationUsageData,
             "sentry.applicationUsageData"
-        )
-        XCTAssertEqual(
-            ComapeoPrefs.Key.captureApplicationData,
-            "sentry.captureApplicationData"
         )
         XCTAssertEqual(ComapeoPrefs.Key.debug, "sentry.debug")
     }

@@ -27,9 +27,6 @@ export const argSpec = {
   sentryTrace: { type: "string" },
   sentryBaggage: { type: "string", default: "" },
   applicationUsageData: { type: "boolean", default: false },
-  // Deprecated alias for `applicationUsageData`; accepted for one minor
-  // release so a stale native argv builder keeps working.
-  captureApplicationData: { type: "boolean", default: false },
   debug: { type: "boolean", default: false },
   deviceClass: { type: "string", default: "unknown" },
   osMajor: { type: "string" },
@@ -48,7 +45,6 @@ export const argSpec = {
  *   sentryTrace?: string,
  *   sentryBaggage: string,
  *   applicationUsageData: boolean,
- *   captureApplicationData?: boolean,
  *   debug: boolean,
  *   deviceClass: string,
  *   osMajor?: string,
@@ -60,17 +56,6 @@ export const argSpec = {
 let Sentry = null;
 /** @type {{ rpcArgsBytes: number, applicationUsageData: boolean, debug: boolean, deviceClass: string, osMajor: string, platformTag: string } | null} */
 let config = null;
-
-/**
- * Resolve the application-usage toggle from argv, honouring the
- * deprecated `--captureApplicationData` alias if a stale native argv
- * builder still passes it.
- *
- * @param {Argv} argv
- */
-function resolveApplicationUsageData(argv) {
-  return argv.applicationUsageData || argv.captureApplicationData === true;
-}
 
 /** Read-only view of the resolved config for the metrics layer. */
 export function getConfig() {
@@ -137,7 +122,7 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
   Sentry = sdk;
   config = {
     rpcArgsBytes: numericArg(argv.sentryRpcArgsBytes),
-    applicationUsageData: resolveApplicationUsageData(argv),
+    applicationUsageData: argv.applicationUsageData === true,
     debug: argv.debug === true,
     deviceClass: argv.deviceClass ?? "unknown",
     osMajor: argv.osMajor ?? `${argv.platformTag ?? "unknown"}.0`,
@@ -150,8 +135,8 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
     environment: argv.sentryEnvironment,
     release: argv.sentryRelease,
     sampleRate: numericArg(argv.sentrySampleRate),
-    // Per-RPC / boot traces are investigation-only behind `--debug`
-    // (§11.5): 1.0 while on, 0 otherwise. Day-to-day perf signal rides
+    // Per-RPC / boot traces are investigation-only behind `--debug`:
+    // 1.0 while on, 0 otherwise. Day-to-day perf signal rides
     // the always-on metrics layer.
     tracesSampleRate: config.debug ? 1.0 : 0,
     // v9 moved this out of `_experiments` — keep the CLI flag name so
@@ -166,7 +151,7 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
     transport: forwardingTransport,
     // Function form preserves SDK defaults (inboundFilters, linkedErrors,
     // nodeContext, etc.) — the array form would replace them.
-    // `consoleIntegration` is debug-only (§11.3): console-log capture is
+    // `consoleIntegration` is debug-only: console-log capture is
     // privacy-expensive and only useful during an investigation window.
     integrations: (defaults) =>
       config?.debug ? [...defaults, Sentry.consoleIntegration()] : defaults,
@@ -185,14 +170,14 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
     return event;
   });
 
-  // PII scrubber (§9b.1) — symmetric with the RN side's `beforeSend`.
+  // PII scrubber — symmetric with the RN side's `beforeSend`.
   // Registered as an event processor so it runs on the way out, after
   // all scope merges. Drops or redacts before envelopes leave Node.
   Sentry.addEventProcessor(scrubEvent);
 
   // Wire the metrics layer with the live SDK + resolved device tags so
   // every emission carries `platform` and the `.by_device` mirrors carry
-  // `device_class` / `os_major` (§11.2).
+  // `device_class` / `os_major`.
   metrics.init({
     Sentry,
     platform: config.platformTag,
@@ -270,7 +255,7 @@ export async function withBootTrace(args, loadIndex) {
  * @returns {Promise<T>}
  */
 export async function withSpan(op, fn) {
-  // Always record the boot-phase duration as a metric (§11.2.a), even
+  // Always record the boot-phase duration as a metric, even
   // when traces are off (`debug=false`). The span only materialises
   // under `debug` via `tracesSampleRate`, but the metric is always-on.
   const phase = op.startsWith("boot.") ? op.slice("boot.".length) : op;
@@ -348,8 +333,8 @@ export function setSink(realSink) {
 /**
  * `onRequestHook` for ComapeoRpcServer. Returns `undefined` when Sentry
  * is off (RPC server skips middleware). When on, ALWAYS records the
- * `comapeo.rpc.server.*` metric (§11.2.a); only creates a Sentry span
- * when `--debug` is set (§11.3). The metric is recorded while the span
+ * `comapeo.rpc.server.*` metric; only creates a Sentry span
+ * when `--debug` is set. The metric is recorded while the span
  * is active so it links to the trace. RPC args capture is opt-in (PII)
  * via `--sentryRpcArgsBytes` AND `--debug`. Errors are not rethrown:
  * rpc-reflector already responds, and rethrowing would route routine
@@ -383,7 +368,6 @@ export function rpcHook() {
               statusFor(error),
               performance.now() - start,
             );
-            metrics.rpcServerError(method, errorClassFor(error));
           },
         )
         .catch(() => {});
@@ -435,7 +419,6 @@ export function rpcHook() {
               statusFor(error),
               performance.now() - start,
             );
-            metrics.rpcServerError(method, errorClassFor(error));
           }
         },
       );
@@ -444,7 +427,7 @@ export function rpcHook() {
 }
 
 /**
- * Bounded `status` tag for a thrown RPC error (§11.8).
+ * Bounded `status` tag for a thrown RPC error.
  * @param {any} error
  */
 function statusFor(error) {
@@ -453,11 +436,3 @@ function statusFor(error) {
   return "error";
 }
 
-/**
- * Bounded `error_class` tag for the error counter.
- * @param {any} error
- */
-function errorClassFor(error) {
-  const name = error && error.name;
-  return typeof name === "string" && name.length > 0 ? name : "Error";
-}

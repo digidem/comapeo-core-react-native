@@ -1,5 +1,5 @@
-// Node-side PII scrubber (Phase 9b.1 / §9b.5) and forbidden-metric
-// filter (§11.8). Hand-mirrored from `src/sentry-scrub.ts` on the RN
+// Node-side PII scrubber and forbidden-metric
+// filter. Hand-mirrored from `src/sentry-scrub.ts` on the RN
 // side — the two run in different module systems (rollup-bundled ESM
 // here, the RN bundle there) so a build-time copy isn't practical. Keep
 // the two regex lists in lock-step; each file points at the other.
@@ -84,10 +84,10 @@ function scrubValue(value) {
 }
 
 /**
- * Walk every text field of a Sentry event and scrub it (§9b.1):
+ * Walk every text field of a Sentry event and scrub it:
  * message, exception values, extra, contexts, request, breadcrumb
  * messages + data, span descriptions + attributes. HTTP breadcrumb and
- * request URLs reduce to host-only (§9b.5). Mutates and returns the event (event-processor
+ * request URLs reduce to host-only. Mutates and returns the event (event-processor
  * contract). Returns the event (never drops here — call-site capture is
  * the real fix; this is the net).
  *
@@ -147,7 +147,7 @@ export function scrubEvent(event) {
 }
 
 /**
- * Scrub one breadcrumb in place: HTTP URL → host-only (§9b.5), message
+ * Scrub one breadcrumb in place: HTTP URL → host-only, message
  * → string-scrubbed, data → recursively scrubbed.
  *
  * @param {any} crumb
@@ -177,7 +177,7 @@ export function scrubBreadcrumb(crumb) {
 /**
  * `true` when a metric should be dropped: its name or any tag name is on
  * the forbidden list, or any tag value matches a forbidden pattern
- * (§11.8 defensive gate).
+ * (defensive gate).
  *
  * @param {string} name
  * @param {Record<string, string | number | boolean>} attributes

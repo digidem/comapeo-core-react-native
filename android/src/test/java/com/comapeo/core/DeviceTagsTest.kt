@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * Classification boundary cases (§11.2.b). Pure JVM tests — [DeviceTags.classify]
+ * Classification boundary cases. Pure JVM tests — [DeviceTags.classify]
  * takes raw RAM bytes + core count so no `ActivityManager` mock is needed.
  *
  * Boundaries that matter: exactly 3 GB RAM, exactly 4 cores (the floor of

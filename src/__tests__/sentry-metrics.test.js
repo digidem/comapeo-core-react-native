@@ -1,10 +1,10 @@
 /**
- * RN-side metrics layer (`src/sentry-metrics.ts`, §11.2 / §11.6 / §11.8)
+ * RN-side metrics layer (`src/sentry-metrics.ts`)
  * — the mirror of the tested backend `metrics.js`. A fake
  * `Sentry.metrics` records every emission so we can assert on the shared
  * `platform` injection, the `.by_device` cardinality split, the
- * forbidden-tag filter (exercising the REAL `isForbiddenMetric`), the
- * off-switch, and the usage gating.
+ * forbidden-tag filter (exercising the REAL `isForbiddenMetric`), and
+ * the off-switch.
  *
  * Plain JS so expo-module-scripts' babel-jest picks it up. Per-test
  * module reset because the layer reads `Platform.OS` and `sentryConfig`
@@ -13,13 +13,13 @@
 
 describe("sentry-metrics", () => {
   let calls;
-  let prefs;
   let isInitializedFlag;
+  let prefs;
 
   beforeEach(() => {
     calls = [];
-    prefs = { diagnosticsEnabled: false, applicationUsageData: false };
     isInitializedFlag = true;
+    prefs = { diagnosticsEnabled: true, applicationUsageData: false };
 
     jest.resetModules();
 
@@ -30,7 +30,6 @@ describe("sentry-metrics", () => {
 
     jest.doMock("@sentry/react-native", () => ({
       isInitialized: () => isInitializedFlag,
-      addBreadcrumb: jest.fn(),
       metrics: {
         distribution: recordCall,
         count: recordCall,
@@ -49,7 +48,8 @@ describe("sentry-metrics", () => {
     }));
   });
 
-  test("rpcClientMetric: primary carries method, by_device carries device tags", () => {
+  test("rpcClientMetric: usage on → primary(method) + by_device(device tags)", () => {
+    prefs.applicationUsageData = true;
     const { rpcClientMetric } = require("../sentry-metrics");
     rpcClientMetric("read.doc", "ok", 42);
 
@@ -69,6 +69,28 @@ describe("sentry-metrics", () => {
     expect(mirror.device_class).toBe("mid");
     expect(mirror.os_major).toBe("android.14");
     expect(mirror.method).toBeUndefined();
+  });
+
+  test("rpcClientMetric: usage off → only the method-less by_device mirror", () => {
+    const { rpcClientMetric } = require("../sentry-metrics");
+    rpcClientMetric("read.doc", "ok", 42);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe("comapeo.rpc.client.duration_ms.by_device");
+    expect(calls[0].method).toBeUndefined();
+    expect(calls[0].status).toBe("ok");
+  });
+
+  test("rpcClientSendMetric: method tag is usage-gated", () => {
+    const { rpcClientSendMetric } = require("../sentry-metrics");
+    rpcClientSendMetric("read.doc", 5);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe("comapeo.rpc.client.send_ms");
+    expect(calls[0].method).toBeUndefined();
+
+    prefs.applicationUsageData = true;
+    rpcClientSendMetric("read.doc", 5);
+    expect(calls[1].method).toBe("read.doc");
   });
 
   test("platform is injected on every primitive", () => {
@@ -104,27 +126,6 @@ describe("sentry-metrics", () => {
     rpcClientMetric("read.doc", "ok", 1);
     __metricsInternals.count("comapeo.x", { method: "read.doc" });
     expect(calls).toHaveLength(0);
-  });
-
-  test("recordUsage no-ops unless diagnostics + usage data are both on", () => {
-    const Sentry = require("@sentry/react-native");
-    const { recordUsage } = require("../sentry-metrics");
-
-    recordUsage.screen("Map");
-    recordUsage.feature("export");
-    expect(calls).toHaveLength(0);
-    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
-
-    prefs.diagnosticsEnabled = true;
-    prefs.applicationUsageData = true;
-    recordUsage.screen("Map");
-    recordUsage.feature("export");
-
-    const names = calls.map((c) => c.name);
-    expect(names).toEqual(["comapeo.usage.screen", "comapeo.usage.feature"]);
-    expect(calls[0].screen).toBe("Map");
-    expect(calls[1].feature).toBe("export");
-    expect(Sentry.addBreadcrumb).toHaveBeenCalledTimes(2);
   });
 
   test("rpcStatusFor maps outcomes to bounded status tags", () => {

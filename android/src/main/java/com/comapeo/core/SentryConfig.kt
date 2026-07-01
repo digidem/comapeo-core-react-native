@@ -76,10 +76,6 @@ data class SentryConfig(
             "com.comapeo.core.sentry.diagnosticsEnabledDefault"
         const val META_APPLICATION_USAGE_DATA_DEFAULT =
             "com.comapeo.core.sentry.applicationUsageDataDefault"
-
-        /** Deprecated pre-Phase-11 key; still read for one minor (§11.7). */
-        const val META_CAPTURE_APPLICATION_DATA_DEFAULT =
-            "com.comapeo.core.sentry.captureApplicationDataDefault"
         const val META_DEBUG_DEFAULT = "com.comapeo.core.sentry.debugDefault"
         const val META_ENABLE_LOGS = "com.comapeo.core.sentry.enableLogs"
         const val META_MODULE_VERSION = "com.comapeo.core.module.version"
@@ -130,10 +126,8 @@ data class SentryConfig(
                 diagnosticsEnabledDefault = metaString(
                     META_DIAGNOSTICS_ENABLED_DEFAULT,
                 )?.toBooleanStrictOrNull(),
-                // New key wins; fall back to the deprecated key for one minor (§11.7).
-                applicationUsageDataDefault = (
-                    metaString(META_APPLICATION_USAGE_DATA_DEFAULT)
-                        ?: metaString(META_CAPTURE_APPLICATION_DATA_DEFAULT)
+                applicationUsageDataDefault = metaString(
+                    META_APPLICATION_USAGE_DATA_DEFAULT,
                 )?.toBooleanStrictOrNull(),
                 debugDefault = metaString(META_DEBUG_DEFAULT)?.toBooleanStrictOrNull(),
                 enableLogs = metaString(META_ENABLE_LOGS)?.toBooleanStrictOrNull(),

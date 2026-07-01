@@ -118,14 +118,14 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         // so `nodeService.start()` finds a live hub. JS-side `Sentry.init`
         // runs later with `autoInitializeNativeSdk: false`.
         if let cfg = Self.resolveEffectiveSentryConfig() {
-            // Run the §11.5 auto-off check before init so any queue() from
+            // Run the auto-off check before init so any queue() from
             // readDebugEnabled() precedes the consume() drain below. Otherwise
             // the only readDebugEnabled() calls this launch run after
             // didFinishLaunching (lazy nodeService / Expo constants), and the
             // crumb is lost on the launch that performed the auto-off.
             _ = ComapeoPrefs.open().readDebugEnabled()
             SentryNativeBridge.initFromConfig(cfg)
-            // Drain a `debug` 24h auto-off (§11.5) queued by the prefs
+            // Drain a `debug` 24h auto-off queued by the prefs
             // reader, which runs before the SDK is up.
             if DebugAutoOff.consume() {
                 SentryNativeBridge.addBreadcrumb(

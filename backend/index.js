@@ -9,7 +9,7 @@ import { SimpleRpcServer } from "./lib/simple-rpc.js";
 import * as sentry from "./lib/sentry.js";
 import * as metrics from "./lib/metrics.js";
 
-// 60s sampler cadence for backend memory + uptime gauges (§11.2.a). No-op
+// 60s sampler cadence for backend memory + uptime gauges. No-op
 // when Sentry is off (the metrics layer never got its SDK).
 const MEMORY_SAMPLE_INTERVAL_MS = 60_000;
 
@@ -307,8 +307,8 @@ async function withPhase(phase, fn) {
 })();
 
 /**
- * 60s gauge sampler for backend memory + uptime + event-loop delay
- * (§11.2.a). `unref()` so the timer never keeps the process alive past
+ * 60s gauge sampler for backend memory + uptime + event-loop delay.
+ * `unref()` so the timer never keeps the process alive past
  * shutdown. No-op metric calls when Sentry is off.
  */
 function startMemorySampler() {
@@ -326,7 +326,7 @@ function startMemorySampler() {
 }
 
 /**
- * One-shot bucketed storage-size counter at STARTED (§11.2.a). Reads the
+ * One-shot bucketed storage-size counter at STARTED. Reads the
  * private storage dir recursively; best-effort — a stat error skips the
  * sample rather than failing boot.
  *

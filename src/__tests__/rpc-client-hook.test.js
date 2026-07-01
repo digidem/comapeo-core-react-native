@@ -1,5 +1,5 @@
 /**
- * RN-side onRequestHook split (§11.9), mirroring backend's
+ * RN-side onRequestHook split, mirroring backend's
  * `sentry.test.mjs` debug-on/debug-off cases. The metric is recorded on
  * EVERY call; the per-RPC span only runs under `diagnosticsEnabled &&
  * debug` with Sentry initialised.

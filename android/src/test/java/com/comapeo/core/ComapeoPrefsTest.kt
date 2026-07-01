@@ -94,33 +94,8 @@ class ComapeoPrefsTest {
     }
 
     @Test
-    fun migrationCopiesLegacyKeyThenDeletesIt() {
-        // §11.7 one-shot rename: captureApplicationData=true present,
-        // applicationUsageData absent → new key populated true, old key gone.
-        val store = FakeStore()
-        store.putBool(ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA, true)
-        ComapeoPrefs.migrateLegacyKeys(store.readBool, store.writeBool, store.remove)
-        assertTrue(store.readBool(ComapeoPrefs.KEY_APPLICATION_USAGE_DATA) == true)
-        assertFalse(
-            "old key must be deleted after migration",
-            store.has(ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA),
-        )
-    }
-
-    @Test
-    fun migrationIsNoOpWhenNewKeyAlreadySet() {
-        // Idempotent: a new-key write must not be clobbered by a stale old key.
-        val store = FakeStore()
-        store.putBool(ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA, true)
-        store.putBool(ComapeoPrefs.KEY_APPLICATION_USAGE_DATA, false)
-        ComapeoPrefs.migrateLegacyKeys(store.readBool, store.writeBool, store.remove)
-        assertFalse(store.readBool(ComapeoPrefs.KEY_APPLICATION_USAGE_DATA)!!)
-        assertFalse(store.has(ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA))
-    }
-
-    @Test
     fun debugAutoOffBoundaries() {
-        // §11.5: fresh enable true; +23h59m true; +24h01m false + cleared.
+        // fresh enable true; +23h59m true; +24h01m false + cleared.
         val store = FakeStore()
         var clock = 1_000_000L
         val p = prefs(store, now = { clock })
@@ -196,17 +171,13 @@ class ComapeoPrefsTest {
             "sentry.applicationUsageData",
             ComapeoPrefs.KEY_APPLICATION_USAGE_DATA,
         )
-        assertEquals(
-            "sentry.captureApplicationData",
-            ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA,
-        )
         assertEquals("sentry.debug", ComapeoPrefs.KEY_DEBUG)
     }
 
     @Test
     fun prefsFileNameIsPinned() {
-        // Phase 6 plans to share this file. Pin the name so it can't
-        // be renamed without a deliberate, visible change.
+        // Other code may come to share this prefs file. Pin the name
+        // so it can't be renamed without a deliberate, visible change.
         assertEquals("com.comapeo.core.prefs", ComapeoPrefs.PREFS_NAME)
     }
 

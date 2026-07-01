@@ -83,12 +83,6 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
    */
   setApplicationUsageData(value: boolean): Promise<void>;
   /**
-   * Deprecated native alias for {@link setApplicationUsageData}; kept
-   * for one minor release so a stale native call site keeps working.
-   * @deprecated use `setApplicationUsageData`.
-   */
-  setCaptureApplicationData(value: boolean): Promise<void>;
-  /**
    * Persist the `debug` toggle and (on a transition to true) stamp the
    * enable time so the 24h auto-off can fire on a later launch.
    * Restart-to-activate.
@@ -131,15 +125,9 @@ export function readSentryConfig(): SentryInitConfig {
  * on the next launch. Falls back to safe defaults (diagnostics on,
  * application-usage-data off, debug off) when the native module isn't
  * available (test contexts).
- *
- * Reads the deprecated `captureApplicationData` field if a stale native
- * module still emits it, so an in-flight native/JS version skew doesn't
- * silently flip the toggle off.
  */
 export function readSentryPreferences(): SentryPreferences {
-  const raw = nativeModule.sentryPreferences as
-    | (SentryPreferences & { captureApplicationData?: boolean })
-    | undefined;
+  const raw = nativeModule.sentryPreferences as SentryPreferences | undefined;
   if (!raw) {
     return {
       diagnosticsEnabled: true,
@@ -149,8 +137,7 @@ export function readSentryPreferences(): SentryPreferences {
   }
   return {
     diagnosticsEnabled: raw.diagnosticsEnabled,
-    applicationUsageData:
-      raw.applicationUsageData ?? raw.captureApplicationData ?? false,
+    applicationUsageData: raw.applicationUsageData ?? false,
     debug: raw.debug ?? false,
   };
 }
@@ -381,8 +368,8 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
               }
             : request;
           // Record the metric while the span is active so it links to the
-          // trace (§11.3). Duration is measured around the same round-trip
-          // the span brackets.
+          // trace. Duration is measured around the same round-trip the
+          // span brackets.
           const start = performance.now();
           try {
             // Split the span duration into "sync send" (JSI hop + UDS write

@@ -62,7 +62,7 @@ class NodeJSService(
     context: android.content.Context,
     /** Forwarded as `--sentry*` argv to backend/loader.mjs. `null` → loader skips Sentry. */
     private val sentryConfig: SentryConfig? = null,
-    /** Stable user.id + usage events when `true`. Ignored when [sentryConfig] is null. */
+    /** Gates the usage-tier metric dimensions (RPC `method`, sync volume buckets) on the backend. Ignored when [sentryConfig] is null. */
     private val applicationUsageData: Boolean = false,
     /** Per-RPC tracing + consoleIntegration when `true`. Ignored when [sentryConfig] is null. */
     private val debug: Boolean = false,

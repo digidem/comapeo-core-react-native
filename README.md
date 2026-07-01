@@ -315,8 +315,14 @@ From `@comapeo/core-react-native/sentry`:
 - `getDiagnosticsEnabled()` / `setDiagnosticsEnabled(value)` — the diagnostics
   opt-out toggle. Restart-to-activate; setting `false` also wipes the on-disk
   envelope cache.
-- `getCaptureApplicationData()` / `setCaptureApplicationData(value)` — the
-  capture-application-data toggle (gates traces and richer payloads).
+- `getApplicationUsageData()` / `setApplicationUsageData(value)` — the
+  opt-in application-usage telemetry toggle (default off). Restart-to-activate;
+  setting `false` also wipes the on-disk envelope cache.
+- `getDebugEnabled()` / `setDebugEnabled(value)` — opt-in debug mode (per-RPC
+  traces, `@comapeo/core` OTel spans, richer capture). Restart-to-activate and
+  auto-expires 24h after the most recent enable.
+- `recordUsage.screen(name)` / `recordUsage.feature(name)` — record a
+  feature-usage metric. No-op unless application-usage data is enabled.
 
 ### Uploading artifacts to Sentry
 

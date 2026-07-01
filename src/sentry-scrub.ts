@@ -1,6 +1,6 @@
 /**
- * Shared PII scrubber (Phase 9b.1 / §9b.5) and forbidden-metric filter
- * (§11.8) for the RN side. The Node side keeps a hand-mirrored copy in
+ * Shared PII scrubber and forbidden-metric filter
+ * for the RN side. The Node side keeps a hand-mirrored copy in
  * `backend/before-send.js` (the two run in different module systems —
  * ESM-via-rollup vs the RN bundle — so a build-time copy isn't
  * practical). Keep the two regex lists in lock-step; each file points
@@ -10,7 +10,7 @@
  * sensitive data at the call site. This net catches a malicious or
  * buggy host (and our own mistakes) before a payload leaves the device.
  *
- * False-positive trade-off (documented per the §9b.1 requirement):
+ * False-positive trade-off:
  *   - The base64 pattern redacts any isolated base64url run of 22-or-more
  *     chars (16-byte rootKey at 22, 32-byte keypair public keys at 43,
  *     z-base-32 project ids at ~52), but ALSO any unrelated long base64
@@ -27,7 +27,7 @@
  *     value that follows. A sentence like "latitude: unknown" is
  *     redacted to "latitude: [redacted]" — harmless over-redaction.
  *   - HTTP breadcrumb URLs are reduced to host-only, dropping path +
- *     query (§9b.5): "https://cloud.comapeo.app/projects/abc?token=x"
+ *     query: "https://cloud.comapeo.app/projects/abc?token=x"
  *     → "https://cloud.comapeo.app". We lose the path detail but keep
  *     "all requests to host X are failing" diagnosability.
  */
@@ -55,7 +55,7 @@ const SCRUB_PATTERNS: RegExp[] = [
 /** Object keys whose value is a raw coordinate — redacted regardless of type. */
 const SENSITIVE_KEY_PATTERN = /^(lat|lng|latitude|longitude)$/i;
 
-/** Tag names/values that must never ride on a metric (§11.8). */
+/** Tag names/values that must never ride on a metric. */
 const FORBIDDEN_METRIC_TAG_NAMES = new Set([
   "device.model",
   "device.id",
@@ -115,10 +115,10 @@ function scrubValue(value: Json): Json {
 type AnyRecord = Record<string, unknown>;
 
 /**
- * Walk every text field of a Sentry event and scrub it (§9b.1):
+ * Walk every text field of a Sentry event and scrub it:
  * message, exception values, extra, contexts, request, breadcrumb
  * messages + data, span descriptions + attributes. HTTP breadcrumb and
- * request URLs reduce to host-only (§9b.5). Mutates and returns the
+ * request URLs reduce to host-only. Mutates and returns the
  * event.
  */
 export function scrubEvent(event: AnyRecord): AnyRecord {
@@ -179,7 +179,7 @@ export function scrubEvent(event: AnyRecord): AnyRecord {
 }
 
 /**
- * Scrub an HTTP breadcrumb's URL down to host-only (§9b.5). Other
+ * Scrub an HTTP breadcrumb's URL down to host-only. Other
  * breadcrumb categories pass through unchanged. Returns the (mutated)
  * breadcrumb, or `null` to drop — we never drop here, the host's chain
  * may.
@@ -207,7 +207,7 @@ export function scrubBreadcrumb(crumb: AnyRecord): AnyRecord {
 /**
  * `true` when a metric should be dropped: its name or any tag name is on
  * the forbidden list, or any tag value matches a forbidden pattern
- * (§11.8 defensive gate).
+ * (defensive gate).
  */
 export function isForbiddenMetric(
   name: string,

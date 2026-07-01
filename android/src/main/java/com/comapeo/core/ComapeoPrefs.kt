@@ -37,18 +37,19 @@ internal class ComapeoPrefs(
         readBool(KEY_APPLICATION_USAGE_DATA) ?: defaults.applicationUsageData
 
     /**
-     * Read the `debug` toggle, applying the §11.5 24h auto-off: if debug
-     * was switched on more than [DEBUG_MAX_AGE_MS] ago, flip it off, clear
+     * Read the `debug` toggle, applying the 24h auto-off: if debug was
+     * switched on more than [DEBUG_MAX_AGE_MS] ago, flip it off, clear
      * the timestamp, queue a `comapeo.debug.auto_disabled` breadcrumb, and
-     * return `false`. A `debug=true` cell with no timestamp (older install)
-     * is treated as "enabled now" and stamped on first read.
+     * return `false`. A `debug=true` cell with no timestamp (e.g. enabled
+     * via the configured default) is treated as "enabled now" and stamped
+     * on first read.
      */
     fun readDebugEnabled(): Boolean {
         val stored = readBool(KEY_DEBUG) ?: defaults.debug
         if (!stored) return false
         val enabledAt = readLong(KEY_DEBUG_ENABLED_AT_MS)
         if (enabledAt == null) {
-            // No timestamp (pre-Phase-11 cell): start the clock cleanly.
+            // No recorded start (e.g. enabled via the default): start the clock.
             writeLong(KEY_DEBUG_ENABLED_AT_MS, now())
             return true
         }
@@ -72,7 +73,7 @@ internal class ComapeoPrefs(
     /**
      * Write `debug`, stamping (true) or clearing (false) the enable
      * timestamp synchronously so the 24h window starts/stops with the
-     * value. Re-writing `true` refreshes the window (§11.5).
+     * value. Re-writing `true` refreshes the window.
      */
     fun writeDebugEnabled(value: Boolean) {
         writeBool(KEY_DEBUG, value)
@@ -87,9 +88,6 @@ internal class ComapeoPrefs(
         const val PREFS_NAME = "com.comapeo.core.prefs"
         const val KEY_DIAGNOSTICS_ENABLED = "sentry.diagnosticsEnabled"
         const val KEY_APPLICATION_USAGE_DATA = "sentry.applicationUsageData"
-
-        /** Deprecated pre-Phase-11 key, migrated to [KEY_APPLICATION_USAGE_DATA]. */
-        const val KEY_CAPTURE_APPLICATION_DATA = "sentry.captureApplicationData"
         const val KEY_DEBUG = "sentry.debug"
         const val KEY_DEBUG_ENABLED_AT_MS = "sentry.debugEnabledAtMs"
 
@@ -97,29 +95,8 @@ internal class ComapeoPrefs(
         const val DEFAULT_APPLICATION_USAGE_DATA = false
         const val DEFAULT_DEBUG = false
 
-        /** 24h in milliseconds (§11.5). */
+        /** 24h in milliseconds. */
         const val DEBUG_MAX_AGE_MS = 24L * 60 * 60 * 1000
-
-        /**
-         * One-shot rename migration (§11.7): if the old
-         * `captureApplicationData` key is present and the new
-         * `applicationUsageData` key is absent, copy the value across and
-         * delete the old key. Idempotent — runs once because it deletes its
-         * own input. Pure-lambda form so it's unit-testable without
-         * `SharedPreferences`.
-         */
-        @JvmStatic
-        fun migrateLegacyKeys(
-            readBool: (String) -> Boolean?,
-            writeBool: (String, Boolean) -> Unit,
-            removeKey: (String) -> Unit,
-        ) {
-            val legacy = readBool(KEY_CAPTURE_APPLICATION_DATA) ?: return
-            if (readBool(KEY_APPLICATION_USAGE_DATA) == null) {
-                writeBool(KEY_APPLICATION_USAGE_DATA, legacy)
-            }
-            removeKey(KEY_CAPTURE_APPLICATION_DATA)
-        }
 
         /**
          * `commit = true` (not `apply`) so a subsequent [wipeSentryOutbox] is
@@ -147,8 +124,6 @@ internal class ComapeoPrefs(
                 { key, value -> sp.edit(commit = true) { putLong(key, value) } }
             val removeKey: (String) -> Unit =
                 { key -> sp.edit(commit = true) { remove(key) } }
-
-            migrateLegacyKeys(readBool, writeBool, removeKey)
 
             return ComapeoPrefs(
                 readBool = readBool,
@@ -185,7 +160,7 @@ internal class ComapeoPrefs(
 
 /**
  * Holds the `comapeo.debug.auto_disabled` breadcrumb queued by the 24h
- * auto-off (§11.5). [ComapeoPrefs.readDebugEnabled] runs before
+ * auto-off. [ComapeoPrefs.readDebugEnabled] runs before
  * `Sentry.init`, so the breadcrumb can't be added directly; it's drained
  * by [SentryFgsBridge.init] / RN init once the SDK is up.
  *

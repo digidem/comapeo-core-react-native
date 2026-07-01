@@ -10,7 +10,7 @@ import {
 } from "../before-send.js";
 
 /**
- * Node-side scrubber (§9b.1 / §9b.5) + forbidden-metric filter (§11.8).
+ * Node-side scrubber + forbidden-metric filter.
  * Symmetric with the RN-side `src/sentry-scrub.ts` — keep both in sync.
  */
 
@@ -39,7 +39,7 @@ test("scrubString does NOT redact bare base64 tokens while the broad rule is dis
   );
 });
 
-test("scrubEvent redacts numeric lat/lng stored as object fields (§9b.1)", () => {
+test("scrubEvent redacts numeric lat/lng stored as object fields", () => {
   const event = {
     extra: { coords: { latitude: 12.3456, longitude: -56.78 } },
     contexts: { geo: { lat: 1.0, lng: 2.0 } },
@@ -67,7 +67,7 @@ test("scrubEvent reduces request.url to host-only and scrubs marked query/header
   assert.match(event.request.headers["x-secret"], /\[redacted\]/);
 });
 
-test("scrubUrlToHost drops path + query (§9b.5)", () => {
+test("scrubUrlToHost drops path + query", () => {
   assert.equal(
     scrubUrlToHost("https://cloud.comapeo.app/projects/abc?token=secret"),
     "https://cloud.comapeo.app",

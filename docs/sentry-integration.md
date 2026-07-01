@@ -112,7 +112,7 @@ its own process / runtime and has its own SDK init.
 │    └──────────────────────────────────────────────────┘           │
 │                            │                                      │
 │                            │ argv: --sentryDsn, --sentry...,      │
-│                            │       --captureApplicationData       │
+│                            │       --applicationUsageData       │
 │                            │ comapeo.sock RPC (with sentry-trace) │
 │                            ▼                                      │
 │    ┌─────────────────── Node backend ─────────────────┐           │
@@ -190,7 +190,7 @@ Three configuration vectors solve this together:
 | Vector                                                         | When read                                                     | Purpose                                                                                                                                                                     |
 | -------------------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Expo config plugin** (build-time)                            | At native process start, before any IPC                       | DSN, environment, release, sample rates. The single source of truth.                                                                                                        |
-| **Persisted native preference** (runtime, restart-to-activate) | At native process start                                       | The `diagnosticsEnabled` and `captureApplicationData` toggles (§9).                                                                                                         |
+| **Persisted native preference** (runtime, restart-to-activate) | At native process start                                       | The `diagnosticsEnabled` and `applicationUsageData` toggles (§9).                                                                                                         |
 | **JS adapter auto-detect** (side-effect import)                | When the consumer imports `@comapeo/core-react-native/sentry` | The sub-export probes `@sentry/react-native` via `require`-then-catch and attaches state listeners against it for `captureException` / breadcrumbs. Does **not** carry DSN. |
 
 ### 4.1 Build-time: Expo config plugin (primary)
@@ -208,7 +208,7 @@ Plugin inputs:
 | `sampleRate`                     | no                          | Sentry sampling knob.                                                                              |
 | `rpcArgsBytes`                   | no                          | RPC arg-truncation cap (developer debug builds only).                                              |
 | `diagnosticsEnabledDefault`      | no                          | Per-environment default for the diagnostics toggle (§9).                                           |
-| `captureApplicationDataDefault`  | no                          | Per-environment default for the capture-application-data toggle (§9).                              |
+| `applicationUsageDataDefault`  | no                          | Per-environment default for the application-usage-data toggle (§9).                              |
 
 The module deliberately **does not derive `environment`** — build-environment
 schemes are app-specific. The consumer feeds `environment` from a build-time
@@ -344,7 +344,7 @@ data class SentryConfig(
   val tracesSampleRate: Double?,
   val rpcArgsBytes: Int?,
   val diagnosticsEnabledDefault: Boolean? = null,
-  val captureApplicationDataDefault: Boolean? = null,
+  val applicationUsageDataDefault: Boolean? = null,
 )
 
 fun loadFromManifest(ctx: Context): SentryConfig? {
@@ -372,7 +372,7 @@ fun loadFromManifest(ctx: Context): SentryConfig? {
     sampleRate = meta.getString("com.comapeo.core.sentry.sampleRate")?.toDoubleOrNull(),
     tracesSampleRate = meta.getString("com.comapeo.core.sentry.tracesSampleRate")?.toDoubleOrNull(),
     rpcArgsBytes = meta.getString("com.comapeo.core.sentry.rpcArgsBytes")?.toIntOrNull(),
-    // …diagnosticsEnabledDefault / captureApplicationDataDefault read similarly
+    // …diagnosticsEnabledDefault / applicationUsageDataDefault read similarly
   )
 }
 ```
@@ -466,7 +466,7 @@ Two persisted boolean toggles in native preferences:
 
 - `diagnosticsEnabled` — gates Sentry entirely. When off, neither the FGS
   bridge nor the backend loader nor the RN-side `Sentry.init` run.
-- `captureApplicationData` — gates the _additional_ observability surface
+- `applicationUsageData` — gates the _additional_ observability surface
   described in §7.4 (per-RPC method spans, sync session spans, counts) but
   never touches DSN/environment/release and never unlocks PII fields.
 
@@ -487,7 +487,7 @@ node loader.mjs \
   --sentryRelease=1.4.2 \
   --sentryTracesSampleRate=0.1 \
   --sentryRpcArgsBytes=0 \
-  --captureApplicationData      # only when toggle is on
+  --applicationUsageData      # only when toggle is on
 ```
 
 Native picks the loader path (`loader.mjs`) as the entry script and
@@ -623,7 +623,7 @@ const { values } = parseArgs({
     sentryTracesSampleRate: { type: "string" },
     sentrySampleRate: { type: "string" },
     sentryRpcArgsBytes: { type: "string" },
-    captureApplicationData: { type: "boolean", default: false },
+    applicationUsageData: { type: "boolean", default: false },
   },
   allowPositionals: true,
   strict: false,
@@ -636,7 +636,7 @@ if (values.sentryDsn) {
     environment: values.sentryEnvironment ?? "production",
     release: values.sentryRelease,
     sampleRate: Number(values.sentrySampleRate ?? 1.0),
-    tracesSampleRate: values.captureApplicationData
+    tracesSampleRate: values.applicationUsageData
       ? Number(values.sentryTracesSampleRate ?? 0.1)
       : 0,
     transport: makeControlSocketTransport(), // see §5.7
@@ -654,7 +654,7 @@ back without re-parsing argv:
 ```js
 globalThis[SENTRY_CONFIG_GLOBAL] = {
   rpcArgsBytes: Number(values.sentryRpcArgsBytes ?? 0),
-  captureApplicationData: values.captureApplicationData,
+  applicationUsageData: values.applicationUsageData,
 };
 ```
 
@@ -816,7 +816,7 @@ sources.
 
 - `src/sentry.ts` — public sub-export. `initSentry()`,
   `getDiagnosticsEnabled` / `setDiagnosticsEnabled`,
-  `getCaptureApplicationData` / `setCaptureApplicationData`, types, state
+  `getApplicationUsageData` / `setApplicationUsageData`, types, state
   listeners.
 - `src/sentry-internal.ts` — module-private state holding the
   auto-detected adapter (or `null`), keyed reads for the RPC wrapper.
@@ -1105,7 +1105,7 @@ captures still fire (commit `6bd4852`).
 | IPC connection breadcrumbs                                         | **Essential**                                 |
 | Unexpected-disconnect event                                        | **Essential**                                 |
 | FGS lifecycle breadcrumbs                                          | **Essential**                                 |
-| Per-RPC method spans (sampled)                                     | **Opt-in** (`captureApplicationData == true`) |
+| Per-RPC method spans (sampled)                                     | **Opt-in** (`applicationUsageData == true`) |
 | Sync session transaction (start → ready → finish, with peer count) | **Opt-in**                                    |
 | Background/foreground transitions                                  | **Opt-in**                                    |
 | Backend memory/heap snapshots (periodic)                           | **Opt-in**                                    |
@@ -1175,7 +1175,7 @@ killers reaching past FGS protection — plus `description`, `pss_kb`,
 (not usage) tier deliberately: they're aggregate, low-resolution
 cohort axes, not a per-user timeline.
 
-App-usage-tier additions (only when `captureApplicationData` is on):
+App-usage-tier additions (only when `applicationUsageData` is on):
 the exact `alive_for_ms` / `backgrounded_for_ms` values — millisecond
 precision over a user's backgrounding behaviour is usage-shape data,
 see §8. Durations derive from wall-clock anchors in
@@ -1254,7 +1254,7 @@ identities). Defaults must avoid leaking it into Sentry:
 - **Stacktraces** are fine — they may include filenames from inside
   `@comapeo/core` and the bundled backend. No user data unless an
   `Error.message` was constructed with one.
-- **`tracesSampleRate`** defaults to `0` if `captureApplicationData` is
+- **`tracesSampleRate`** defaults to `0` if `applicationUsageData` is
   off. The host app must opt in to RPC tracing volume explicitly.
 - **`sendDefaultPii: false`** is locked by `initSentry()`; the host can't
   override it.
@@ -1291,25 +1291,20 @@ before they ship.
 
 ## 9. Privacy model
 
-> **Phase 11 update (see [`sentry-integration-plan.md` §11](./sentry-integration-plan.md#phase-11--metrics-first-observability--debug-tier)).**
-> The two-toggle model below has been superseded by a three-toggle
-> model. `captureApplicationData` was renamed to `applicationUsageData`
-> (deprecated alias kept for one minor release) and a new `debug` toggle
-> was added. The current contract:
+> **Three-toggle model.** The privacy contract has three toggles —
+> `diagnosticsEnabled`, `applicationUsageData`, and `debug`:
 >
 > | Toggle                 | Gates                                                                                  | Default   |
 > | ---------------------- | -------------------------------------------------------------------------------------- | --------- |
 > | `diagnosticsEnabled`   | `Sentry.init`; errors, lifecycle, **metrics**, boot/sync/shutdown transactions.        | `true`    |
-> | `applicationUsageData` | Stable `user.id` (no monthly hash) + feature-usage breadcrumbs/counters.               | `false`   |
+> | `applicationUsageData` | Stable `user.id` (no monthly hash) + the usage-tier metric dimensions (see the §9.2 table). | `false`   |
 > | `debug`                | Per-RPC traces, `@comapeo/core` OTel spans, backend `consoleIntegration`, `rpc.args`.  | `false`   |
 >
-> Day-to-day performance signal now rides an always-on **metrics** layer
-> at the diagnostic tier (`comapeo.rpc.*`, `comapeo.boot.*`, etc. — see
-> §11.2); per-RPC *traces* moved behind `debug`, which 100%-samples while
-> on and auto-expires 24h after the most recent enable. `tracesSampleRate`
-> is `debug ? 1.0 : 0` (was `applicationUsageData ? 0.1 : 0`). The §9.2
-> sections below describe the renamed toggle; read `applicationUsageData`
-> wherever they say `captureApplicationData`.
+> Day-to-day performance signal rides an always-on **metrics** layer at
+> the diagnostic tier (`comapeo.rpc.*`, `comapeo.boot.*`, etc.); per-RPC
+> *traces* moved behind `debug`, which 100%-samples while on and
+> auto-expires 24h after the most recent enable. `tracesSampleRate` is
+> `debug ? 1.0 : 0`.
 
 CoMapeo's host-app privacy contract has three states, not two:
 
@@ -1317,11 +1312,11 @@ CoMapeo's host-app privacy contract has three states, not two:
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | **Off**                           | Nothing. `Sentry.init` is **not** called on RN, FGS, or Node. The module's adapter stays null; emit paths no-op.                                                                                         | User explicitly opts out of diagnostic data sharing in the host app settings. |
 | **Diagnostic** (default-on)       | Errors + lifecycle: `Sentry.init` runs in all three SDKs with `tracesSampleRate=0`, `sendDefaultPii=false`, and a PII scrubber. Boot transactions on; per-RPC spans off.                                 | Default for fresh installs (and recommended for production).                  |
-| **App-usage** (additional opt-in) | Diagnostic set **plus** per-RPC client/server spans, sync-session transaction, bg/fg breadcrumbs, backend memory snapshot, `privateStorageDir` size, and the full SentryNativeContext fingerprinting fields. | User opts in via a settings toggle.                                           |
+| **App-usage** (additional opt-in) | Diagnostic set **plus** the usage-tier metric dimensions (RPC `method` breakdown, sync `peers_bucket`/`bytes_bucket`, app-exit exact-ms durations — see the §9.2 table), the stable `user.id`, bg/fg breadcrumbs, and the SentryNativeContext fingerprinting fields. | User opts in via a settings toggle.                                           |
 
 Diagnostic is the _baseline_; app-usage is _additive_. App-usage without
 diagnostic is impossible by construction — the effective gate is
-`captureApplicationData && diagnosticsEnabled`, enforced inside this
+`applicationUsageData && diagnosticsEnabled`, enforced inside this
 module so the host UI never has to mirror that logic.
 
 ### 9.1 The `diagnosticsEnabled` toggle
@@ -1353,23 +1348,52 @@ via `diagnosticsEnabledDefault`.
     separate native-init gate; the host's `Sentry.init` (owned by
     `initSentry()`) is the only init site, and it gates on the same pref.
 
-### 9.2 The `captureApplicationData` toggle
+### 9.2 The `applicationUsageData` toggle
 
 A persisted boolean, default off, that the host app's settings UI exposes
-to the end user. When on, the opt-in captures from §7.3.8 are emitted.
-Never unlocks anything in the §8 never-capture list — the two layers are
-independent.
+to the end user. When on, it adds the usage-tier metric dimensions in the
+table below to the always-on diagnostic set. Never unlocks anything in the
+§8 never-capture list — the two layers are independent.
+
+Front-end feature-usage recording (which screens/features a user opens) is
+**not** part of this tier; that telemetry is handled by the host app via
+PostHog, not Sentry. The Sentry metrics layer is for backend/native
+performance and the operational dimensions below.
 
 - **Persistence**: same `ComapeoPrefs` file. Key:
-  `sentry.captureApplicationData`.
+  `sentry.applicationUsageData`.
 - **JS API**:
   ```ts
-  export function getCaptureApplicationData(): Promise<boolean>;
-  export function setCaptureApplicationData(enabled: boolean): Promise<void>;
+  export function getApplicationUsageData(): boolean;
+  export function setApplicationUsageData(value: boolean): Promise<void>;
   ```
 - **Plumbing**: read once at native process start, passed as a Node argv
-  flag (`--captureApplicationData`). The control-socket `init` frame
-  doesn't carry it.
+  flag (`--applicationUsageData`). The control-socket `init` frame
+  doesn't carry it. Android also reads it directly from `ComapeoPrefs` to
+  gate the app-exit exact-ms fields in the FGS/main process.
+
+#### What the tier gates
+
+The diagnostic tier carries aggregate, low-cardinality operational signal;
+`applicationUsageData` adds the dimensions that would otherwise reveal
+*what a specific user does* or *how much they hold*. Per-signal:
+
+| Signal | Tier | Why |
+| --- | --- | --- |
+| RPC latency, aggregate (`rpc.{client,server}.duration_ms.by_device{status}`) | Diagnostics | Latency by status and device bucket is pure performance; no per-operation detail. |
+| RPC `method` breakdown (`rpc.*.duration_ms{method,status}`, `rpc.client.send_ms{method}`) | applicationUsageData | The set and frequency of `@comapeo/core` methods a user invokes reveals what they do (create vs view vs sync) — usage behaviour, not perf. |
+| Boot / shutdown phase timings + outcome | Diagnostics | Startup/teardown performance; no user-specific content. |
+| Backend health gauges (memory, heap, uptime, event-loop delay) | Diagnostics | Process resource health; independent of user activity. |
+| Sync session duration + outcome | Diagnostics | Sync performance/reliability is core-function health; that a sync ran is inherent to a P2P app. |
+| Sync `peers_bucket` | applicationUsageData | How many devices a user syncs with is a proxy for their collaboration/social-graph size. |
+| Sync `bytes_bucket` | applicationUsageData | Volume of data exchanged is a proxy for how much a user collects/shares. |
+| `state.transitions` | Diagnostics | App lifecycle states; no user content. |
+| `storage.size_bucket` | Diagnostics | Coarse 4-bucket dataset size — kept on so crashes/OOMs can be correlated with data volume. |
+| App-exit coarse buckets (`uptime_bucket`, `bg_duration_bucket`, OEM-kill flags) | Diagnostics | Aggregate stability signal ("which OEMs kill us"); low-resolution. |
+| App-exit exact-ms (`alive_for_ms`, `backgrounded_for_ms`) | applicationUsageData | Millisecond session/foreground durations are fine-grained usage-shape data. |
+| `device_class` / `os_major` / `platform` tags | Diagnostics | Low-cardinality device-capability buckets; not user-identifying. |
+| `ipc.errors`, `telemetry.forwarding_failures` | Diagnostics | Internal transport health. |
+| Per-RPC traces / OTel spans / `rpc.args` | `debug` (separate) | Investigation-only; behind the 24h auto-off `debug` toggle, not `applicationUsageData`. |
 
 #### Why restart-to-activate
 
@@ -1386,9 +1410,9 @@ independent.
 #### Cross-toggle interaction
 
 Setters write their raw values independently. The _effective_
-`captureApplicationData` value is always
+`applicationUsageData` value is always
 `stored && diagnosticsEnabled` — internal gate only. The user's stored
-`captureApplicationData=true` is preserved across diagnostics off→on
+`applicationUsageData=true` is preserved across diagnostics off→on
 cycles.
 
 #### What the toggle never unlocks
@@ -1431,7 +1455,7 @@ them — TypeScript refuses them at the call site):
 
 - `dsn`, `release`, `environment`, `sampleRate`, `enableLogs` — from the
   plugin's `sentryConfig`.
-- `tracesSampleRate` — `0` when capture-application-data is off, the
+- `tracesSampleRate` — `0` when application-usage-data is off, the
   plugin's value (default `0.1`) when on. Effective gate enforced here.
 - `sendDefaultPii: false` — non-overridable.
 - `user.id` — controlled by the module (planned; see Phase 9b in the
@@ -1474,7 +1498,7 @@ Per-environment, decided by the consumer at build time via plugin fields:
             "dsn": "...",
             "environment": "development",
             "diagnosticsEnabledDefault": true,
-            "captureApplicationDataDefault": true
+            "applicationUsageDataDefault": true
           }
         }
       ]
@@ -1487,7 +1511,7 @@ Recommended consumer config, wired through EAS env vars:
 
 ```js
 // app.config.js
-captureApplicationDataDefault:
+applicationUsageDataDefault:
   (process.env.SENTRY_ENVIRONMENT ?? "production") !== "production",
 ```
 

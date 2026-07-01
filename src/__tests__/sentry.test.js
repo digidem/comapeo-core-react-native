@@ -57,11 +57,9 @@ describe("initSentry", () => {
       setDebugEnabledNative: jest.fn(),
     }));
 
-    // `src/sentry.ts` re-exports `recordUsage` from `./sentry-metrics`,
-    // which would otherwise pull the whole metrics layer (and a circular
-    // import back to `./sentry`) into this unit test. Stub it.
+    // Stub the metrics layer so this unit test doesn't pull it in (and
+    // the circular import back to `./sentry`).
     jest.doMock("../sentry-metrics", () => ({
-      recordUsage: { screen: jest.fn(), feature: jest.fn() },
       rpcClientMetric: jest.fn(),
       rpcStatusFor: jest.fn(() => "ok"),
     }));
@@ -133,7 +131,7 @@ describe("initSentry", () => {
     expect(opts.release).toBe("1.0+1");
     expect(opts.sendDefaultPii).toBe(false);
     // debug=false → traces forced to 0 (per-RPC traces are debug-only;
-    // the plugin's configured rate no longer applies in Phase 11).
+    // the plugin's configured rate no longer applies).
     expect(opts.tracesSampleRate).toBe(0);
     expect(opts.enableLogs).toBe(true);
   });

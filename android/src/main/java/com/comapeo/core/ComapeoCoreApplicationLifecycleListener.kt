@@ -54,7 +54,7 @@ class ComapeoCoreApplicationLifecycleListener : ApplicationLifecycleListener {
                 context = application,
                 processName = application.packageName,
                 procKey = SentryTags.PROC_MAIN,
-                captureApplicationData = prefs.readApplicationUsageData(),
+                applicationUsageData = prefs.readApplicationUsageData(),
                 snapshot = snapshot,
             )
         }

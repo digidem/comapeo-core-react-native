@@ -52,10 +52,6 @@ const ANDROID_KEYS = {
     "com.comapeo.core.sentry.diagnosticsEnabledDefault",
   applicationUsageDataDefault:
     "com.comapeo.core.sentry.applicationUsageDataDefault",
-  // Deprecated pre-Phase-11 key. Still stripped on prebuild so a stale
-  // entry from before the rename can't survive (§11.7).
-  captureApplicationDataDefault:
-    "com.comapeo.core.sentry.captureApplicationDataDefault",
   debugDefault: "com.comapeo.core.sentry.debugDefault",
   enableLogs: "com.comapeo.core.sentry.enableLogs",
   // Identifies the @comapeo/core-react-native module build the FGS
@@ -87,9 +83,6 @@ const IOS_KEYS = {
     "ComapeoCoreSentryDiagnosticsEnabledDefault",
   applicationUsageDataDefault:
     "ComapeoCoreSentryApplicationUsageDataDefault",
-  // Deprecated pre-Phase-11 key; stripped on prebuild (§11.7).
-  captureApplicationDataDefault:
-    "ComapeoCoreSentryCaptureApplicationDataDefault",
   debugDefault: "ComapeoCoreSentryDebugDefault",
   enableLogs: "ComapeoCoreSentryEnableLogs",
 };
@@ -475,7 +468,7 @@ function normalizeSentryProps(sentry) {
   if (!sentry.environment || typeof sentry.environment !== "string") {
     throw new Error(
       "@comapeo/core-react-native plugin: `sentry.environment` is required when sentry is configured. " +
-        "Sourced per build profile via EAS env vars (see plan §4.1).",
+        "Sourced per build profile via EAS env vars.",
     );
   }
 
@@ -502,17 +495,6 @@ function normalizeSentryProps(sentry) {
   }
   if (sentry.applicationUsageDataDefault !== undefined) {
     normalized.applicationUsageDataDefault = sentry.applicationUsageDataDefault
-      ? "true"
-      : "false";
-  } else if (sentry.captureApplicationDataDefault !== undefined) {
-    // Deprecated field — warn (don't error) and forward to the new
-    // field for one minor release (§11.7).
-    console.warn(
-      "@comapeo/core-react-native plugin: `sentry.captureApplicationDataDefault` " +
-        "is deprecated; rename it to `sentry.applicationUsageDataDefault`. " +
-        "The old name is honoured for one more minor release.",
-    );
-    normalized.applicationUsageDataDefault = sentry.captureApplicationDataDefault
       ? "true"
       : "false";
   }
@@ -576,13 +558,6 @@ function withSentryAndroid(config, sentry, moduleIdent) {
       application,
       ANDROID_KEYS.applicationUsageDataDefault,
       sentry.applicationUsageDataDefault,
-    );
-    // Always strip the deprecated key — its value (if any) was already
-    // forwarded onto `applicationUsageDataDefault` in normalize (§11.7).
-    syncAndroidMetaData(
-      application,
-      ANDROID_KEYS.captureApplicationDataDefault,
-      undefined,
     );
     syncAndroidMetaData(
       application,
@@ -658,8 +633,6 @@ function withSentryIos(config, sentry) {
       IOS_KEYS.applicationUsageDataDefault,
       sentry.applicationUsageDataDefault,
     );
-    // Strip the deprecated key (value already forwarded in normalize).
-    setOrDelete(plist, IOS_KEYS.captureApplicationDataDefault, undefined);
     setOrDelete(plist, IOS_KEYS.debugDefault, sentry.debugDefault);
     setOrDelete(plist, IOS_KEYS.enableLogs, sentry.enableLogs);
     return cfg;

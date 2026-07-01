@@ -22,7 +22,7 @@ struct SentryConfig: Equatable {
 
     /// Subset that maps cleanly to JS-side `Sentry.init` options;
     /// plugin-internal fields excluded. Spread on the JS side as
-    /// `Sentry.init({ ...sentryConfig, ...mine })`. `deviceTags` (§11.2.b)
+    /// `Sentry.init({ ...sentryConfig, ...mine })`. `deviceTags`
     /// rides along for the `.by_device` metrics.
     func toSentryInitMap(deviceTags: DeviceTags? = nil) -> [String: Any] {
         var map: [String: Any] = [
@@ -53,8 +53,6 @@ struct SentryConfig: Equatable {
         static let rpcArgsBytes = "ComapeoCoreSentryRpcArgsBytes"
         static let diagnosticsEnabledDefault = "ComapeoCoreSentryDiagnosticsEnabledDefault"
         static let applicationUsageDataDefault = "ComapeoCoreSentryApplicationUsageDataDefault"
-        /// Deprecated pre-Phase-11 key; still read for one minor (§11.7).
-        static let captureApplicationDataDefault = "ComapeoCoreSentryCaptureApplicationDataDefault"
         static let debugDefault = "ComapeoCoreSentryDebugDefault"
         static let enableLogs = "ComapeoCoreSentryEnableLogs"
     }
@@ -98,10 +96,8 @@ struct SentryConfig: Equatable {
             diagnosticsEnabledDefault: parseStrictBool(
                 info[Key.diagnosticsEnabledDefault]
             ),
-            // New key wins; fall back to the deprecated key for one minor (§11.7).
             applicationUsageDataDefault: parseStrictBool(
                 info[Key.applicationUsageDataDefault]
-                    ?? info[Key.captureApplicationDataDefault]
             ),
             debugDefault: parseStrictBool(info[Key.debugDefault]),
             enableLogs: parseStrictBool(info[Key.enableLogs])
