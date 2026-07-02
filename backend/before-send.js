@@ -24,11 +24,13 @@ const SCRUB_PATTERNS = [
   // Value stops at a field delimiter (whitespace, `,;&`, quote) so co-located
   // fields in a compact `rootKey=abc,method=x` string survive.
   /\broot[_-]?key\b\s*["']?\s*[:=]\s*[^\s,;&"']+/gi,
-  /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
+  // `lon` is the field name @comapeo/schema observations actually use.
+  // Optional quote so JSON-serialized coordinates (`"lat":-12.3`) match.
+  /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
 
 /** Object keys whose value is a raw coordinate — redacted regardless of type. */
-const SENSITIVE_KEY_PATTERN = /^(lat|lng|latitude|longitude)$/i;
+const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude)$/i;
 
 const FORBIDDEN_METRIC_TAG_NAMES = new Set([
   "device.model",
@@ -48,7 +50,7 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
 
 /** @type {RegExp[]} */
 const FORBIDDEN_METRIC_VALUE_PATTERNS = [
-  /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/i,
+  /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/i,
 ];
 
 /** @param {string} input */

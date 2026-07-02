@@ -45,12 +45,14 @@ const SCRUB_PATTERNS: RegExp[] = [
   // type names, and error_class metric tags, redacting data we need. Pending
   // a narrower design agreed with the team; bare tokens are unscrubbed until
   // then.
-  // Latitude / longitude markers followed by a number.
-  /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
+  // Latitude / longitude markers followed by a number. `lon` is the field
+  // name @comapeo/schema observations actually use. Optional quote between
+  // key and separator so JSON-serialized coordinates (`"lat":-12.3`) match.
+  /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
 
 /** Object keys whose value is a raw coordinate — redacted regardless of type. */
-const SENSITIVE_KEY_PATTERN = /^(lat|lng|latitude|longitude)$/i;
+const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude)$/i;
 
 /** Tag names/values that must never ride on a metric. */
 const FORBIDDEN_METRIC_TAG_NAMES = new Set([
@@ -72,7 +74,7 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
 /** Forbidden tag *values* — lat/lng shapes. (The broad base64-22 rule is
  *  held back here too; see the SCRUB_PATTERNS note above.) */
 const FORBIDDEN_METRIC_VALUE_PATTERNS: RegExp[] = [
-  /\b(?:lat|lng|latitude|longitude)\b\s*[:=]\s*-?\d+(?:\.\d+)?/i,
+  /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/i,
 ];
 
 export function scrubString(input: string): string {

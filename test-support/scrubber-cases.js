@@ -17,6 +17,11 @@ export const scrubStringCases = [
   { name: "rootKey marker (no delimiter) → whole value redacted", input: "rootKey=aGVsbG8td29ybGQtMTIzNA", expect: "[redacted]" },
   { name: "latitude marker redacted", input: "latitude: -12.345", expect: "[redacted]" },
   { name: "lng marker redacted", input: "lng=120.5", expect: "[redacted]" },
+  // `lon` is the field name @comapeo/schema observations actually use.
+  { name: "lon marker redacted", input: "lon=-55.1234", expect: "[redacted]" },
+  // JSON-stringified coordinates: the closing quote sits between key and
+  // separator (`"lat":`), which the pre-quote-handling regex missed.
+  { name: "JSON-serialized coordinates redacted", input: '{"lat":-12.345,"lon":55.2}', expect: '{"[redacted],"[redacted]}' },
   // Greedy-regex regression: the value stops at the first field delimiter, so
   // co-located fields in a compact string survive.
   { name: "rootKey value stops at comma delimiter", input: "rootKey=abc,method=obs.create,code=500", expect: "[redacted],method=obs.create,code=500" },
@@ -43,6 +48,7 @@ export const forbiddenMetricCases = [
   { name: "forbidden tag name in attributes", metricName: "comapeo.x", attributes: { project_id: "p" }, expect: true },
   { name: "forbidden metric name", metricName: "project_id", attributes: { platform: "ios" }, expect: true },
   { name: "lat/lng-shaped tag value", metricName: "comapeo.x", attributes: { coord: "lat=12.34" }, expect: true },
+  { name: "lon-shaped tag value", metricName: "comapeo.x", attributes: { coord: "lon=-55.12" }, expect: true },
   // Broad base64-22 value rule disabled — bare tokens no longer drop a metric.
   { name: "43-char token value allowed (broad rule off)", metricName: "comapeo.x", attributes: { bucket: BASE64_43 }, expect: false },
   { name: "52-char token value allowed (broad rule off)", metricName: "comapeo.x", attributes: { bucket: ZBASE32_52 }, expect: false },
