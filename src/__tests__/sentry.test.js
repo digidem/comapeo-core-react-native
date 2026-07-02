@@ -26,6 +26,7 @@ describe("initSentry", () => {
   let setTagSpy;
   let setContextSpy;
   let addEventProcessorSpy;
+  let setDiagnosticsEnabledNativeSpy;
 
   beforeEach(() => {
     preferences = {
@@ -44,6 +45,7 @@ describe("initSentry", () => {
     setTagSpy = jest.fn();
     setContextSpy = jest.fn();
     addEventProcessorSpy = jest.fn();
+    setDiagnosticsEnabledNativeSpy = jest.fn(() => Promise.resolve());
 
     jest.resetModules();
 
@@ -62,10 +64,10 @@ describe("initSentry", () => {
       }),
       readSentryPreferencesAtLaunch: () => preferences,
       readCurrentSentryPreferences: () => livePreferences,
-      readRootUserIdNative: () => "11111111-2222-3333-4444-555555555555",
-      setDiagnosticsEnabledNative: jest.fn(),
-      setApplicationUsageDataNative: jest.fn(),
-      setDebugEnabledNative: jest.fn(),
+      readRootUserIdNative: () => "AB3D-EF9H-J2K3",
+      setDiagnosticsEnabledNative: setDiagnosticsEnabledNativeSpy,
+      setApplicationUsageDataNative: jest.fn(() => Promise.resolve()),
+      setDebugEnabledNative: jest.fn(() => Promise.resolve()),
     }));
 
     // Stub the metrics layer so this unit test doesn't pull it in (and
@@ -163,7 +165,7 @@ describe("initSentry", () => {
 
   test("getRootUserId returns the native root ID (never sent to Sentry)", () => {
     const { getRootUserId } = require("../sentry");
-    expect(getRootUserId()).toBe("11111111-2222-3333-4444-555555555555");
+    expect(getRootUserId()).toBe("AB3D-EF9H-J2K3");
   });
 
   test("tracesSampleRate is 1.0 when debug is on, else the configured rate", () => {
@@ -352,5 +354,34 @@ describe("initSentry", () => {
     expect(getDebugEnabled()).toBe(true);
     // The boot snapshot (what governs this session) is untouched.
     expect(preferences.diagnosticsEnabled).toBe(true);
+  });
+
+  test("setter updates the live view only after the native write resolves", async () => {
+    const { setDiagnosticsEnabled, getDiagnosticsEnabled } =
+      require("../sentry");
+    let resolveNative;
+    setDiagnosticsEnabledNativeSpy.mockImplementation(
+      () => new Promise((r) => { resolveNative = r; }),
+    );
+    const pending = setDiagnosticsEnabled(false);
+    // Not yet persisted — the getter must still show the old value.
+    expect(getDiagnosticsEnabled()).toBe(true);
+    resolveNative();
+    await pending;
+    expect(getDiagnosticsEnabled()).toBe(false);
+  });
+
+  test("setter leaves the live view unchanged when the native write rejects", async () => {
+    const { setDiagnosticsEnabled, getDiagnosticsEnabled } =
+      require("../sentry");
+    setDiagnosticsEnabledNativeSpy.mockImplementation(() =>
+      Promise.reject(new Error("native context not attached")),
+    );
+    await expect(setDiagnosticsEnabled(false)).rejects.toThrow(
+      "native context not attached",
+    );
+    // The failed opt-out must not be reported as done — the on-disk
+    // value is still true, so the getter must agree.
+    expect(getDiagnosticsEnabled()).toBe(true);
   });
 });

@@ -161,8 +161,12 @@ export function getDiagnosticsEnabled(): boolean {
  * upload.
  */
 export function setDiagnosticsEnabled(value: boolean): Promise<void> {
-  livePreferences().diagnosticsEnabled = value;
-  return setDiagnosticsEnabledNative(value);
+  // Update the in-memory view only after the native write lands — a
+  // rejected write (e.g. native context not attached yet) must not
+  // leave the getters reporting a value that was never persisted.
+  return setDiagnosticsEnabledNative(value).then(() => {
+    livePreferences().diagnosticsEnabled = value;
+  });
 }
 
 /**
@@ -176,8 +180,9 @@ export function getApplicationUsageData(): boolean {
 
 /** Persist the toggle. See [setDiagnosticsEnabled] for semantics. */
 export function setApplicationUsageData(value: boolean): Promise<void> {
-  livePreferences().applicationUsageData = value;
-  return setApplicationUsageDataNative(value);
+  return setApplicationUsageDataNative(value).then(() => {
+    livePreferences().applicationUsageData = value;
+  });
 }
 
 /**
@@ -198,17 +203,20 @@ export function getDebugEnabled(): boolean {
  * restart-to-activate semantics.
  */
 export function setDebugEnabled(value: boolean): Promise<void> {
-  livePreferences().debug = value;
-  return setDebugEnabledNative(value);
+  return setDebugEnabledNative(value).then(() => {
+    livePreferences().debug = value;
+  });
 }
 
 /**
  * The permanent per-install root user ID (lazily generated on first
- * read; reset by uninstall). Sentry never sees this value — the
- * `user.id` on events is a hash derived from it (monthly-rotating by
- * default, permanent under the usage opt-in), so both derivations can
- * be recomputed from a user-shared root ID to re-associate historical
- * events for a support case. Intended for a debug/about screen.
+ * read; reset by uninstall). A short `XXXX-XXXX-XXXX` code with no
+ * ambiguous characters, so a user can hand-copy it from a screen.
+ * Sentry never sees this value — the `user.id` on events is a hash
+ * derived from it (monthly-rotating by default, permanent under the
+ * usage opt-in), so both derivations can be recomputed from a
+ * user-shared root ID to re-associate historical events for a support
+ * case. Intended for a debug/about screen.
  */
 export function getRootUserId(): string {
   return readRootUserIdNative();
