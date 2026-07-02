@@ -53,9 +53,11 @@ object SentryFgsBridge {
     private var initialized: Boolean = false
 
     /** Idempotent. Caller must pass a non-null `SentryConfig`; skip the call
-     *  entirely when `loadFromManifest` returns null. */
+     *  entirely when `loadFromManifest` returns null. `userId` is the derived
+     *  Sentry user.id (monthly or permanent hash — never the root ID). */
     @JvmStatic
-    fun init(context: Context, config: SentryConfig) {
+    @JvmOverloads
+    fun init(context: Context, config: SentryConfig, userId: String? = null) {
         if (initialized) return
         try {
             // Parse once here rather than in the event processor on every capture.
@@ -97,13 +99,30 @@ object SentryFgsBridge {
             }
 
             // SentryOptions has no "set context at init" hook; ride a configureScope after init.
-            if (backendModules != null) {
+            if (backendModules != null || userId != null) {
                 Sentry.configureScope { scope ->
-                    scope.setContexts("comapeoBackend", backendModules)
+                    if (backendModules != null) {
+                        scope.setContexts("comapeoBackend", backendModules)
+                    }
+                    if (userId != null) {
+                        scope.user = io.sentry.protocol.User().apply { id = userId }
+                    }
                 }
             }
 
             initialized = true
+
+            // Drain a `debug` 72h auto-off queued by the prefs
+            // reader, which runs before the SDK is up and so couldn't emit.
+            if (DebugAutoOff.consume()) {
+                Sentry.addBreadcrumb(
+                    Breadcrumb().apply {
+                        category = "comapeo.debug.auto_disabled"
+                        message = "debug auto-disabled after 72h"
+                        level = SentryLevel.INFO
+                    },
+                )
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "SentryFgsBridge.init failed; continuing without FGS Sentry", t)
         }

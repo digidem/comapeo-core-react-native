@@ -155,7 +155,11 @@ class NodeJSService {
     /// Forwarded as `--sentry*` argv to `backend/loader.mjs`.
     /// `nil` → loader skips Sentry.
     private let sentryConfig: SentryConfig?
-    private let captureApplicationData: Bool
+    private let applicationUsageData: Bool
+    private let debug: Bool
+    private let deviceTags: DeviceTags?
+    /// Derived Sentry user.id (monthly/permanent hash) forwarded as `--sentryUserId`.
+    private let sentryUserId: String?
 
     init(
         socketDir: String,
@@ -167,13 +171,19 @@ class NodeJSService {
         },
         rootKeyProvider: @escaping RootKeyProvider,
         sentryConfig: SentryConfig? = SentryConfig.loadFromMainBundle(),
-        captureApplicationData: Bool = false,
+        applicationUsageData: Bool = false,
+        debug: Bool = false,
+        deviceTags: DeviceTags? = nil,
+        sentryUserId: String? = nil,
         startupTimeout: TimeInterval = 30
     ) {
         self.socketDir = socketDir
         self.privateStorageDir = privateStorageDir
         self.sentryConfig = sentryConfig
-        self.captureApplicationData = captureApplicationData
+        self.applicationUsageData = applicationUsageData
+        self.debug = debug
+        self.deviceTags = deviceTags
+        self.sentryUserId = sentryUserId
         self.comapeoSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
         self.controlSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.controlSocketFilename)
 
@@ -702,17 +712,30 @@ class NodeJSService {
         if let r = cfg.sampleRate {
             out.append("--sentrySampleRate=\(r)")
         }
-        if let r = cfg.tracesSampleRate {
-            out.append("--sentryTracesSampleRate=\(r)")
-        }
+        // Native owns the trace-sampling decision: full while the debug window
+        // is on, else the plugin-configured cap (0 if unset). The backend
+        // mirrors this value rather than re-deciding.
+        let effectiveTracesSampleRate = debug ? 1.0 : (cfg.tracesSampleRate ?? 0.0)
+        out.append("--sentryTracesSampleRate=\(effectiveTracesSampleRate)")
         if let b = cfg.rpcArgsBytes {
             out.append("--sentryRpcArgsBytes=\(b)")
         }
         if cfg.enableLogs == true {
             out.append("--sentryEnableLogs")
         }
-        if captureApplicationData {
-            out.append("--captureApplicationData")
+        if let userId = sentryUserId {
+            out.append("--sentryUserId=\(userId)")
+        }
+        if applicationUsageData {
+            out.append("--applicationUsageData")
+        }
+        if debug {
+            out.append("--debug")
+        }
+        if let tags = deviceTags {
+            out.append("--deviceClass=\(tags.deviceClass)")
+            out.append("--osMajor=\(tags.osMajor)")
+            out.append("--platformTag=\(tags.platform)")
         }
 
         // Prefer the node-spawn span over the transaction so Node-side

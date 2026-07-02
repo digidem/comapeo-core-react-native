@@ -13,66 +13,160 @@ import XCTest
 /// regression). Both are silent if the tests don't catch them.
 final class ComapeoPrefsTests: XCTestCase {
 
-    /// Backing dictionary stand-in for the UserDefaults file. Wrapped
-    /// in a class so the lambdas share mutable state with `has(_:)`.
-    /// Box the dict in a reference holder so the lambdas can mutate
-    /// without capturing `self` and tripping ARC's deallocation
-    /// guard when the closure outlives this instance.
-    private final class FakeStore {
-        private final class Box {
-            var data: [String: Bool] = [:]
+    /// In-memory `ComapeoPrefs.Store` stand-in for the UserDefaults file.
+    private final class FakeStore: ComapeoPrefs.Store {
+        private var bools: [String: Bool] = [:]
+        private var doubles: [String: Double] = [:]
+        private var strings: [String: String] = [:]
+        func getBool(_ key: String) -> Bool? { bools[key] }
+        func setBool(_ key: String, _ value: Bool) { bools[key] = value }
+        func getDouble(_ key: String) -> Double? { doubles[key] }
+        func setDouble(_ key: String, _ value: Double) { doubles[key] = value }
+        func getString(_ key: String) -> String? { strings[key] }
+        func setString(_ key: String, _ value: String) { strings[key] = value }
+        func remove(_ key: String) {
+            bools[key] = nil; doubles[key] = nil; strings[key] = nil
         }
-        private let box = Box()
-        lazy var read: (String) -> Bool? = { [box] key in box.data[key] }
-        lazy var write: (String, Bool) -> Void = { [box] key, value in
-            box.data[key] = value
+        func has(_ key: String) -> Bool {
+            bools[key] != nil || doubles[key] != nil || strings[key] != nil
         }
-        func has(_ key: String) -> Bool { return box.data[key] != nil }
+    }
+
+    private final class Clock {
+        var nowMs: Double = 0
     }
 
     private func prefs(
         store: FakeStore,
         diagnosticsDefault: Bool = ComapeoPrefs.defaultDiagnosticsEnabled,
-        captureDefault: Bool = ComapeoPrefs.defaultCaptureApplicationData
+        usageDefault: Bool = ComapeoPrefs.defaultApplicationUsageData,
+        debugDefault: Bool = ComapeoPrefs.defaultDebug,
+        clock: Clock = Clock()
     ) -> ComapeoPrefs {
         return ComapeoPrefs(
-            readBool: store.read,
-            writeBool: store.write,
+            store: store,
             defaults: ComapeoPrefs.Defaults(
                 diagnosticsEnabled: diagnosticsDefault,
-                captureApplicationData: captureDefault
-            )
+                applicationUsageData: usageDefault,
+                debug: debugDefault
+            ),
+            now: { [clock] in clock.nowMs }
         )
     }
 
     func testBakedDefaultWhenKeyAbsent() {
         // Fresh install, plugin didn't ship a default, user hasn't
-        // toggled anything — diagnostics on, capture-app-data off.
+        // toggled anything — diagnostics on, usage off, debug off.
         let p = prefs(store: FakeStore())
         XCTAssertTrue(p.readDiagnosticsEnabled())
-        XCTAssertFalse(p.readCaptureApplicationData())
+        XCTAssertFalse(p.readApplicationUsageData())
+        XCTAssertFalse(p.readDebugEnabled())
     }
 
     func testPluginDefaultOverridesBakedWhenKeyAbsent() {
-        // E.g. a dev/qa plugin config with both flags on by default.
+        // E.g. a dev/qa plugin config with usage on by default.
         let p = prefs(
             store: FakeStore(),
             diagnosticsDefault: false,
-            captureDefault: true
+            usageDefault: true
         )
         XCTAssertFalse(p.readDiagnosticsEnabled())
-        XCTAssertTrue(p.readCaptureApplicationData())
+        XCTAssertTrue(p.readApplicationUsageData())
     }
 
     func testUserValueWinsOverDefault() {
         // Once written, the user's choice persists across cold
         // starts regardless of what the plugin default says.
         let store = FakeStore()
-        let p = prefs(store: store, diagnosticsDefault: true, captureDefault: false)
+        let p = prefs(store: store, diagnosticsDefault: true, usageDefault: false)
         p.writeDiagnosticsEnabled(false)
-        p.writeCaptureApplicationData(true)
+        p.writeApplicationUsageData(true)
         XCTAssertFalse(p.readDiagnosticsEnabled())
-        XCTAssertTrue(p.readCaptureApplicationData())
+        XCTAssertTrue(p.readApplicationUsageData())
+    }
+
+    func testDebugAutoOffBoundaries() {
+        // fresh enable true; just within window true; just past window false + cleared.
+        let store = FakeStore()
+        let clock = Clock()
+        clock.nowMs = 1_000_000
+        let p = prefs(store: store, clock: clock)
+        p.writeDebugEnabled(true)
+        XCTAssertTrue(p.readDebugEnabled(), "fresh enable reads true")
+
+        clock.nowMs += ComapeoPrefs.debugMaxAgeMs - 60_000 // one minute before expiry
+        XCTAssertTrue(p.readDebugEnabled(), "within window reads true")
+
+        clock.nowMs += 120_000 // now past the window since enable
+        XCTAssertFalse(p.readDebugEnabled(), "past window auto-disables")
+        XCTAssertEqual(
+            store.getBool(ComapeoPrefs.Key.debug), false,
+            "auto-off clears the value"
+        )
+        XCTAssertFalse(
+            store.has(ComapeoPrefs.Key.debugEnabledAtMs),
+            "auto-off clears the timestamp"
+        )
+        XCTAssertFalse(p.readDebugEnabled(), "subsequent read is stable")
+    }
+
+    func testDebugExpiresWhenClockMovesBackwardPastEnable() {
+        // Backward wall-clock change must not extend debug: an enable
+        // timestamp in the future (age < 0) auto-disables rather than
+        // keeping debug on indefinitely.
+        let store = FakeStore()
+        let clock = Clock()
+        clock.nowMs = 10_000_000
+        let p = prefs(store: store, clock: clock)
+        p.writeDebugEnabled(true)
+        XCTAssertTrue(p.readDebugEnabled())
+
+        clock.nowMs -= 5_000_000 // clock moved back before the enable stamp
+        XCTAssertFalse(p.readDebugEnabled(), "backward clock past enable auto-disables")
+        XCTAssertFalse(store.has(ComapeoPrefs.Key.debugEnabledAtMs))
+    }
+
+    func testDebugReEnableRefreshesWindow() {
+        let store = FakeStore()
+        let clock = Clock()
+        let p = prefs(store: store, clock: clock)
+        p.writeDebugEnabled(true)
+        clock.nowMs += ComapeoPrefs.debugMaxAgeMs - 60_000
+        p.writeDebugEnabled(true) // refresh just before expiry
+        clock.nowMs += ComapeoPrefs.debugMaxAgeMs - 60_000
+        XCTAssertTrue(p.readDebugEnabled(), "re-enable should reset the window clock")
+    }
+
+    func testReadDebugStoredIsRawWithNoAutoOff() {
+        // The live settings read must return the raw saved toggle and never
+        // mutate: past the window, readDebugEnabled auto-disables + writes,
+        // but readDebugStored still reads true and leaves disk untouched.
+        let store = FakeStore()
+        let clock = Clock()
+        clock.nowMs = 1_000
+        let p = prefs(store: store, clock: clock)
+        p.writeDebugEnabled(true)
+        clock.nowMs += ComapeoPrefs.debugMaxAgeMs + 60_000
+
+        XCTAssertTrue(p.readDebugStored(), "raw read returns stored value")
+        XCTAssertEqual(
+            store.getBool(ComapeoPrefs.Key.debug), true,
+            "raw read does not clear the stored value"
+        )
+        XCTAssertTrue(
+            store.has(ComapeoPrefs.Key.debugEnabledAtMs),
+            "raw read runs no auto-off (timestamp intact)"
+        )
+    }
+
+    func testDebugTrueWithoutTimestampStampsAndStaysOn() {
+        let store = FakeStore()
+        store.setBool(ComapeoPrefs.Key.debug, true)
+        let clock = Clock()
+        clock.nowMs = 500
+        let p = prefs(store: store, clock: clock)
+        XCTAssertTrue(p.readDebugEnabled())
+        XCTAssertEqual(store.getDouble(ComapeoPrefs.Key.debugEnabledAtMs), 500)
     }
 
     func testWriteFalsePersistsExplicitlyNotJustClears() {
@@ -98,9 +192,10 @@ final class ComapeoPrefsTests: XCTestCase {
             "sentry.diagnosticsEnabled"
         )
         XCTAssertEqual(
-            ComapeoPrefs.Key.captureApplicationData,
-            "sentry.captureApplicationData"
+            ComapeoPrefs.Key.applicationUsageData,
+            "sentry.applicationUsageData"
         )
+        XCTAssertEqual(ComapeoPrefs.Key.debug, "sentry.debug")
     }
 
     func testWipeSentryOutboxRemovesDirectory() throws {
@@ -135,6 +230,49 @@ final class ComapeoPrefsTests: XCTestCase {
         )
         // Clean up the temp root (parent of sentryDir).
         try? fm.removeItem(at: tempRoot)
+    }
+
+    func testRootUserIdIsGeneratedOnceAndStable() {
+        // Identity anchor: regenerating on every read would silently
+        // rotate the "permanent" user.id and break historical
+        // re-association from a user-shared root ID.
+        let store = FakeStore()
+        let p = prefs(store: store)
+        let first = p.readRootUserId()
+        XCTAssertFalse(first.isEmpty)
+        XCTAssertEqual(first, p.readRootUserId())
+        XCTAssertEqual(first, prefs(store: store).readRootUserId())
+        XCTAssertTrue(store.has(ComapeoPrefs.Key.rootUserId))
+    }
+
+    func testDeriveSentryUserIdRotatesMonthlyWithoutOptIn() {
+        let store = FakeStore()
+        let clock = Clock()
+        clock.nowMs = 0 // 1970-01
+        let p = prefs(store: store, clock: clock)
+        let january = p.deriveSentryUserId(applicationUsageData: false)
+        clock.nowMs = 32 * 24 * 60 * 60 * 1000 // 1970-02
+        let february = p.deriveSentryUserId(applicationUsageData: false)
+        XCTAssertNotEqual(january, february)
+        // Same month → same id.
+        XCTAssertEqual(february, p.deriveSentryUserId(applicationUsageData: false))
+    }
+
+    func testDeriveSentryUserIdIsPermanentWithOptIn() {
+        let store = FakeStore()
+        let clock = Clock()
+        clock.nowMs = 0
+        let p = prefs(store: store, clock: clock)
+        let a = p.deriveSentryUserId(applicationUsageData: true)
+        clock.nowMs = 400 * 24 * 60 * 60 * 1000 // > a year later
+        let b = p.deriveSentryUserId(applicationUsageData: true)
+        XCTAssertEqual(a, b)
+        // Neither derivation ever exposes the root ID itself.
+        XCTAssertNotEqual(a, p.readRootUserId())
+        XCTAssertNotEqual(
+            p.deriveSentryUserId(applicationUsageData: false),
+            p.readRootUserId()
+        )
     }
 
     func testWipeSentryOutboxIsNoOpWhenAbsent() {

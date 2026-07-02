@@ -63,8 +63,14 @@ class NodeJSService(
     context: android.content.Context,
     /** Forwarded as `--sentry*` argv to backend/loader.mjs. `null` → loader skips Sentry. */
     private val sentryConfig: SentryConfig? = null,
-    /** Backend forwards span/event data with potential app content when `true`. Ignored when [sentryConfig] is null. */
-    private val captureApplicationData: Boolean = false,
+    /** Gates the usage-tier metric dimensions (RPC `method`, sync volume buckets) on the backend. Ignored when [sentryConfig] is null. */
+    private val applicationUsageData: Boolean = false,
+    /** Per-RPC tracing + consoleIntegration when `true`. Ignored when [sentryConfig] is null. */
+    private val debug: Boolean = false,
+    /** Device classification tags forwarded to Node for the `.by_device` metrics. */
+    private val deviceTags: DeviceTags? = null,
+    /** Derived Sentry user.id (monthly/permanent hash) forwarded as `--sentryUserId`. */
+    private val sentryUserId: String? = null,
     /** Max ms in STARTING before the watchdog forces ERROR. 30 s covers cold boot + native addon dlopens. */
     private val startupTimeoutMs: Long = 30_000,
 ) : ContextWrapper(context) {
@@ -380,10 +386,21 @@ class NodeJSService(
             args += "--sentryEnvironment=${cfg.environment}"
             args += "--sentryRelease=${cfg.release}"
             cfg.sampleRate?.let { args += "--sentrySampleRate=$it" }
-            cfg.tracesSampleRate?.let { args += "--sentryTracesSampleRate=$it" }
+            // Native owns the trace-sampling decision: full while the debug
+            // window is on, else the plugin-configured cap (0 if unset). The
+            // backend mirrors this value rather than re-deciding.
+            val effectiveTracesSampleRate = if (debug) 1.0 else (cfg.tracesSampleRate ?: 0.0)
+            args += "--sentryTracesSampleRate=$effectiveTracesSampleRate"
             cfg.rpcArgsBytes?.let { args += "--sentryRpcArgsBytes=$it" }
             if (cfg.enableLogs == true) args += "--sentryEnableLogs"
-            if (captureApplicationData) args += "--captureApplicationData"
+            sentryUserId?.let { args += "--sentryUserId=$it" }
+            if (applicationUsageData) args += "--applicationUsageData"
+            if (debug) args += "--debug"
+            deviceTags?.let {
+                args += "--deviceClass=${it.deviceClass}"
+                args += "--osMajor=${it.osMajor}"
+                args += "--platformTag=${it.platform}"
+            }
 
             // Forward node-spawn's trace so Node spans nest under it; fall back to
             // the transaction defensively if node-spawn hasn't opened yet.

@@ -49,14 +49,14 @@ final class SentryConfigTests: XCTestCase {
         XCTAssertNil(config?.tracesSampleRate)
         XCTAssertNil(config?.rpcArgsBytes)
         XCTAssertNil(config?.diagnosticsEnabledDefault)
-        XCTAssertNil(config?.captureApplicationDataDefault)
+        XCTAssertNil(config?.applicationUsageDataDefault)
+        XCTAssertNil(config?.debugDefault)
     }
 
     func testPluginReleaseOverridesDefault() {
         // When the consumer passes `release` to the plugin, that
         // value wins over CFBundleShortVersionString+CFBundleVersion.
-        // Used to embed git SHAs from EAS_BUILD_GIT_COMMIT_HASH
-        // (plan §4.1).
+        // Used to embed git SHAs from EAS_BUILD_GIT_COMMIT_HASH.
         let config = SentryConfig.load(
             from: [
                 SentryConfig.Key.dsn: "https://x@sentry.io/1",
@@ -159,41 +159,41 @@ final class SentryConfigTests: XCTestCase {
         XCTAssertNil(stray?.diagnosticsEnabledDefault)
     }
 
-    func testCaptureApplicationDataDefaultParsesString() {
+    func testApplicationUsageDataDefaultParsesString() {
         let on = SentryConfig.load(
             from: [
                 SentryConfig.Key.dsn: "https://x@sentry.io/1",
                 SentryConfig.Key.environment: "qa",
-                SentryConfig.Key.captureApplicationDataDefault: "true",
+                SentryConfig.Key.applicationUsageDataDefault: "true",
             ],
             defaultRelease: defaultRelease
         )
-        XCTAssertEqual(on?.captureApplicationDataDefault, true)
+        XCTAssertEqual(on?.applicationUsageDataDefault, true)
 
         let off = SentryConfig.load(
             from: [
                 SentryConfig.Key.dsn: "https://x@sentry.io/1",
                 SentryConfig.Key.environment: "production",
-                SentryConfig.Key.captureApplicationDataDefault: "false",
+                SentryConfig.Key.applicationUsageDataDefault: "false",
             ],
             defaultRelease: defaultRelease
         )
-        XCTAssertEqual(off?.captureApplicationDataDefault, false)
+        XCTAssertEqual(off?.applicationUsageDataDefault, false)
     }
 
-    func testCaptureApplicationDataDefaultParsesNativeBool() {
+    func testDebugDefaultParses() {
         let config = SentryConfig.load(
             from: [
                 SentryConfig.Key.dsn: "https://x@sentry.io/1",
-                SentryConfig.Key.environment: "production",
-                SentryConfig.Key.captureApplicationDataDefault: true,
+                SentryConfig.Key.environment: "qa",
+                SentryConfig.Key.debugDefault: "true",
             ],
             defaultRelease: defaultRelease
         )
-        XCTAssertEqual(config?.captureApplicationDataDefault, true)
+        XCTAssertEqual(config?.debugDefault, true)
     }
 
-    func testCaptureApplicationDataDefaultStrictness() {
+    func testApplicationUsageDataDefaultStrictness() {
         // Only "true"/"false" (or a real Bool) parse. A stray
         // "1"/"yes" returns nil → native treats absence as false.
         // Defensive against hand-written plists silently flipping
@@ -202,15 +202,15 @@ final class SentryConfigTests: XCTestCase {
             from: [
                 SentryConfig.Key.dsn: "https://x@sentry.io/1",
                 SentryConfig.Key.environment: "qa",
-                SentryConfig.Key.captureApplicationDataDefault: "yes",
+                SentryConfig.Key.applicationUsageDataDefault: "yes",
             ],
             defaultRelease: defaultRelease
         )
-        XCTAssertNil(config?.captureApplicationDataDefault)
+        XCTAssertNil(config?.applicationUsageDataDefault)
     }
 
     func testMissingEnvironmentReturnsNilNotFatal() {
-        // The plugin refuses to prebuild without environment (§4.1),
+        // The plugin refuses to prebuild without environment,
         // but a stale prebuild from before that validation was added
         // would still ship. The original `fatalError` behaviour
         // crashed every cold start with no way to recover. Now we

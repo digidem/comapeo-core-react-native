@@ -6,6 +6,9 @@
 
 /** @typedef {import("./sentry-frame.js").SentryFrame} SentryFrame */
 
+import { scrubEvent, scrubLog } from "../before-send.js";
+import * as metrics from "./metrics.js";
+
 /**
  * parseArgs spec for the Sentry-related CLI flags. loader.mjs uses
  * this as the `options` for its single `parseArgs` call and forwards
@@ -21,9 +24,14 @@ export const argSpec = {
   sentryTracesSampleRate: { type: "string" },
   sentryRpcArgsBytes: { type: "string", default: "0" },
   sentryEnableLogs: { type: "boolean", default: false },
+  sentryUserId: { type: "string" },
   sentryTrace: { type: "string" },
   sentryBaggage: { type: "string", default: "" },
-  captureApplicationData: { type: "boolean", default: false },
+  applicationUsageData: { type: "boolean", default: false },
+  debug: { type: "boolean", default: false },
+  deviceClass: { type: "string", default: "unknown" },
+  osMajor: { type: "string" },
+  platformTag: { type: "string" },
 };
 
 /**
@@ -35,16 +43,26 @@ export const argSpec = {
  *   sentryTracesSampleRate?: string,
  *   sentryRpcArgsBytes: string,
  *   sentryEnableLogs: boolean,
+ *   sentryUserId?: string,
  *   sentryTrace?: string,
  *   sentryBaggage: string,
- *   captureApplicationData: boolean,
+ *   applicationUsageData: boolean,
+ *   debug: boolean,
+ *   deviceClass: string,
+ *   osMajor?: string,
+ *   platformTag?: string,
  * }} Argv
  */
 
 /** @type {typeof import("@sentry/node-core") | null} */
 let Sentry = null;
-/** @type {{ rpcArgsBytes: number, captureApplicationData: boolean } | null} */
+/** @type {{ rpcArgsBytes: number, applicationUsageData: boolean, debug: boolean, deviceClass: string, osMajor: string, platformTag: string } | null} */
 let config = null;
+
+/** Read-only view of the resolved config for the metrics layer. */
+export function getConfig() {
+  return config;
+}
 /** @type {((envelope: any) => SentryFrame) | null} */
 let envelopeToFrame = null;
 /** @type {((frame: SentryFrame) => void) | null} */
@@ -78,9 +96,6 @@ const forwardingTransport = () => ({
   flush: async () => true,
 });
 
-// Keep in sync with `src/sentry.ts`'s DEFAULT_TRACES_SAMPLE_RATE.
-const DEFAULT_TRACES_SAMPLE_RATE = 0.1;
-
 /**
  * Coerce a numeric CLI arg, throwing if native passed a non-finite
  * value. Loud-fail symmetric with `strict: true`.
@@ -109,7 +124,11 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
   Sentry = sdk;
   config = {
     rpcArgsBytes: numericArg(argv.sentryRpcArgsBytes),
-    captureApplicationData: argv.captureApplicationData,
+    applicationUsageData: argv.applicationUsageData === true,
+    debug: argv.debug === true,
+    deviceClass: argv.deviceClass ?? "unknown",
+    osMajor: argv.osMajor ?? `${argv.platformTag ?? "unknown"}.0`,
+    platformTag: argv.platformTag ?? "unknown",
   };
   envelopeToFrame = toFrame;
 
@@ -118,12 +137,18 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
     environment: argv.sentryEnvironment,
     release: argv.sentryRelease,
     sampleRate: numericArg(argv.sentrySampleRate),
-    tracesSampleRate: argv.captureApplicationData
-      ? numericArg(argv.sentryTracesSampleRate ?? DEFAULT_TRACES_SAMPLE_RATE)
+    // Native (Kotlin/Swift) owns the trace-sampling decision and forwards the
+    // already-resolved rate — it folds in the `debug` window (full sampling
+    // while on) and any plugin-configured cap. Mirror it verbatim here; absent
+    // means 0. Day-to-day perf signal rides the always-on metrics layer.
+    tracesSampleRate: argv.sentryTracesSampleRate
+      ? numericArg(argv.sentryTracesSampleRate)
       : 0,
     // v9 moved this out of `_experiments` — keep the CLI flag name so
     // native doesn't have to change.
     enableLogs: argv.sentryEnableLogs,
+    // Structured logs bypass the scrubEvent processor, so scrub them here.
+    beforeSendLog: scrubLog,
     // We register no OTel auto-instrumentations, so the iitm loader
     // thread that `@sentry/node-core`'s `initializeEsmLoader` would
     // spin up has nothing to hook. Disabling it lets us drop iitm
@@ -133,9 +158,15 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
     transport: forwardingTransport,
     // Function form preserves SDK defaults (inboundFilters, linkedErrors,
     // nodeContext, etc.) — the array form would replace them.
-    integrations: (defaults) => [...defaults, Sentry.consoleIntegration()],
+    // `consoleIntegration` is debug-only: console-log capture is
+    // privacy-expensive and only useful during an investigation window.
+    integrations: (defaults) =>
+      config?.debug ? [...defaults, Sentry.consoleIntegration()] : defaults,
     initialScope: {
       tags: { proc: "fgs", layer: "node" },
+      // Native-derived user.id (monthly/permanent hash) — same value the
+      // FGS and RN layers set, so one launch reports one user.
+      ...(argv.sentryUserId ? { user: { id: argv.sentryUserId } } : {}),
     },
   });
 
@@ -147,6 +178,22 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
     delete event.contexts.device;
     delete event.contexts.culture;
     return event;
+  });
+
+  // PII scrubber — symmetric with the RN side's `beforeSend`.
+  // Registered as an event processor so it runs on the way out, after
+  // all scope merges. Drops or redacts before envelopes leave Node.
+  Sentry.addEventProcessor(scrubEvent);
+
+  // Wire the metrics layer with the live SDK + resolved device tags so
+  // every emission carries `platform` and the duration metrics carry
+  // `device_class` / `os_major`.
+  metrics.init({
+    Sentry,
+    platform: config.platformTag,
+    deviceClass: config.deviceClass,
+    osMajor: config.osMajor,
+    applicationUsageData: config.applicationUsageData,
   });
 }
 
@@ -218,7 +265,19 @@ export async function withBootTrace(args, loadIndex) {
  * @returns {Promise<T>}
  */
 export async function withSpan(op, fn) {
-  if (!Sentry) return fn();
+  // Always record the boot-phase duration as a metric, even
+  // when traces are off (`debug=false`). The span only materialises
+  // under `debug` via `tracesSampleRate`, but the metric is always-on.
+  const phase = op.startsWith("boot.") ? op.slice("boot.".length) : op;
+  const start = performance.now();
+  const recordPhase = () => metrics.bootPhase(phase, performance.now() - start);
+  if (!Sentry) {
+    try {
+      return await fn();
+    } finally {
+      recordPhase();
+    }
+  }
   // op:boot.* is the Discover filter; name=op so span.name renders.
   return Sentry.startSpan({ name: op, op }, async (span) => {
     try {
@@ -228,6 +287,8 @@ export async function withSpan(op, fn) {
     } catch (e) {
       span.setStatus({ code: 2, message: "internal_error" });
       throw e;
+    } finally {
+      recordPhase();
     }
   });
 }
@@ -280,9 +341,12 @@ export function setSink(realSink) {
 }
 
 /**
- * `onRequestHook` for ComapeoRpcServer. Returns `undefined` when off
- * so the RPC server skips middleware entirely. RPC args capture is
- * opt-in (PII) via `--sentryRpcArgsBytes`. Errors are not rethrown:
+ * `onRequestHook` for ComapeoRpcServer. Returns `undefined` when Sentry
+ * is off (RPC server skips middleware). When on, ALWAYS records the
+ * `comapeo.rpc.server.*` metric; only creates a Sentry span
+ * when `--debug` is set. The metric is recorded while the span
+ * is active so it links to the trace. RPC args capture is opt-in (PII)
+ * via `--sentryRpcArgsBytes` AND `--debug`. Errors are not rethrown:
  * rpc-reflector already responds, and rethrowing would route routine
  * RPC errors into `handleFatal`.
  *
@@ -292,10 +356,36 @@ export function rpcHook() {
   if (!Sentry) return undefined;
   const sentryRef = Sentry;
   const rpcArgsBytes = config?.rpcArgsBytes ?? 0;
+  const debug = config?.debug ?? false;
   return (request, next) => {
+    const method = request.method.join(".");
+
+    // Metrics/tracing only — the hook never captures exceptions. An RPC
+    // rejection is often expected control flow (e.g. NotFound) that should
+    // not auto-create a Sentry issue; deciding what's report-worthy is the
+    // caller's job, at the call site. Records duration + status regardless of
+    // `debug`; the span block below adds per-RPC tracing under `debug`. The
+    // trailing `.catch` keeps a throw from a metrics call out of the
+    // unhandledRejection → handleFatal path.
+    if (!debug) {
+      const start = performance.now();
+      Promise.resolve(next(request))
+        .then(
+          () => metrics.rpcServer(method, "ok", performance.now() - start),
+          (error) => {
+            metrics.rpcServer(
+              method,
+              statusFor(error),
+              performance.now() - start,
+            );
+          },
+        )
+        .catch(() => {});
+      return;
+    }
+
     const sentryTrace = request.metadata?.["sentry-trace"];
     const baggage = request.metadata?.baggage;
-    const method = request.method.join(".");
     // `rpc.system` / `rpc.method` follow OpenTelemetry's RPC semantic
     // conventions (https://opentelemetry.io/docs/specs/semconv/rpc/),
     // which Sentry defers to for RPC ops. Pair with `op: "rpc.server"`
@@ -325,17 +415,34 @@ export function rpcHook() {
           attributes,
         },
         async (span) => {
+          const start = performance.now();
           try {
             await next(request);
             span.setStatus({ code: 1, message: "ok" });
+            metrics.rpcServer(method, "ok", performance.now() - start);
           } catch (error) {
+            // Mark the span errored for tracing, but do not capture an issue
+            // — see the metrics-only note on the non-debug path above.
             span.setStatus({ code: 2, message: "internal_error" });
-            sentryRef.captureException(error, {
-              tags: { layer: "node", op: "rpc.server" },
-            });
+            metrics.rpcServer(
+              method,
+              statusFor(error),
+              performance.now() - start,
+            );
           }
         },
       );
     });
   };
 }
+
+/**
+ * Bounded `status` tag for a thrown RPC error.
+ * @param {any} error
+ */
+function statusFor(error) {
+  const name = error && error.name;
+  if (typeof name === "string" && /timeout/i.test(name)) return "timeout";
+  return "error";
+}
+

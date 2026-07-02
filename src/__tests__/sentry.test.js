@@ -21,21 +21,35 @@ const { SENTRY_OWNED_GLOBAL_KEY } = require("../sentry-tags");
 
 describe("initSentry", () => {
   let preferences;
+  let livePreferences;
   let configDsn;
+  let configUserId;
   let isInitializedFlag;
   let initSpy;
+  let setUserSpy;
   let setTagSpy;
   let setContextSpy;
   let addEventProcessorSpy;
+  let setDiagnosticsEnabledNativeSpy;
 
   beforeEach(() => {
-    preferences = { diagnosticsEnabled: true, captureApplicationData: false };
+    preferences = {
+      diagnosticsEnabled: true,
+      applicationUsageData: false,
+      debug: false,
+    };
+    // The live view starts equal to the boot snapshot; tests mutate it to
+    // simulate a `setX` made after launch.
+    livePreferences = { ...preferences };
     configDsn = "https://x@sentry.io/1";
+    configUserId = undefined;
     isInitializedFlag = false;
     initSpy = jest.fn();
+    setUserSpy = jest.fn();
     setTagSpy = jest.fn();
     setContextSpy = jest.fn();
     addEventProcessorSpy = jest.fn();
+    setDiagnosticsEnabledNativeSpy = jest.fn(() => Promise.resolve());
 
     jest.resetModules();
 
@@ -56,10 +70,21 @@ describe("initSentry", () => {
         // plugin value and falls back to 0.1 would fail this test.
         tracesSampleRate: 0.5,
         enableLogs: true,
+        ...(configUserId ? { userId: configUserId } : {}),
       }),
-      readSentryPreferences: () => preferences,
-      setDiagnosticsEnabledNative: jest.fn(),
-      setCaptureApplicationDataNative: jest.fn(),
+      readSentryPreferencesAtLaunch: () => preferences,
+      readCurrentSentryPreferences: () => livePreferences,
+      readRootUserIdNative: () => "AB3D-EF9H-J2K3",
+      setDiagnosticsEnabledNative: setDiagnosticsEnabledNativeSpy,
+      setApplicationUsageDataNative: jest.fn(() => Promise.resolve()),
+      setDebugEnabledNative: jest.fn(() => Promise.resolve()),
+    }));
+
+    // Stub the metrics layer so this unit test doesn't pull it in (and
+    // the circular import back to `./sentry`).
+    jest.doMock("../sentry-metrics", () => ({
+      rpcClientMetric: jest.fn(),
+      rpcStatusFor: jest.fn(() => "ok"),
     }));
 
     const globalScope = {
@@ -71,6 +96,7 @@ describe("initSentry", () => {
     jest.doMock("@sentry/react-native", () => ({
       init: initSpy,
       isInitialized: () => isInitializedFlag,
+      setUser: setUserSpy,
       getGlobalScope: () => globalScope,
       captureException: jest.fn(),
       captureMessage: jest.fn(),
@@ -128,16 +154,43 @@ describe("initSentry", () => {
     expect(opts.environment).toBe("test");
     expect(opts.release).toBe("1.0+1");
     expect(opts.sendDefaultPii).toBe(false);
-    // captureApplicationData=false → traces forced to 0 regardless
-    // of the plugin's configured 0.5.
-    expect(opts.tracesSampleRate).toBe(0);
+    // debug=false → the plugin-configured rate (0.5) applies. Native folds the
+    // debug window into the backend's rate; RN applies the same formula.
+    expect(opts.tracesSampleRate).toBe(0.5);
     expect(opts.enableLogs).toBe(true);
   });
 
-  test("tracesSampleRate uses plugin value when captureApplicationData is on", () => {
-    preferences.captureApplicationData = true;
+  test("applies the native-derived user.id via Sentry.setUser", () => {
+    configUserId = "e15e7255ae360358";
     const { initSentry } = require("../sentry");
     initSentry();
+    expect(setUserSpy).toHaveBeenCalledWith({ id: "e15e7255ae360358" });
+  });
+
+  test("skips Sentry.setUser when native provided no userId", () => {
+    const { initSentry } = require("../sentry");
+    initSentry();
+    expect(setUserSpy).not.toHaveBeenCalled();
+  });
+
+  test("getRootUserId returns the native root ID (never sent to Sentry)", () => {
+    const { getRootUserId } = require("../sentry");
+    expect(getRootUserId()).toBe("AB3D-EF9H-J2K3");
+  });
+
+  test("tracesSampleRate is 1.0 when debug is on, else the configured rate", () => {
+    preferences.debug = true;
+    const { initSentry } = require("../sentry");
+    initSentry();
+    expect(initSpy.mock.calls[0][0].tracesSampleRate).toBe(1.0);
+  });
+
+  test("applicationUsageData does NOT drive tracesSampleRate (debug + config do)", () => {
+    preferences.applicationUsageData = true;
+    preferences.debug = false;
+    const { initSentry } = require("../sentry");
+    initSentry();
+    // Usage tier is irrelevant to tracing; the non-debug rate is the config (0.5).
     expect(initSpy.mock.calls[0][0].tracesSampleRate).toBe(0.5);
   });
 
@@ -220,9 +273,7 @@ describe("initSentry", () => {
   });
 
   test("beforeSend chains: our scrubber runs first, host's second", () => {
-    // Our scrubber is currently identity (PII implementation lands
-    // in Phase 9b) — but the chain order itself is load-bearing:
-    // the host's hook must see only post-scrub payloads, never raw
+    // The host's hook must see only post-scrub payloads, never raw
     // ones. Test by passing a host hook that observes the input.
     const hostBeforeSend = jest.fn((event) => ({
       ...event,
@@ -234,6 +285,47 @@ describe("initSentry", () => {
     const result = chain({ original: true }, undefined);
     expect(hostBeforeSend).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ original: true, hostMarker: true });
+  });
+
+  test("beforeSend scrubber redacts lat/lng and rootKey markers before the host sees them", () => {
+    const seen = [];
+    const hostBeforeSend = jest.fn((event) => {
+      seen.push(JSON.stringify(event));
+      return event;
+    });
+    const { initSentry } = require("../sentry");
+    initSentry({ beforeSend: hostBeforeSend });
+    const chain = initSpy.mock.calls[0][0].beforeSend;
+    chain(
+      {
+        message: "latitude: -12.34",
+        exception: {
+          values: [{ type: "Error", value: "rootKey=aGVsbG8td29ybGQtMTIzNA" }],
+        },
+        extra: { token: "bm90LWEtcmVhbC1rZXktMQ" },
+      },
+      undefined,
+    );
+    const payload = seen[0];
+    expect(payload).toContain("[redacted]");
+    expect(payload).not.toContain("aGVsbG8td29ybGQtMTIzNA"); // rootKey value gone
+    expect(payload).not.toContain("-12.34"); // lat/lng gone
+    // Broad base64-22 rule disabled: a bare token in `extra` currently survives.
+    expect(payload).toContain("bm90LWEtcmVhbC1rZXktMQ");
+  });
+
+  test("beforeBreadcrumb reduces HTTP URLs to host-only", () => {
+    const { initSentry } = require("../sentry");
+    initSentry();
+    const beforeBreadcrumb = initSpy.mock.calls[0][0].beforeBreadcrumb;
+    const result = beforeBreadcrumb(
+      {
+        category: "http",
+        data: { url: "https://cloud.comapeo.app/projects/abc?token=x" },
+      },
+      undefined,
+    );
+    expect(result.data.url).toBe("https://cloud.comapeo.app");
   });
 
   test("beforeSend drops the event when host returns null", () => {
@@ -272,5 +364,53 @@ describe("initSentry", () => {
         ["env", "staging"],
       ]),
     );
+  });
+
+  test("toggle getters read the live value, not the boot snapshot", () => {
+    const {
+      getDiagnosticsEnabled,
+      getApplicationUsageData,
+      getDebugEnabled,
+    } = require("../sentry");
+    // Simulate a setX made after launch: the live view diverges from the
+    // boot snapshot. The getters must reflect the live view so a settings
+    // screen reads back the user's just-made choice.
+    livePreferences.diagnosticsEnabled = false;
+    livePreferences.applicationUsageData = true;
+    livePreferences.debug = true;
+    expect(getDiagnosticsEnabled()).toBe(false);
+    expect(getApplicationUsageData()).toBe(true);
+    expect(getDebugEnabled()).toBe(true);
+    // The boot snapshot (what governs this session) is untouched.
+    expect(preferences.diagnosticsEnabled).toBe(true);
+  });
+
+  test("setter updates the live view only after the native write resolves", async () => {
+    const { setDiagnosticsEnabled, getDiagnosticsEnabled } =
+      require("../sentry");
+    let resolveNative;
+    setDiagnosticsEnabledNativeSpy.mockImplementation(
+      () => new Promise((r) => { resolveNative = r; }),
+    );
+    const pending = setDiagnosticsEnabled(false);
+    // Not yet persisted — the getter must still show the old value.
+    expect(getDiagnosticsEnabled()).toBe(true);
+    resolveNative();
+    await pending;
+    expect(getDiagnosticsEnabled()).toBe(false);
+  });
+
+  test("setter leaves the live view unchanged when the native write rejects", async () => {
+    const { setDiagnosticsEnabled, getDiagnosticsEnabled } =
+      require("../sentry");
+    setDiagnosticsEnabledNativeSpy.mockImplementation(() =>
+      Promise.reject(new Error("native context not attached")),
+    );
+    await expect(setDiagnosticsEnabled(false)).rejects.toThrow(
+      "native context not attached",
+    );
+    // The failed opt-out must not be reported as done — the on-disk
+    // value is still true, so the getter must agree.
+    expect(getDiagnosticsEnabled()).toBe(true);
   });
 });

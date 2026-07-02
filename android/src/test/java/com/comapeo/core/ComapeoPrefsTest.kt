@@ -9,10 +9,10 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 /**
- * JVM-only unit tests for [ComapeoPrefs]. Uses the constructor's
- * lambda seam so we don't depend on a real `SharedPreferences`
- * (unmocked on the JVM unit-test classpath). Same pattern as
- * [SentryConfigTest] and [ControlFrameTest].
+ * JVM-only unit tests for [ComapeoPrefs]. Backs the [ComapeoPrefs.Store]
+ * seam with an in-memory map so we don't depend on a real
+ * `SharedPreferences` (unmocked on the JVM unit-test classpath). Same
+ * pattern as [SentryConfigTest] and [ControlFrameTest].
  *
  * Coverage rationale: this is the privacy toggle's persistence
  * layer. A regression that loses or mis-merges the default-fallback
@@ -22,46 +22,60 @@ import java.io.File
  */
 class ComapeoPrefsTest {
 
-    /** Backing HashMap stand-in for the SharedPreferences file. */
-    private class FakeStore {
-        private val data = mutableMapOf<String, Boolean>()
-        val read: (String) -> Boolean? = { key -> data[key] }
-        val write: (String, Boolean) -> Unit = { key, value -> data[key] = value }
-        fun has(key: String) = data.containsKey(key)
+    /** In-memory [ComapeoPrefs.Store] stand-in for the SharedPreferences file. */
+    private class FakeStore : ComapeoPrefs.Store {
+        private val bools = mutableMapOf<String, Boolean>()
+        private val longs = mutableMapOf<String, Long>()
+        private val strings = mutableMapOf<String, String>()
+        override fun getBoolean(key: String): Boolean? = bools[key]
+        override fun putBoolean(key: String, value: Boolean) { bools[key] = value }
+        override fun getLong(key: String): Long? = longs[key]
+        override fun putLong(key: String, value: Long) { longs[key] = value }
+        override fun getString(key: String): String? = strings[key]
+        override fun putString(key: String, value: String) { strings[key] = value }
+        override fun remove(key: String) {
+            bools.remove(key); longs.remove(key); strings.remove(key)
+        }
+        fun has(key: String) =
+            bools.containsKey(key) || longs.containsKey(key) || strings.containsKey(key)
     }
 
     private fun prefs(
         store: FakeStore,
         diagnosticsDefault: Boolean = ComapeoPrefs.DEFAULT_DIAGNOSTICS_ENABLED,
-        captureDefault: Boolean = ComapeoPrefs.DEFAULT_CAPTURE_APPLICATION_DATA,
+        usageDefault: Boolean = ComapeoPrefs.DEFAULT_APPLICATION_USAGE_DATA,
+        debugDefault: Boolean = ComapeoPrefs.DEFAULT_DEBUG,
+        now: () -> Long = { 0L },
     ): ComapeoPrefs = ComapeoPrefs(
-        readBool = store.read,
-        writeBool = store.write,
+        store = store,
         defaults = ComapeoPrefs.Defaults(
             diagnosticsEnabled = diagnosticsDefault,
-            captureApplicationData = captureDefault,
+            applicationUsageData = usageDefault,
+            debug = debugDefault,
         ),
+        now = now,
     )
 
     @Test
     fun bakedDefaultWhenKeyAbsent() {
         // Fresh install, plugin didn't ship a default, user hasn't
-        // toggled anything — diagnostics on, capture-app-data off.
+        // toggled anything — diagnostics on, usage off, debug off.
         val p = prefs(FakeStore())
         assertTrue(p.readDiagnosticsEnabled())
-        assertFalse(p.readCaptureApplicationData())
+        assertFalse(p.readApplicationUsageData())
+        assertFalse(p.readDebugEnabled())
     }
 
     @Test
     fun pluginDefaultOverridesBakedWhenKeyAbsent() {
-        // E.g. a dev/qa plugin config with both flags on by default.
+        // E.g. a dev/qa plugin config with usage on by default.
         val p = prefs(
             FakeStore(),
             diagnosticsDefault = false,
-            captureDefault = true,
+            usageDefault = true,
         )
         assertFalse(p.readDiagnosticsEnabled())
-        assertTrue(p.readCaptureApplicationData())
+        assertTrue(p.readApplicationUsageData())
     }
 
     @Test
@@ -72,12 +86,100 @@ class ComapeoPrefsTest {
         val p = prefs(
             store,
             diagnosticsDefault = true,
-            captureDefault = false,
+            usageDefault = false,
         )
         p.writeDiagnosticsEnabled(false)
-        p.writeCaptureApplicationData(true)
+        p.writeApplicationUsageData(true)
         assertFalse(p.readDiagnosticsEnabled())
-        assertTrue(p.readCaptureApplicationData())
+        assertTrue(p.readApplicationUsageData())
+    }
+
+    @Test
+    fun debugAutoOffBoundaries() {
+        // fresh enable true; just within window true; just past window false + cleared.
+        val store = FakeStore()
+        var clock = 1_000_000L
+        val p = prefs(store, now = { clock })
+        p.writeDebugEnabled(true)
+        assertTrue("fresh enable reads true", p.readDebugEnabled())
+
+        clock += ComapeoPrefs.DEBUG_MAX_AGE_MS - 60_000 // one minute before expiry
+        assertTrue("within window reads true", p.readDebugEnabled())
+
+        clock += 120_000 // now past the window since enable
+        assertFalse("past window auto-disables", p.readDebugEnabled())
+        assertFalse(
+            "auto-off clears the value",
+            store.getBoolean(ComapeoPrefs.KEY_DEBUG)!!,
+        )
+        assertFalse(
+            "auto-off clears the timestamp",
+            store.has(ComapeoPrefs.KEY_DEBUG_ENABLED_AT_MS),
+        )
+        // A second read does not mutate further.
+        assertFalse(p.readDebugEnabled())
+    }
+
+    @Test
+    fun debugExpiresWhenClockMovesBackwardPastEnable() {
+        // Backward wall-clock change must not extend debug: an enable
+        // timestamp in the future (age < 0) auto-disables rather than
+        // keeping debug on indefinitely.
+        val store = FakeStore()
+        var clock = 10_000_000L
+        val p = prefs(store, now = { clock })
+        p.writeDebugEnabled(true)
+        assertTrue(p.readDebugEnabled())
+
+        clock -= 5_000_000L // clock moved back before the enable stamp
+        assertFalse("backward clock past enable auto-disables", p.readDebugEnabled())
+        assertFalse(store.has(ComapeoPrefs.KEY_DEBUG_ENABLED_AT_MS))
+    }
+
+    @Test
+    fun debugReEnableRefreshesWindow() {
+        val store = FakeStore()
+        var clock = 0L
+        val p = prefs(store, now = { clock })
+        p.writeDebugEnabled(true)
+        clock += ComapeoPrefs.DEBUG_MAX_AGE_MS - 60_000
+        // Re-enable just before expiry → fresh full window.
+        p.writeDebugEnabled(true)
+        clock += ComapeoPrefs.DEBUG_MAX_AGE_MS - 60_000
+        assertTrue("re-enable should reset the window clock", p.readDebugEnabled())
+    }
+
+    @Test
+    fun readDebugStoredIsRawWithNoAutoOff() {
+        // The live settings read must return the raw saved toggle and never
+        // mutate: past the window, readDebugEnabled auto-disables + writes,
+        // but readDebugStored still reads true and leaves disk untouched.
+        val store = FakeStore()
+        var clock = 1_000L
+        val p = prefs(store, now = { clock })
+        p.writeDebugEnabled(true)
+        clock += ComapeoPrefs.DEBUG_MAX_AGE_MS + 60_000
+
+        assertTrue("raw read returns stored value", p.readDebugStored())
+        assertTrue(
+            "raw read does not clear the stored value",
+            store.getBoolean(ComapeoPrefs.KEY_DEBUG)!!,
+        )
+        assertTrue(
+            "raw read runs no auto-off (timestamp intact)",
+            store.has(ComapeoPrefs.KEY_DEBUG_ENABLED_AT_MS),
+        )
+    }
+
+    @Test
+    fun debugTrueWithoutTimestampStampsAndStaysOn() {
+        // Older install: debug=true cell exists, no timestamp. Treat as
+        // "enabled now" and stamp on first read.
+        val store = FakeStore()
+        store.putBoolean(ComapeoPrefs.KEY_DEBUG, true)
+        val p = prefs(store, now = { 500L })
+        assertTrue(p.readDebugEnabled())
+        assertEquals(500L, store.getLong(ComapeoPrefs.KEY_DEBUG_ENABLED_AT_MS))
     }
 
     @Test
@@ -105,15 +207,16 @@ class ComapeoPrefsTest {
             ComapeoPrefs.KEY_DIAGNOSTICS_ENABLED,
         )
         assertEquals(
-            "sentry.captureApplicationData",
-            ComapeoPrefs.KEY_CAPTURE_APPLICATION_DATA,
+            "sentry.applicationUsageData",
+            ComapeoPrefs.KEY_APPLICATION_USAGE_DATA,
         )
+        assertEquals("sentry.debug", ComapeoPrefs.KEY_DEBUG)
     }
 
     @Test
     fun prefsFileNameIsPinned() {
-        // Phase 6 plans to share this file. Pin the name so it can't
-        // be renamed without a deliberate, visible change.
+        // Other code may come to share this prefs file. Pin the name
+        // so it can't be renamed without a deliberate, visible change.
         assertEquals("com.comapeo.core.prefs", ComapeoPrefs.PREFS_NAME)
     }
 
@@ -139,6 +242,47 @@ class ComapeoPrefsTest {
             "wipe must recursively remove the sentry dir",
             sentryDir.exists(),
         )
+    }
+
+    @Test
+    fun rootUserIdIsGeneratedOnceAndStable() {
+        // Identity anchor: regenerating on every read would silently
+        // rotate the "permanent" user.id and break historical
+        // re-association from a user-shared root ID.
+        val store = FakeStore()
+        val p = prefs(store)
+        val first = p.readRootUserId()
+        assertTrue(first.isNotEmpty())
+        assertEquals(first, p.readRootUserId())
+        assertEquals(first, prefs(store).readRootUserId())
+        assertTrue(store.has(ComapeoPrefs.KEY_ROOT_USER_ID))
+    }
+
+    @Test
+    fun deriveSentryUserIdRotatesMonthlyWithoutOptIn() {
+        val store = FakeStore()
+        var nowMs = 0L // 1970-01
+        val p = prefs(store, now = { nowMs })
+        val january = p.deriveSentryUserId(applicationUsageData = false)
+        nowMs = 32L * 24 * 60 * 60 * 1000 // 1970-02
+        val february = p.deriveSentryUserId(applicationUsageData = false)
+        assertTrue(january != february)
+        // Same month → same id.
+        assertEquals(february, p.deriveSentryUserId(applicationUsageData = false))
+    }
+
+    @Test
+    fun deriveSentryUserIdIsPermanentWithOptIn() {
+        val store = FakeStore()
+        var nowMs = 0L
+        val p = prefs(store, now = { nowMs })
+        val a = p.deriveSentryUserId(applicationUsageData = true)
+        nowMs = 400L * 24 * 60 * 60 * 1000 // > a year later
+        val b = p.deriveSentryUserId(applicationUsageData = true)
+        assertEquals(a, b)
+        // Neither derivation ever exposes the root ID itself.
+        assertTrue(a != p.readRootUserId())
+        assertTrue(p.deriveSentryUserId(applicationUsageData = false) != p.readRootUserId())
     }
 
     @Test

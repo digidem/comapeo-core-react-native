@@ -18,7 +18,7 @@ git history stay valid.
 | Phase 5 — capture-application-data opt-in surface                          | Per-RPC method spans, sync session transaction, bg/fg breadcrumbs, memory checkpoints, storage size sample, and the `before_send` privacy processor. The toggle plumbing itself is already done in Phase 9a.                                                                                  |
 | Phase 7b — iOS killed-in-background heuristic (optional)                   | `UserDefaults`-anchored per-event "killed in background" inference layered on top of the landed Phase 7a MetricKit forwarding (which is 24h-aggregate only).                                                                                                                                   |
 | Phase 8 — refinements                                                      | Sample-rate tuning from real data; optional dual-bundle if size matters.                                                                                                                                                                                                                       |
-| Phase 9b — PII scrubber, user.id rotation, context reclassification        | Substring scrubber; installation UUID with monthly hash at diagnostic tier; native-scope field split; consoleIntegration gating; network-URL scrubbing.                                                                                                                                       |
+| Phase 9b — PII scrubber, user.id rotation, context reclassification        | Scrubber (9b.1), user.id rotation (9b.2), network-URL scrubbing (9b.5), and consoleIntegration gating (9b.7, now debug-gated) landed with the Phase 11 branch. Remaining: native-scope field split (9b.3), boot-transaction slimming (9b.4), backend free-mem refresh (9b.6), toggle anchor resets (9b.9). |
 | Phase 11 — Metrics-first observability + `debug` tier                      | Shift day-to-day performance signal from per-RPC tracing to Sentry metrics (with bucketed device tags so "Samsung A52 is slow at sync" is a dashboard query). Rename `captureApplicationData` → `applicationUsageData` (now: stable `user.id` + usage events). New user-facing `debug` toggle enables per-RPC tracing for investigation. |
 
 ---
@@ -185,34 +185,25 @@ and every span's `description` + `attributes`. Trade-off between
 false-positive aggressiveness and signal preservation documented
 inline with example matches.
 
-### 9b.2 `user.id` — installation UUID + monthly rotation
+### 9b.2 `user.id` — root user ID + monthly rotation
 
-A stable per-install UUID owned by native (because the FGS process
-needs it before RN starts):
+**Landed** (with the Phase 11 branch) — see
+[`sentry-integration.md` §9.2](./sentry-integration.md#92-the-applicationusagedata-toggle)
+"Sentry `user.id`" for the as-built design. Two deltas from this
+section's original spec:
 
-- **Storage**: `ComapeoPrefs` adds a `sentry.installationId` key.
-  Generated lazily on first read as `UUID.randomUUID().toString()` on
-  Android / `UUID().uuidString` on iOS. Persisted in `SharedPreferences`
-  (cleared on uninstall) — explicitly **not** Keychain; we want
-  uninstall to genuinely reset identity.
-- **Computation**:
-  - Diagnostic tier:
-    `user.id = sha256(installationId + utc_year_month).slice(0, 16)`
-    where `utc_year_month` is `YYYY-MM` (current UTC). Hash rotates
-    monthly so cross-month traces don't link.
-  - App-usage tier: `user.id = installationId` (raw stable ID).
-  - When a user shares their `installationId` (e.g. for a bug report),
-    we can recover the diagnostic hashes back to them.
-- **Distribution**: native computes once at process start, exposes on
-  the existing `sentryConfig` Expo constant as `userId`. Backend
-  loader receives it via `--sentryUserId=...` argv. All three SDKs use
-  the same value via `Sentry.setUser({ id })` (locked — host can't
-  override).
-- **On toggle-flip**: the `installationId` itself doesn't rotate on
-  `diagnosticsEnabled` toggle (that would defeat bug-report
-  recoverability). When the user goes `app-usage on → off`, the next
-  launch's `user.id` changes (raw → monthly hash); that's the intended
-  boundary.
+- The stored ID is named **`sentry.rootUserId`** and is *never* sent
+  raw. The usage tier uses `sha256(root + "|permanent")` instead of the
+  raw ID, so the root ID is only ever shared by explicit user action
+  (via the `getRootUserId()` API, for support cases).
+- Both tiers hash with the same shape:
+  `sha256("<root>|<salt>").slice(0, 16)` where salt is UTC `YYYY-MM`
+  (diagnostic, monthly rotation) or `"permanent"` (usage opt-in).
+
+Distribution matches the spec: native derives once per process start,
+exposes `userId` on the `sentryConfig` Expo constant, passes
+`--sentryUserId` argv to the backend, and all three SDKs set the same
+`user.id`.
 
 ### 9b.3 Context field reclassification
 
@@ -586,10 +577,11 @@ Previously this gated per-RPC tracing + the perf grab bag. After this
 phase it gates only:
 
 1. **Stable `user.id`** — disables the monthly hash rotation specified
-   in Phase 9b.2. Locks to raw `installationId`. Without
-   `applicationUsageData` the user.id rotates monthly across
-   diagnostic captures (cohort-unlinkable). With it on, stable across
-   launches and months (cohort analysis works).
+   in Phase 9b.2. Locks to the permanent hash of the root user ID
+   (never the raw ID). Without `applicationUsageData` the user.id
+   rotates monthly across diagnostic captures (cohort-unlinkable).
+   With it on, stable across launches and months (cohort analysis
+   works).
 2. **Usage breadcrumbs / counters** — a module-supplied helper:
 
    ```ts

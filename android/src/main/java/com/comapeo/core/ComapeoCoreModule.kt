@@ -173,27 +173,72 @@ class ComapeoCoreModule : Module() {
 
         // `sentryConfig` — baked-in by app.plugin.js at prebuild; spread into
         // `Sentry.init(...)` by the JS `/sentry` sub-export. Empty map when the
-        // plugin isn't registered so spreading is always safe.
+        // plugin isn't registered so spreading is always safe. `userId` is
+        // derived with the same launch snapshot the FGS uses, so both
+        // processes report the same Sentry user.id.
         Constant("sentryConfig") {
-            appContext.reactContext?.let {
-                SentryConfig.loadFromManifest(it)?.toSentryInitMap()
+            appContext.reactContext?.let { ctx ->
+                val prefs = ComapeoPrefs.open(ctx)
+                SentryConfig.loadFromManifest(ctx)?.toSentryInitMap(
+                    DeviceTags.compute(ctx),
+                    prefs.deriveSentryUserId(prefs.readApplicationUsageData()),
+                )
             } ?: emptyMap<String, Any>()
         }
 
-        // `sentryPreferences` — snapshot-at-boot; toggle changes take effect on next
-        // launch. Returns baked-in defaults pre-attach so JS can spread unconditionally.
-        Constant("sentryPreferences") {
+        // The permanent root user ID (lazily generated on first read). Local
+        // debugging aid only — Sentry sees derived hashes, never this value.
+        // The host app may show it in a debug/about screen so a user can share
+        // it and support can recompute their historical monthly user.ids.
+        Function("getSentryRootUserId") {
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "getSentryRootUserId called before native context attached",
+                )
+            ComapeoPrefs.open(ctx).readRootUserId()
+        }
+
+        // `sentryPreferencesAtLaunch` — the snapshot in effect this session; toggle
+        // changes take effect on next launch. Returns baked-in defaults pre-attach so
+        // JS can spread unconditionally. For the current saved value use
+        // `getCurrentSentryPreferences`.
+        Constant("sentryPreferencesAtLaunch") {
             val ctx = appContext.reactContext
             if (ctx == null) {
                 mapOf(
                     "diagnosticsEnabled" to ComapeoPrefs.DEFAULT_DIAGNOSTICS_ENABLED,
-                    "captureApplicationData" to ComapeoPrefs.DEFAULT_CAPTURE_APPLICATION_DATA,
+                    "applicationUsageData" to ComapeoPrefs.DEFAULT_APPLICATION_USAGE_DATA,
+                    "debug" to ComapeoPrefs.DEFAULT_DEBUG,
                 )
             } else {
                 val prefs = ComapeoPrefs.open(ctx)
                 mapOf(
                     "diagnosticsEnabled" to prefs.readDiagnosticsEnabled(),
-                    "captureApplicationData" to prefs.readCaptureApplicationData(),
+                    "applicationUsageData" to prefs.readApplicationUsageData(),
+                    "debug" to prefs.readDebugEnabled(),
+                )
+            }
+        }
+
+        // Live read of the current persisted values — reflects a `setX` made this
+        // session and survives a JS reload (unlike the `sentryPreferencesAtLaunch`
+        // Constant), so a settings screen can read the user's choice without keeping
+        // its own copy. Raw `debug` (no 72h auto-off side effect — that's applied by
+        // readDebugEnabled at launch).
+        Function("getCurrentSentryPreferences") {
+            val ctx = appContext.reactContext
+            if (ctx == null) {
+                mapOf(
+                    "diagnosticsEnabled" to ComapeoPrefs.DEFAULT_DIAGNOSTICS_ENABLED,
+                    "applicationUsageData" to ComapeoPrefs.DEFAULT_APPLICATION_USAGE_DATA,
+                    "debug" to ComapeoPrefs.DEFAULT_DEBUG,
+                )
+            } else {
+                val prefs = ComapeoPrefs.open(ctx)
+                mapOf(
+                    "diagnosticsEnabled" to prefs.readDiagnosticsEnabled(),
+                    "applicationUsageData" to prefs.readApplicationUsageData(),
+                    "debug" to prefs.readDebugStored(),
                 )
             }
         }
@@ -210,12 +255,21 @@ class ComapeoCoreModule : Module() {
             if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
         }
 
-        AsyncFunction("setCaptureApplicationData") { value: Boolean ->
+        AsyncFunction("setApplicationUsageData") { value: Boolean ->
             val ctx = appContext.reactContext
                 ?: throw IllegalStateException(
-                    "setCaptureApplicationData called before native context attached",
+                    "setApplicationUsageData called before native context attached",
                 )
-            ComapeoPrefs.open(ctx).writeCaptureApplicationData(value)
+            ComapeoPrefs.open(ctx).writeApplicationUsageData(value)
+            if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
+        }
+
+        AsyncFunction("setDebugEnabled") { value: Boolean ->
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "setDebugEnabled called before native context attached",
+                )
+            ComapeoPrefs.open(ctx).writeDebugEnabled(value)
             if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
         }
 

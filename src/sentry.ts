@@ -4,7 +4,7 @@
  * This module owns the RN-side `Sentry.init` call — the host calls
  * [initSentry] once at app entry and the module decides DSN, release,
  * sample rates, and user-tier gating based on the persisted
- * `diagnosticsEnabled` / `captureApplicationData` preferences. The host
+ * `diagnosticsEnabled` / `applicationUsageData` / `debug` preferences. The host
  * cannot override DSN or sample rates; it can append integrations and
  * chain its own `beforeSend` / `beforeBreadcrumb` after our scrubber.
  *
@@ -18,12 +18,17 @@ import * as Sentry from "@sentry/react-native";
 import {
   state,
   readSentryConfig,
-  readSentryPreferences,
+  readSentryPreferencesAtLaunch,
+  readCurrentSentryPreferences,
+  readRootUserIdNative,
   setDiagnosticsEnabledNative,
-  setCaptureApplicationDataNative,
+  setApplicationUsageDataNative,
+  setDebugEnabledNative,
+  type SentryPreferences,
 } from "./ComapeoCoreModule";
 import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types";
 import { SentryTags, SENTRY_OWNED_GLOBAL_KEY } from "./sentry-tags";
+import { scrubEvent, scrubBreadcrumb, scrubLog } from "./sentry-scrub";
 import {
   BACKEND_MODULES,
   COMAPEO_MODULE_VERSION_LABEL,
@@ -40,6 +45,31 @@ export type SentryInitConfig = {
   sampleRate?: number;
   tracesSampleRate?: number;
   enableLogs?: boolean;
+  /**
+   * Device-classification tags computed once at native process start.
+   * Attached to the duration metrics as low-cardinality attributes — see
+   * `sentry-metrics.ts`. Absent in test contexts / pre-attach.
+   */
+  deviceTags?: SentryDeviceTags;
+  /**
+   * Derived Sentry `user.id` for this launch, computed natively from the
+   * permanent root user ID: a monthly-rotating hash by default, a
+   * permanent hash when the user opted in to application-usage data.
+   * Never the root ID itself. Applied via `Sentry.setUser` by
+   * [initSentry]; locked (the host can't override it).
+   */
+  userId?: string;
+};
+
+/**
+ * Low-cardinality device classification. `deviceClass`
+ * buckets RAM + CPU cores into low/mid/high; `osMajor` is
+ * `<platform>.<major>`; `platform` is `ios` / `android`.
+ */
+export type SentryDeviceTags = {
+  platform: string;
+  deviceClass: string;
+  osMajor: string;
 };
 
 /**
@@ -51,13 +81,6 @@ export type SentryInitConfig = {
  * Always-defined: empty object when the plugin isn't registered.
  */
 export const sentryConfig: SentryInitConfig = readSentryConfig();
-
-/**
- * Fallback `tracesSampleRate` when the plugin doesn't configure one
- * and `captureApplicationData` is on. Keep in sync with
- * `backend/loader.mjs`'s `DEFAULT_TRACES_SAMPLE_RATE`.
- */
-const DEFAULT_TRACES_SAMPLE_RATE = 0.1;
 
 // ── Host extension API ──────────────────────────────────────────
 
@@ -104,12 +127,29 @@ export interface InitSentryOptions {
 
 // ── Public toggle API ───────────────────────────────────────────
 
+// In-memory view of the current saved preferences. Seeded lazily from the
+// native current-value read (one synchronous native call, not once per
+// render), then kept in sync by the setters so a settings screen can read a
+// toggle back mid-session without its own state. Module-level, so a JS reload
+// drops it and it re-seeds from the native read — reflecting any change made
+// since the native process launched. Distinct from the launch snapshot the
+// module's own behaviour is pinned to (see [initSentry]).
+let currentPreferences: SentryPreferences | undefined;
+
+function livePreferences(): SentryPreferences {
+  return (currentPreferences ??= readCurrentSentryPreferences());
+}
+
 /**
- * User's saved value (or the plugin/baked default if unset).
- * Restart-to-activate — see [setDiagnosticsEnabled].
+ * The user's current saved value (or the plugin/baked default if unset).
+ * Reflects a [setDiagnosticsEnabled] made earlier this session and survives a
+ * JS reload, so a settings screen can read it back without keeping its own
+ * copy. This is the *saved* value, which is restart-to-activate: the value
+ * governing whether Sentry actually emits this session is fixed at launch
+ * (see [initSentry]).
  */
 export function getDiagnosticsEnabled(): boolean {
-  return readSentryPreferences().diagnosticsEnabled;
+  return livePreferences().diagnosticsEnabled;
 }
 
 /**
@@ -121,24 +161,65 @@ export function getDiagnosticsEnabled(): boolean {
  * upload.
  */
 export function setDiagnosticsEnabled(value: boolean): Promise<void> {
-  return setDiagnosticsEnabledNative(value);
+  // Update the in-memory view only after the native write lands — a
+  // rejected write (e.g. native context not attached yet) must not
+  // leave the getters reporting a value that was never persisted.
+  return setDiagnosticsEnabledNative(value).then(() => {
+    livePreferences().diagnosticsEnabled = value;
+  });
 }
 
 /**
- * User's saved value (or the plugin/baked default if unset). Note
- * that the *effective* value (what actually gates per-RPC traces
- * etc.) is `getCaptureApplicationData() && getDiagnosticsEnabled()`
- * — but the getter returns the saved value so a settings UI can
- * render the toggle's stored state regardless of the diagnostics
- * setting.
+ * The user's current saved application-usage-data preference (or the
+ * plugin/baked default if unset). See [getDiagnosticsEnabled] for the
+ * saved-vs-active distinction.
  */
-export function getCaptureApplicationData(): boolean {
-  return readSentryPreferences().captureApplicationData;
+export function getApplicationUsageData(): boolean {
+  return livePreferences().applicationUsageData;
 }
 
 /** Persist the toggle. See [setDiagnosticsEnabled] for semantics. */
-export function setCaptureApplicationData(value: boolean): Promise<void> {
-  return setCaptureApplicationDataNative(value);
+export function setApplicationUsageData(value: boolean): Promise<void> {
+  return setApplicationUsageDataNative(value).then(() => {
+    livePreferences().applicationUsageData = value;
+  });
+}
+
+/**
+ * The user's current saved `debug` value (or the plugin/baked default if
+ * unset). See [getDiagnosticsEnabled] for the saved-vs-active distinction.
+ * This is the raw saved toggle; the 72h auto-off is applied natively at
+ * launch, so a still-`true` value here means "on, pending the next-launch
+ * expiry check". `debug` gates per-RPC traces, `@comapeo/core` OTel spans,
+ * backend `consoleIntegration`, and `rpc.args` capture.
+ */
+export function getDebugEnabled(): boolean {
+  return livePreferences().debug;
+}
+
+/**
+ * Persist the `debug` toggle. Writing `true` (re)starts the 72h
+ * auto-off window. See [setDiagnosticsEnabled] for the
+ * restart-to-activate semantics.
+ */
+export function setDebugEnabled(value: boolean): Promise<void> {
+  return setDebugEnabledNative(value).then(() => {
+    livePreferences().debug = value;
+  });
+}
+
+/**
+ * The permanent per-install root user ID (lazily generated on first
+ * read; reset by uninstall). A short `XXXX-XXXX-XXXX` code with no
+ * ambiguous characters, so a user can hand-copy it from a screen.
+ * Sentry never sees this value — the `user.id` on events is a hash
+ * derived from it (monthly-rotating by default, permanent under the
+ * usage opt-in), so both derivations can be recomputed from a
+ * user-shared root ID to re-associate historical events for a support
+ * case. Intended for a debug/about screen.
+ */
+export function getRootUserId(): string {
+  return readRootUserIdNative();
 }
 
 // ── initSentry ──────────────────────────────────────────────────
@@ -195,10 +276,9 @@ function markSentryOwned(): void {
  * - `dsn`, `release`, `environment`, `sampleRate`, `enableLogs` —
  *   from `sentryConfig` (the Expo plugin's prebuild output).
  * - `sendDefaultPii: false` — privacy default; not overridable.
- * - `tracesSampleRate` — 0 when capture-application-data is off, the
- *   plugin's configured value (default 0.1) when on.
- * - PII scrubber (currently an identity no-op; full implementation
- *   lands in the subsequent phase) runs before any host `beforeSend`.
+ * - `tracesSampleRate` — 1.0 when `debug` is on, 0 otherwise. Per-RPC
+ *   traces are investigation-only; metrics carry the day-to-day signal.
+ * - PII scrubber runs before any host `beforeSend`.
  */
 export function initSentry(options: InitSentryOptions = {}): void {
   // `isInitialized` isn't on `@sentry/react-native`'s public type
@@ -245,7 +325,7 @@ export function initSentry(options: InitSentryOptions = {}): void {
 
   initialized = true;
 
-  const preferences = readSentryPreferences();
+  const preferences = readSentryPreferencesAtLaunch();
   if (!preferences.diagnosticsEnabled) {
     // User opted out. Skip Sentry.init; state listeners (attached at
     // module load below) stay no-op via `sentryReady`.
@@ -260,17 +340,22 @@ export function initSentry(options: InitSentryOptions = {}): void {
     return;
   }
 
-  // 0 when off; plugin value (or DEFAULT_TRACES_SAMPLE_RATE) when on.
+  // Same trace-sampling decision the native side folds into the backend's
+  // rate: full while the `debug` window is on, else the plugin-configured cap
+  // (0 if unset). Day-to-day perf signal rides the always-on metrics layer.
   // Locked — the host extension API can't override this.
-  const effectiveTracesSampleRate = preferences.captureApplicationData
-    ? sentryConfig.tracesSampleRate ?? DEFAULT_TRACES_SAMPLE_RATE
-    : 0;
+  const effectiveTracesSampleRate = preferences.debug
+    ? 1.0
+    : (sentryConfig.tracesSampleRate ?? 0);
 
-  // PII scrubber — currently identity. Substring scan (rootKey,
-  // base64-22-char, lat/lng) TBD; chain shape is wired now so the
-  // host contract doesn't have to change later.
-  const ourBeforeSend: BeforeSendHook = (event) => event;
-  const ourBeforeBreadcrumb: BeforeBreadcrumbHook = (crumb) => crumb;
+  // PII scrubber — substring scan for rootKey + lat/lng markers across
+  // every text field. Runs BEFORE any host `beforeSend` so a buggy or
+  // malicious host never sees a raw payload.
+  const ourBeforeSend: BeforeSendHook = (event) => scrubEvent(event);
+  // URL-scrubbing breadcrumb hook: HTTP breadcrumbs reduced to
+  // host-only so request paths/queries don't leak.
+  const ourBeforeBreadcrumb: BeforeBreadcrumbHook = (crumb) =>
+    scrubBreadcrumb(crumb);
 
   const chainedBeforeSend = chainHook(ourBeforeSend, options.beforeSend);
   const chainedBeforeBreadcrumb = chainHook(
@@ -302,10 +387,21 @@ export function initSentry(options: InitSentryOptions = {}): void {
       options.integrations ? options.integrations(defaults) : defaults,
     beforeSend: chainedBeforeSend as never,
     beforeBreadcrumb: chainedBeforeBreadcrumb as never,
+    // Structured logs (`Sentry.logger.*`) bypass beforeSend/beforeBreadcrumb,
+    // so scrub them on their own hook — our state/message-error logs and any
+    // host logs.
+    beforeSendLog: (log: { message?: unknown; attributes?: unknown }) =>
+      scrubLog(log),
   } as never);
 
   markSentryOwned();
   sentryReady = true;
+
+  // Locked user.id — the native-derived monthly/permanent hash, shared
+  // with the FGS and backend layers so one launch reports one user.
+  if (sentryConfig.userId) {
+    Sentry.setUser({ id: sentryConfig.userId });
+  }
 
   // Scope-default tags via global scope (survives later forks).
   const globalScope = Sentry.getGlobalScope();

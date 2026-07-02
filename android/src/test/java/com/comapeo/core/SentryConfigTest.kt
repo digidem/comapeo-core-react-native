@@ -51,7 +51,8 @@ class SentryConfigTest {
         assertNull(config.tracesSampleRate)
         assertNull(config.rpcArgsBytes)
         assertNull(config.diagnosticsEnabledDefault)
-        assertNull(config.captureApplicationDataDefault)
+        assertNull(config.applicationUsageDataDefault)
+        assertNull(config.debugDefault)
         assertNull(config.enableLogs)
     }
 
@@ -59,7 +60,7 @@ class SentryConfigTest {
     fun pluginReleaseOverridesDefault() {
         // When the consumer passes `release` to the plugin, that
         // value wins over versionName+versionCode. Used to embed git
-        // SHAs from EAS_BUILD_GIT_COMMIT_HASH (plan §4.1).
+        // SHAs from EAS_BUILD_GIT_COMMIT_HASH.
         val config = SentryConfig.load(
             mapGetter(
                 mapOf(
@@ -154,34 +155,49 @@ class SentryConfigTest {
     }
 
     @Test
-    fun captureApplicationDataDefaultParses() {
+    fun applicationUsageDataDefaultParses() {
         val on = SentryConfig.load(
             mapGetter(
                 mapOf(
                     SentryConfig.META_DSN to "https://x@sentry.io/1",
                     SentryConfig.META_ENVIRONMENT to "qa",
-                    SentryConfig.META_CAPTURE_APPLICATION_DATA_DEFAULT to "true",
+                    SentryConfig.META_APPLICATION_USAGE_DATA_DEFAULT to "true",
                 ),
             ),
             DEFAULT_RELEASE,
         )!!
-        assertEquals(true, on.captureApplicationDataDefault)
+        assertEquals(true, on.applicationUsageDataDefault)
 
         val off = SentryConfig.load(
             mapGetter(
                 mapOf(
                     SentryConfig.META_DSN to "https://x@sentry.io/1",
                     SentryConfig.META_ENVIRONMENT to "production",
-                    SentryConfig.META_CAPTURE_APPLICATION_DATA_DEFAULT to "false",
+                    SentryConfig.META_APPLICATION_USAGE_DATA_DEFAULT to "false",
                 ),
             ),
             DEFAULT_RELEASE,
         )!!
-        assertEquals(false, off.captureApplicationDataDefault)
+        assertEquals(false, off.applicationUsageDataDefault)
     }
 
     @Test
-    fun captureApplicationDataDefaultStrictness() {
+    fun debugDefaultParses() {
+        val on = SentryConfig.load(
+            mapGetter(
+                mapOf(
+                    SentryConfig.META_DSN to "https://x@sentry.io/1",
+                    SentryConfig.META_ENVIRONMENT to "qa",
+                    SentryConfig.META_DEBUG_DEFAULT to "true",
+                ),
+            ),
+            DEFAULT_RELEASE,
+        )!!
+        assertEquals(true, on.debugDefault)
+    }
+
+    @Test
+    fun applicationUsageDataDefaultStrictness() {
         // `toBooleanStrictOrNull` rejects values other than "true" /
         // "false". Defensive: a stray "1"/"yes" from a hand-written
         // manifest should not silently flip the default. Returns
@@ -191,12 +207,12 @@ class SentryConfigTest {
                 mapOf(
                     SentryConfig.META_DSN to "https://x@sentry.io/1",
                     SentryConfig.META_ENVIRONMENT to "qa",
-                    SentryConfig.META_CAPTURE_APPLICATION_DATA_DEFAULT to "yes",
+                    SentryConfig.META_APPLICATION_USAGE_DATA_DEFAULT to "yes",
                 ),
             ),
             DEFAULT_RELEASE,
         )!!
-        assertNull(config.captureApplicationDataDefault)
+        assertNull(config.applicationUsageDataDefault)
     }
 
     @Test
@@ -241,7 +257,7 @@ class SentryConfigTest {
 
     @Test
     fun missingEnvironmentReturnsNullNotThrow() {
-        // The plugin refuses to prebuild without environment (§4.1),
+        // The plugin refuses to prebuild without environment,
         // but a stale prebuild from before that validation was added
         // would still ship. The original "throw" behaviour crashed
         // every cold start with no way to recover. Now we log loud

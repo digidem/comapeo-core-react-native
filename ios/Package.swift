@@ -41,6 +41,8 @@ let package = Package(
                 "SentryConfig.swift",
                 "SentryNativeBridge.swift",
                 "SentryTags.swift",
+                "SentryUserId.swift",
+                "DeviceTags.swift",
                 // MetricKit subscriber is #if os(iOS); only the pure
                 // AppExitDecoder compiles (and is tested) on macOS.
                 "AppExitMetricsCollector.swift",

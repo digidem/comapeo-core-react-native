@@ -22,6 +22,7 @@ import * as Sentry from "@sentry/react-native";
 // the import is safe.
 import { getTraceData, startNewTrace } from "@sentry/core";
 import type { SentryInitConfig } from "./sentry";
+import { rpcClientMetric, rpcStatusFor } from "./sentry-metrics";
 
 // `onRequestHook` request type derived from `createComapeoCoreClient` so
 // any hook-signature change up-stream is a compile error here. The
@@ -37,13 +38,15 @@ type IpcRequestWithMetadata = IpcHookRequest & {
 
 /**
  * User-persisted sentry preferences (snapshot at module construction).
- * Diagnostics on by default; capture-app-data off by default. Plugin
- * `diagnosticsEnabledDefault` / `captureApplicationDataDefault` change
- * the fresh-install defaults but not the user's saved choice.
+ * Diagnostics on by default; application-usage-data and debug off by
+ * default. Plugin `diagnosticsEnabledDefault` /
+ * `applicationUsageDataDefault` / `debugDefault` change the
+ * fresh-install defaults but not the user's saved choice.
  */
 export type SentryPreferences = {
   diagnosticsEnabled: boolean;
-  captureApplicationData: boolean;
+  applicationUsageData: boolean;
+  debug: boolean;
 };
 
 declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
@@ -56,11 +59,23 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
    */
   readonly sentryConfig: SentryInitConfig;
   /**
-   * User-persisted preferences, read at module construction.
-   * Snapshot-at-boot — `setDiagnosticsEnabled` / `setCaptureApplicationData`
-   * writes only take effect on the next launch.
+   * User-persisted preferences as read at native module construction —
+   * the **launch snapshot** that governs this session's Sentry behaviour
+   * (whether `initSentry` emits, the metrics usage tier, debug tracing).
+   * Immutable this session; `setX` writes only take effect on the next
+   * launch. For the current saved value (e.g. a settings screen reading
+   * back a just-made toggle) use `getCurrentSentryPreferences()`.
    */
-  readonly sentryPreferences: SentryPreferences;
+  readonly sentryPreferencesAtLaunch: SentryPreferences;
+  /**
+   * Live read of the current persisted preferences — reflects a `setX`
+   * made this session and survives a JS reload (unlike the
+   * `sentryPreferencesAtLaunch` snapshot). `debug` is the raw stored value,
+   * without the launch-time 72h auto-off side effect. Backs the public
+   * `getDiagnosticsEnabled` / `getApplicationUsageData` / `getDebugEnabled`
+   * getters.
+   */
+  getCurrentSentryPreferences(): SentryPreferences;
   /**
    * Persist `diagnosticsEnabled` and (on a transition to false) wipe
    * the on-disk Sentry envelope cache so queued events from the
@@ -70,11 +85,23 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   setDiagnosticsEnabled(value: boolean): Promise<void>;
   /**
    * Same shape as `setDiagnosticsEnabled` but for the
-   * `captureApplicationData` toggle. Outbox wipe on false is full
+   * `applicationUsageData` toggle. Outbox wipe on false is full
    * (not just trace envelopes) — selective wipe would be a lot of
    * code for the same effect when an outbox is mixed.
    */
-  setCaptureApplicationData(value: boolean): Promise<void>;
+  setApplicationUsageData(value: boolean): Promise<void>;
+  /**
+   * Persist the `debug` toggle and (on a transition to true) stamp the
+   * enable time so the 72h auto-off can fire on a later launch.
+   * Restart-to-activate.
+   */
+  setDebugEnabled(value: boolean): Promise<void>;
+  /**
+   * The permanent per-install root user ID (lazily generated on first
+   * read). Never sent to Sentry — the Sentry `user.id` is a hash derived
+   * from it natively. For debug/about screens so a user can share it.
+   */
+  getSentryRootUserId(): string;
   /**
    * Current notification-permission status without prompting. On Android
    * < 13 (API 33) and on iOS this resolves as `granted` (no-op).
@@ -106,19 +133,48 @@ export function readSentryConfig(): SentryInitConfig {
 }
 
 /**
- * User-persisted sentry preferences. Snapshot-at-boot: the values are
- * read at native module construction, so `setDiagnosticsEnabled` /
- * `setCaptureApplicationData` writes only take effect on the next
- * launch. Falls back to safe defaults (diagnostics on, capture-app-
- * data off) when the native module isn't available (test contexts).
+ * The launch snapshot of the sentry preferences: read once at native module
+ * construction, so `setDiagnosticsEnabled` / `setApplicationUsageData` /
+ * `setDebugEnabled` writes only take effect on the next launch. This is what
+ * the module's own session behaviour (initSentry, metrics tier, debug tracing)
+ * is pinned to. Falls back to safe defaults (diagnostics on, usage off, debug
+ * off) when the native module isn't available (test contexts).
  */
-export function readSentryPreferences(): SentryPreferences {
-  return (
-    nativeModule.sentryPreferences ?? {
+export function readSentryPreferencesAtLaunch(): SentryPreferences {
+  const raw = nativeModule.sentryPreferencesAtLaunch as
+    | SentryPreferences
+    | undefined;
+  if (!raw) {
+    return {
       diagnosticsEnabled: true,
-      captureApplicationData: false,
-    }
-  );
+      applicationUsageData: false,
+      debug: false,
+    };
+  }
+  return normalizePreferences(raw);
+}
+
+/**
+ * The current saved preferences — reflects a `setX` made this session and
+ * survives a JS reload, so a settings screen can read back the user's choice
+ * without maintaining its own copy. Distinct from
+ * [readSentryPreferencesAtLaunch] (the launch snapshot the session is pinned
+ * to); this is the current on-disk value. Falls back to the snapshot when the
+ * native live getter isn't available (older native / test contexts).
+ */
+export function readCurrentSentryPreferences(): SentryPreferences {
+  const live = nativeModule.getCurrentSentryPreferences?.() as
+    | SentryPreferences
+    | undefined;
+  return live ? normalizePreferences(live) : readSentryPreferencesAtLaunch();
+}
+
+function normalizePreferences(raw: SentryPreferences): SentryPreferences {
+  return {
+    diagnosticsEnabled: raw.diagnosticsEnabled,
+    applicationUsageData: raw.applicationUsageData ?? false,
+    debug: raw.debug ?? false,
+  };
 }
 
 /** Persist `diagnosticsEnabled`. See `setDiagnosticsEnabled` JSDoc. */
@@ -126,9 +182,22 @@ export function setDiagnosticsEnabledNative(value: boolean): Promise<void> {
   return nativeModule.setDiagnosticsEnabled(value);
 }
 
-/** Persist `captureApplicationData`. See `setCaptureApplicationData` JSDoc. */
-export function setCaptureApplicationDataNative(value: boolean): Promise<void> {
-  return nativeModule.setCaptureApplicationData(value);
+/** Persist `applicationUsageData`. See `setApplicationUsageData` JSDoc. */
+export function setApplicationUsageDataNative(value: boolean): Promise<void> {
+  return nativeModule.setApplicationUsageData(value);
+}
+
+/** Persist `debug`. See `setDebugEnabled` JSDoc. */
+export function setDebugEnabledNative(value: boolean): Promise<void> {
+  return nativeModule.setDebugEnabled(value);
+}
+
+/**
+ * The permanent root user ID from native prefs. Empty string when the
+ * native module isn't available (test contexts).
+ */
+export function readRootUserIdNative(): string {
+  return nativeModule.getSentryRootUserId?.() ?? "";
 }
 
 const GRANTED_PERMISSION: NotificationPermissionResponse = {
@@ -267,26 +336,54 @@ function hasInheritableActiveSpan(): boolean {
   return rootOp !== "ui.load" && !rootOp.startsWith("app.start.");
 }
 
+/**
+ * `true` when per-RPC tracing is active — `diagnosticsEnabled && debug`
+ * with the SDK actually initialised. Read once at module construction
+ * (snapshot-at-boot, like the rest of the preferences) so a per-call
+ * branch stays cheap.
+ */
+const debugTracingEnabled = (() => {
+  const prefs = readSentryPreferencesAtLaunch();
+  return prefs.diagnosticsEnabled && prefs.debug;
+})();
+
 export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort, {
   timeout: RPC_TIMEOUT_MS,
   onRequestHook: (request, next) => {
     // Sentry-not-initialised guard. `isInitialized` lives in `@sentry/core`
     // and is reachable through the namespace at runtime but isn't on the
     // public type surface — defensive accessor in case the helper isn't
-    // wired through in older SDK releases. Don't gate on `getActiveSpan`:
-    // it's undefined whenever no transaction is in progress (e.g. after
-    // App Start ends), which is exactly when we still want to create the
-    // span and propagate the trace to the backend.
+    // wired through in older SDK releases.
     const isInitialized = (
       Sentry as unknown as {
         isInitialized?: () => boolean;
       }
     ).isInitialized;
-    if (typeof isInitialized === "function" && !isInitialized()) {
-      next(request).catch(noop);
+    const sentryUp =
+      typeof isInitialized !== "function" || isInitialized();
+    const method = request.method.join(".");
+
+    // Metrics/tracing only — the hook never captures exceptions. An RPC
+    // rejection is often expected control flow (e.g. NotFound) that the
+    // caller may not want reported; deciding what's report-worthy is the
+    // caller's job, at the call site. The metric layer no-ops when Sentry is
+    // off. Per-RPC traces (below) only run under `debug`.
+    const recordMetric = (start: number, status: string) => {
+      rpcClientMetric(method, status, performance.now() - start);
+    };
+
+    if (!sentryUp || !debugTracingEnabled) {
+      const start = performance.now();
+      const responsePromise = next(request);
+      responsePromise
+        .then(
+          () => recordMetric(start, "ok"),
+          (error: unknown) => recordMetric(start, rpcStatusFor(error)),
+        )
+        .catch(noop);
       return;
     }
-    const method = request.method.join(".");
+
     const runSpan = () =>
       Sentry.startSpan(
         {
@@ -311,6 +408,10 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
                 },
               }
             : request;
+          // Record the metric while the span is active so it links to the
+          // trace. Duration is measured around the same round-trip the
+          // span brackets.
+          const start = performance.now();
           try {
             // Split the span duration into "sync send" (JSI hop + UDS write
             // to Node) and "await" (entire round-trip incl. response delivery
@@ -319,15 +420,16 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
             // cold boot, `rn.send.syncMs` stays small while total stays high.
             const sendStart = performance.now();
             const responsePromise = next(tracedRequest);
-            span.setAttribute?.(
-              "rn.send.syncMs",
-              performance.now() - sendStart,
-            );
+            const sendMs = performance.now() - sendStart;
+            span.setAttribute?.("rn.send.syncMs", sendMs);
             await responsePromise;
             span.setStatus?.({ code: 1, message: "ok" });
+            recordMetric(start, "ok");
           } catch (error) {
+            // Mark the span errored for tracing, but do not capture an issue
+            // — see the metrics-only note on the non-debug path above.
             span.setStatus?.({ code: 2, message: "internal_error" });
-            Sentry.captureException(error);
+            recordMetric(start, rpcStatusFor(error));
           }
         },
       );

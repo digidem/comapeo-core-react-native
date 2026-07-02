@@ -65,12 +65,12 @@ internal data class AnchorSnapshot(
  * `bg_duration_bucket`, `comapeo.fgs.killed_in_background`) are
  * low-resolution aggregate data and flow at the diagnostic tier; the exact
  * millisecond durations are usage-shape data and only flow when
- * capture-application-data is on.
+ * application-usage-data is on.
  */
 internal class ExitReasonsCollector(
     private val anchors: BackgroundAnchors,
     private val snapshot: AnchorSnapshot,
-    private val captureApplicationData: Boolean,
+    private val applicationUsageData: Boolean,
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
     /** [newLastSeenMs] is non-null when there are metrics to report; the
@@ -133,7 +133,7 @@ internal class ExitReasonsCollector(
             if (procKey == SentryTags.PROC_FGS) {
                 put(SentryTags.FGS_KILLED_IN_BACKGROUND, backgroundedForMs != null)
             }
-            if (captureApplicationData) {
+            if (applicationUsageData) {
                 aliveForMs?.let { put("alive_for_ms", it) }
                 if (procKey == SentryTags.PROC_MAIN) {
                     backgroundedForMs?.let { put("backgrounded_for_ms", it) }
@@ -179,7 +179,7 @@ internal class ExitReasonsCollector(
             context: Context,
             processName: String,
             procKey: String,
-            captureApplicationData: Boolean,
+            applicationUsageData: Boolean,
             snapshot: AnchorSnapshot,
         ) {
             if (Build.VERSION.SDK_INT < 30) {
@@ -203,7 +203,7 @@ internal class ExitReasonsCollector(
                 val result = ExitReasonsCollector(
                     anchors = anchors,
                     snapshot = snapshot,
-                    captureApplicationData = captureApplicationData,
+                    applicationUsageData = applicationUsageData,
                 ).collect(processName, procKey, queryRecords(context))
                 log("[${SentryCategories.EXIT}] $procKey: ${result.metrics.size} new exit record(s)")
                 if (result.metrics.isEmpty()) return
