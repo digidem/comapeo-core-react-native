@@ -136,12 +136,12 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // crumb is lost on the launch that performed the auto-off.
             _ = ComapeoPrefs.open().readDebugEnabled()
             SentryNativeBridge.initFromConfig(cfg, userId: Self.deriveSentryUserId())
-            // Drain a `debug` 24h auto-off queued by the prefs
+            // Drain a `debug` 72h auto-off queued by the prefs
             // reader, which runs before the SDK is up.
             if DebugAutoOff.consume() {
                 SentryNativeBridge.addBreadcrumb(
                     category: "comapeo.debug.auto_disabled",
-                    message: "debug auto-disabled after 24h"
+                    message: "debug auto-disabled after 72h"
                 )
             }
             // MXAppExitMetric needs iOS 14+; the podspec floor (15.1)

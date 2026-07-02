@@ -560,14 +560,15 @@ Toggle rework (#75):
   on first `ComapeoPrefs.open` on both platforms.
 - New `debug` toggle: `get/setDebugEnabled` (JS), `setDebugEnabled` (native),
   `sentry.debug` + `sentry.debugEnabledAtMs` prefs slots, `--debug` argv,
-  `debugDefault` plugin field. 24h auto-off (§11.5) implemented in the
-  `readDebugEnabled` reader on both platforms; re-enable refreshes the window.
+  `debugDefault` plugin field. Auto-off (§11.5; shipped as 72h, up from the
+  planned 24h) implemented in the `readDebugEnabled` reader on both
+  platforms; re-enable refreshes the window.
 - Device classification (§11.2.b): new `DeviceTags.{kt,swift}` bucket the
   device low/mid/high by RAM + cores and compute `<platform>.<major>`.
   Plumbed to RN via the `sentryConfig.deviceTags` constant and to Node via
   `--deviceClass` / `--osMajor` / `--platformTag`.
-- `tracesSampleRate` now derives from `debug` (1.0 / 0), not from the
-  usage toggle.
+- `tracesSampleRate` now derives from `debug` (1.0 while on, else the
+  plugin-configured rate, 0 when unset), not from the usage toggle.
 
 Metrics layer (#76):
 - New `backend/lib/metrics.js` + `src/sentry-metrics.ts`: wrappers around
@@ -593,6 +594,6 @@ PII scrubbers (#77):
 Tests: `backend/lib/metrics.test.mjs`, `backend/lib/before-send.test.mjs`,
 extended `backend/lib/sentry.test.mjs` (debug on/off branching) and
 `src/__tests__/sentry.test.js` (scrubber + traces gating); native
-migration / 24h-auto-off / device-boundary tests in
+migration / debug-auto-off / device-boundary tests in
 `ComapeoPrefs{Test,Tests}` and new `DeviceTags{Test,Tests}` on both
 platforms (run on CI emulator/Xcode).

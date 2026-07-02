@@ -112,13 +112,13 @@ object SentryFgsBridge {
 
             initialized = true
 
-            // Drain a `debug` 24h auto-off queued by the prefs
+            // Drain a `debug` 72h auto-off queued by the prefs
             // reader, which runs before the SDK is up and so couldn't emit.
             if (DebugAutoOff.consume()) {
                 Sentry.addBreadcrumb(
                     Breadcrumb().apply {
                         category = "comapeo.debug.auto_disabled"
-                        message = "debug auto-disabled after 24h"
+                        message = "debug auto-disabled after 72h"
                         level = SentryLevel.INFO
                     },
                 )

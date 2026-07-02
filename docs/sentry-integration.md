@@ -636,11 +636,10 @@ if (values.sentryDsn) {
     environment: values.sentryEnvironment ?? "production",
     release: values.sentryRelease,
     sampleRate: Number(values.sentrySampleRate ?? 1.0),
-    tracesSampleRate: values.applicationUsageData
-      ? Number(values.sentryTracesSampleRate ?? 0.1)
-      : 0,
+    // Native resolves the effective rate (debug window folds in there)
+    // and forwards it; the backend mirrors it verbatim.
+    tracesSampleRate: Number(values.sentryTracesSampleRate ?? 0),
     transport: makeControlSocketTransport(), // see §5.7
-    integrations: [Sentry.consoleLoggingIntegration()],
     initialScope: { tags: { layer: "node" } },
   });
 }
@@ -1254,8 +1253,11 @@ identities). Defaults must avoid leaking it into Sentry:
 - **Stacktraces** are fine — they may include filenames from inside
   `@comapeo/core` and the bundled backend. No user data unless an
   `Error.message` was constructed with one.
-- **`tracesSampleRate`** defaults to `0` if `applicationUsageData` is
-  off. The host app must opt in to RPC tracing volume explicitly.
+- **`tracesSampleRate`** is `1.0` while the user-bounded `debug` window
+  is on, otherwise the plugin-configured rate — and `0` when the plugin
+  doesn't set one, which is the expected production config. The plugin
+  field is a build-time consumer decision (e.g. sampling internal/QA
+  builds), not a per-user setting.
 - **`sendDefaultPii: false`** is locked by `initSentry()`; the host can't
   override it.
 
@@ -1279,13 +1281,18 @@ config option, not behind `rpcArgsBytes>0`, not ever:
 - File paths under `Application Support` or `getFilesDir()` that include
   the rootkey or project IDs.
 
-A `before_send` event processor (currently an identity placeholder, full
-implementation pending in Phase 9b) enforces the list defensively: it
-walks the event tree for known sensitive substrings (`rootKey`,
-base64-shaped 22-char strings, `lat=`, `lng=`, `latitude:`, `longitude:`)
-and either redacts or drops the event. This is belt-and-suspenders — the
-fix is always at the capture site, but the processor catches mistakes
-before they ship.
+A scrubber enforces the list defensively on both sides of the IPC
+boundary (`src/sentry-scrub.ts` on RN, `backend/before-send.js` on
+Node; shared test cases in `test-support/scrubber-cases.js` keep the
+two copies from drifting): it walks the event tree — message, exception
+values, extra, contexts, breadcrumbs, structured logs — redacting
+`rootKey`-marked values and coordinate markers (`lat`, `lng`, `lon`,
+`latitude`, `longitude`, in key/value and JSON-serialized forms). A
+broad base64-22-char rule (to catch *bare* unmarked rootkeys) is
+deliberately **not** enabled: it also matched trace IDs and exception
+type names; a narrower design is pending, and until then bare unmarked
+tokens pass through. This is belt-and-suspenders — the fix is always at
+the capture site, but the scrubber catches mistakes before they ship.
 
 ---
 
@@ -1303,15 +1310,17 @@ before they ship.
 > Day-to-day performance signal rides an always-on **metrics** layer at
 > the diagnostic tier (`comapeo.rpc.*`, `comapeo.boot.*`, etc.); per-RPC
 > *traces* moved behind `debug`, which 100%-samples while on and
-> auto-expires 24h after the most recent enable. `tracesSampleRate` is
-> `debug ? 1.0 : 0`.
+> auto-expires 72h after the most recent enable. `tracesSampleRate` is
+> `debug ? 1.0 : <plugin rate>` where the plugin rate defaults to `0`
+> (the expected production config — a nonzero rate is a build-time
+> consumer decision for internal/QA builds).
 
 CoMapeo's host-app privacy contract has three states, not two:
 
 | Tier                              | What runs                                                                                                                                                                                                | When                                                                          |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | **Off**                           | Nothing. `Sentry.init` is **not** called on RN, FGS, or Node. The module's adapter stays null; emit paths no-op.                                                                                         | User explicitly opts out of diagnostic data sharing in the host app settings. |
-| **Diagnostic** (default-on)       | Errors + lifecycle: `Sentry.init` runs in all three SDKs with `tracesSampleRate=0`, `sendDefaultPii=false`, and a PII scrubber. Boot transactions on; per-RPC spans off.                                 | Default for fresh installs (and recommended for production).                  |
+| **Diagnostic** (default-on)       | Errors + lifecycle: `Sentry.init` runs in all three SDKs with the plugin-configured `tracesSampleRate` (`0` when unset — the expected production config), `sendDefaultPii=false`, and a PII scrubber. Boot transactions on; per-RPC spans off.                                 | Default for fresh installs (and recommended for production).                  |
 | **App-usage** (additional opt-in) | Diagnostic set **plus** the usage-tier metric dimensions (RPC `method` breakdown, sync `peers_bucket`/`bytes_bucket`, app-exit exact-ms durations — see the §9.2 table), the permanent `user.id` hash, bg/fg breadcrumbs, and the SentryNativeContext fingerprinting fields. | User opts in via a settings toggle.                                           |
 
 Diagnostic is the _baseline_; app-usage is _additive_. App-usage without
@@ -1393,7 +1402,7 @@ The diagnostic tier carries aggregate, low-cardinality operational signal;
 | App-exit exact-ms (`alive_for_ms`, `backgrounded_for_ms`) | applicationUsageData | Millisecond session/foreground durations are fine-grained usage-shape data. |
 | `device_class` / `os_major` / `platform` tags | Diagnostics | Low-cardinality device-capability buckets; not user-identifying. |
 | `ipc.errors`, `telemetry.forwarding_failures` | Diagnostics | Internal transport health. |
-| Per-RPC traces / OTel spans / `rpc.args` | `debug` (separate) | Investigation-only; behind the 24h auto-off `debug` toggle, not `applicationUsageData`. |
+| Per-RPC traces / OTel spans / `rpc.args` | `debug` (separate) | Investigation-only; behind the 72h auto-off `debug` toggle, not `applicationUsageData`. |
 
 #### Why restart-to-activate
 
@@ -1428,11 +1437,14 @@ The §8 never-capture list applies regardless:
 
 #### Sentry `user.id`
 
-Identity is anchored on a **root user ID** — a random UUID generated
-lazily on first read, persisted in `ComapeoPrefs` (SharedPreferences /
-UserDefaults, so uninstall genuinely resets identity). The root ID
-itself is **never sent to Sentry**; every event's `user.id` is a hash
-derived from it natively (`SentryUserId.{kt,swift}`,
+Identity is anchored on a **root user ID** — a short random code
+(`XXXX-XXXX-XXXX`, 12 chars from a base32 alphabet with no I/L/O/U, 60
+bits) generated lazily on first read and persisted in `ComapeoPrefs`
+(SharedPreferences / UserDefaults, so uninstall genuinely resets
+identity). The format is deliberately short and unambiguous so a user
+can hand-copy it from a screen for a support case. The root ID itself
+is **never sent to Sentry**; every event's `user.id` is a hash derived
+from it natively (`SentryUserId.{kt,swift}`,
 `sha256("<root>|<salt>")` hex, first 16 chars):
 
 - `applicationUsageData` **off** → salt is the current UTC `YYYY-MM`,
@@ -1482,8 +1494,8 @@ them — TypeScript refuses them at the call site):
 
 - `dsn`, `release`, `environment`, `sampleRate`, `enableLogs` — from the
   plugin's `sentryConfig`.
-- `tracesSampleRate` — `0` when application-usage-data is off, the
-  plugin's value (default `0.1`) when on. Effective gate enforced here.
+- `tracesSampleRate` — `1.0` while the `debug` window is on, otherwise
+  the plugin's value (`0` when unset). Effective gate enforced here.
 - `sendDefaultPii: false` — non-overridable.
 - `user.id` — controlled by the module: the native-derived
   monthly/permanent hash (see §9.2's "Sentry `user.id`").

@@ -92,7 +92,7 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   setApplicationUsageData(value: boolean): Promise<void>;
   /**
    * Persist the `debug` toggle and (on a transition to true) stamp the
-   * enable time so the 24h auto-off can fire on a later launch.
+   * enable time so the 72h auto-off can fire on a later launch.
    * Restart-to-activate.
    */
   setDebugEnabled(value: boolean): Promise<void>;
