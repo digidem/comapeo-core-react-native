@@ -85,9 +85,25 @@ public class ComapeoCoreModule: Module {
 
         // Plist-baked Sentry options, re-exported by the JS `/sentry`
         // sub-export. Empty map when DSN absent so spreading is safe.
+        // `userId` is derived with the same launch snapshot the native init
+        // uses, so all layers report the same Sentry user.id.
         Constant("sentryConfig") { () -> [String: Any] in
-            SentryConfig.loadFromMainBundle()?
-                .toSentryInitMap(deviceTags: DeviceTags.compute()) ?? [:]
+            let prefs = ComapeoPrefs.open()
+            return SentryConfig.loadFromMainBundle()?.toSentryInitMap(
+                deviceTags: DeviceTags.compute(),
+                userId: prefs.deriveSentryUserId(
+                    applicationUsageData: prefs.readApplicationUsageData()
+                )
+            ) ?? [:]
+        }
+
+        // The permanent root user ID (lazily generated on first read). Local
+        // debugging aid only — Sentry sees derived hashes, never this value.
+        // The host app may show it in a debug/about screen so a user can
+        // share it and support can recompute their historical monthly
+        // user.ids.
+        Function("getSentryRootUserId") { () -> String in
+            ComapeoPrefs.open().readRootUserId()
         }
 
         // The snapshot in effect this session. Toggle changes take effect on

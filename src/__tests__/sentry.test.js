@@ -19,8 +19,10 @@ describe("initSentry", () => {
   let preferences;
   let livePreferences;
   let configDsn;
+  let configUserId;
   let isInitializedFlag;
   let initSpy;
+  let setUserSpy;
   let setTagSpy;
   let setContextSpy;
   let addEventProcessorSpy;
@@ -35,8 +37,10 @@ describe("initSentry", () => {
     // simulate a `setX` made after launch.
     livePreferences = { ...preferences };
     configDsn = "https://x@sentry.io/1";
+    configUserId = undefined;
     isInitializedFlag = false;
     initSpy = jest.fn();
+    setUserSpy = jest.fn();
     setTagSpy = jest.fn();
     setContextSpy = jest.fn();
     addEventProcessorSpy = jest.fn();
@@ -54,9 +58,11 @@ describe("initSentry", () => {
         // plugin value and falls back to 0.1 would fail this test.
         tracesSampleRate: 0.5,
         enableLogs: true,
+        ...(configUserId ? { userId: configUserId } : {}),
       }),
       readSentryPreferencesAtLaunch: () => preferences,
       readCurrentSentryPreferences: () => livePreferences,
+      readRootUserIdNative: () => "11111111-2222-3333-4444-555555555555",
       setDiagnosticsEnabledNative: jest.fn(),
       setApplicationUsageDataNative: jest.fn(),
       setDebugEnabledNative: jest.fn(),
@@ -78,6 +84,7 @@ describe("initSentry", () => {
     jest.doMock("@sentry/react-native", () => ({
       init: initSpy,
       isInitialized: () => isInitializedFlag,
+      setUser: setUserSpy,
       getGlobalScope: () => globalScope,
       captureException: jest.fn(),
       captureMessage: jest.fn(),
@@ -139,6 +146,24 @@ describe("initSentry", () => {
     // debug window into the backend's rate; RN applies the same formula.
     expect(opts.tracesSampleRate).toBe(0.5);
     expect(opts.enableLogs).toBe(true);
+  });
+
+  test("applies the native-derived user.id via Sentry.setUser", () => {
+    configUserId = "e15e7255ae360358";
+    const { initSentry } = require("../sentry");
+    initSentry();
+    expect(setUserSpy).toHaveBeenCalledWith({ id: "e15e7255ae360358" });
+  });
+
+  test("skips Sentry.setUser when native provided no userId", () => {
+    const { initSentry } = require("../sentry");
+    initSentry();
+    expect(setUserSpy).not.toHaveBeenCalled();
+  });
+
+  test("getRootUserId returns the native root ID (never sent to Sentry)", () => {
+    const { getRootUserId } = require("../sentry");
+    expect(getRootUserId()).toBe("11111111-2222-3333-4444-555555555555");
   });
 
   test("tracesSampleRate is 1.0 when debug is on, else the configured rate", () => {

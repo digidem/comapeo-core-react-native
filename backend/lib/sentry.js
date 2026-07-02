@@ -24,6 +24,7 @@ export const argSpec = {
   sentryTracesSampleRate: { type: "string" },
   sentryRpcArgsBytes: { type: "string", default: "0" },
   sentryEnableLogs: { type: "boolean", default: false },
+  sentryUserId: { type: "string" },
   sentryTrace: { type: "string" },
   sentryBaggage: { type: "string", default: "" },
   applicationUsageData: { type: "boolean", default: false },
@@ -42,6 +43,7 @@ export const argSpec = {
  *   sentryTracesSampleRate?: string,
  *   sentryRpcArgsBytes: string,
  *   sentryEnableLogs: boolean,
+ *   sentryUserId?: string,
  *   sentryTrace?: string,
  *   sentryBaggage: string,
  *   applicationUsageData: boolean,
@@ -162,6 +164,9 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
       config?.debug ? [...defaults, Sentry.consoleIntegration()] : defaults,
     initialScope: {
       tags: { proc: "fgs", layer: "node" },
+      // Native-derived user.id (monthly/permanent hash) — same value the
+      // FGS and RN layers set, so one launch reports one user.
+      ...(argv.sentryUserId ? { user: { id: argv.sentryUserId } } : {}),
     },
   });
 

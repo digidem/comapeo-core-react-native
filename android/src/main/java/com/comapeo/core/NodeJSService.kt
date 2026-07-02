@@ -68,6 +68,8 @@ class NodeJSService(
     private val debug: Boolean = false,
     /** Device classification tags forwarded to Node for the `.by_device` metrics. */
     private val deviceTags: DeviceTags? = null,
+    /** Derived Sentry user.id (monthly/permanent hash) forwarded as `--sentryUserId`. */
+    private val sentryUserId: String? = null,
     /** Max ms in STARTING before the watchdog forces ERROR. 30 s covers cold boot + native addon dlopens. */
     private val startupTimeoutMs: Long = 30_000,
 ) : ContextWrapper(context) {
@@ -376,6 +378,7 @@ class NodeJSService(
             args += "--sentryTracesSampleRate=$effectiveTracesSampleRate"
             cfg.rpcArgsBytes?.let { args += "--sentryRpcArgsBytes=$it" }
             if (cfg.enableLogs == true) args += "--sentryEnableLogs"
+            sentryUserId?.let { args += "--sentryUserId=$it" }
             if (applicationUsageData) args += "--applicationUsageData"
             if (debug) args += "--debug"
             deviceTags?.let {

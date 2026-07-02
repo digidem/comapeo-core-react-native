@@ -20,6 +20,7 @@ import {
   readSentryConfig,
   readSentryPreferencesAtLaunch,
   readCurrentSentryPreferences,
+  readRootUserIdNative,
   setDiagnosticsEnabledNative,
   setApplicationUsageDataNative,
   setDebugEnabledNative,
@@ -50,6 +51,14 @@ export type SentryInitConfig = {
    * `sentry-metrics.ts`. Absent in test contexts / pre-attach.
    */
   deviceTags?: SentryDeviceTags;
+  /**
+   * Derived Sentry `user.id` for this launch, computed natively from the
+   * permanent root user ID: a monthly-rotating hash by default, a
+   * permanent hash when the user opted in to application-usage data.
+   * Never the root ID itself. Applied via `Sentry.setUser` by
+   * [initSentry]; locked (the host can't override it).
+   */
+  userId?: string;
 };
 
 /**
@@ -193,6 +202,18 @@ export function setDebugEnabled(value: boolean): Promise<void> {
   return setDebugEnabledNative(value);
 }
 
+/**
+ * The permanent per-install root user ID (lazily generated on first
+ * read; reset by uninstall). Sentry never sees this value — the
+ * `user.id` on events is a hash derived from it (monthly-rotating by
+ * default, permanent under the usage opt-in), so both derivations can
+ * be recomputed from a user-shared root ID to re-associate historical
+ * events for a support case. Intended for a debug/about screen.
+ */
+export function getRootUserId(): string {
+  return readRootUserIdNative();
+}
+
 // ── initSentry ──────────────────────────────────────────────────
 
 let initialized = false;
@@ -328,6 +349,12 @@ export function initSentry(options: InitSentryOptions = {}): void {
   } as never);
 
   sentryReady = true;
+
+  // Locked user.id — the native-derived monthly/permanent hash, shared
+  // with the FGS and backend layers so one launch reports one user.
+  if (sentryConfig.userId) {
+    Sentry.setUser({ id: sentryConfig.userId });
+  }
 
   // Scope-default tags via global scope (survives later forks).
   const globalScope = Sentry.getGlobalScope();

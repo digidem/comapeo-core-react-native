@@ -44,14 +44,20 @@ data class SentryConfig(
     /**
      * Subset that maps cleanly to `Sentry.init` options on the RN side. Sent to JS
      * as the `sentryConfig` constant; consumers spread into `Sentry.init({...})`.
+     * `userId` is the derived Sentry user.id (monthly hash or permanent hash,
+     * never the root ID) — `initSentry` applies it via `Sentry.setUser`.
      */
-    fun toSentryInitMap(deviceTags: DeviceTags? = null): Map<String, Any> = buildMap {
+    fun toSentryInitMap(
+        deviceTags: DeviceTags? = null,
+        userId: String? = null,
+    ): Map<String, Any> = buildMap {
         put("dsn", dsn)
         put("environment", environment)
         put("release", release)
         sampleRate?.let { put("sampleRate", it) }
         tracesSampleRate?.let { put("tracesSampleRate", it) }
         enableLogs?.let { put("enableLogs", it) }
+        userId?.let { put("userId", it) }
         deviceTags?.let {
             put(
                 "deviceTags",

@@ -173,12 +173,29 @@ class ComapeoCoreModule : Module() {
 
         // `sentryConfig` — baked-in by app.plugin.js at prebuild; spread into
         // `Sentry.init(...)` by the JS `/sentry` sub-export. Empty map when the
-        // plugin isn't registered so spreading is always safe.
+        // plugin isn't registered so spreading is always safe. `userId` is
+        // derived with the same launch snapshot the FGS uses, so both
+        // processes report the same Sentry user.id.
         Constant("sentryConfig") {
             appContext.reactContext?.let { ctx ->
-                SentryConfig.loadFromManifest(ctx)
-                    ?.toSentryInitMap(DeviceTags.compute(ctx))
+                val prefs = ComapeoPrefs.open(ctx)
+                SentryConfig.loadFromManifest(ctx)?.toSentryInitMap(
+                    DeviceTags.compute(ctx),
+                    prefs.deriveSentryUserId(prefs.readApplicationUsageData()),
+                )
             } ?: emptyMap<String, Any>()
+        }
+
+        // The permanent root user ID (lazily generated on first read). Local
+        // debugging aid only — Sentry sees derived hashes, never this value.
+        // The host app may show it in a debug/about screen so a user can share
+        // it and support can recompute their historical monthly user.ids.
+        Function("getSentryRootUserId") {
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "getSentryRootUserId called before native context attached",
+                )
+            ComapeoPrefs.open(ctx).readRootUserId()
         }
 
         // `sentryPreferencesAtLaunch` — the snapshot in effect this session; toggle

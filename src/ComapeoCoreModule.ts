@@ -97,6 +97,12 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
    */
   setDebugEnabled(value: boolean): Promise<void>;
   /**
+   * The permanent per-install root user ID (lazily generated on first
+   * read). Never sent to Sentry — the Sentry `user.id` is a hash derived
+   * from it natively. For debug/about screens so a user can share it.
+   */
+  getSentryRootUserId(): string;
+  /**
    * Current notification-permission status without prompting. On Android
    * < 13 (API 33) and on iOS this resolves as `granted` (no-op).
    */
@@ -184,6 +190,14 @@ export function setApplicationUsageDataNative(value: boolean): Promise<void> {
 /** Persist `debug`. See `setDebugEnabled` JSDoc. */
 export function setDebugEnabledNative(value: boolean): Promise<void> {
   return nativeModule.setDebugEnabled(value);
+}
+
+/**
+ * The permanent root user ID from native prefs. Empty string when the
+ * native module isn't available (test contexts).
+ */
+export function readRootUserIdNative(): string {
+  return nativeModule.getSentryRootUserId?.() ?? "";
 }
 
 const GRANTED_PERMISSION: NotificationPermissionResponse = {

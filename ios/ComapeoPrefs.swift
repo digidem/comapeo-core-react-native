@@ -16,6 +16,8 @@ final class ComapeoPrefs {
         func setBool(_ key: String, _ value: Bool)
         func getDouble(_ key: String) -> Double?
         func setDouble(_ key: String, _ value: Double)
+        func getString(_ key: String) -> String?
+        func setString(_ key: String, _ value: String)
         func remove(_ key: String)
     }
 
@@ -93,6 +95,29 @@ final class ComapeoPrefs {
         store.setBool(Key.applicationUsageData, value)
     }
 
+    /// The permanent per-install root user ID, generated lazily on first
+    /// read. Never sent to Sentry — Sentry `user.id` values are derived from
+    /// it via `SentryUserId.derive`. Exposed to the host app (via
+    /// `getSentryRootUserId`) so a user can share it for debugging and we can
+    /// recompute their historical monthly IDs. Lives in `UserDefaults` (not
+    /// Keychain) deliberately: uninstall should genuinely reset identity.
+    func readRootUserId() -> String {
+        if let existing = store.getString(Key.rootUserId) { return existing }
+        let generated = UUID().uuidString
+        store.setString(Key.rootUserId, generated)
+        return generated
+    }
+
+    /// The Sentry `user.id` for this launch: permanent when the user opted
+    /// in to application-usage data, otherwise rotating monthly (UTC).
+    func deriveSentryUserId(applicationUsageData: Bool) -> String {
+        SentryUserId.derive(
+            rootUserId: readRootUserId(),
+            permanent: applicationUsageData,
+            nowMs: now()
+        )
+    }
+
     /// Write `debug`, stamping (true) or clearing (false) the enable
     /// timestamp synchronously. Re-writing `true` refreshes the window.
     func writeDebugEnabled(_ value: Bool) {
@@ -109,6 +134,7 @@ final class ComapeoPrefs {
         static let applicationUsageData = "sentry.applicationUsageData"
         static let debug = "sentry.debug"
         static let debugEnabledAtMs = "sentry.debugEnabledAtMs"
+        static let rootUserId = "sentry.rootUserId"
     }
 
     /// 72h in milliseconds — debug mode auto-disables this long after enable.
@@ -144,6 +170,8 @@ final class ComapeoPrefs {
         func setBool(_ key: String, _ value: Bool) { defaults.set(value, forKey: key) }
         func getDouble(_ key: String) -> Double? { defaults.object(forKey: key) as? Double }
         func setDouble(_ key: String, _ value: Double) { defaults.set(value, forKey: key) }
+        func getString(_ key: String) -> String? { defaults.string(forKey: key) }
+        func setString(_ key: String, _ value: String) { defaults.set(value, forKey: key) }
         func remove(_ key: String) { defaults.removeObject(forKey: key) }
     }
 

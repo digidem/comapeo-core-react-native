@@ -17,13 +17,18 @@ final class ComapeoPrefsTests: XCTestCase {
     private final class FakeStore: ComapeoPrefs.Store {
         private var bools: [String: Bool] = [:]
         private var doubles: [String: Double] = [:]
+        private var strings: [String: String] = [:]
         func getBool(_ key: String) -> Bool? { bools[key] }
         func setBool(_ key: String, _ value: Bool) { bools[key] = value }
         func getDouble(_ key: String) -> Double? { doubles[key] }
         func setDouble(_ key: String, _ value: Double) { doubles[key] = value }
-        func remove(_ key: String) { bools[key] = nil; doubles[key] = nil }
+        func getString(_ key: String) -> String? { strings[key] }
+        func setString(_ key: String, _ value: String) { strings[key] = value }
+        func remove(_ key: String) {
+            bools[key] = nil; doubles[key] = nil; strings[key] = nil
+        }
         func has(_ key: String) -> Bool {
-            bools[key] != nil || doubles[key] != nil
+            bools[key] != nil || doubles[key] != nil || strings[key] != nil
         }
     }
 
@@ -225,6 +230,49 @@ final class ComapeoPrefsTests: XCTestCase {
         )
         // Clean up the temp root (parent of sentryDir).
         try? fm.removeItem(at: tempRoot)
+    }
+
+    func testRootUserIdIsGeneratedOnceAndStable() {
+        // Identity anchor: regenerating on every read would silently
+        // rotate the "permanent" user.id and break historical
+        // re-association from a user-shared root ID.
+        let store = FakeStore()
+        let p = prefs(store: store)
+        let first = p.readRootUserId()
+        XCTAssertFalse(first.isEmpty)
+        XCTAssertEqual(first, p.readRootUserId())
+        XCTAssertEqual(first, prefs(store: store).readRootUserId())
+        XCTAssertTrue(store.has(ComapeoPrefs.Key.rootUserId))
+    }
+
+    func testDeriveSentryUserIdRotatesMonthlyWithoutOptIn() {
+        let store = FakeStore()
+        let clock = Clock()
+        clock.nowMs = 0 // 1970-01
+        let p = prefs(store: store, clock: clock)
+        let january = p.deriveSentryUserId(applicationUsageData: false)
+        clock.nowMs = 32 * 24 * 60 * 60 * 1000 // 1970-02
+        let february = p.deriveSentryUserId(applicationUsageData: false)
+        XCTAssertNotEqual(january, february)
+        // Same month → same id.
+        XCTAssertEqual(february, p.deriveSentryUserId(applicationUsageData: false))
+    }
+
+    func testDeriveSentryUserIdIsPermanentWithOptIn() {
+        let store = FakeStore()
+        let clock = Clock()
+        clock.nowMs = 0
+        let p = prefs(store: store, clock: clock)
+        let a = p.deriveSentryUserId(applicationUsageData: true)
+        clock.nowMs = 400 * 24 * 60 * 60 * 1000 // > a year later
+        let b = p.deriveSentryUserId(applicationUsageData: true)
+        XCTAssertEqual(a, b)
+        // Neither derivation ever exposes the root ID itself.
+        XCTAssertNotEqual(a, p.readRootUserId())
+        XCTAssertNotEqual(
+            p.deriveSentryUserId(applicationUsageData: false),
+            p.readRootUserId()
+        )
     }
 
     func testWipeSentryOutboxIsNoOpWhenAbsent() {

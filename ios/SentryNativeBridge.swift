@@ -22,8 +22,9 @@ enum SentryNativeBridge {
     /// Idempotent. Caller must pass non-nil config; skip the call when
     /// `loadFromMainBundle()` returns nil. Mirror of Android
     /// `SentryFgsBridge.init` — the iOS process IS the "FGS" since iOS
-    /// is single-process.
-    static func initFromConfig(_ config: SentryConfig) {
+    /// is single-process. `userId` is the derived Sentry user.id (monthly
+    /// or permanent hash — never the root ID).
+    static func initFromConfig(_ config: SentryConfig, userId: String? = nil) {
         if SentrySDK.isEnabled { return }
         let opts = Options()
         opts.dsn = config.dsn
@@ -37,6 +38,11 @@ enum SentryNativeBridge {
         opts.initialScope = { scope in
             scope.setTag(value: SentryTags.procMain, key: SentryTags.proc)
             scope.setTag(value: SentryTags.layerNative, key: SentryTags.layer)
+            if let userId = userId {
+                let user = User()
+                user.userId = userId
+                scope.setUser(user)
+            }
             return scope
         }
         SentrySDK.start(options: opts)

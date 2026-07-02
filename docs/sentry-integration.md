@@ -1297,7 +1297,7 @@ before they ship.
 > | Toggle                 | Gates                                                                                  | Default   |
 > | ---------------------- | -------------------------------------------------------------------------------------- | --------- |
 > | `diagnosticsEnabled`   | `Sentry.init`; errors, lifecycle, **metrics**, boot/sync/shutdown transactions.        | `true`    |
-> | `applicationUsageData` | Stable `user.id` (no monthly hash) + the usage-tier metric dimensions (see the §9.2 table). | `false`   |
+> | `applicationUsageData` | Permanent `user.id` hash (no monthly rotation) + the usage-tier metric dimensions (see the §9.2 table). | `false`   |
 > | `debug`                | Per-RPC traces, `@comapeo/core` OTel spans, backend `consoleIntegration`, `rpc.args`.  | `false`   |
 >
 > Day-to-day performance signal rides an always-on **metrics** layer at
@@ -1312,7 +1312,7 @@ CoMapeo's host-app privacy contract has three states, not two:
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | **Off**                           | Nothing. `Sentry.init` is **not** called on RN, FGS, or Node. The module's adapter stays null; emit paths no-op.                                                                                         | User explicitly opts out of diagnostic data sharing in the host app settings. |
 | **Diagnostic** (default-on)       | Errors + lifecycle: `Sentry.init` runs in all three SDKs with `tracesSampleRate=0`, `sendDefaultPii=false`, and a PII scrubber. Boot transactions on; per-RPC spans off.                                 | Default for fresh installs (and recommended for production).                  |
-| **App-usage** (additional opt-in) | Diagnostic set **plus** the usage-tier metric dimensions (RPC `method` breakdown, sync `peers_bucket`/`bytes_bucket`, app-exit exact-ms durations — see the §9.2 table), the stable `user.id`, bg/fg breadcrumbs, and the SentryNativeContext fingerprinting fields. | User opts in via a settings toggle.                                           |
+| **App-usage** (additional opt-in) | Diagnostic set **plus** the usage-tier metric dimensions (RPC `method` breakdown, sync `peers_bucket`/`bytes_bucket`, app-exit exact-ms durations — see the §9.2 table), the permanent `user.id` hash, bg/fg breadcrumbs, and the SentryNativeContext fingerprinting fields. | User opts in via a settings toggle.                                           |
 
 Diagnostic is the _baseline_; app-usage is _additive_. App-usage without
 diagnostic is impossible by construction — the effective gate is
@@ -1426,6 +1426,33 @@ The §8 never-capture list applies regardless:
 - The toggle does not start capturing precise location.
 - The toggle does not start capturing peer identities.
 
+#### Sentry `user.id`
+
+Identity is anchored on a **root user ID** — a random UUID generated
+lazily on first read, persisted in `ComapeoPrefs` (SharedPreferences /
+UserDefaults, so uninstall genuinely resets identity). The root ID
+itself is **never sent to Sentry**; every event's `user.id` is a hash
+derived from it natively (`SentryUserId.{kt,swift}`,
+`sha256("<root>|<salt>")` hex, first 16 chars):
+
+- `applicationUsageData` **off** → salt is the current UTC `YYYY-MM`,
+  so the ID rotates monthly and cross-month events can't be linked to
+  one install.
+- `applicationUsageData` **on** → salt is the constant `"permanent"`,
+  so the ID is stable across launches and months (cohort analysis
+  works). Restart-to-activate, like the toggle itself.
+
+Because both derivations are recomputable from the root ID, a user can
+share it (surfaced via `getRootUserId()` from the `/sentry` sub-export,
+intended for a debug/about screen) and support can re-associate their
+historical events — including pre-opt-in monthly IDs.
+
+One launch reports one user: native derives the value once per process
+start and distributes it to all three SDKs — `Sentry.setUser` on the RN
+side (via the `sentryConfig.userId` constant), scope user on the native
+init (`SentryFgsBridge.init` / `SentryNativeBridge.initFromConfig`), and
+`--sentryUserId` argv to the backend's `initialScope`.
+
 ### 9.3 Module ownership of `Sentry.init`
 
 `@comapeo/core-react-native/sentry` owns the RN-side `Sentry.init` call.
@@ -1458,8 +1485,8 @@ them — TypeScript refuses them at the call site):
 - `tracesSampleRate` — `0` when application-usage-data is off, the
   plugin's value (default `0.1`) when on. Effective gate enforced here.
 - `sendDefaultPii: false` — non-overridable.
-- `user.id` — controlled by the module (planned; see Phase 9b in the
-  remaining work).
+- `user.id` — controlled by the module: the native-derived
+  monthly/permanent hash (see §9.2's "Sentry `user.id`").
 
 The `integrations` option is a function `(defaults) => Integration[]` so
 the host can append to (not replace) our defaults. `beforeSend` and

@@ -35,6 +35,7 @@ class ComapeoCoreService : Service() {
     private var applicationUsageData: Boolean = false
     private var debug: Boolean = false
     private var deviceTags: DeviceTags? = null
+    private var sentryUserId: String? = null
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     companion object {
@@ -76,7 +77,8 @@ class ComapeoCoreService : Service() {
         // It's cheap relative to the Node backend (libnode load), which is the only
         // part deferred to ensureBackendInitialized() to keep off the FGS deadline.
         effectiveSentryConfig?.let { cfg ->
-            SentryFgsBridge.init(applicationContext, cfg)
+            sentryUserId = prefs.deriveSentryUserId(applicationUsageData)
+            SentryFgsBridge.init(applicationContext, cfg, sentryUserId)
         }
 
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
@@ -130,6 +132,7 @@ class ComapeoCoreService : Service() {
             applicationUsageData = applicationUsageData,
             debug = debug,
             deviceTags = deviceTags,
+            sentryUserId = sentryUserId,
         )
     }
 

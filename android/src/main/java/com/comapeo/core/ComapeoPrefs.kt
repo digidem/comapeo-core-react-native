@@ -31,6 +31,8 @@ internal class ComapeoPrefs(
         fun putBoolean(key: String, value: Boolean)
         fun getLong(key: String): Long?
         fun putLong(key: String, value: Long)
+        fun getString(key: String): String?
+        fun putString(key: String, value: String)
         fun remove(key: String)
     }
 
@@ -95,6 +97,31 @@ internal class ComapeoPrefs(
     }
 
     /**
+     * The permanent per-install root user ID, generated lazily on first read.
+     * Never sent to Sentry — Sentry `user.id` values are derived from it via
+     * [SentryUserId.derive]. Exposed to the host app (via
+     * `getSentryRootUserId`) so a user can share it for debugging and we can
+     * recompute their historical monthly IDs. Lives in SharedPreferences (not
+     * Keystore) deliberately: uninstall should genuinely reset identity.
+     */
+    fun readRootUserId(): String {
+        store.getString(KEY_ROOT_USER_ID)?.let { return it }
+        // Benign first-launch race: the main and FGS processes could both
+        // generate before either write lands. Worst case is one session with
+        // two IDs; both processes converge on the persisted value next launch.
+        val generated = java.util.UUID.randomUUID().toString()
+        store.putString(KEY_ROOT_USER_ID, generated)
+        return generated
+    }
+
+    /**
+     * The Sentry `user.id` for this launch: permanent when the user opted in
+     * to application-usage data, otherwise rotating monthly (UTC).
+     */
+    fun deriveSentryUserId(applicationUsageData: Boolean): String =
+        SentryUserId.derive(readRootUserId(), applicationUsageData, now())
+
+    /**
      * Write `debug`, stamping (true) or clearing (false) the enable timestamp
      * synchronously so the window starts/stops with the value. Re-writing
      * `true` refreshes the window.
@@ -114,6 +141,7 @@ internal class ComapeoPrefs(
         const val KEY_APPLICATION_USAGE_DATA = "sentry.applicationUsageData"
         const val KEY_DEBUG = "sentry.debug"
         const val KEY_DEBUG_ENABLED_AT_MS = "sentry.debugEnabledAtMs"
+        const val KEY_ROOT_USER_ID = "sentry.rootUserId"
 
         const val DEFAULT_DIAGNOSTICS_ENABLED = true
         const val DEFAULT_APPLICATION_USAGE_DATA = false
@@ -176,6 +204,12 @@ internal class ComapeoPrefs(
 
         override fun putLong(key: String, value: Long) {
             sp.edit(commit = true) { putLong(key, value) }
+        }
+
+        override fun getString(key: String): String? = sp.getString(key, null)
+
+        override fun putString(key: String, value: String) {
+            sp.edit(commit = true) { putString(key, value) }
         }
 
         override fun remove(key: String) {

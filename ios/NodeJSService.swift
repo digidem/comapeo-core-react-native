@@ -158,6 +158,8 @@ class NodeJSService {
     private let applicationUsageData: Bool
     private let debug: Bool
     private let deviceTags: DeviceTags?
+    /// Derived Sentry user.id (monthly/permanent hash) forwarded as `--sentryUserId`.
+    private let sentryUserId: String?
 
     init(
         socketDir: String,
@@ -172,6 +174,7 @@ class NodeJSService {
         applicationUsageData: Bool = false,
         debug: Bool = false,
         deviceTags: DeviceTags? = nil,
+        sentryUserId: String? = nil,
         startupTimeout: TimeInterval = 30
     ) {
         self.socketDir = socketDir
@@ -180,6 +183,7 @@ class NodeJSService {
         self.applicationUsageData = applicationUsageData
         self.debug = debug
         self.deviceTags = deviceTags
+        self.sentryUserId = sentryUserId
         self.comapeoSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
         self.controlSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.controlSocketFilename)
 
@@ -710,6 +714,9 @@ class NodeJSService {
         }
         if cfg.enableLogs == true {
             out.append("--sentryEnableLogs")
+        }
+        if let userId = sentryUserId {
+            out.append("--sentryUserId=\(userId)")
         }
         if applicationUsageData {
             out.append("--applicationUsageData")

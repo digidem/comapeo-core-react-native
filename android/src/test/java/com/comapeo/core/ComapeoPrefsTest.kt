@@ -26,12 +26,18 @@ class ComapeoPrefsTest {
     private class FakeStore : ComapeoPrefs.Store {
         private val bools = mutableMapOf<String, Boolean>()
         private val longs = mutableMapOf<String, Long>()
+        private val strings = mutableMapOf<String, String>()
         override fun getBoolean(key: String): Boolean? = bools[key]
         override fun putBoolean(key: String, value: Boolean) { bools[key] = value }
         override fun getLong(key: String): Long? = longs[key]
         override fun putLong(key: String, value: Long) { longs[key] = value }
-        override fun remove(key: String) { bools.remove(key); longs.remove(key) }
-        fun has(key: String) = bools.containsKey(key) || longs.containsKey(key)
+        override fun getString(key: String): String? = strings[key]
+        override fun putString(key: String, value: String) { strings[key] = value }
+        override fun remove(key: String) {
+            bools.remove(key); longs.remove(key); strings.remove(key)
+        }
+        fun has(key: String) =
+            bools.containsKey(key) || longs.containsKey(key) || strings.containsKey(key)
     }
 
     private fun prefs(
@@ -236,6 +242,47 @@ class ComapeoPrefsTest {
             "wipe must recursively remove the sentry dir",
             sentryDir.exists(),
         )
+    }
+
+    @Test
+    fun rootUserIdIsGeneratedOnceAndStable() {
+        // Identity anchor: regenerating on every read would silently
+        // rotate the "permanent" user.id and break historical
+        // re-association from a user-shared root ID.
+        val store = FakeStore()
+        val p = prefs(store)
+        val first = p.readRootUserId()
+        assertTrue(first.isNotEmpty())
+        assertEquals(first, p.readRootUserId())
+        assertEquals(first, prefs(store).readRootUserId())
+        assertTrue(store.has(ComapeoPrefs.KEY_ROOT_USER_ID))
+    }
+
+    @Test
+    fun deriveSentryUserIdRotatesMonthlyWithoutOptIn() {
+        val store = FakeStore()
+        var nowMs = 0L // 1970-01
+        val p = prefs(store, now = { nowMs })
+        val january = p.deriveSentryUserId(applicationUsageData = false)
+        nowMs = 32L * 24 * 60 * 60 * 1000 // 1970-02
+        val february = p.deriveSentryUserId(applicationUsageData = false)
+        assertTrue(january != february)
+        // Same month → same id.
+        assertEquals(february, p.deriveSentryUserId(applicationUsageData = false))
+    }
+
+    @Test
+    fun deriveSentryUserIdIsPermanentWithOptIn() {
+        val store = FakeStore()
+        var nowMs = 0L
+        val p = prefs(store, now = { nowMs })
+        val a = p.deriveSentryUserId(applicationUsageData = true)
+        nowMs = 400L * 24 * 60 * 60 * 1000 // > a year later
+        val b = p.deriveSentryUserId(applicationUsageData = true)
+        assertEquals(a, b)
+        // Neither derivation ever exposes the root ID itself.
+        assertTrue(a != p.readRootUserId())
+        assertTrue(p.deriveSentryUserId(applicationUsageData = false) != p.readRootUserId())
     }
 
     @Test

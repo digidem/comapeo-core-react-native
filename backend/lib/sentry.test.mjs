@@ -195,3 +195,23 @@ test("debug OFF: a rejecting RPC records the duration metric but captures no iss
 
   await Sentry.close();
 });
+
+test("initialScope carries the native-derived user.id on outgoing events", async () => {
+  initSentry({ ...baseArgv, debug: false, sentryUserId: "e15e7255ae360358" });
+
+  const captured = [];
+  setSink((frame) => captured.push(frame));
+
+  Sentry.captureMessage("user id smoke");
+  await flush(2000);
+
+  const eventFrame = captured.find((f) => f.type === "sentry-event");
+  assert.ok(eventFrame, "no event frame reached the sink");
+  assert.equal(
+    eventFrame.payload.user?.id,
+    "e15e7255ae360358",
+    "event must carry the --sentryUserId value as user.id",
+  );
+
+  await Sentry.close();
+});

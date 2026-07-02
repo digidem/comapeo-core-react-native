@@ -28,6 +28,16 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         return SentryConfig.loadFromMainBundle()
     }
 
+    /// Derived Sentry user.id for this launch (monthly hash, or permanent
+    /// hash under the usage opt-in). `nil` when diagnostics is off.
+    private static func deriveSentryUserId() -> String? {
+        let prefs = ComapeoPrefs.open()
+        guard prefs.readDiagnosticsEnabled() else { return nil }
+        return prefs.deriveSentryUserId(
+            applicationUsageData: prefs.readApplicationUsageData()
+        )
+    }
+
     static let nodeService = NodeJSService(
         socketDir: AppLifecycleDelegate.resolveSocketDir(),
         privateStorageDir: AppLifecycleDelegate.resolvePrivateStorageDir(),
@@ -65,7 +75,8 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         sentryConfig: AppLifecycleDelegate.resolveEffectiveSentryConfig(),
         applicationUsageData: ComapeoPrefs.open().readApplicationUsageData(),
         debug: ComapeoPrefs.open().readDebugEnabled(),
-        deviceTags: DeviceTags.compute()
+        deviceTags: DeviceTags.compute(),
+        sentryUserId: AppLifecycleDelegate.deriveSentryUserId()
     )
 
     /// Directory for the Unix-domain socket files. The 104-byte
@@ -124,7 +135,7 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // didFinishLaunching (lazy nodeService / Expo constants), and the
             // crumb is lost on the launch that performed the auto-off.
             _ = ComapeoPrefs.open().readDebugEnabled()
-            SentryNativeBridge.initFromConfig(cfg)
+            SentryNativeBridge.initFromConfig(cfg, userId: Self.deriveSentryUserId())
             // Drain a `debug` 24h auto-off queued by the prefs
             // reader, which runs before the SDK is up.
             if DebugAutoOff.consume() {

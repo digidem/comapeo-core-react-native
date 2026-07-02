@@ -23,8 +23,10 @@ struct SentryConfig: Equatable {
     /// Subset that maps cleanly to JS-side `Sentry.init` options;
     /// plugin-internal fields excluded. Spread on the JS side as
     /// `Sentry.init({ ...sentryConfig, ...mine })`. `deviceTags`
-    /// rides along for the `.by_device` metrics.
-    func toSentryInitMap(deviceTags: DeviceTags? = nil) -> [String: Any] {
+    /// rides along for the `.by_device` metrics; `userId` is the derived
+    /// Sentry user.id (monthly or permanent hash, never the root ID) —
+    /// `initSentry` applies it via `Sentry.setUser`.
+    func toSentryInitMap(deviceTags: DeviceTags? = nil, userId: String? = nil) -> [String: Any] {
         var map: [String: Any] = [
             "dsn": dsn,
             "environment": environment,
@@ -33,6 +35,7 @@ struct SentryConfig: Equatable {
         if let sampleRate = sampleRate { map["sampleRate"] = sampleRate }
         if let tracesSampleRate = tracesSampleRate { map["tracesSampleRate"] = tracesSampleRate }
         if let enableLogs = enableLogs { map["enableLogs"] = enableLogs }
+        if let userId = userId { map["userId"] = userId }
         if let deviceTags = deviceTags {
             map["deviceTags"] = [
                 "platform": deviceTags.platform,
