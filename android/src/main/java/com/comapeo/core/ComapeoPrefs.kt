@@ -97,7 +97,8 @@ internal class ComapeoPrefs(
     }
 
     /**
-     * The permanent per-install root user ID, generated lazily on first read.
+     * The permanent per-install root user ID (a short `XXXX-XXXX-XXXX` code —
+     * see [SentryUserId.generateRootId]), generated lazily on first read.
      * Never sent to Sentry — Sentry `user.id` values are derived from it via
      * [SentryUserId.derive]. Exposed to the host app (via
      * `getSentryRootUserId`) so a user can share it for debugging and we can
@@ -109,7 +110,7 @@ internal class ComapeoPrefs(
         // Benign first-launch race: the main and FGS processes could both
         // generate before either write lands. Worst case is one session with
         // two IDs; both processes converge on the persisted value next launch.
-        val generated = java.util.UUID.randomUUID().toString()
+        val generated = SentryUserId.generateRootId()
         store.putString(KEY_ROOT_USER_ID, generated)
         return generated
     }

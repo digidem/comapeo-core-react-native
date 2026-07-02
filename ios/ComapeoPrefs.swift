@@ -95,7 +95,8 @@ final class ComapeoPrefs {
         store.setBool(Key.applicationUsageData, value)
     }
 
-    /// The permanent per-install root user ID, generated lazily on first
+    /// The permanent per-install root user ID (a short `XXXX-XXXX-XXXX`
+    /// code — see `SentryUserId.generateRootId`), generated lazily on first
     /// read. Never sent to Sentry — Sentry `user.id` values are derived from
     /// it via `SentryUserId.derive`. Exposed to the host app (via
     /// `getSentryRootUserId`) so a user can share it for debugging and we can
@@ -103,7 +104,7 @@ final class ComapeoPrefs {
     /// Keychain) deliberately: uninstall should genuinely reset identity.
     func readRootUserId() -> String {
         if let existing = store.getString(Key.rootUserId) { return existing }
-        let generated = UUID().uuidString
+        let generated = SentryUserId.generateRootId()
         store.setString(Key.rootUserId, generated)
         return generated
     }

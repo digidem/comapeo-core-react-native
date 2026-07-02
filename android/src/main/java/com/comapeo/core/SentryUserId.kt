@@ -1,6 +1,7 @@
 package com.comapeo.core
 
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.Calendar
 import java.util.TimeZone
 
@@ -21,6 +22,24 @@ import java.util.TimeZone
 internal object SentryUserId {
     const val PERMANENT_SALT = "permanent"
     private const val ID_LENGTH = 16
+
+    /**
+     * Crockford-style base32: no I/L/O/U, so a root ID read off a screen and
+     * typed back by hand can't be mis-transcribed. Must match `SentryUserId.swift`.
+     */
+    const val ROOT_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+    /**
+     * A fresh root user ID: 12 alphabet chars grouped `XXXX-XXXX-XXXX` (60
+     * bits — comfortable headroom against collisions across the install base
+     * while staying short enough to copy from a screen by hand). Stored and
+     * hashed exactly as formatted, hyphens included.
+     */
+    fun generateRootId(random: SecureRandom = SecureRandom()): String =
+        CharArray(12) { ROOT_ID_ALPHABET[random.nextInt(ROOT_ID_ALPHABET.length)] }
+            .concatToString()
+            .chunked(4)
+            .joinToString("-")
 
     fun derive(rootUserId: String, permanent: Boolean, nowMs: Long): String {
         val salt = if (permanent) PERMANENT_SALT else utcYearMonth(nowMs)

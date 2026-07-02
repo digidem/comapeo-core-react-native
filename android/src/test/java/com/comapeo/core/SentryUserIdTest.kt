@@ -1,6 +1,7 @@
 package com.comapeo.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -30,6 +31,18 @@ class SentryUserIdTest {
             "cbd8388dc87b1a9c",
             SentryUserId.derive("test-root", permanent = true, nowMs = july2026Ms),
         )
+    }
+
+    @Test
+    fun generateRootIdFormat() {
+        // XXXX-XXXX-XXXX from the no-I/L/O/U alphabet — a user must be able
+        // to hand-copy this from a screen without ambiguous characters.
+        val format = Regex("^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$")
+        repeat(20) {
+            val id = SentryUserId.generateRootId()
+            assertTrue("bad root id format: $id", format.matches(id))
+        }
+        assertTrue(SentryUserId.generateRootId() != SentryUserId.generateRootId())
     }
 
     @Test

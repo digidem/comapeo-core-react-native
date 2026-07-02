@@ -17,6 +17,25 @@ enum SentryUserId {
     static let permanentSalt = "permanent"
     private static let idLength = 16
 
+    /// Crockford-style base32: no I/L/O/U, so a root ID read off a screen
+    /// and typed back by hand can't be mis-transcribed. Must match
+    /// `SentryUserId.kt`.
+    static let rootIdAlphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+
+    /// A fresh root user ID: 12 alphabet chars grouped `XXXX-XXXX-XXXX`
+    /// (60 bits — comfortable headroom against collisions across the
+    /// install base while staying short enough to copy from a screen by
+    /// hand). Stored and hashed exactly as formatted, hyphens included.
+    static func generateRootId() -> String {
+        var rng = SystemRandomNumberGenerator()
+        let chars = (0..<12).map { _ in
+            rootIdAlphabet[Int(rng.next(upperBound: UInt32(rootIdAlphabet.count)))]
+        }
+        return [chars[0..<4], chars[4..<8], chars[8..<12]]
+            .map { String($0) }
+            .joined(separator: "-")
+    }
+
     static func derive(rootUserId: String, permanent: Bool, nowMs: Double) -> String {
         let salt = permanent ? permanentSalt : utcYearMonth(nowMs: nowMs)
         return String(sha256Hex("\(rootUserId)|\(salt)").prefix(idLength))

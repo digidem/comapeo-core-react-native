@@ -26,6 +26,20 @@ final class SentryUserIdTests: XCTestCase {
         )
     }
 
+    func testGenerateRootIdFormat() {
+        // XXXX-XXXX-XXXX from the no-I/L/O/U alphabet — a user must be able
+        // to hand-copy this from a screen without ambiguous characters.
+        let format = "^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$"
+        for _ in 0..<20 {
+            let id = SentryUserId.generateRootId()
+            XCTAssertNotNil(
+                id.range(of: format, options: .regularExpression),
+                "bad root id format: \(id)"
+            )
+        }
+        XCTAssertNotEqual(SentryUserId.generateRootId(), SentryUserId.generateRootId())
+    }
+
     func testUtcYearMonthPadsAndUsesUtc() {
         XCTAssertEqual("1970-01", SentryUserId.utcYearMonth(nowMs: 0))
         // 1ms before the month boundary vs 1ms after — the rotation
