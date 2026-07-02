@@ -92,10 +92,7 @@ run_unit_tests() {
   echo ""
   echo "==> Running JVM unit tests..."
   cd "$EXAMPLE_DIR/android"
-  # The library module name in the Gradle build varies by Expo setup.
-  # Run via the app module which includes the library.
-  ./gradlew :comapeo-core-react-native:test || \
-    echo "Warning: Library module test task failed. This may be expected if the module name differs."
+  ./gradlew :comapeo-core-react-native:test
   cd "$PROJECT_ROOT"
 }
 
