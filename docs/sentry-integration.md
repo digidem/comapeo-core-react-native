@@ -1389,19 +1389,19 @@ The diagnostic tier carries aggregate, low-cardinality operational signal;
 
 | Signal | Tier | Why |
 | --- | --- | --- |
-| RPC latency, aggregate (`rpc.{client,server}.duration_ms.by_device{status}`) | Diagnostics | Latency by status and device bucket is pure performance; no per-operation detail. |
-| RPC `method` breakdown (`rpc.*.duration_ms{method,status}`, `rpc.client.send_ms{method}`) | applicationUsageData | The set and frequency of `@comapeo/core` methods a user invokes reveals what they do (create vs view vs sync) — usage behaviour, not perf. |
-| Boot / shutdown phase timings + outcome | Diagnostics | Startup/teardown performance; no user-specific content. |
+| RPC latency, aggregate (`rpc.{client,server}.duration_ms` with `status` + device tags) | Diagnostics | Latency by status and device bucket is pure performance; no per-operation detail. |
+| RPC `method` attribute on the same metrics (+ `rpc.client.send_ms{method}`) | applicationUsageData | The set and frequency of `@comapeo/core` methods a user invokes reveals what they do (create vs view vs sync) — usage behaviour, not perf. |
+| Boot / shutdown phase timings + outcome | Diagnostics | Startup/teardown performance; no user-specific content. *Shutdown emitter not yet wired ([#190](https://github.com/digidem/comapeo-core-react-native/issues/190)).* |
 | Backend health gauges (memory, heap, uptime, event-loop delay) | Diagnostics | Process resource health; independent of user activity. |
-| Sync session duration + outcome | Diagnostics | Sync performance/reliability is core-function health; that a sync ran is inherent to a P2P app. |
-| Sync `peers_bucket` | applicationUsageData | How many devices a user syncs with is a proxy for their collaboration/social-graph size. |
-| Sync `bytes_bucket` | applicationUsageData | Volume of data exchanged is a proxy for how much a user collects/shares. |
+| Sync session duration + outcome | Diagnostics | Sync performance/reliability is core-function health; that a sync ran is inherent to a P2P app. *Not yet wired ([#80](https://github.com/digidem/comapeo-core-react-native/issues/80)).* |
+| Sync `peers_bucket` | applicationUsageData | How many devices a user syncs with is a proxy for their collaboration/social-graph size. *Not yet wired ([#80](https://github.com/digidem/comapeo-core-react-native/issues/80)).* |
+| Sync `bytes_bucket` | applicationUsageData | Volume of data exchanged is a proxy for how much a user collects/shares. *Not yet wired ([#80](https://github.com/digidem/comapeo-core-react-native/issues/80)).* |
 | `state.transitions` | Diagnostics | App lifecycle states; no user content. |
 | `storage.size_bucket` | Diagnostics | Coarse 4-bucket dataset size — kept on so crashes/OOMs can be correlated with data volume. |
 | App-exit coarse buckets (`uptime_bucket`, `bg_duration_bucket`, OEM-kill flags) | Diagnostics | Aggregate stability signal ("which OEMs kill us"); low-resolution. |
 | App-exit exact-ms (`alive_for_ms`, `backgrounded_for_ms`) | applicationUsageData | Millisecond session/foreground durations are fine-grained usage-shape data. |
 | `device_class` / `os_major` / `platform` tags | Diagnostics | Low-cardinality device-capability buckets; not user-identifying. |
-| `ipc.errors`, `telemetry.forwarding_failures` | Diagnostics | Internal transport health. |
+| `ipc.errors`, `telemetry.forwarding_failures` | Diagnostics | Internal transport health. *Not yet wired ([#190](https://github.com/digidem/comapeo-core-react-native/issues/190)).* |
 | Per-RPC traces / OTel spans / `rpc.args` | `debug` (separate) | Investigation-only; behind the 72h auto-off `debug` toggle, not `applicationUsageData`. |
 
 #### Why restart-to-activate
