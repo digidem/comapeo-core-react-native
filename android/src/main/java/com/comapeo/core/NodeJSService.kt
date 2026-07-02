@@ -3,6 +3,7 @@ package com.comapeo.core
 import android.content.ContextWrapper
 import android.util.Base64
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.core.content.edit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -184,7 +185,12 @@ class NodeJSService(
      *  (`fgs-launch`, `extract-assets`, `node-spawn`, `rootkey-load`). */
     private val bootSpans = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
-    /** Single-slot state observer; FGS routes through here to broadcast on the control socket. */
+    /**
+     * Single-slot derived-state observer, invoked outside the state lock on each
+     * transition. [ComapeoCoreService] wires this to its self-terminate watchdog so
+     * a terminal ERROR converges the FGS process to a restartable dead state
+     * (see `ComapeoCoreService.onNodeStateChange`).
+     */
     @Volatile
     var onStateChange: ((State) -> Unit)? = null
 
@@ -357,8 +363,17 @@ class NodeJSService(
         // 5th positional: consumer's online map style URL, or "" when unset.
         val defaultOnlineStyleUrl =
             SentryConfig.readApplicationMetaDataString(this, META_DEFAULT_ONLINE_STYLE_URL) ?: ""
-        val args = mutableListOf(
-            "node",
+        val args = mutableListOf("node")
+        // Debug builds ship the backend's `.map` colocated with the bundle
+        // (src/debug only). `--enable-source-maps` (a Node runtime flag, so
+        // it must precede the script path) makes Node remap stacks to
+        // original positions in-process, so Sentry events are symbolicated
+        // without a map upload. Release builds omit it and rely on
+        // consumer-uploaded maps (debug-ID matched, symbolicated by Sentry).
+        if (BuildConfig.DEBUG) {
+            args += "--enable-source-maps"
+        }
+        args += listOf(
             entryPath,
             comapeoSocketFile.absolutePath,
             controlSocketFile.absolutePath,
@@ -580,6 +595,27 @@ class NodeJSService(
         }
     }
 
+    /**
+     * Test seam: drive the service to a terminal ERROR **without** exiting the
+     * node thread, reproducing the FGS-local failure shape (startup-watchdog
+     * timeout, rootkey load failure) that the self-terminate watchdog guards
+     * against. Leaves `nodeRuntime` as-is (`Running`), so derivation lands in
+     * ERROR while node stays alive — exactly the case where
+     * `ComapeoCoreService.onNodeStateChange` must kill the process.
+     *
+     * Reached only via the debug-gated `Actions.SIMULATE_FATAL_ERROR` intent
+     * (`BuildConfig.DEBUG`); not part of the production lifecycle. `otherwise =
+     * PACKAGE_PRIVATE` so Lint allows the same-package call from the debug intent
+     * handler in `ComapeoCoreService` while still flagging any wider production use.
+     */
+    @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
+    fun forceFatalErrorForTesting() {
+        val info = ErrorInfo("test-forced-error", "Forced fatal error (test seam)")
+        applyAndEmit(error = info) {
+            it.copy(backendState = BackendState.Error(info.phase, info.message))
+        }
+    }
+
     /** Routes raw control-socket frames into component-state mutations and the
      *  rootkey handshake. */
     private fun handleControlMessage(message: String) {
@@ -729,12 +765,43 @@ class NodeJSService(
 
     suspend fun stop() {
         // Strict guard: stop only valid from STARTING/STARTED. Refusing ERROR keeps
-        // ERROR per-instance terminal (callers use destroy() to release resources).
+        // ERROR per-instance terminal for the public API (callers use destroy() to
+        // release resources). The FGS teardown path uses [stopForTeardown] instead,
+        // which drains gracefully even from ERROR.
         val current = getState()
         if (current != State.STARTING && current != State.STARTED) {
             log("Cannot stop NodeJS service from state $current (not STARTING/STARTED)")
             return
         }
+        drainNode()
+    }
+
+    /**
+     * Best-effort graceful drain for FGS process teardown. Ships the shutdown
+     * frame and joins the node thread so the backend closes
+     * MapeoManager/SQLite/fastify/sockets and exits on its own, instead of being
+     * SIGKILLed by `Process.killProcess`.
+     *
+     * Unlike [stop] this has no lifecycle-state guard, so the self-terminate path
+     * — which fires from ERROR with the node thread still alive, whose event loop
+     * can still service the shutdown frame even while parked on `await initPromise`
+     * — drains gracefully too. The drain is skipped only when the runtime has
+     * already exited (crash / clean exit), where there is nothing left to drain.
+     * The caller ([ComapeoCoreService.onDestroy]) bounds this with a timeout and
+     * force-kills on expiry, so a wedged node can't block teardown.
+     */
+    suspend fun stopForTeardown() {
+        if (stateFlow.value.nodeRuntime !is NodeRuntimeState.Running) {
+            log("stopForTeardown: node runtime already exited, nothing to drain")
+            nodeJob = null
+            return
+        }
+        drainNode()
+    }
+
+    /** Ships `{type:"shutdown"}` and joins the node thread. Shared by the guarded
+     *  public [stop] and the guard-less [stopForTeardown]. */
+    private suspend fun drainNode() {
         if (nodeJob == null) {
             log("NodeJS service is not running, nothing to stop")
             return
@@ -749,7 +816,7 @@ class NodeJSService(
         } catch (e: Exception) {
             logCrumb(
                 SentryCategories.STATE,
-                "stop() failed: ${e.message}",
+                "drainNode() failed: ${e.message}",
                 level = "warning",
             )
             nodeJob?.cancel()

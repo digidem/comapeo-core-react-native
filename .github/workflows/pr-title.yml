@@ -57,7 +57,7 @@ jobs:
       # Title-only — never checks out PR code, so pull_request_target is safe here.
       - uses: actions/github-script@v9
         with:
-          script: |
+          script: | #js
             const title = context.payload.pull_request.title;
             const body = context.payload.pull_request.body || '';
             const m = title.match(/^(\w+)(\(([\w$.\-*/ ]+)\))?(!)?:/);

@@ -111,6 +111,9 @@ android {
     }
     buildFeatures {
         prefab true
+        // BuildConfig.DEBUG gates the debug-only SIMULATE_FATAL_ERROR intent
+        // (ComapeoCoreService) so the self-terminate test seam compiles out of release.
+        buildConfig true
     }
     packagingOptions {
         excludes += [
