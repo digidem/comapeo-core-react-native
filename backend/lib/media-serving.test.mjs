@@ -145,18 +145,19 @@ async function connectWithRetry(t, path, { timeout = 15_000 } = {}) {
 }
 
 /**
- * Issue a raw HTTP/1.0 GET over the media UDS — byte-for-byte what the
+ * Issue a raw HTTP/1.0 request over the media UDS — byte-for-byte what the
  * native clients send — and read the response to EOF.
  *
  * @param {string} mediaSocketPath
  * @param {string} pathAndQuery
+ * @param {"GET" | "HEAD"} [method]
  * @returns {Promise<{ status: number, headers: Record<string, string>, body: Buffer, rawHead: string }>}
  */
-async function httpGetOverUds(mediaSocketPath, pathAndQuery) {
+async function httpGetOverUds(mediaSocketPath, pathAndQuery, method = "GET") {
   const socket = net.connect(mediaSocketPath);
   await once(socket, "connect");
   socket.write(
-    `GET ${pathAndQuery} HTTP/1.0\r\n` +
+    `${method} ${pathAndQuery} HTTP/1.0\r\n` +
       `Host: localhost\r\n` +
       `Connection: close\r\n` +
       `\r\n`,
@@ -232,6 +233,20 @@ test(
       missing.status >= 400,
       `expected an error status, got ${missing.status}`,
     );
+
+    // HEAD works (Fastify's exposeHeadRoutes default) and carries the
+    // metadata headers with no body. Android's MediaContentProvider
+    // depends on this to answer ContentResolver.getType() and
+    // OpenableColumns queries for share-sheet receivers without pulling
+    // the blob bytes.
+    const head = await httpGetOverUds(mediaSocketPath, url, "HEAD");
+    assert.equal(head.status, 200, `HEAD ${url} → ${head.rawHead}`);
+    assert.match(head.headers["content-type"] ?? "", /^image\/png/);
+    assert.equal(head.body.length, 0, "HEAD response has no body");
+    // NOTE: the blob route streams without a Content-Length (on GET and
+    // HEAD alike, as of @comapeo/core 7.3.0) — so resolver metadata on
+    // Android exposes MIME type but not SIZE, and the native clients'
+    // truncation checks only arm if upstream starts sending the header.
   },
 );
 

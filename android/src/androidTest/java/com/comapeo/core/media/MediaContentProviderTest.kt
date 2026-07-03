@@ -4,6 +4,7 @@ import android.net.LocalServerSocket
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.comapeo.core.ComapeoCoreService
@@ -69,7 +70,8 @@ class MediaContentProviderTest {
     /**
      * Fake media server: accepts connections in a loop (the provider opens
      * one connection per request), records the request line, discards the
-     * request headers, and replies with [status] + [body], closing the
+     * request headers, and replies with [status] + [body] (headers only
+     * for HEAD requests, mirroring the real Fastify backend), closing the
      * connection to mark end-of-body (HTTP/1.0 framing).
      */
     private fun startFakeMediaServer(
@@ -105,7 +107,9 @@ class MediaContentProviderTest {
                         "Content-Length: ${contentLengthOverride ?: body.size}\r\n" +
                         "\r\n"
                     client.outputStream.write(head.toByteArray(StandardCharsets.US_ASCII))
-                    client.outputStream.write(body)
+                    if (!requestLine.startsWith("HEAD ")) {
+                        client.outputStream.write(body)
+                    }
                     client.outputStream.flush()
                 } catch (e: IOException) {
                     // Client hung up early — fine.
@@ -159,6 +163,44 @@ class MediaContentProviderTest {
                 "message should mention the HTTP status, got: ${e.message}",
                 e.message?.contains("404") == true,
             )
+        }
+    }
+
+    @Test
+    fun getTypeAnswersFromServedContentType() {
+        startFakeMediaServer(contentType = "image/jpeg", body = ByteArray(1))
+
+        val path = "/blobs/proj/drive/photo/original/00aabbccddeeff22"
+        assertEquals("image/jpeg", context.contentResolver.getType(mediaUri(path)))
+        assertEquals("HEAD $path HTTP/1.0", requestLines.first())
+        // Second lookup answers from the metadata cache — no new request.
+        assertEquals("image/jpeg", context.contentResolver.getType(mediaUri(path)))
+        assertEquals(1, requestLines.size)
+    }
+
+    @Test
+    fun getTypeDegradesWhenBackendIsDown() {
+        // No fake server: metadata must degrade to a generic type quickly,
+        // never error — it runs on other apps' binder threads.
+        assertEquals(
+            "application/octet-stream",
+            context.contentResolver.getType(mediaUri("/blobs/x")),
+        )
+    }
+
+    @Test
+    fun queryExposesDisplayNameWithExtensionForShareReceivers() {
+        startFakeMediaServer(contentType = "image/png", body = ByteArray(1))
+
+        val uri = mediaUri("/blobs/proj/drive/photo/original/00aabbccddeeff33?v=1")
+        context.contentResolver.query(uri, null, null, null, null)!!.use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            val nameIdx = cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME)
+            assertEquals("00aabbccddeeff33.png", cursor.getString(nameIdx))
+            // SIZE is present but null: the backend streams without a
+            // Content-Length header.
+            val sizeIdx = cursor.getColumnIndexOrThrow(OpenableColumns.SIZE)
+            assertTrue(cursor.isNull(sizeIdx))
         }
     }
 

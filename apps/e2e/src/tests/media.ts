@@ -110,19 +110,42 @@ export function test({ describe, expect, it, afterEach }: TestContext) {
 			expect(failed).toBe(true)
 		})
 
-		it('getShareableMediaUrl() snapshots the blob to a shareable file', async () => {
+		it('getShareableMediaUrl() returns a share-sheet-ready URL', async () => {
 			const { relativeUrl, pngBytes } = await createProjectWithBlob()
 
-			// Accepts the in-app URL form; returns a file:// snapshot with an
-			// extension derived from the served content type.
+			// Accepts the in-app URL form.
 			const shareUrl = await getShareableMediaUrl(toMediaUrl(relativeUrl))
-			expect(shareUrl.startsWith('file://')).toBe(true)
-			expect(shareUrl.endsWith('.png')).toBe(true)
 
-			const shared = new File(shareUrl)
-			expect(shared.exists).toBe(true)
-			const sharedBytes = await shared.bytes()
-			expect(Array.from(sharedBytes)).toEqual(Array.from(pngBytes))
+			if (Platform.OS === 'android') {
+				// Zero-copy: the same streaming content:// URI the app renders
+				// with — nothing on disk for low-storage devices to evict. The
+				// bytes behind it were already proven servable by the image
+				// pipeline test above.
+				expect(shareUrl).toBe(toMediaUrl(relativeUrl))
+			} else {
+				// iOS must snapshot to a file:// URL (with an extension derived
+				// from the served content type): share extensions run
+				// out-of-process, where comapeo:// URLs mean nothing.
+				expect(shareUrl.startsWith('file://')).toBe(true)
+				expect(shareUrl.endsWith('.png')).toBe(true)
+
+				const shared = new File(shareUrl)
+				expect(shared.exists).toBe(true)
+				const sharedBytes = await shared.bytes()
+				expect(Array.from(sharedBytes)).toEqual(Array.from(pngBytes))
+			}
+		})
+
+		it('getShareableMediaUrl() rejects for missing media', async () => {
+			const { relativeUrl } = await createProjectWithBlob()
+			const bogus = relativeUrl.replace(/[^/]+$/, '0000000000000000')
+			let rejected = false
+			try {
+				await getShareableMediaUrl(bogus)
+			} catch {
+				rejected = true
+			}
+			expect(rejected).toBe(true)
 		})
 	})
 }

@@ -68,11 +68,34 @@ internal object MediaHttpClient {
      * loads can race the backend's boot.
      */
     @Throws(IOException::class)
-    fun get(socketFile: File, pathAndQuery: String): Response {
-        val socket = connectWithRetry(socketFile)
+    fun get(socketFile: File, pathAndQuery: String): Response =
+        request("GET", socketFile, pathAndQuery, connectRetries)
+
+    /**
+     * Issues `HEAD <pathAndQuery>` — status + headers, no body (the server
+     * closes right after the header section). Backs the resolver-metadata
+     * paths (`getType`, `OpenableColumns`), which run on binder threads
+     * serving *other apps'* requests — hence the caller-set (usually
+     * short) retry budget instead of the boot-covering default.
+     */
+    @Throws(IOException::class)
+    fun head(
+        socketFile: File,
+        pathAndQuery: String,
+        retries: Int = connectRetries,
+    ): Response = request("HEAD", socketFile, pathAndQuery, retries)
+
+    @Throws(IOException::class)
+    private fun request(
+        method: String,
+        socketFile: File,
+        pathAndQuery: String,
+        retries: Int,
+    ): Response {
+        val socket = connectWithRetry(socketFile, retries)
         try {
             val request = buildString {
-                append("GET ").append(pathAndQuery).append(" HTTP/1.0\r\n")
+                append(method).append(' ').append(pathAndQuery).append(" HTTP/1.0\r\n")
                 append("Host: localhost\r\n")
                 append("Connection: close\r\n")
                 append("\r\n")
@@ -140,14 +163,14 @@ internal object MediaHttpClient {
         }
     }
 
-    private fun connectWithRetry(socketFile: File): LocalSocket {
+    private fun connectWithRetry(socketFile: File, retries: Int): LocalSocket {
         val addr = LocalSocketAddress(
             socketFile.absolutePath,
             LocalSocketAddress.Namespace.FILESYSTEM,
         )
         var lastError: IOException? = null
         var delayMs = CONNECT_INITIAL_DELAY_MS
-        repeat(connectRetries) {
+        repeat(retries) {
             val socket = LocalSocket()
             try {
                 return socket.apply { connect(addr) }

@@ -90,19 +90,28 @@ export function toMediaUrl(relativePath: string): string {
 }
 
 /**
- * A URL for handing this media to *other apps* via the platform share sheet.
+ * A URL for handing this media to *other apps* via the platform share
+ * sheet. Rejects if the media doesn't exist, so a bad path fails here
+ * rather than opaquely inside the receiving app.
  *
- * The in-app URLs from {@link getMediaBaseUrl} can't cross the process
- * boundary: on iOS `comapeo://` is resolved by a `URLProtocol` that only
- * exists inside this process, and on Android the `content://` stream is
- * only alive while the backend runs. This call snapshots the bytes to a
- * file in the app's cache directory (with an extension derived from the
- * served Content-Type) and returns a `file://` URL — safe to pass to
- * `expo-sharing`, `react-native-share`, or a share `Intent` /
- * `UIActivityViewController` on either platform.
+ * **Android** → the same streaming `content://` URI the app renders with
+ * (equal to {@link toMediaUrl}). No bytes are copied to disk — nothing for
+ * low-storage devices to evict — and the stream is served by the
+ * `:ComapeoCore` foreground service, which keeps running across app
+ * switches. The provider answers receivers' MIME/display-name lookups from
+ * the served HTTP headers. Your share `Intent` must carry
+ * `FLAG_GRANT_READ_URI_PERMISSION` with the URI in `setClipData` (libraries
+ * like `react-native-share` do this; `expo-sharing` does NOT support
+ * `content://` URIs). Caveats: a receiver that defers reading until after
+ * the backend stops will fail, as will the rare receiver that requires a
+ * *seekable* file descriptor (some video players).
  *
- * The file is a copy; the OS may reclaim the cache directory, so request a
- * fresh URL at share time rather than persisting this one.
+ * **iOS** → a `file://` snapshot (extension derived from the served
+ * Content-Type) in Application Support, safe for
+ * `UIActivityViewController` / `expo-sharing`. A copy is unavoidable on
+ * iOS: share extensions run out-of-process and the `comapeo://` protocol
+ * only exists inside this app. Snapshots are pruned after 24h — request a
+ * fresh URL at share time rather than persisting one.
  *
  * @param url Either a relative media path (`/blobs/...`) as returned by
  *   `$blobs.getUrl()` / `$icons.getIconUrl()`, or a full in-app media URL

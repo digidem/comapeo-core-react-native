@@ -160,20 +160,36 @@ const url = toMediaUrl(relative); // getMediaBaseUrl() + relative
 function returning it) to `@comapeo/core-react` so it can append full URLs to
 data records in the frontend.
 
-These URLs work **inside your app only**. To hand media to another app via the
-share sheet, snapshot it to a file first:
+To hand media to another app via the share sheet, use
+`getShareableMediaUrl()` (it also verifies the media exists, rejecting
+early instead of failing inside the receiving app):
 
 ```ts
 import { getShareableMediaUrl } from "@comapeo/core-react-native";
 
-const fileUrl = await getShareableMediaUrl(url); // or the relative path
-// → file:///…/comapeo-shared-media/<digest>-<name>.jpg
-await Sharing.shareAsync(fileUrl); // e.g. expo-sharing
+const shareUrl = await getShareableMediaUrl(url); // or the relative path
+// Android → content://<applicationId>.comapeo.media/blobs/… (zero-copy stream)
+// iOS     → file:///…/comapeo-shared-media/<digest>-<name>.jpg (snapshot)
 ```
 
-The snapshot lives in the app's cache directory (the OS may reclaim it), with
-a file extension derived from the served content type — request a fresh URL at
-share time rather than persisting it.
+**Android** returns the same streaming `content://` URI the app renders with:
+no bytes are copied to disk (nothing for low-storage devices to evict), and
+the stream is served by the `:ComapeoCore` foreground service, which keeps
+running across app switches. The provider answers receivers'
+`getType()`/`OpenableColumns` lookups from the served HTTP headers. Your
+share `Intent` must grant the receiver read access —
+`FLAG_GRANT_READ_URI_PERMISSION` with the URI in `setClipData`, which
+libraries like `react-native-share` handle for you (`expo-sharing` does
+**not** support `content://` URIs). Two caveats: a receiver that defers
+reading until after the backend stops will fail, as will the rare receiver
+that requires a seekable file descriptor (some video players).
+
+**iOS** has no equivalent of a streaming content provider — share extensions
+run out-of-process, where `comapeo://` URLs mean nothing — so the bytes are
+snapshotted to a `file://` URL (in Application Support, not the purgeable
+cache; pruned after 24h) that works with `expo-sharing` /
+`UIActivityViewController`. Request a fresh URL at share time rather than
+persisting one.
 
 ### Notification permission (Android 13+)
 

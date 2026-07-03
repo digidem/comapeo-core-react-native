@@ -187,9 +187,14 @@ chunked-transfer decoder):
   `comapeo://media/<path>` URLs.
 
 `src/mediaUrl.ts` composes the URLs (`getMediaBaseUrl()`, `toMediaUrl()`)
-and provides `getShareableMediaUrl()`, which snapshots a blob to a cache
-file and returns a `file://` URL — in-app media URLs cannot cross the
-process boundary to share-sheet targets.
+and provides `getShareableMediaUrl()` for share sheets. On Android that is
+the same streaming `content://` URI (zero-copy — the provider answers
+receivers' `getType()`/`OpenableColumns` lookups from the served headers,
+and the FGS-served socket outlives app switches; the share Intent must
+carry a URI read grant). On iOS it is a `file://` snapshot in Application
+Support — share extensions run out-of-process, where `comapeo://` means
+nothing, and the purgeable cache directory was evicting snapshots on
+low-storage devices before shares completed.
 
 > **Maps caveat.** Core registers a third prefix (`maps`) on the same
 > Fastify, so `MapeoManager#getMapStyleJsonUrl()` also returns a relative
