@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import ensureError from "ensure-error";
@@ -33,12 +34,16 @@ console.log("Starting Comapeo Node server...");
 // string when unset) so the `--sentry*` flags that follow can't land in
 // them. Empty 4th → undefined → MapeoManager applies no default config;
 // empty 5th → undefined → createComapeo falls back to its built-in URL.
+// 6th positional is the Unix domain socket path the blob/icon media
+// server binds to (`media.sock`, alongside `comapeo.sock` /
+// `control.sock`). Required — see the media-socket bind below.
 const [
   comapeoSocketPath,
   controlSocketPath,
   privateStorageDir,
   configArg,
   styleUrlArg,
+  mediaSocketPath,
 ] = process.argv.slice(2);
 const defaultConfigPath = configArg || undefined;
 const defaultOnlineStyleUrl = styleUrlArg || undefined;
@@ -225,6 +230,30 @@ async function withPhase(phase, fn) {
     );
     console.log(`Control socket listening on ${controlSocketPath}`);
 
+    // Validate the argv contract after the control socket is up so the
+    // error frame can reach a native client that connects in time (a
+    // missing slot means a native/backend version mismatch — fail loudly
+    // with the contract spelled out rather than with a downstream ENOENT,
+    // or by silently serving media over TCP).
+    await withPhase("argv", async () => {
+      const required = {
+        comapeoSocketPath,
+        controlSocketPath,
+        privateStorageDir,
+        mediaSocketPath,
+      };
+      const missing = Object.keys(required).filter(
+        (key) => !required[/** @type {keyof typeof required} */ (key)],
+      );
+      if (missing.length > 0) {
+        throw new Error(
+          `Missing required argv positional(s): ${missing.join(", ")}. ` +
+            "Native must pass [comapeoSocketPath, controlSocketPath, " +
+            "privateStorageDir, configPath, styleUrl, mediaSocketPath].",
+        );
+      }
+    });
+
     // Drain loader.mjs's pre-listen queue; SimpleRpcServer's own ring
     // buffer covers the gap until clients connect.
     sentry.setSink((frame) => controlIpcServer.broadcast(frame));
@@ -248,11 +277,21 @@ async function withPhase(phase, fn) {
           rootKey,
         });
 
-        // Start the MapeoManager's Fastify so its blob/icon server is
-        // reachable. `$blobs.getUrl()` / `$icons.getUrl()` await the server's
-        // address (5s timeout, else AbortError). Non-fatal: surface listen
-        // failures to getUrl() callers only.
-        fastify.listen({ host: "127.0.0.1", port: 0 }).catch(() => {});
+        // Bind the MapeoManager's Fastify (the blob/icon media server) to a
+        // Unix domain socket inside the app sandbox instead of a loopback
+        // TCP port, so no other app on the device can reach it. The only
+        // clients are the native bridges: `MediaContentProvider` (Android)
+        // and `MediaFetcher` (iOS). With a UDS bind, the patched
+        // `getFastifyServerAddress` (see
+        // `patches/@comapeo+core+*.patch`) makes `$blobs.getUrl()` /
+        // `$icons.getIconUrl()` return *relative* paths — core stays
+        // agnostic of how (and at what URL) media is actually served; the
+        // React Native side prepends the platform-native base URL.
+        //
+        // A stale socket file from a previous process would fail the bind
+        // with EADDRINUSE; native deletes it before spawning Node, and we
+        // remove it here too so the backend is robust on its own.
+        rmSync(mediaSocketPath, { force: true });
 
         // Map server is non-critical: boot must still reach "ready" if it
         // fails. Isolate construction *and* listen() inside one promise so any
@@ -289,10 +328,19 @@ async function withPhase(phase, fn) {
           { onRequestHook: sentry.rpcHook() },
         );
 
-        await comapeoRpcServer.listen(comapeoSocketPath);
+        // Media bind is fatal (unlike the map server): photos/icons are
+        // core app function, and "ready" must mean the media socket is
+        // accepting — the native clients connect with bounded retries and
+        // a missing socket would surface as confusing per-image timeouts.
+        await Promise.all([
+          comapeoRpcServer.listen(comapeoSocketPath),
+          fastify.listen({ path: mediaSocketPath }),
+        ]);
       }),
     );
-    console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
+    console.log(
+      `Comapeo socket listening on ${comapeoSocketPath}, media socket on ${mediaSocketPath}`,
+    );
 
     controlIpcServer.setReadinessPhase("ready");
     metrics.bootOutcome("started");

@@ -83,6 +83,7 @@ class NodeJSService {
 
     static let comapeoSocketFilename = "comapeo.sock"
     static let controlSocketFilename = "control.sock"
+    static let mediaSocketFilename = "media.sock"
 
     private let socketDir: String
     /// Backend's third argv positional. Mirrors Android's `dataDir`. The
@@ -91,6 +92,10 @@ class NodeJSService {
     private let privateStorageDir: String
     let comapeoSocketPath: String
     let controlSocketPath: String
+    /// Unix domain socket the backend's blob/icon media server binds to.
+    /// Read by `MediaFetcher` (via the provider closure installed in
+    /// `AppLifecycleDelegate`) to satisfy `comapeo://media/...` loads.
+    let mediaSocketPath: String
     private var controlIPC: NodeJSIPC?
     private var nodeThread: Thread?
     private let lock = NSLock()
@@ -186,11 +191,12 @@ class NodeJSService {
         self.sentryUserId = sentryUserId
         self.comapeoSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.comapeoSocketFilename)
         self.controlSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.controlSocketFilename)
+        self.mediaSocketPath = (socketDir as NSString).appendingPathComponent(NodeJSService.mediaSocketFilename)
 
         // sockaddr_un.sun_path is 104 bytes on Darwin (incl. null terminator).
         // Silent truncation makes bind() succeed against a different file.
         let sunPathMax = 104
-        for path in [comapeoSocketPath, controlSocketPath] {
+        for path in [comapeoSocketPath, controlSocketPath, mediaSocketPath] {
             let needed = path.utf8.count + 1
             precondition(
                 needed <= sunPathMax,
@@ -655,6 +661,9 @@ class NodeJSService {
             privateStorageDir,
             defaultConfigPath,
             defaultOnlineStyleUrl,
+            // 6th positional: UDS the blob/icon media server binds to,
+            // consumed by MediaFetcher / MediaURLProtocol in-process.
+            mediaSocketPath,
         ])
         args.append(contentsOf: buildSentryArgs())
         let exitCode = nodeEntryPoint(args)
@@ -799,6 +808,7 @@ class NodeJSService {
         let fm = FileManager.default
         try? fm.removeItem(atPath: comapeoSocketPath)
         try? fm.removeItem(atPath: controlSocketPath)
+        try? fm.removeItem(atPath: mediaSocketPath)
     }
 
 }

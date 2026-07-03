@@ -7,4 +7,9 @@ export {
   getNotificationPermissionsAsync,
   requestNotificationPermissionsAsync,
 } from "./ComapeoCoreModule";
+export {
+  getMediaBaseUrl,
+  toMediaUrl,
+  getShareableMediaUrl,
+} from "./mediaUrl";
 export * from "./ComapeoCore.types";

@@ -163,6 +163,7 @@ class NodeJSService(
     private val jsFile: File = File(nodeProjectDir, NODEJS_PROJECT_INDEX_FILENAME)
     private val comapeoSocketFile: File = File(filesDir, ComapeoCoreService.COMAPEO_SOCKET_FILENAME)
     private val controlSocketFile: File = File(filesDir, ComapeoCoreService.CONTROL_SOCKET_FILENAME)
+    private val mediaSocketFile: File = File(filesDir, ComapeoCoreService.MEDIA_SOCKET_FILENAME)
     private val sharedPrefsName = packageName + SHARED_PREFS_NAME_POSTFIX
     private val json = Json { encodeDefaults = true }
     private val ipcDeferred = CompletableDeferred<NodeJSIPC>()
@@ -380,6 +381,10 @@ class NodeJSService(
             dataDir,
             defaultConfigPath,
             defaultOnlineStyleUrl,
+            // 6th positional: UDS the blob/icon media server binds to. Read
+            // by MediaContentProvider (main process) at the same filesDir
+            // path — both processes share the sandbox.
+            mediaSocketFile.absolutePath,
         )
         sentryConfig?.let { cfg ->
             args += "--sentryDsn=${cfg.dsn}"
@@ -849,6 +854,7 @@ class NodeJSService(
     private fun deleteSocketFiles() {
         comapeoSocketFile.delete()
         controlSocketFile.delete()
+        mediaSocketFile.delete()
     }
 
     private fun shouldCopyAssets(): Boolean {

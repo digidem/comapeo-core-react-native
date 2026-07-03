@@ -34,7 +34,7 @@ The module runs CoMapeo Core inside an embedded Node.js runtime and talks to the
 - **Android** — dual-process: the UI runs in the main app process and Node.js runs in a separate `:ComapeoCore` `dataSync` foreground service, so sync survives backgrounding.
 - **iOS** — in-process on a dedicated thread (`nodejs-mobile`'s `NodeMobileStartNode`, which is **once-per-process**): Node.js starts on first foreground, stays alive across background/foreground transitions, and stops only on `applicationWillTerminate`.
 
-Two sockets carry the traffic: `comapeo.sock` (main RPC, surfaced as `messagePort` in JS) and `control.sock` (lifecycle signals — `started`, `ready`, `shutdown`).
+Three sockets carry the traffic: `comapeo.sock` (main RPC, surfaced as `messagePort` in JS), `control.sock` (lifecycle signals — `started`, `ready`, `shutdown`), and `media.sock` (blob/icon HTTP, consumed by per-platform native media bridges that serve `content://` (Android) / `comapeo://` (iOS) URLs — see `src/mediaUrl.ts`).
 
 The JS-facing API (`src/`) is two singletons from `ComapeoCoreModule.ts`: `messagePort` (an EventEmitter — `postMessage()` to send, `"message"` events to receive) and `state` (`getState()` plus `"stateChange"` events). Both wrap the native module from `requireNativeModule("ComapeoCore")`.
 

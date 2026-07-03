@@ -18,6 +18,27 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
     /// reference; defer the read to handshake time.
     private static let rootKeyStore = RootKeyStore()
 
+    /// Idempotent installer for the `comapeo://media/...` fetch path —
+    /// `static let` guarantees at-most-one registration regardless of how
+    /// many `AppLifecycleDelegate` instances Expo creates. The side effect
+    /// runs the first time anything reads this property (force-evaluated in
+    /// `applicationDidBecomeActive`, before the first image render).
+    ///
+    /// Two consumers wire up here:
+    ///   - `MediaFetcher.socketPathProvider` — read by the Obj-C
+    ///     `ComapeoMediaImageLoader` (`RCTImageURLLoader`, RN `<Image>`)
+    ///     AND by the streaming `MediaURLProtocol`.
+    ///   - `URLProtocol.registerClass(MediaURLProtocol.self)` — picks up
+    ///     `URLSession.shared` callers (third-party libraries) for which
+    ///     the RCTImageURLLoader path is irrelevant.
+    private static let mediaUrlProtocolInstalled: Bool = {
+        MediaFetcher.socketPathProvider = {
+            AppLifecycleDelegate.nodeService.mediaSocketPath
+        }
+        URLProtocol.registerClass(MediaURLProtocol.self)
+        return true
+    }()
+
     /// Sentry config for this launch, gated on `diagnosticsEnabled`.
     /// When nil: NodeJSService skips `--sentry*` argv (loader
     /// short-circuits on absent DSN); native bridge calls no-op against
@@ -125,6 +146,12 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // Install the media URL bridge at launch, not first activation —
+        // image prefetches (or a background launch that warms the RN
+        // bridge) can issue comapeo://media loads before the app is ever
+        // active. The didBecomeActive read below stays as a belt-and-braces
+        // second trigger; Swift's static-let guarantees at-most-once.
+        _ = Self.mediaUrlProtocolInstalled
         // Init sentry-cocoa before `applicationDidBecomeActive` fires
         // so `nodeService.start()` finds a live hub. JS-side `Sentry.init`
         // runs later with `autoInitializeNativeSdk: false`.
@@ -155,6 +182,13 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
 
     public func applicationDidBecomeActive(_ application: UIApplication) {
         log("applicationDidBecomeActive")
+        // Force-evaluate the lazy `static let` so URLProtocol.registerClass
+        // runs exactly once per process, before the first image render.
+        // Swift's dispatch_once-backed static init provides the at-most-once
+        // guarantee; reading the value is what drives it.
+        _ = Self.mediaUrlProtocolInstalled
+        // Start is guarded by `state == .stopped`, so subsequent foreground
+        // transitions in the same process are no-ops.
         Self.nodeService.start()
     }
 

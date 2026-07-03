@@ -1,4 +1,6 @@
+import { comapeo } from '@comapeo/core-react-native'
 import { ComapeoDoc } from '@comapeo/core/schema.js'
+import type { ComapeoProjectClientApi } from '@comapeo/ipc'
 import { JasmineInterface } from 'jasmine-core/lib/jasmine-core/jasmine'
 
 export type TestContext = Pick<
@@ -11,6 +13,30 @@ export type TestContext = Pick<
 	| 'beforeEach'
 	| 'afterEach'
 >
+
+/**
+ * Returns an `openProject(projectId)` that tracks every opened project and
+ * closes them all in `afterEach`. Close in afterEach to avoid leaking
+ * listeners across tests (otherwise EventEmitter MaxListenersExceeded fires
+ * and later tests slow down).
+ */
+export function trackOpenProjects(afterEach: TestContext['afterEach']) {
+	const openProjects = new Set<ComapeoProjectClientApi>()
+
+	afterEach(async () => {
+		const projects = [...openProjects]
+		openProjects.clear()
+		await Promise.all(projects.map((p) => p.close().catch(() => undefined)))
+	})
+
+	return async function openProject(
+		projectId: string,
+	): Promise<ComapeoProjectClientApi> {
+		const project = await comapeo.getProject(projectId)
+		openProjects.add(project)
+		return project
+	}
+}
 
 export function sortBy<T>(arr: Array<T>, key: keyof T) {
 	return arr.sort(function (a, b) {

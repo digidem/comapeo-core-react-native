@@ -1,11 +1,16 @@
 package com.comapeo.core
 
 import android.Manifest
+import com.comapeo.core.media.MediaContentProvider
+import com.comapeo.core.media.MediaHttpClient
 import expo.modules.interfaces.permissions.Permissions
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
+import java.io.IOException
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 
 private typealias JsState = NodeJSService.State
 
@@ -293,6 +298,100 @@ class ComapeoCoreModule : Module() {
                 promise,
                 Manifest.permission.POST_NOTIFICATIONS,
             )
+        }
+
+        // The authority of MediaContentProvider for the consuming app
+        // (depends on its applicationId). Read once by src/mediaUrl.ts so
+        // the relative blob/icon paths returned by the backend can be
+        // composed into `content://<authority>/...` URIs for <Image>.
+        Function("getMediaContentAuthority") {
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "getMediaContentAuthority called before native context attached",
+                )
+            MediaContentProvider.authorityFor(ctx)
+        }
+
+        // Snapshot a blob/icon to a cache file and return a `file://` URL
+        // for the share sheet. The in-app content:// stream is only alive
+        // while the backend runs; a file copy has no such coupling and works
+        // with expo-sharing / FileProvider-based flows. Runs on the module's
+        // background dispatcher, so blocking socket + file IO is fine.
+        AsyncFunction("getShareableMediaUrl") { relativePath: String ->
+            require(relativePath.startsWith("/")) {
+                "Expected a relative media path beginning with '/', got: $relativePath"
+            }
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "getShareableMediaUrl called before native context attached",
+                )
+            val socketFile = File(ctx.filesDir, ComapeoCoreService.MEDIA_SOCKET_FILENAME)
+            MediaHttpClient.get(socketFile, relativePath).use { response ->
+                if (response.status !in 200..299) {
+                    throw IOException("HTTP ${response.status} for $relativePath")
+                }
+                val dir = File(ctx.cacheDir, SHARED_MEDIA_DIR_NAME).apply { mkdirs() }
+                pruneStaleSharedMedia(dir)
+                // Prefix with a digest of the full path (query included —
+                // icon URLs differ only by query params): the final segment
+                // (the blob name) is shared across variants of one blob, so
+                // it alone would collide (original vs preview vs thumbnail).
+                val digest = MessageDigest.getInstance("SHA-256")
+                    .digest(relativePath.toByteArray(StandardCharsets.UTF_8))
+                    .joinToString("") { "%02x".format(it) }
+                    .take(16)
+                // Strip any query string before deriving the display name —
+                // a '?' in a filename breaks consumers that parse the URL.
+                val name = relativePath.substringBefore('?')
+                    .substringAfterLast('/').ifEmpty { "media" }
+                val ext = MediaHttpClient.extensionForMimeType(response.headers["content-type"])
+                val file = File(dir, "$digest-$name" + if (ext != null) ".$ext" else "")
+                // Stream into a temp file, then rename into place atomically
+                // so a share target still reading a previous snapshot never
+                // observes a truncated file, and a failed fetch never leaves
+                // a partial one.
+                val temp = File.createTempFile(".snapshot", ".tmp", dir)
+                try {
+                    val copied = temp.outputStream().use { out ->
+                        response.body.copyTo(out)
+                    }
+                    // HTTP/1.0 bodies are EOF-delimited; verify against
+                    // Content-Length so a backend dying mid-response can't
+                    // pass a truncated snapshot off as complete.
+                    val expected = response.headers["content-length"]?.toLongOrNull()
+                    if (expected != null && copied != expected) {
+                        throw IOException("Truncated body: $copied of $expected bytes")
+                    }
+                    if (!temp.renameTo(file)) {
+                        throw IOException("Could not move snapshot into place: $file")
+                    }
+                } catch (e: Exception) {
+                    temp.delete()
+                    throw e
+                }
+                "file://${file.absolutePath}"
+            }
+        }
+    }
+
+    private companion object {
+        const val SHARED_MEDIA_DIR_NAME = "comapeo-shared-media"
+
+        /** See [pruneStaleSharedMedia]. */
+        const val SHARED_MEDIA_MAX_AGE_MS = 24L * 60 * 60 * 1000
+
+        /**
+         * Best-effort removal of snapshots older than 24h, run before each
+         * new snapshot so the share cache can't grow without bound (the JS
+         * docs tell callers to request a fresh URL per share, so old copies
+         * are dead weight). Errors are ignored — pruning must never fail a
+         * share. Mirrors `MediaFetcher.pruneStaleSnapshots` on iOS.
+         */
+        fun pruneStaleSharedMedia(dir: File) {
+            val cutoff = System.currentTimeMillis() - SHARED_MEDIA_MAX_AGE_MS
+            dir.listFiles()?.forEach { file ->
+                if (file.lastModified() < cutoff) file.delete()
+            }
         }
     }
 }

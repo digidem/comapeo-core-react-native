@@ -163,6 +163,34 @@ public class ComapeoCoreModule: Module {
         AsyncFunction("requestNotificationPermissionsAsync") { () -> [String: Any] in
             ComapeoCoreModule.grantedPermissionResponse
         }
+
+        // Mirror of the Android Function so `src/mediaUrl.ts` can call the
+        // same name on both platforms. Returns "" on iOS — there is no
+        // per-app authority; the scheme is a fixed `comapeo://media/...`
+        // handled by MediaURLProtocol / ComapeoMediaImageLoader.
+        Function("getMediaContentAuthority") { () -> String in
+            return ""
+        }
+
+        // Snapshot a blob/icon to a cache file and return a `file://` URL
+        // for the share sheet. `comapeo://` URLs can't cross the process
+        // boundary (the URLProtocol only exists in this process), so
+        // UIActivityViewController targets need real file bytes. Expo runs
+        // AsyncFunctions off the main thread, so blocking socket + file IO
+        // is fine here.
+        AsyncFunction("getShareableMediaUrl") { (relativePath: String) -> String in
+            guard relativePath.hasPrefix("/") else {
+                throw MediaShareException(relativePath)
+            }
+            guard let url = URL(string: "comapeo://media\(relativePath)") else {
+                throw MediaShareException(relativePath)
+            }
+            let cachesDir = FileManager.default.urls(
+                for: .cachesDirectory, in: .userDomainMask
+            )[0].appendingPathComponent("comapeo-shared-media", isDirectory: true)
+            let fileUrl = try MediaFetcher.fetchToFile(url: url, directory: cachesDir)
+            return fileUrl.absoluteString
+        }
     }
 
     // Testable seam: the constant value both notification AsyncFunctions
@@ -173,4 +201,10 @@ public class ComapeoCoreModule: Module {
         "canAskAgain": true,
         "expires": "never",
     ]
+}
+
+private final class MediaShareException: GenericException<String>, @unchecked Sendable {
+    override var reason: String {
+        "Expected a relative media path beginning with '/', got: \(param)"
+    }
 }

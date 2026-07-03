@@ -31,6 +31,9 @@ let package = Package(
                 "ComapeoCoreModule.swift",
                 "AppLifecycleDelegate.swift",
                 "RootKeyStore.swift",
+                // Obj-C++ RCTImageURLLoader — React headers aren't available
+                // in the swift-test target (CocoaPods-only source).
+                "ComapeoMediaImageLoader.mm",
             ],
             sources: [
                 "NodeJSIPC.swift",
@@ -46,6 +49,10 @@ let package = Package(
                 // MetricKit subscriber is #if os(iOS); only the pure
                 // AppExitDecoder compiles (and is tested) on macOS.
                 "AppExitMetricsCollector.swift",
+                // Portable (Foundation + Darwin sockets): the media-over-UDS
+                // fetch pipeline, tested against an in-test UDS HTTP server.
+                "MediaFetcher.swift",
+                "MediaURLProtocol.swift",
             ]
         ),
         .testTarget(

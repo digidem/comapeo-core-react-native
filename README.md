@@ -137,6 +137,44 @@ const baseUrl = await comapeoServicesClient.mapServer.getBaseUrl();
 // → http://127.0.0.1:<port>
 ```
 
+### Media URLs — blobs and icons
+
+The backend serves blobs and icons over a Unix domain socket inside the app
+sandbox (never a TCP port), so no other app on the device can read them.
+Because of that, `$blobs.getUrl()` / `$icons.getIconUrl()` return **relative**
+paths (`/blobs/...`) — CoMapeo Core has no knowledge of URLs or how media is
+served. Compose them with the platform-native base URL from this module:
+
+```ts
+import { getMediaBaseUrl, toMediaUrl } from "@comapeo/core-react-native";
+
+const relative = await project.$blobs.getUrl(blobId); // "/blobs/…"
+const url = toMediaUrl(relative); // getMediaBaseUrl() + relative
+// Android → content://<applicationId>.comapeo.media/blobs/…
+// iOS     → comapeo://media/blobs/…
+
+<Image source={{ uri: url }} />;
+```
+
+`getMediaBaseUrl()` is stable for the lifetime of the process — pass it (or a
+function returning it) to `@comapeo/core-react` so it can append full URLs to
+data records in the frontend.
+
+These URLs work **inside your app only**. To hand media to another app via the
+share sheet, snapshot it to a file first:
+
+```ts
+import { getShareableMediaUrl } from "@comapeo/core-react-native";
+
+const fileUrl = await getShareableMediaUrl(url); // or the relative path
+// → file:///…/comapeo-shared-media/<digest>-<name>.jpg
+await Sharing.shareAsync(fileUrl); // e.g. expo-sharing
+```
+
+The snapshot lives in the app's cache directory (the OS may reclaim it), with
+a file extension derived from the served content type — request a fresh URL at
+share time rather than persisting it.
+
 ### Notification permission (Android 13+)
 
 The foreground service posts an ongoing notification. On Android 13+ (API 33)
