@@ -145,8 +145,10 @@ test("before_metric_send drops forbidden tag VALUES (lat/lng shape)", () => {
     0,
     "metric carrying a lat/lng tag value must be dropped",
   );
-  // A normal bucket value passes. (The broad base64-22 value rule is disabled
-  // pending a narrower design — a bare token would also pass now.)
+  // A bare rootkey-shaped value is also dropped.
+  metrics.storageSizeBucket("bm90LWEtcmVhbC1rZXktMQ");
+  assert.equal(calls.count.length, 0);
+  // A normal bucket value passes.
   metrics.storageSizeBucket("<10MB");
   assert.equal(calls.count.length, 1);
 });

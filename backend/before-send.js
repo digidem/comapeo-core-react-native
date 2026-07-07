@@ -8,14 +8,12 @@
 // the same scrubbing + drop behaviour runs on Node-side events before
 // they leave the FGS.
 //
-// Mirrored from `src/sentry-scrub.ts`. The broad base64-22 token rule (to
-// catch bare rootKeys / public keys / project ids) is intentionally NOT
-// enabled here either — it over-matched Sentry's own 32-hex trace_ids,
-// PascalCase exception type names, and error_class metric tags, redacting
-// data we need. Pending a narrower design agreed with the team; bare tokens
-// are unscrubbed until then. Object fields keyed
-// lat/lng/latitude/longitude are redacted regardless of value type; lat/lng
-// markers redact the trailing number; HTTP breadcrumb URLs reduce to host-only.
+// Mirrored from `src/sentry-scrub.ts`. Bare (unmarked) rootkey-shaped
+// tokens are redacted by the exact-length base64-22 rule — see
+// BARE_KEY_TOKEN_PATTERN below for the design and its known limits.
+// Object fields keyed lat/lng/latitude/longitude are redacted regardless
+// of value type; lat/lng markers redact the trailing number; HTTP
+// breadcrumb URLs reduce to host-only.
 
 const REDACTED = "[redacted]";
 
@@ -28,6 +26,36 @@ const SCRUB_PATTERNS = [
   // Optional quote so JSON-serialized coordinates (`"lat":-12.3`) match.
   /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
+
+/**
+ * Bare rootkey-shaped token: exactly 22 base64/base64url chars whose last
+ * data char is [AQgw] (any valid 16-byte base64 ends there — its final 4
+ * bits are padding zeros), optional `==`, bounded by non-base64 chars.
+ * This exact-length + final-char anchor replaces the disabled "any
+ * 22+-char base64 run" rule that over-matched 32-hex trace_ids, PascalCase
+ * exception type names, and error_class metric tags. Matches still pass
+ * through isBareKeyShaped before redaction.
+ */
+const BARE_KEY_TOKEN_PATTERN =
+  /(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/_-]{21}[AQgw](?:==)?(?![A-Za-z0-9+/=_-])/g;
+
+/**
+ * Padded (`==`) matches are the exact rootkey wire shape — always redact.
+ * Unpadded ones must show a random-key character mix: both cases plus a
+ * digit/symbol (rejects PascalCase type names and ERR_* codes) and not
+ * pure hex (rejects truncated ids). Known limits: ~1% of random rootkeys
+ * are all-letters and slip an *unpadded* leak (the padded wire form still
+ * redacts), and a 22-char mixed-case identifier containing a digit that
+ * happens to end in [AQgw] is falsely redacted — an accepted trade-off,
+ * false negatives being worse here.
+ *
+ * @param {string} token
+ */
+function isBareKeyShaped(token) {
+  if (token.endsWith("==")) return true;
+  if (/^[0-9a-f]+$/i.test(token)) return false;
+  return /[a-z]/.test(token) && /[A-Z]/.test(token) && /[0-9+/_-]/.test(token);
+}
 
 /** Object keys whose value is a raw coordinate — redacted regardless of type. */
 const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude)$/i;
@@ -48,10 +76,20 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
   "rootkey",
 ]);
 
-/** @type {RegExp[]} */
+/** Forbidden tag *values* — lat/lng shapes. (Bare rootkey-shaped values
+ *  are checked separately via containsBareKeyToken.)
+ *  @type {RegExp[]} */
 const FORBIDDEN_METRIC_VALUE_PATTERNS = [
   /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/i,
 ];
+
+/** @param {string} value */
+function containsBareKeyToken(value) {
+  for (const match of value.matchAll(BARE_KEY_TOKEN_PATTERN)) {
+    if (isBareKeyShaped(match[0])) return true;
+  }
+  return false;
+}
 
 /** @param {string} input */
 export function scrubString(input) {
@@ -59,7 +97,9 @@ export function scrubString(input) {
   for (const pattern of SCRUB_PATTERNS) {
     out = out.replace(pattern, REDACTED);
   }
-  return out;
+  return out.replace(BARE_KEY_TOKEN_PATTERN, (match) =>
+    isBareKeyShaped(match) ? REDACTED : match,
+  );
 }
 
 /** Reduce an HTTP(S) URL to scheme + host. @param {string} url */
@@ -241,6 +281,7 @@ export function isForbiddenMetric(name, attributes) {
       for (const pattern of FORBIDDEN_METRIC_VALUE_PATTERNS) {
         if (pattern.test(tagValue)) return true;
       }
+      if (containsBareKeyToken(tagValue)) return true;
     }
   }
   return false;

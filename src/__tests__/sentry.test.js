@@ -310,8 +310,7 @@ describe("initSentry", () => {
     expect(payload).toContain("[redacted]");
     expect(payload).not.toContain("aGVsbG8td29ybGQtMTIzNA"); // rootKey value gone
     expect(payload).not.toContain("-12.34"); // lat/lng gone
-    // Broad base64-22 rule disabled: a bare token in `extra` currently survives.
-    expect(payload).toContain("bm90LWEtcmVhbC1rZXktMQ");
+    expect(payload).not.toContain("bm90LWEtcmVhbC1rZXktMQ"); // bare rootkey-shaped token gone
   });
 
   test("beforeBreadcrumb reduces HTTP URLs to host-only", () => {

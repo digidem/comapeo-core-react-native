@@ -1287,12 +1287,29 @@ Node; shared test cases in `test-support/scrubber-cases.js` keep the
 two copies from drifting): it walks the event tree — message, exception
 values, extra, contexts, breadcrumbs, structured logs — redacting
 `rootKey`-marked values and coordinate markers (`lat`, `lng`, `lon`,
-`latitude`, `longitude`, in key/value and JSON-serialized forms). A
-broad base64-22-char rule (to catch *bare* unmarked rootkeys) is
-deliberately **not** enabled: it also matched trace IDs and exception
-type names; a narrower design is pending, and until then bare unmarked
-tokens pass through. This is belt-and-suspenders — the fix is always at
-the capture site, but the scrubber catches mistakes before they ship.
+`latitude`, `longitude`, in key/value and JSON-serialized forms).
+
+*Bare* (unmarked) rootkey-shaped tokens are caught by an exact-shape
+rule rather than the originally proposed "any 22+-char base64 run"
+(which over-matched 32-hex trace IDs, PascalCase exception type names,
+and `error_class` metric tags). The rootkey crosses the wire as strict
+base64 of 16 bytes — `backend/index.js` enforces
+`/^[A-Za-z0-9+/]{22}==$/` — and any valid 16-byte base64 ends its 22nd
+char in `A`/`Q`/`g`/`w` (the final 4 bits are padding zeros). So the
+rule matches exactly 22 base64/base64url chars ending in `[AQgw]`,
+optionally `==`-padded, bounded by non-base64 chars; a padded match is
+the exact wire shape and always redacts, while an unpadded match must
+also show a random-key character mix (both cases plus a digit or
+symbol, and not pure hex). That structurally spares trace/span IDs
+(wrong length, hex), type names and `ERR_*` codes (letters-only or
+single-case), and base64-ish IDs of other lengths (43-char public keys,
+52-char project IDs). Known limits: roughly 1% of random rootkeys are
+all-letters and would slip through in *unpadded* form (the padded wire
+form still redacts), and a 22-char mixed-case identifier containing a
+digit that happens to end in `[AQgw]` is falsely redacted — accepted,
+since false negatives are worse here. This is belt-and-suspenders — the
+fix is always at the capture site, but the scrubber catches mistakes
+before they ship.
 
 ---
 

@@ -11,10 +11,13 @@
  * buggy host (and our own mistakes) before a payload leaves the device.
  *
  * What it redacts (and the false-positive trade-off):
- *   - Explicit `rootKey=…` markers (key=value / json / prose). A broad
- *     "any 22+-char base64url run" rule is deliberately NOT enabled — see
- *     the SCRUB_PATTERNS note below — so bare rootKeys/keys/project-ids
- *     with no marker are currently unscrubbed.
+ *   - Explicit `rootKey=…` markers (key=value / json / prose).
+ *   - Bare (unmarked) rootkey-shaped tokens: exactly 22 base64 chars
+ *     ending in [AQgw] — the only shape a 16-byte base64 rootkey can take
+ *     (`backend/index.js` enforces /^[A-Za-z0-9+/]{22}==$/ on the wire).
+ *     Padded (`==`) matches always redact; unpadded ones also need a
+ *     character-mix check — see BARE_KEY_TOKEN_PATTERN below for the rule
+ *     and its known limits.
  *   - Object fields whose KEY is lat/lng/latitude/longitude are redacted
  *     regardless of value type — a numeric `{latitude: 12.3}` is the most
  *     likely capture shape and value-only scrubbing would miss it.
@@ -39,17 +42,39 @@ const SCRUB_PATTERNS: RegExp[] = [
   // field delimiter (whitespace, `,;&`, quote) so co-located fields in a
   // compact string like `rootKey=abc,method=x` survive.
   /\broot[_-]?key\b\s*["']?\s*[:=]\s*[^\s,;&"']+/gi,
-  // NOTE: a broad 22+-char URL-safe base64 rule (to catch bare rootKeys at
-  // 22, public keys at 43, project ids at ~52) is intentionally NOT enabled
-  // — it also matched Sentry's own 32-hex trace_ids, PascalCase exception
-  // type names, and error_class metric tags, redacting data we need. Pending
-  // a narrower design agreed with the team; bare tokens are unscrubbed until
-  // then.
   // Latitude / longitude markers followed by a number. `lon` is the field
   // name @comapeo/schema observations actually use. Optional quote between
   // key and separator so JSON-serialized coordinates (`"lat":-12.3`) match.
   /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
+
+/**
+ * Bare rootkey-shaped token: exactly 22 base64/base64url chars whose last
+ * data char is [AQgw] (any valid 16-byte base64 ends there — its final 4
+ * bits are padding zeros), optional `==`, bounded by non-base64 chars.
+ * This exact-length + final-char anchor replaces the disabled "any
+ * 22+-char base64 run" rule that over-matched 32-hex trace_ids, PascalCase
+ * exception type names, and error_class metric tags. Matches still pass
+ * through isBareKeyShaped before redaction.
+ */
+const BARE_KEY_TOKEN_PATTERN =
+  /(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/_-]{21}[AQgw](?:==)?(?![A-Za-z0-9+/=_-])/g;
+
+/**
+ * Padded (`==`) matches are the exact rootkey wire shape — always redact.
+ * Unpadded ones must show a random-key character mix: both cases plus a
+ * digit/symbol (rejects PascalCase type names and ERR_* codes) and not
+ * pure hex (rejects truncated ids). Known limits: ~1% of random rootkeys
+ * are all-letters and slip an *unpadded* leak (the padded wire form still
+ * redacts), and a 22-char mixed-case identifier containing a digit that
+ * happens to end in [AQgw] is falsely redacted — an accepted trade-off,
+ * false negatives being worse here.
+ */
+function isBareKeyShaped(token: string): boolean {
+  if (token.endsWith("==")) return true;
+  if (/^[0-9a-f]+$/i.test(token)) return false;
+  return /[a-z]/.test(token) && /[A-Z]/.test(token) && /[0-9+/_-]/.test(token);
+}
 
 /** Object keys whose value is a raw coordinate — redacted regardless of type. */
 const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude)$/i;
@@ -71,18 +96,27 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
   "rootkey",
 ]);
 
-/** Forbidden tag *values* — lat/lng shapes. (The broad base64-22 rule is
- *  held back here too; see the SCRUB_PATTERNS note above.) */
+/** Forbidden tag *values* — lat/lng shapes. (Bare rootkey-shaped values
+ *  are checked separately via containsBareKeyToken.) */
 const FORBIDDEN_METRIC_VALUE_PATTERNS: RegExp[] = [
   /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/i,
 ];
+
+function containsBareKeyToken(value: string): boolean {
+  for (const match of value.matchAll(BARE_KEY_TOKEN_PATTERN)) {
+    if (isBareKeyShaped(match[0])) return true;
+  }
+  return false;
+}
 
 export function scrubString(input: string): string {
   let out = input;
   for (const pattern of SCRUB_PATTERNS) {
     out = out.replace(pattern, REDACTED);
   }
-  return out;
+  return out.replace(BARE_KEY_TOKEN_PATTERN, (match) =>
+    isBareKeyShaped(match) ? REDACTED : match,
+  );
 }
 
 /** Reduce an HTTP(S) URL to scheme + host, dropping path/query/fragment. */
@@ -261,6 +295,7 @@ export function isForbiddenMetric(
       for (const pattern of FORBIDDEN_METRIC_VALUE_PATTERNS) {
         if (pattern.test(tagValue)) return true;
       }
+      if (containsBareKeyToken(tagValue)) return true;
     }
   }
   return false;
