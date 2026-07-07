@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
+import FramedStream from "framed-stream";
 import {
   createComapeoServicesClient,
   closeComapeoServicesClient,
@@ -7,7 +9,8 @@ import {
 
 import { ComapeoRpc } from "./comapeo-rpc.js";
 import { SocketMessagePort } from "./message-port.js";
-import { connectSocket, socketPath } from "./test-helpers.mjs";
+import * as metrics from "./metrics.js";
+import { connectSocket, socketPath, waitFor } from "./test-helpers.mjs";
 
 // Core requests aren't exercised here, so a bare object stands in for the
 // manager — createComapeoCoreServer only forwards calls it never receives.
@@ -82,4 +85,34 @@ test("a client disconnecting does not stop the server serving the next client", 
   // (the listener registered before start()); a fresh client must still work.
   const second = await connectServicesClient(t, path);
   assert.equal(await second.mapServer.getBaseUrl(), "http://127.0.0.1:1001");
+});
+
+test("a malformed frame on the comapeo socket records comapeo.ipc.errors", async (t) => {
+  /** @type {Array<{ name: string, attributes: Record<string, unknown> }>} */
+  const counts = [];
+  metrics.init({
+    Sentry: /** @type {any} */ ({
+      metrics: {
+        count: (name, value, data) => counts.push({ name, ...data }),
+      },
+    }),
+    platform: "android",
+    deviceClass: "mid",
+    osMajor: "android.14",
+    applicationUsageData: false,
+  });
+  t.after(() => metrics.resetForTests());
+
+  const { path } = await startRpc(t, {
+    mapServer: { getBaseUrl: async () => "http://127.0.0.1:9999" },
+  });
+  const socket = await connectSocket(t, path);
+  const raw = new FramedStream(socket);
+  raw.write(Buffer.from("garbage not json"));
+
+  await waitFor(() => counts.some((c) => c.name === "comapeo.ipc.errors"), {
+    message: "ipc error metric recorded",
+  });
+  const err = counts.find((c) => c.name === "comapeo.ipc.errors");
+  assert.equal(err?.attributes.error_class, "SyntaxError");
 });

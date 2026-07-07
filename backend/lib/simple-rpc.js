@@ -1,5 +1,6 @@
 import { ServerHelper } from "./server-helper.js";
 import { SocketMessagePort } from "./message-port.js";
+import * as metrics from "./metrics.js";
 
 /**
  * @typedef {{ type: "stopping" } | { type: "error", phase: string, message: string, stack?: string }} TerminalFrame
@@ -48,6 +49,7 @@ export class SimpleRpcServer extends ServerHelper {
     messagePort.addEventListener("message", this.#handleMessageEvent);
     messagePort.addEventListener("messageerror", (event) => {
       console.error("Client sent invalid message", event.data);
+      metrics.ipcError(event.data?.name);
     });
     messagePort.addEventListener("close", () => {
       this.#clients.delete(messagePort);
@@ -138,6 +140,7 @@ export class SimpleRpcServer extends ServerHelper {
         client.postMessage(message);
       } catch (e) {
         console.error("broadcast: client postMessage threw", e);
+        metrics.ipcError(e instanceof Error ? e.name : undefined);
       }
     }
   }

@@ -126,13 +126,27 @@ const controlIpcServer = new SimpleRpcServer({
       Promise.resolve(p).catch((e) =>
         console.error(`shutdown: ${label} close failed`, e),
       );
-    await Promise.all([
-      settle("control", controlIpcServer.close()),
-      settle("fastify", fastify.close()),
-      ...(comapeoRpcServer ? [settle("rpc", comapeoRpcServer.close())] : []),
-    ]);
-    if (comapeoManager) await settle("manager", comapeoManager.close());
-    if (mapServer) await settle("map-server", mapServer.close());
+    // withSpan records each phase to `comapeo.shutdown.phase_duration_ms`
+    // even when traces are off, mirroring the boot phases.
+    await sentry.withSpan("shutdown.close-servers", () =>
+      Promise.all([
+        settle("control", controlIpcServer.close()),
+        settle("fastify", fastify.close()),
+        ...(comapeoRpcServer ? [settle("rpc", comapeoRpcServer.close())] : []),
+      ]),
+    );
+    const manager = comapeoManager;
+    if (manager) {
+      await sentry.withSpan("shutdown.close-manager", () =>
+        settle("manager", manager.close()),
+      );
+    }
+    const maps = mapServer;
+    if (maps) {
+      await sentry.withSpan("shutdown.close-map-server", () =>
+        settle("map-server", maps.close()),
+      );
+    }
   },
   /**
    * Android-only attribution channel: FGS-local failures (rootkey load,
