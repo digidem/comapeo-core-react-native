@@ -30,6 +30,15 @@ enum AppExitDecoder {
         let attributes: [String: Any]
     }
 
+    /// Whether a payload window may be reported given the exit-telemetry
+    /// reset anchor (stamped by `ComapeoPrefs` on a toggle off → on flip).
+    /// A 24h window that began before the anchor aggregates exits from the
+    /// opted-out period and can't be split, so it is dropped whole.
+    static func windowIsReportable(windowStart: Date, resetAtMs: Double?) -> Bool {
+        guard let resetAtMs else { return true }
+        return windowStart.timeIntervalSince1970 * 1000 >= resetAtMs
+    }
+
     static func metrics(from payload: AppExitPayloadData) -> [Metric] {
         var out: [Metric] = []
         for (cohort, counts) in [
@@ -159,7 +168,15 @@ final class AppExitMetricsCollector: NSObject, MXMetricManagerSubscriber {
     }
 
     func didReceive(_ payloads: [MXMetricPayload]) {
+        let resetAtMs = ComapeoPrefs.open().readExitTelemetryResetAtMs()
         for payload in payloads {
+            guard AppExitDecoder.windowIsReportable(
+                windowStart: payload.timeStampBegin,
+                resetAtMs: resetAtMs
+            ) else {
+                log("AppExitMetricsCollector: dropping window overlapping an opted-out period")
+                continue
+            }
             // Optional: iOS delivers payloads with no exit data on quiet days.
             guard let exits = payload.applicationExitMetrics else { continue }
             let foreground = exits.foregroundExitData

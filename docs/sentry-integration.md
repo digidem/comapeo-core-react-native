@@ -1137,6 +1137,17 @@ no issue lifecycle, so nothing sits unresolved in the Issues UI and
 nothing fires regression alerts. Attributes carry the slice axes; query
 in Sentry's Explore UI. Breadcrumb category: `comapeo.exit`.
 
+Toggle-cycle reset: when `diagnosticsEnabled` or `applicationUsageData`
+flips off → on, the setter resets the exit-telemetry anchors to "now" so
+exits recorded while the user had opted out are never reported after
+re-enable. Android resets the per-process high-water marks and duration
+anchors (`BackgroundAnchors.resetExitTelemetryAnchors`); iOS stamps
+`sentry.exitTelemetryResetAtMs` in `ComapeoPrefs` and the collector
+drops MetricKit windows that began before it (24h aggregates can't be
+split, so an overlapping window is dropped whole). Only the off → on
+transition resets; redundant sets and disables leave the anchors
+untouched.
+
 #### 7.5.1 Android — historical exit reasons (`ExitReasonsCollector.kt`)
 
 On each process start (API 30+ only; pre-30 sets a one-time scope tag

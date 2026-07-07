@@ -15,6 +15,11 @@ import androidx.core.content.edit
  * process wrote since this process loaded the file). The FGS process only
  * READS the `main` slots, opening the file at its own cold start, which is
  * fresh enough: the values it needs were written before it was spawned.
+ * Sole exception: [resetExitTelemetryAnchors] (main process, toggle
+ * re-enable) also writes the `fgs` slots — the FGS only writes its own file
+ * in a burst at its cold start, so a reset racing that narrow window (and
+ * being reverted by the FGS's stale cached map) is a tolerable best-effort
+ * gap.
  *
  * Constructor takes read/write lambdas to keep tests free of
  * `SharedPreferences` (unmocked on the JVM unit-test classpath). [open] is
@@ -50,6 +55,24 @@ internal class BackgroundAnchors(
 
     fun writeLastSeenMs(proc: String, wallMs: Long) {
         writeLong(proc, KEY_LAST_SEEN, wallMs)
+    }
+
+    /**
+     * Reset the exit-telemetry anchors to [nowMs] on a diagnostics /
+     * application-usage-data off → on flip (§9b.9): the high-water marks so
+     * exits recorded during the opted-out window are never reported, and the
+     * duration anchors so post-re-enable exits can't report durations
+     * spanning it. `backgrounded_at` stays — the fresh `foregrounded_at`
+     * already neutralises it for later exits (the user is in the foreground
+     * to flip the toggle), and equal stamps would misread as "in background
+     * since the reset".
+     */
+    fun resetExitTelemetryAnchors(nowMs: Long) {
+        for (proc in listOf(SentryTags.PROC_MAIN, SentryTags.PROC_FGS)) {
+            writeLastSeenMs(proc, nowMs)
+            writeProcessStartedAtMs(proc, nowMs)
+        }
+        writeForegroundedAtMs(SentryTags.PROC_MAIN, nowMs)
     }
 
     companion object {
