@@ -59,6 +59,7 @@
     "clean": "expo-module clean",
     "lint": "expo-module lint --cache .",
     "test": "expo-module test",
+    "test:scripts": "node --test 'scripts/lib/*.test.mjs'",
     "test:swift": "cd ios && swift test",
     "test:android": "./scripts/run-instrumented-tests.sh",
     "test:android:unit": "./scripts/run-instrumented-tests.sh --unit-only",

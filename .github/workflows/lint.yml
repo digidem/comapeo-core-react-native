@@ -42,3 +42,6 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      - name: Script tests
+        run: npm run test:scripts
