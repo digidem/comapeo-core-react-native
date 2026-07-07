@@ -405,9 +405,13 @@ public final class MediaFetcher: NSObject {
                            userInfo: [NSLocalizedDescriptionKey:
                                         "Header bytes not parseable"])
         }
-        // Split on CRLF; tolerate bare LF for safety.
-        let lines = raw.split(whereSeparator: { $0 == "\r" || $0 == "\n" })
-            .map { String($0) }
+        // Split on CRLF; tolerate bare LF for safety. Operate on unicode
+        // scalars, not Characters: Swift folds a "\r\n" pair into a single
+        // grapheme-cluster Character, so a Character-level split never sees
+        // the line breaks and returns the whole block as one line.
+        let lines = raw.unicodeScalars
+            .split(whereSeparator: { $0 == "\r" || $0 == "\n" })
+            .map { String(String.UnicodeScalarView($0)) }
             .filter { !$0.isEmpty }
         guard let statusLine = lines.first else {
             throw URLError(.badServerResponse,
