@@ -249,6 +249,8 @@ export function telemetryForwardingFailure() {
 
 /** @param {number} peers @returns {string} */
 export function peersBucket(peers) {
+  // A session can end without any peer ever connecting.
+  if (peers <= 0) return "0";
   if (peers <= 3) return "1-3";
   if (peers <= 10) return "4-10";
   return "10+";

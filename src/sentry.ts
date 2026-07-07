@@ -12,7 +12,7 @@
  * attaches the state listeners so they're ready to fire — they no-op
  * until [initSentry] runs and flips `sentryReady`.
  */
-import { Platform } from "react-native";
+import { AppState, Platform, type AppStateStatus } from "react-native";
 import * as Sentry from "@sentry/react-native";
 
 import {
@@ -512,4 +512,45 @@ function truncateForSentry(input: string): string {
   if (input.length <= MESSAGE_ERROR_MAX_LEN) return input;
   return `${input.slice(0, MESSAGE_ERROR_MAX_LEN)}… [truncated ${input.length - MESSAGE_ERROR_MAX_LEN} chars]`;
 }
+
+// ── App lifecycle breadcrumbs (usage tier) ──────────────────────
+//
+// Background/foreground transitions become `comapeo.app.background` /
+// `comapeo.app.foreground` breadcrumbs riding on subsequent events, so
+// an error can be read as "fired N seconds after backgrounding" from
+// the breadcrumb timestamps. When the app is used is session-shape
+// data, so the crumbs are gated on the `applicationUsageData` tier
+// (snapshot-at-launch, like every other capture this module makes).
+
+// Lazy so nothing reads the native module at import time (mirrors
+// sentry-metrics.ts — this can run before the native binding attaches).
+let usageDataAtLaunch: boolean | undefined;
+
+function usageDataEnabledAtLaunch(): boolean {
+  return (usageDataAtLaunch ??=
+    readSentryPreferencesAtLaunch().applicationUsageData);
+}
+
+let lastAppLifecycleCrumb: "background" | "foreground" | undefined;
+
+function handleAppStateChange(next: AppStateStatus): void {
+  if (!sentryReady || !usageDataEnabledAtLaunch()) return;
+  // iOS `inactive` (app switcher, notification shade) is transient —
+  // only a real background/foreground pair is worth a crumb.
+  const crumb =
+    next === "background"
+      ? ("background" as const)
+      : next === "active"
+        ? ("foreground" as const)
+        : undefined;
+  if (!crumb || crumb === lastAppLifecycleCrumb) return;
+  lastAppLifecycleCrumb = crumb;
+  Sentry.addBreadcrumb({
+    category: "comapeo.app.lifecycle",
+    level: "info",
+    message: `comapeo.app.${crumb}`,
+  });
+}
+
+AppState.addEventListener("change", handleAppStateChange);
 

@@ -31,6 +31,8 @@ describe("initSentry", () => {
   let setContextSpy;
   let addEventProcessorSpy;
   let setDiagnosticsEnabledNativeSpy;
+  let addBreadcrumbSpy;
+  let appStateHandler;
 
   beforeEach(() => {
     preferences = {
@@ -50,6 +52,8 @@ describe("initSentry", () => {
     setContextSpy = jest.fn();
     addEventProcessorSpy = jest.fn();
     setDiagnosticsEnabledNativeSpy = jest.fn(() => Promise.resolve());
+    addBreadcrumbSpy = jest.fn();
+    appStateHandler = undefined;
 
     jest.resetModules();
 
@@ -100,7 +104,7 @@ describe("initSentry", () => {
       getGlobalScope: () => globalScope,
       captureException: jest.fn(),
       captureMessage: jest.fn(),
-      addBreadcrumb: jest.fn(),
+      addBreadcrumb: addBreadcrumbSpy,
       setTag: jest.fn(),
       startSpan: jest.fn(),
       getActiveSpan: jest.fn(),
@@ -120,11 +124,18 @@ describe("initSentry", () => {
     }));
 
     // `react-native` is needed because `src/sentry.ts` reads
-    // `Platform.OS`. Without the mock, Jest tries to load the real
-    // RN bundle and trips on its ESM-style imports under the
-    // expo-module-scripts preset.
+    // `Platform.OS` and attaches an `AppState` listener at module
+    // load. Without the mock, Jest tries to load the real RN bundle
+    // and trips on its ESM-style imports under the expo-module-scripts
+    // preset. Capture the AppState handler so tests can drive
+    // background/foreground transitions.
     jest.doMock("react-native", () => ({
       Platform: { OS: "ios" },
+      AppState: {
+        addEventListener: (event, handler) => {
+          if (event === "change") appStateHandler = handler;
+        },
+      },
     }));
   });
 
@@ -202,7 +213,10 @@ describe("initSentry", () => {
   });
 
   test("autoInitializeNativeSdk omitted on Android so RNSentry inits the main-process SDK", () => {
-    jest.doMock("react-native", () => ({ Platform: { OS: "android" } }));
+    jest.doMock("react-native", () => ({
+      Platform: { OS: "android" },
+      AppState: { addEventListener: jest.fn() },
+    }));
     const { initSentry } = require("../sentry");
     initSentry();
     const opts = initSpy.mock.calls[0][0];
@@ -412,5 +426,46 @@ describe("initSentry", () => {
     // The failed opt-out must not be reported as done — the on-disk
     // value is still true, so the getter must agree.
     expect(getDiagnosticsEnabled()).toBe(true);
+  });
+
+  test("usage tier on: bg/fg AppState changes add comapeo.app.* breadcrumbs", () => {
+    preferences.applicationUsageData = true;
+    const { initSentry } = require("../sentry");
+    initSentry();
+    expect(typeof appStateHandler).toBe("function");
+
+    appStateHandler("background");
+    appStateHandler("active");
+    expect(addBreadcrumbSpy.mock.calls.map(([c]) => c.message)).toEqual([
+      "comapeo.app.background",
+      "comapeo.app.foreground",
+    ]);
+    expect(addBreadcrumbSpy.mock.calls[0][0].category).toBe(
+      "comapeo.app.lifecycle",
+    );
+
+    // Repeated same-direction events (Android can fire "active" more
+    // than once) and iOS transient "inactive" add nothing.
+    appStateHandler("active");
+    appStateHandler("inactive");
+    expect(addBreadcrumbSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test("usage tier off: AppState changes add no breadcrumbs", () => {
+    preferences.applicationUsageData = false;
+    const { initSentry } = require("../sentry");
+    initSentry();
+    appStateHandler("background");
+    appStateHandler("active");
+    expect(addBreadcrumbSpy).not.toHaveBeenCalled();
+  });
+
+  test("no breadcrumbs when diagnostics is off (Sentry never initialised)", () => {
+    preferences.diagnosticsEnabled = false;
+    preferences.applicationUsageData = true;
+    const { initSentry } = require("../sentry");
+    initSentry();
+    appStateHandler("background");
+    expect(addBreadcrumbSpy).not.toHaveBeenCalled();
   });
 });

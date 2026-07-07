@@ -1393,9 +1393,9 @@ The diagnostic tier carries aggregate, low-cardinality operational signal;
 | RPC `method` attribute on the same metrics (+ `rpc.client.send_ms{method}`) | applicationUsageData | The set and frequency of `@comapeo/core` methods a user invokes reveals what they do (create vs view vs sync) — usage behaviour, not perf. |
 | Boot / shutdown phase timings + outcome | Diagnostics | Startup/teardown performance; no user-specific content. *Shutdown emitter not yet wired ([#190](https://github.com/digidem/comapeo-core-react-native/issues/190)).* |
 | Backend health gauges (memory, heap, uptime, event-loop delay) | Diagnostics | Process resource health; independent of user activity. |
-| Sync session duration + outcome | Diagnostics | Sync performance/reliability is core-function health; that a sync ran is inherent to a P2P app. *Not yet wired ([#80](https://github.com/digidem/comapeo-core-react-native/issues/80)).* |
-| Sync `peers_bucket` | applicationUsageData | How many devices a user syncs with is a proxy for their collaboration/social-graph size. *Not yet wired ([#80](https://github.com/digidem/comapeo-core-react-native/issues/80)).* |
-| Sync `bytes_bucket` | applicationUsageData | Volume of data exchanged is a proxy for how much a user collects/shares. *Not yet wired ([#80](https://github.com/digidem/comapeo-core-react-native/issues/80)).* |
+| Sync session duration + outcome | Diagnostics | Sync performance/reliability is core-function health; that a sync ran is inherent to a P2P app. |
+| Sync `peers_bucket` | applicationUsageData | How many devices a user syncs with is a proxy for their collaboration/social-graph size. Buckets: `0` / `1-3` / `4-10` / `10+`. |
+| Sync `bytes_bucket` | applicationUsageData | Volume of data exchanged is a proxy for how much a user collects/shares. Currently always `unknown`: `@comapeo/core`'s sync state exposes remaining block counts, not byte counters. |
 | `state.transitions` | Diagnostics | App lifecycle states; no user content. |
 | `storage.size_bucket` | Diagnostics | Coarse 4-bucket dataset size — kept on so crashes/OOMs can be correlated with data volume. |
 | App-exit coarse buckets (`uptime_bucket`, `bg_duration_bucket`, OEM-kill flags) | Diagnostics | Aggregate stability signal ("which OEMs kill us"); low-resolution. |

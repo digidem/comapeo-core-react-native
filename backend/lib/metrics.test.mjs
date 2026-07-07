@@ -152,6 +152,7 @@ test("before_metric_send drops forbidden tag VALUES (lat/lng shape)", () => {
 });
 
 test("bucketing helpers match the spec thresholds", () => {
+  assert.equal(metrics.peersBucket(0), "0");
   assert.equal(metrics.peersBucket(1), "1-3");
   assert.equal(metrics.peersBucket(4), "4-10");
   assert.equal(metrics.peersBucket(50), "10+");
