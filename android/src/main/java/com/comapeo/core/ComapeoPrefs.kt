@@ -45,8 +45,15 @@ internal class ComapeoPrefs(
     fun readDiagnosticsEnabled(): Boolean =
         store.getBoolean(KEY_DIAGNOSTICS_ENABLED) ?: defaults.diagnosticsEnabled
 
-    fun writeDiagnosticsEnabled(value: Boolean) {
+    /**
+     * Write the toggle. Returns `true` when this flip re-enabled it
+     * (off → on) — the caller must then reset the exit-telemetry anchors so
+     * exit records from the opted-out window are never reported (§9b.9).
+     */
+    fun writeDiagnosticsEnabled(value: Boolean): Boolean {
+        val reEnabled = value && !readDiagnosticsEnabled()
         store.putBoolean(KEY_DIAGNOSTICS_ENABLED, value)
+        return reEnabled
     }
 
     fun readApplicationUsageData(): Boolean =
@@ -61,8 +68,12 @@ internal class ComapeoPrefs(
     fun readDebugStored(): Boolean =
         store.getBoolean(KEY_DEBUG) ?: defaults.debug
 
-    fun writeApplicationUsageData(value: Boolean) {
+    /** Write the toggle; returns `true` on an off → on re-enable, like
+     *  [writeDiagnosticsEnabled]. */
+    fun writeApplicationUsageData(value: Boolean): Boolean {
+        val reEnabled = value && !readApplicationUsageData()
         store.putBoolean(KEY_APPLICATION_USAGE_DATA, value)
+        return reEnabled
     }
 
     /**

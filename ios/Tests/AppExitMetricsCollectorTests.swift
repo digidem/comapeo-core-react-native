@@ -158,6 +158,38 @@ final class AppExitMetricsCollectorTests: XCTestCase {
         XCTAssertEqual(metric.attributes[SentryTags.exitIntentional] as? Bool, false)
     }
 
+    // The reset anchor is stamped by ComapeoPrefs on a toggle off → on
+    // flip; a 24h window that began before it aggregates exits from the
+    // opted-out period and must be dropped whole.
+
+    func testWindowBeginningBeforeResetAnchorIsNotReportable() {
+        let anchorMs = windowStart.timeIntervalSince1970 * 1000 + 1
+        XCTAssertFalse(
+            AppExitDecoder.windowIsReportable(windowStart: windowStart, resetAtMs: anchorMs),
+            "window overlapping the opted-out period must be dropped"
+        )
+    }
+
+    func testWindowAtOrAfterResetAnchorIsReportable() {
+        let startMs = windowStart.timeIntervalSince1970 * 1000
+        XCTAssertTrue(
+            AppExitDecoder.windowIsReportable(windowStart: windowStart, resetAtMs: startMs)
+        )
+        XCTAssertTrue(
+            AppExitDecoder.windowIsReportable(
+                windowStart: windowStart,
+                resetAtMs: startMs - 60_000
+            ),
+            "window beginning after the re-enable is reported"
+        )
+    }
+
+    func testNoResetAnchorReportsEveryWindow() {
+        XCTAssertTrue(
+            AppExitDecoder.windowIsReportable(windowStart: windowStart, resetAtMs: nil)
+        )
+    }
+
     func testMissingMetadataOmitsVersionAttributes() {
         let metrics = AppExitDecoder.metrics(
             from: payload(

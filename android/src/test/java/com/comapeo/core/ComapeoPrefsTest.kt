@@ -95,6 +95,28 @@ class ComapeoPrefsTest {
     }
 
     @Test
+    fun writeDiagnosticsEnabledReportsOnlyOffToOnTransitions() {
+        // The re-enable signal drives the exit-telemetry anchor reset: a
+        // false positive would wipe legitimately pending exit records, a
+        // false negative would leak opted-out-window records to Sentry.
+        val p = prefs(FakeStore(), diagnosticsDefault = true)
+        assertFalse("on → on (default on) is not a re-enable", p.writeDiagnosticsEnabled(true))
+        assertFalse("on → off is not a re-enable", p.writeDiagnosticsEnabled(false))
+        assertTrue("off → on is a re-enable", p.writeDiagnosticsEnabled(true))
+        assertFalse("redundant on → on is not a re-enable", p.writeDiagnosticsEnabled(true))
+    }
+
+    @Test
+    fun writeApplicationUsageDataReportsOnlyOffToOnTransitions() {
+        // Usage data defaults off, so the very first enable is a re-enable.
+        val p = prefs(FakeStore(), usageDefault = false)
+        assertTrue("default-off → on is a re-enable", p.writeApplicationUsageData(true))
+        assertFalse("redundant on → on is not a re-enable", p.writeApplicationUsageData(true))
+        assertFalse("on → off is not a re-enable", p.writeApplicationUsageData(false))
+        assertTrue("off → on is a re-enable", p.writeApplicationUsageData(true))
+    }
+
+    @Test
     fun debugAutoOffBoundaries() {
         // fresh enable true; just within window true; just past window false + cleared.
         val store = FakeStore()

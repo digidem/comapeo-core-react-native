@@ -87,12 +87,30 @@ final class ComapeoPrefs {
         return true
     }
 
+    /// Write the toggle. An off → on flip stamps the exit-telemetry reset
+    /// anchor so MetricKit exit windows covering the opted-out period are
+    /// never reported after re-enable (§9b.9).
     func writeDiagnosticsEnabled(_ value: Bool) {
+        if value && !readDiagnosticsEnabled() {
+            store.setDouble(Key.exitTelemetryResetAtMs, now())
+        }
         store.setBool(Key.diagnosticsEnabled, value)
     }
 
+    /// Write the toggle; stamps the exit-telemetry reset anchor on an
+    /// off → on flip, like `writeDiagnosticsEnabled`.
     func writeApplicationUsageData(_ value: Bool) {
+        if value && !readApplicationUsageData() {
+            store.setDouble(Key.exitTelemetryResetAtMs, now())
+        }
         store.setBool(Key.applicationUsageData, value)
+    }
+
+    /// Wall-clock ms of the most recent toggle re-enable; `nil` when no
+    /// toggle has ever cycled off → on. `AppExitMetricsCollector` drops
+    /// MetricKit payloads whose window began before this.
+    func readExitTelemetryResetAtMs() -> Double? {
+        store.getDouble(Key.exitTelemetryResetAtMs)
     }
 
     /// The permanent per-install root user ID (a short `XXXX-XXXX-XXXX`
@@ -136,6 +154,7 @@ final class ComapeoPrefs {
         static let debug = "sentry.debug"
         static let debugEnabledAtMs = "sentry.debugEnabledAtMs"
         static let rootUserId = "sentry.rootUserId"
+        static let exitTelemetryResetAtMs = "sentry.exitTelemetryResetAtMs"
     }
 
     /// 72h in milliseconds — debug mode auto-disables this long after enable.
