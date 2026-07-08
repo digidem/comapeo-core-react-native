@@ -52,7 +52,7 @@ export function observeSyncSessions(manager) {
     const project = await getProject(projectPublicId);
     if (!observed.has(project.$sync)) {
       observed.add(project.$sync);
-      watchSyncApi(/** @type {SyncApiLike} */ (project.$sync));
+      watchSyncApi(project.$sync);
     }
     return project;
   };
@@ -113,7 +113,12 @@ export function watchSyncApi(syncApi) {
         peersBucket,
         bytesBucket: BYTES_BUCKET_UNKNOWN,
       });
-      metrics.syncSession(outcome, durationMs, peersBucket, BYTES_BUCKET_UNKNOWN);
+      metrics.syncSession(
+        outcome,
+        durationMs,
+        peersBucket,
+        BYTES_BUCKET_UNKNOWN,
+      );
       session = null;
     }
   };
