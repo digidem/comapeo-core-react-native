@@ -5,6 +5,7 @@ import FramedStream from "framed-stream";
 
 import { SimpleRpcServer } from "./simple-rpc.js";
 import { SocketMessagePort } from "./message-port.js";
+import * as metrics from "./metrics.js";
 import { connectSocket, socketPath, waitFor } from "./test-helpers.mjs";
 
 /**
@@ -157,4 +158,32 @@ test("a malformed frame does not crash the server", async (t) => {
 
   await waitFor(() => received.length === 1, { message: "survived bad frame" });
   assert.deepEqual(received[0], { type: "init", ok: true });
+});
+
+test("a malformed frame on the control socket records comapeo.ipc.errors", async (t) => {
+  /** @type {Array<{ name: string, attributes: Record<string, unknown> }>} */
+  const counts = [];
+  metrics.init({
+    Sentry: /** @type {any} */ ({
+      metrics: {
+        count: (name, value, data) => counts.push({ name, ...data }),
+      },
+    }),
+    platform: "android",
+    deviceClass: "mid",
+    osMajor: "android.14",
+    applicationUsageData: false,
+  });
+  t.after(() => metrics.resetForTests());
+
+  const { path } = await startServer(t, {});
+  const socket = await connectSocket(t, path);
+  const raw = new FramedStream(socket);
+  raw.write(Buffer.from("garbage not json"));
+
+  await waitFor(() => counts.some((c) => c.name === "comapeo.ipc.errors"), {
+    message: "ipc error metric recorded",
+  });
+  const err = counts.find((c) => c.name === "comapeo.ipc.errors");
+  assert.equal(err?.attributes.error_class, "SyntaxError");
 });

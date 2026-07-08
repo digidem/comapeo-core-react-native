@@ -85,6 +85,44 @@ final class ComapeoPrefsTests: XCTestCase {
         XCTAssertTrue(p.readApplicationUsageData())
     }
 
+    func testDiagnosticsReEnableStampsExitTelemetryResetAnchor() {
+        // The anchor drives the MetricKit exit-window filter: a missed
+        // stamp would report exit windows from the opted-out period.
+        let store = FakeStore()
+        let clock = Clock()
+        let p = prefs(store: store, clock: clock)
+
+        clock.nowMs = 1_000
+        p.writeDiagnosticsEnabled(true) // on → on (default on): no stamp
+        XCTAssertNil(p.readExitTelemetryResetAtMs(), "redundant enable must not stamp")
+
+        p.writeDiagnosticsEnabled(false)
+        XCTAssertNil(p.readExitTelemetryResetAtMs(), "disable must not stamp")
+
+        clock.nowMs = 2_000
+        p.writeDiagnosticsEnabled(true) // off → on: stamp
+        XCTAssertEqual(p.readExitTelemetryResetAtMs(), 2_000)
+
+        clock.nowMs = 3_000
+        p.writeDiagnosticsEnabled(true) // on → on: keep the earlier stamp
+        XCTAssertEqual(p.readExitTelemetryResetAtMs(), 2_000)
+    }
+
+    func testUsageDataReEnableStampsExitTelemetryResetAnchor() {
+        let store = FakeStore()
+        let clock = Clock()
+        let p = prefs(store: store, clock: clock)
+
+        clock.nowMs = 500
+        p.writeApplicationUsageData(true) // default-off → on: stamp
+        XCTAssertEqual(p.readExitTelemetryResetAtMs(), 500)
+
+        clock.nowMs = 600
+        p.writeApplicationUsageData(false)
+        p.writeApplicationUsageData(true) // off → on again: fresh stamp
+        XCTAssertEqual(p.readExitTelemetryResetAtMs(), 600)
+    }
+
     func testDebugAutoOffBoundaries() {
         // fresh enable true; just within window true; just past window false + cleared.
         let store = FakeStore()
