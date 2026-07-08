@@ -90,6 +90,16 @@ android {
     lintOptions {
         abortOnError false
     }
+    testOptions {
+        unitTests {
+            // android.util.Log and other android.jar stubs throw by default in
+            // JVM unit tests. Return no-op defaults so code paths that log on a
+            // non-exceptional branch (e.g. countMetric's forbidden-attribute
+            // drop) are testable. Real test deps (org.json, sentry-android)
+            // provide actual classes and still take precedence.
+            returnDefaultValues = true
+        }
+    }
     sourceSets {
         main {
             // `libnode/bin/` holds the prebuilt nodejs-mobile libnode.so per ABI.
