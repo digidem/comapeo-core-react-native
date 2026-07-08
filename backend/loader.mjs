@@ -10,7 +10,7 @@ import * as sentry from "./lib/sentry.js";
 // process spawn through Sentry.init.
 const loaderStartDate = new Date();
 
-const { values } = parseArgs({
+const { values, positionals } = parseArgs({
   options: sentry.argSpec,
   allowPositionals: true,
 });
@@ -33,7 +33,9 @@ if (values.sentryDsn) {
   // would have nothing to hook and is pure dead weight.
   importSentryNodeStartDate = new Date();
   const { initSentry } = await import("./lib/sentry-init.js");
-  initSentry(values);
+  // 3rd positional is privateStorageDir (see index.js) — used for
+  // capture-time free-disk reads at the usage tier.
+  initSentry(values, positionals[2]);
   importSentryNodeEndDate = new Date();
 }
 

@@ -276,3 +276,42 @@ test("initialScope carries the native-derived user.id on outgoing events", async
 
   await Sentry.close();
 });
+
+test("usage tier ON: events carry a fresh node_resources context", async () => {
+  initSentry({ ...baseArgv, applicationUsageData: true }, process.cwd());
+
+  const captured = [];
+  setSink((frame) => captured.push(frame));
+
+  Sentry.captureMessage("node resources smoke");
+  await flush(2000);
+
+  const eventFrame = captured.find((f) => f.type === "sentry-event");
+  assert.ok(eventFrame, "no event frame reached the sink");
+  const resources = eventFrame.payload.contexts?.node_resources;
+  assert.ok(resources, "usage tier must attach node_resources");
+  assert.ok(resources.free_memory > 0, "free_memory must be a live read");
+  assert.ok(resources.storage_size > 0, "storage_size must come from statfs");
+
+  await Sentry.close();
+});
+
+test("usage tier OFF: events carry no node_resources context", async () => {
+  initSentry({ ...baseArgv, applicationUsageData: false }, process.cwd());
+
+  const captured = [];
+  setSink((frame) => captured.push(frame));
+
+  Sentry.captureMessage("node resources gated smoke");
+  await flush(2000);
+
+  const eventFrame = captured.find((f) => f.type === "sentry-event");
+  assert.ok(eventFrame, "no event frame reached the sink");
+  assert.equal(
+    eventFrame.payload.contexts?.node_resources,
+    undefined,
+    "diagnostic tier must not attach node_resources",
+  );
+
+  await Sentry.close();
+});
