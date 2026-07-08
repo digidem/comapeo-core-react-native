@@ -140,10 +140,9 @@ const controlIpcServer = new SimpleRpcServer({
         settle("manager", comapeoManager.close()),
       );
     }
-    const maps = mapServer;
-    if (maps) {
+    if (mapServer) {
       await sentry.withSpan("shutdown.close-map-server", () =>
-        settle("map-server", maps.close()),
+        settle("map-server", mapServer.close()),
       );
     }
   },
