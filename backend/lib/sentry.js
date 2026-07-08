@@ -84,10 +84,15 @@ const forwardingTransport = () => ({
     if (!envelopeToFrame) return {};
     const frame = envelopeToFrame(envelope);
     if (sink) {
-      sink(frame);
+      try {
+        sink(frame);
+      } catch {
+        metrics.telemetryForwardingFailure();
+      }
     } else {
       if (preListenQueue.length >= PRE_LISTEN_QUEUE_MAX) {
         preListenQueue.shift();
+        metrics.telemetryForwardingFailure();
       }
       preListenQueue.push(frame);
     }
@@ -265,12 +270,21 @@ export async function withBootTrace(args, loadIndex) {
  * @returns {Promise<T>}
  */
 export async function withSpan(op, fn) {
-  // Always record the boot-phase duration as a metric, even
+  // Always record the phase duration as a metric, even
   // when traces are off (`debug=false`). The span only materialises
   // under `debug` via `tracesSampleRate`, but the metric is always-on.
-  const phase = op.startsWith("boot.") ? op.slice("boot.".length) : op;
   const start = performance.now();
-  const recordPhase = () => metrics.bootPhase(phase, performance.now() - start);
+  const recordPhase = () => {
+    const ms = performance.now() - start;
+    if (op.startsWith("shutdown.")) {
+      metrics.shutdownPhase(op.slice("shutdown.".length), ms);
+    } else {
+      metrics.bootPhase(
+        op.startsWith("boot.") ? op.slice("boot.".length) : op,
+        ms,
+      );
+    }
+  };
   if (!Sentry) {
     try {
       return await fn();
@@ -335,6 +349,7 @@ export function setSink(realSink) {
       realSink(frame);
     } catch {
       // Sink threw — drop the rest rather than retrying forever.
+      metrics.telemetryForwardingFailure();
       break;
     }
   }

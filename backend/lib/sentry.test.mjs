@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import * as Sentry from "@sentry/node-core";
 
 import { initSentry } from "./sentry-init.js";
-import { rpcHook, setSink, flush } from "./sentry.js";
+import { rpcHook, setSink, flush, withSpan } from "./sentry.js";
 import * as metrics from "./metrics.js";
 
 /**
@@ -38,16 +38,18 @@ const baseArgv = {
   platformTag: "android",
 };
 
-/** Fake metrics SDK that records distribution calls instead of emitting. */
+/** Fake metrics SDK that records distribution/count calls instead of emitting. */
 function recordingMetricsSdk() {
   const distributions = [];
+  const counts = [];
   return {
     distributions,
+    counts,
     sdk: {
       metrics: {
         distribution: (name, value, data) =>
           distributions.push({ name, value, ...data }),
-        count: () => {},
+        count: (name, value, data) => counts.push({ name, value, ...data }),
         gauge: () => {},
       },
     },
@@ -191,6 +193,65 @@ test("debug OFF: a rejecting RPC records the duration metric but captures no iss
       (d) => d.name === "comapeo.rpc.server.duration_ms",
     ),
     "the error path must still record the duration metric",
+  );
+
+  await Sentry.close();
+});
+
+test("withSpan on a shutdown op records the shutdown phase metric", async () => {
+  initSentry({ ...baseArgv, debug: false });
+  const rec = recordingMetricsSdk();
+  metrics.init({
+    Sentry: rec.sdk,
+    platform: "android",
+    deviceClass: "mid",
+    osMajor: "android.14",
+    applicationUsageData: true,
+  });
+
+  await withSpan("shutdown.close-servers", async () => {});
+  await withSpan("boot.manager-init", async () => {});
+
+  const shutdown = rec.distributions.find(
+    (d) => d.name === "comapeo.shutdown.phase_duration_ms",
+  );
+  assert.ok(shutdown, "shutdown phase metric not recorded via withSpan");
+  assert.equal(shutdown.attributes.phase, "close-servers");
+  assert.equal(shutdown.unit, "millisecond");
+  assert.ok(shutdown.value >= 0);
+
+  // Boot ops still route to the boot metric with the prefix stripped.
+  const boot = rec.distributions.find(
+    (d) => d.name === "comapeo.boot.phase_duration_ms",
+  );
+  assert.ok(boot, "boot phase metric not recorded via withSpan");
+  assert.equal(boot.attributes.phase, "manager-init");
+
+  await Sentry.close();
+});
+
+test("a throwing envelope sink records the telemetry forwarding-failure metric", async () => {
+  initSentry({ ...baseArgv, debug: false });
+  const rec = recordingMetricsSdk();
+  metrics.init({
+    Sentry: rec.sdk,
+    platform: "android",
+    deviceClass: "mid",
+    osMajor: "android.14",
+    applicationUsageData: true,
+  });
+
+  setSink(() => {
+    throw new Error("sink boom");
+  });
+
+  // Real call path: capture → forwardingTransport.send → sink throws.
+  Sentry.captureMessage("forwarding failure smoke");
+  await flush(2000);
+
+  assert.ok(
+    rec.counts.some((c) => c.name === "comapeo.telemetry.forwarding_failures"),
+    "sink throw must record comapeo.telemetry.forwarding_failures",
   );
 
   await Sentry.close();
