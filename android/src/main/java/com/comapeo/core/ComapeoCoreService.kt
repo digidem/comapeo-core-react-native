@@ -59,6 +59,7 @@ class ComapeoCoreService : Service() {
         const val NOTIFICATION_ID = 1
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
         const val CONTROL_SOCKET_FILENAME = "control.sock"
+        const val MEDIA_SOCKET_FILENAME = "media.sock"
 
         /**
          * Grace between a terminal ERROR and the FGS killing its own process

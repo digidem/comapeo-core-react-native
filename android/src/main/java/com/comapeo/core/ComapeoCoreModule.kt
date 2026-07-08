@@ -1,11 +1,14 @@
 package com.comapeo.core
 
 import android.Manifest
+import com.comapeo.core.media.MediaContentProvider
+import com.comapeo.core.media.MediaHttpClient
 import expo.modules.interfaces.permissions.Permissions
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
+import java.io.IOException
 
 private typealias JsState = NodeJSService.State
 
@@ -293,6 +296,51 @@ class ComapeoCoreModule : Module() {
                 promise,
                 Manifest.permission.POST_NOTIFICATIONS,
             )
+        }
+
+        // The authority of MediaContentProvider for the consuming app
+        // (depends on its applicationId). Read once by src/mediaUrl.ts so
+        // the relative blob/icon paths returned by the backend can be
+        // composed into `content://<authority>/...` URIs for <Image>.
+        Function("getMediaContentAuthority") {
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "getMediaContentAuthority called before native context attached",
+                )
+            MediaContentProvider.authorityFor(ctx)
+        }
+
+        // Share-sheet URL for a blob/icon: the same streaming `content://`
+        // URI the app renders with — NOT a file snapshot. Cache files were
+        // observed being evicted on low-storage devices before the share
+        // completed; the provider-backed URI has no bytes on disk to
+        // evict, and its socket is served by the :ComapeoCore foreground
+        // service, which outlives app switches. The caller's share Intent
+        // must carry FLAG_GRANT_READ_URI_PERMISSION (+ setClipData) so the
+        // chosen app can read it. Validates the path with a HEAD first so
+        // a missing blob rejects here (like iOS) instead of failing
+        // opaquely inside the receiving app — and the HEAD warms the
+        // provider's metadata cache for the share sheet's immediate
+        // getType/query calls.
+        AsyncFunction("getShareableMediaUrl") { relativePath: String ->
+            require(relativePath.startsWith("/")) {
+                "Expected a relative media path beginning with '/', got: $relativePath"
+            }
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "getShareableMediaUrl called before native context attached",
+                )
+            val socketFile = File(ctx.filesDir, ComapeoCoreService.MEDIA_SOCKET_FILENAME)
+            MediaHttpClient.head(socketFile, relativePath).use { response ->
+                if (response.status !in 200..299) {
+                    throw IOException("HTTP ${response.status} for $relativePath")
+                }
+                MediaContentProvider.cacheContentType(
+                    relativePath,
+                    response.headers["content-type"],
+                )
+            }
+            "content://${MediaContentProvider.authorityFor(ctx)}$relativePath"
         }
     }
 }

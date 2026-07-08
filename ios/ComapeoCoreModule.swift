@@ -163,6 +163,47 @@ public class ComapeoCoreModule: Module {
         AsyncFunction("requestNotificationPermissionsAsync") { () -> [String: Any] in
             ComapeoCoreModule.grantedPermissionResponse
         }
+
+        // Mirror of the Android Function so `src/mediaUrl.ts` can call the
+        // same name on both platforms. Returns "" on iOS — there is no
+        // per-app authority; the scheme is a fixed `comapeo://media/...`
+        // handled by MediaURLProtocol / ComapeoMediaImageLoader.
+        Function("getMediaContentAuthority") { () -> String in
+            return ""
+        }
+
+        // Snapshot a blob/icon to a file and return a `file://` URL for the
+        // share sheet. `comapeo://` URLs can't cross the process boundary
+        // (the URLProtocol only exists in this process), so
+        // UIActivityViewController targets need real file bytes. Unlike
+        // Android (which shares a streaming content:// URI), a copy is
+        // unavoidable on iOS.
+        //
+        // Application Support, NOT Caches: cache eviction on low-storage
+        // devices has been observed deleting snapshots before the share
+        // completed. App Support isn't system-purged; growth is bounded by
+        // MediaFetcher's own 24h pruning, and the directory is excluded
+        // from iCloud backup (transient share copies, not user data).
+        // Expo runs AsyncFunctions off the main thread, so blocking socket
+        // + file IO is fine here.
+        AsyncFunction("getShareableMediaUrl") { (relativePath: String) -> String in
+            guard relativePath.hasPrefix("/") else {
+                throw MediaShareException(relativePath)
+            }
+            guard let url = URL(string: "comapeo://media\(relativePath)") else {
+                throw MediaShareException(relativePath)
+            }
+            var dir = FileManager.default.urls(
+                for: .applicationSupportDirectory, in: .userDomainMask
+            )[0].appendingPathComponent("comapeo-shared-media", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true)
+            var resourceValues = URLResourceValues()
+            resourceValues.isExcludedFromBackup = true
+            try? dir.setResourceValues(resourceValues)
+            let fileUrl = try MediaFetcher.fetchToFile(url: url, directory: dir)
+            return fileUrl.absoluteString
+        }
     }
 
     // Testable seam: the constant value both notification AsyncFunctions
@@ -173,4 +214,10 @@ public class ComapeoCoreModule: Module {
         "canAskAgain": true,
         "expires": "never",
     ]
+}
+
+private final class MediaShareException: GenericException<String>, @unchecked Sendable {
+    override var reason: String {
+        "Expected a relative media path beginning with '/', got: \(param)"
+    }
 }

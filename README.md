@@ -137,6 +137,60 @@ const baseUrl = await comapeoServicesClient.mapServer.getBaseUrl();
 // → http://127.0.0.1:<port>
 ```
 
+### Media URLs — blobs and icons
+
+The backend serves blobs and icons over a Unix domain socket inside the app
+sandbox (never a TCP port), so no other app on the device can read them.
+Because of that, `$blobs.getUrl()` / `$icons.getIconUrl()` return **relative**
+paths (`/blobs/...`) — CoMapeo Core has no knowledge of URLs or how media is
+served. Compose them with the platform-native base URL from this module:
+
+```ts
+import { getMediaBaseUrl, toMediaUrl } from "@comapeo/core-react-native";
+
+const relative = await project.$blobs.getUrl(blobId); // "/blobs/…"
+const url = toMediaUrl(relative); // getMediaBaseUrl() + relative
+// Android → content://<applicationId>.comapeo.media/blobs/…
+// iOS     → comapeo://media/blobs/…
+
+<Image source={{ uri: url }} />;
+```
+
+`getMediaBaseUrl()` is stable for the lifetime of the process — pass it (or a
+function returning it) to `@comapeo/core-react` so it can append full URLs to
+data records in the frontend.
+
+To hand media to another app via the share sheet, use
+`getShareableMediaUrl()` (it also verifies the media exists, rejecting
+early instead of failing inside the receiving app):
+
+```ts
+import { getShareableMediaUrl } from "@comapeo/core-react-native";
+
+const shareUrl = await getShareableMediaUrl(url); // or the relative path
+// Android → content://<applicationId>.comapeo.media/blobs/… (zero-copy stream)
+// iOS     → file:///…/comapeo-shared-media/<digest>-<name>.jpg (snapshot)
+```
+
+**Android** returns the same streaming `content://` URI the app renders with:
+no bytes are copied to disk (nothing for low-storage devices to evict), and
+the stream is served by the `:ComapeoCore` foreground service, which keeps
+running across app switches. The provider answers receivers'
+`getType()`/`OpenableColumns` lookups from the served HTTP headers. Your
+share `Intent` must grant the receiver read access —
+`FLAG_GRANT_READ_URI_PERMISSION` with the URI in `setClipData`, which
+libraries like `react-native-share` handle for you (`expo-sharing` does
+**not** support `content://` URIs). Two caveats: a receiver that defers
+reading until after the backend stops will fail, as will the rare receiver
+that requires a seekable file descriptor (some video players).
+
+**iOS** has no equivalent of a streaming content provider — share extensions
+run out-of-process, where `comapeo://` URLs mean nothing — so the bytes are
+snapshotted to a `file://` URL (in Application Support, not the purgeable
+cache; pruned after 24h) that works with `expo-sharing` /
+`UIActivityViewController`. Request a fresh URL at share time rather than
+persisting one.
+
 ### Notification permission (Android 13+)
 
 The foreground service posts an ongoing notification. On Android 13+ (API 33)

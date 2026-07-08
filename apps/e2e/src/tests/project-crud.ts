@@ -22,6 +22,7 @@ import {
 	removeUndefinedFields,
 	round,
 	sortById,
+	trackOpenProjects,
 	type TestContext,
 } from './utils'
 
@@ -42,23 +43,7 @@ export function test({
 }: TestContext) {
 	const CREATE_COUNT = 100
 
-	const openProjects = new Set<ComapeoProjectClientApi>()
-
-	async function openProject(projectId: string): Promise<ComapeoProjectClientApi> {
-		const project = await comapeo.getProject(projectId)
-		openProjects.add(project)
-		return project
-	}
-
-	afterEach(async () => {
-		const projects = [...openProjects]
-		openProjects.clear()
-		// Close in afterEach to avoid leaking listeners across tests (otherwise
-		// EventEmitter MaxListenersExceeded fires and later tests slow down).
-		await Promise.all(
-			projects.map((p) => p.close().catch(() => undefined)),
-		)
-	})
+	const openProject = trackOpenProjects(afterEach)
 
 	const FIXTURES: Array<
 		| FieldValue

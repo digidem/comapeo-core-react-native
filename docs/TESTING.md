@@ -123,7 +123,7 @@ tests build and run through `apps/integration/android`'s Gradle. It doubles as a
 runnable dev app (`expo run:*`, `expo start --dev-client`).
 
 **`apps/e2e`** is a thin harness: its `TestRunner.tsx` runs the suites under
-`apps/e2e/src/tests/` (`basic`, `project-crud`, `map-server`) in-process against
+`apps/e2e/src/tests/` (`basic`, `project-crud`, `map-server`, `media`) in-process against
 the real backend and surfaces the result through testIDs (`all-tests-done`,
 `all-tests-passed`). The Maestro flow ([§7](#7-the-browserstack-e2e-end-to-end))
 just taps **Run tests** and asserts on those testIDs — all the real assertions

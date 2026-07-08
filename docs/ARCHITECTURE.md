@@ -18,8 +18,10 @@ to it, and the alternatives we considered along the way. Companion docs:
 - iOS runs everything in one process. Android runs the embedded Node.js
   in a separate `:ComapeoCore` process behind a foreground service so it
   survives backgrounding.
-- The React Native layer talks to Node over **two Unix-domain sockets**:
-  `comapeo.sock` (RPC) and `control.sock` (lifecycle + handshake).
+- The React Native layer talks to Node over **three Unix-domain sockets**:
+  `comapeo.sock` (RPC), `control.sock` (lifecycle + handshake), and
+  `media.sock` (blob/icon HTTP, consumed by native media bridges — not
+  by JS directly).
 - Boot is gated on a rootkey handshake on the control socket: backend
   binds → broadcasts `started` → native sends the rootkey in an `init`
   frame → backend constructs `MapeoManager` → broadcasts `ready`.
@@ -99,12 +101,14 @@ described in §3 are how.
 
 ## 3. IPC channels
 
-### 3.1 The two sockets
+### 3.1 The three sockets
 
-Both sockets are AF_UNIX, length-prefixed JSON framing, bound by Node.js
-inside the backend process. Native code connects as a client. The
-control socket is also a write channel from native to Node for the
-init / shutdown / error-native frames listed in the table in §3.1.
+All sockets are AF_UNIX, bound by Node.js inside the backend process;
+native code connects as a client. `comapeo.sock` and `control.sock`
+carry length-prefixed JSON framing; `media.sock` carries plain HTTP
+(see below). The control socket is also a write channel from native to
+Node for the init / shutdown / error-native frames listed in the table
+in §3.1.
 
 #### `comapeo.sock` — application RPC
 
@@ -157,7 +161,52 @@ an `error` frame's phase and message are replaced by a synthetic
 `node-runtime-unexpected`. Caching the latest terminal frame closes
 both gaps with a single object reference of overhead.
 
-### 3.2 Why two sockets
+#### `media.sock` — blob/icon HTTP
+
+Carries plain HTTP: the Fastify instance that `MapeoManager` registers
+its blob/icon server plugins on binds here (`fastify.listen({ path })`)
+instead of a loopback TCP port, so no other app on the device can reach
+media bytes. Bound together with `comapeo.sock` inside the `construct`
+phase — `ready` therefore implies the media socket is accepting.
+
+Because the server has no TCP address, a patched
+`getFastifyServerAddress` (see `backend/patches/`) makes
+`$blobs.getUrl()` / `$icons.getIconUrl()` return **relative** paths
+(`/blobs/...`) — `@comapeo/core` stays agnostic of how media is served.
+JS never touches this socket; per-platform native bridges translate
+platform URLs into HTTP/1.0 requests over it (HTTP/1.0 forces
+`Connection: close` + EOF-delimited bodies, so neither bridge needs a
+chunked-transfer decoder):
+
+- **Android** — `MediaContentProvider` (main process) serves
+  `content://<applicationId>.comapeo.media/<path>` by streaming the UDS
+  response through a `ParcelFileDescriptor` pipe.
+- **iOS** — `MediaFetcher` backs both `ComapeoMediaImageLoader` (an
+  `RCTImageURLLoader`, used by RN `<Image>`) and the globally-registered
+  `MediaURLProtocol` (any `URLSession.shared` consumer) for
+  `comapeo://media/<path>` URLs.
+
+`src/mediaUrl.ts` composes the URLs (`getMediaBaseUrl()`, `toMediaUrl()`)
+and provides `getShareableMediaUrl()` for share sheets. On Android that is
+the same streaming `content://` URI (zero-copy — the provider answers
+receivers' `getType()`/`OpenableColumns` lookups from the served headers,
+and the FGS-served socket outlives app switches; the share Intent must
+carry a URI read grant). On iOS it is a `file://` snapshot in Application
+Support — share extensions run out-of-process, where `comapeo://` means
+nothing, and the purgeable cache directory was evicting snapshots on
+low-storage devices before shares completed.
+
+> **Maps caveat.** Core registers a third prefix (`maps`) on the same
+> Fastify, so `MapeoManager#getMapStyleJsonUrl()` also returns a relative
+> path under the patch — and no native bridge serves `/maps/...` (the
+> plugin's self-fetch needs an HTTP origin a UDS bind doesn't have). That
+> surface is unused in this stack: maps are served by the separate
+> `@comapeo/map-server` over loopback TCP
+> (`comapeoServicesClient.mapServer.getBaseUrl()`). If core's own maps
+> endpoint is ever needed, it must move to that server or get its own
+> bridge.
+
+### 3.2 Why separate sockets
 
 Three signals matter:
 

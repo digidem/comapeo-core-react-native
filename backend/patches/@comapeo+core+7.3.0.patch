@@ -1,0 +1,19 @@
+diff --git a/node_modules/@comapeo/core/src/fastify-plugins/utils.js b/node_modules/@comapeo/core/src/fastify-plugins/utils.js
+index c62cd8b..6084bc3 100644
+--- a/node_modules/@comapeo/core/src/fastify-plugins/utils.js
++++ b/node_modules/@comapeo/core/src/fastify-plugins/utils.js
+@@ -29,7 +29,13 @@ export async function getFastifyServerAddress(server, { timeout } = {}) {
+   }
+ 
+   if (typeof address === 'string') {
+-    return address
++    // UDS-bound: server.address() returns the socket path, not host:port.
++    // Return an empty base so MapeoManager#getMediaBaseUrl produces
++    // relative paths like '/blobs/<projectPublicId>/...'. How (and at what
++    // absolute URL) those paths are served is the embedder's concern —
++    // @comapeo/core-react-native rewrites them to platform-native URLs
++    // (content:// on Android, comapeo:// on iOS) outside of core.
++    return ''
+   }
+ 
+   // Full address construction for non unix-socket address
