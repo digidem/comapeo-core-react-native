@@ -110,7 +110,9 @@ enum SentryNativeBridge {
     static func countMetric(_ key: String, value: UInt, attributes: [String: Any]) {
         if SentryMetricScrub.isForbiddenMetric(name: key, attributes: attributes) {
             // Debug, not warn: an innocuous, expected drop that can recur often.
-            log("countMetric(\(key)) dropped: forbidden attribute", level: .debug)
+            // Module-qualified: an unqualified `log` binds to this enum's own
+            // static `log(level:message:)`, not the global os_log helper.
+            ComapeoCore.log("countMetric(\(key)) dropped: forbidden attribute", level: .debug)
             return
         }
         var converted: [String: SentryAttributeValue] = [:]
