@@ -135,7 +135,11 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // didFinishLaunching (lazy nodeService / Expo constants), and the
             // crumb is lost on the launch that performed the auto-off.
             _ = ComapeoPrefs.open().readDebugEnabled()
-            SentryNativeBridge.initFromConfig(cfg, userId: Self.deriveSentryUserId())
+            SentryNativeBridge.initFromConfig(
+                cfg,
+                userId: Self.deriveSentryUserId(),
+                applicationUsageData: ComapeoPrefs.open().readApplicationUsageData()
+            )
             // Drain a `debug` 72h auto-off queued by the prefs
             // reader, which runs before the SDK is up.
             if DebugAutoOff.consume() {

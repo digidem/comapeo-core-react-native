@@ -105,7 +105,7 @@ class ComapeoCoreService : Service() {
         // part deferred to ensureBackendInitialized() to keep off the FGS deadline.
         effectiveSentryConfig?.let { cfg ->
             sentryUserId = prefs.deriveSentryUserId(applicationUsageData)
-            SentryFgsBridge.init(applicationContext, cfg, sentryUserId)
+            SentryFgsBridge.init(applicationContext, cfg, sentryUserId, applicationUsageData)
         }
 
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")

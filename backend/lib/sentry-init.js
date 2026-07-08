@@ -35,9 +35,11 @@ import * as sentry from "./sentry.js";
  * import AND the SDK init.
  *
  * @param {Argv} argv
+ * @param {string} [storageDir] private-storage positional, for
+ *   capture-time free-disk reads (usage tier).
  */
-export function initSentry(argv) {
-  sentry.init({ Sentry, argv, envelopeToFrame });
+export function initSentry(argv, storageDir) {
+  sentry.init({ Sentry, argv, envelopeToFrame, storageDir });
 
   const client = Sentry.getClient();
   if (!client) return;

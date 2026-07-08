@@ -54,7 +54,10 @@ const SCRUB_PATTERNS: RegExp[] = [
 /** Object keys whose value is a raw coordinate — redacted regardless of type. */
 const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude)$/i;
 
-/** Tag names/values that must never ride on a metric. */
+/** Tag names/values that must never ride on a metric. The native metric
+ *  paths keep hand-mirrored copies of this list in
+ *  `android/src/main/java/com/comapeo/core/SentryMetricScrub.kt` and
+ *  `ios/SentryMetricScrub.swift` — keep all four in lock-step. */
 const FORBIDDEN_METRIC_TAG_NAMES = new Set([
   "device.model",
   "device.id",

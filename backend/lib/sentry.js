@@ -8,6 +8,7 @@
 
 import { scrubEvent, scrubLog } from "../before-send.js";
 import * as metrics from "./metrics.js";
+import { createNodeResourcesProcessor } from "./node-resources.js";
 
 /**
  * parseArgs spec for the Sentry-related CLI flags. loader.mjs uses
@@ -112,15 +113,18 @@ function numericArg(raw) {
 
 /**
  * One-call setup: stores singletons AND calls `Sentry.init(...)`.
- * Caller has already verified `argv.sentryDsn` is set.
+ * Caller has already verified `argv.sentryDsn` is set. `storageDir`
+ * is the private-storage positional, used for capture-time free-disk
+ * reads at the usage tier.
  *
  * @param {{
  *   Sentry: typeof import("@sentry/node-core"),
  *   argv: Argv,
  *   envelopeToFrame: (envelope: any) => SentryFrame,
+ *   storageDir?: string,
  * }} args
  */
-export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
+export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame, storageDir }) {
   Sentry = sdk;
   config = {
     rpcArgsBytes: numericArg(argv.sentryRpcArgsBytes),
@@ -184,6 +188,16 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame }) {
   // Registered as an event processor so it runs on the way out, after
   // all scope merges. Drops or redacts before envelopes leave Node.
   Sentry.addEventProcessor(scrubEvent);
+
+  // §9b.6: fresh free-memory/free-disk numbers on every backend event.
+  // Usage tier only; the processor re-checks the live config per capture
+  // (registrations outlive re-init, so gating here would leak across inits).
+  const resolvedStorageDir = storageDir;
+  Sentry.addEventProcessor(
+    createNodeResourcesProcessor(() =>
+      config?.applicationUsageData ? { storageDir: resolvedStorageDir } : null,
+    ),
+  );
 
   // Wire the metrics layer with the live SDK + resolved device tags so
   // every emission carries `platform` and the duration metrics carry

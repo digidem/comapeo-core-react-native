@@ -54,10 +54,16 @@ object SentryFgsBridge {
 
     /** Idempotent. Caller must pass a non-null `SentryConfig`; skip the call
      *  entirely when `loadFromManifest` returns null. `userId` is the derived
-     *  Sentry user.id (monthly or permanent hash — never the root ID). */
+     *  Sentry user.id (monthly or permanent hash — never the root ID).
+     *  `applicationUsageData` selects the scope tier (see TierScopeEventProcessor). */
     @JvmStatic
     @JvmOverloads
-    fun init(context: Context, config: SentryConfig, userId: String? = null) {
+    fun init(
+        context: Context,
+        config: SentryConfig,
+        userId: String? = null,
+        applicationUsageData: Boolean = false,
+    ) {
         if (initialized) return
         try {
             // Parse once here rather than in the event processor on every capture.
@@ -96,6 +102,9 @@ object SentryFgsBridge {
                 // `comapeo.boot` match the main-process value rather than
                 // splitting the dashboard.
                 options.addEventProcessor(NormalizeDeviceFamilyProcessor)
+                // After NormalizeDeviceFamilyProcessor so the trimmed device
+                // context keeps the normalised family value.
+                options.addEventProcessor(TierScopeEventProcessor(applicationUsageData))
             }
 
             // SentryOptions has no "set context at init" hook; ride a configureScope after init.
@@ -216,6 +225,10 @@ object SentryFgsBridge {
     ) {
         if (!initialized) return
         try {
+            if (SentryMetricScrub.isForbiddenMetric(name, attributes)) {
+                Log.w(TAG, "countMetric($name) dropped: forbidden attribute")
+                return
+            }
             val attrs = attributes.entries
                 .map { (k, v) -> SentryAttribute.stringAttribute(k, v) }
                 .toTypedArray()

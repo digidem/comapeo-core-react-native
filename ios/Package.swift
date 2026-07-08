@@ -40,6 +40,8 @@ let package = Package(
                 "ComapeoPrefs.swift",
                 "SentryConfig.swift",
                 "SentryNativeBridge.swift",
+                "SentryScopeTier.swift",
+                "SentryMetricScrub.swift",
                 "SentryTags.swift",
                 "SentryUserId.swift",
                 "DeviceTags.swift",
