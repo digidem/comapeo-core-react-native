@@ -109,7 +109,8 @@ enum SentryNativeBridge {
     /// false (it defaults to true).
     static func countMetric(_ key: String, value: UInt, attributes: [String: Any]) {
         if SentryMetricScrub.isForbiddenMetric(name: key, attributes: attributes) {
-            log("countMetric(\(key)) dropped: forbidden attribute", level: .warning)
+            // Debug, not warn: an innocuous, expected drop that can recur often.
+            log("countMetric(\(key)) dropped: forbidden attribute", level: .debug)
             return
         }
         var converted: [String: SentryAttributeValue] = [:]

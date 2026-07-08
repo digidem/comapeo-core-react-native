@@ -217,11 +217,16 @@ capture time. Re-specify against the native SDKs' `beforeSend` hook
 (filter scope fields per tier on the wire out), not against a Node-side
 context blob. The privacy goals still apply:
 
-- **Diagnostic tier emits**:
+- **Error/fatal events are exempt**: full device context is most valuable
+  exactly when something crashed, so error and fatal captures keep the SDK's
+  complete `device`/`os`/`app` scope at both tiers. Only `culture` (locale +
+  timezone) is still dropped from them at the diagnostic tier. The allowlist
+  below applies to transactions and non-error events.
+- **Diagnostic tier emits** (non-error events):
   - `device`: `manufacturer`, `brand`, `model`, `model_id`, `family`,
     `arch`, `simulator`, `processor_count`, `memory_size`,
     `storage_size` (bucketed to standard sizes:
-    32/64/128/256/512/1024 GB).
+    8/16/32/64/128/256/512/1024 GB).
   - `os`: `name`, `version` only. **Drop** `kernel_version` (both),
     `build` (Android `Build.DISPLAY`). iOS `kern.osversion` redundant
     with `version`, drop too.

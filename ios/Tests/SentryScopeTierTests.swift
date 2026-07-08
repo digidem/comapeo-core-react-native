@@ -106,11 +106,41 @@ final class SentryScopeTierTests: XCTestCase {
 
     func testBucketStorageSizeRoundsUpToStandardSizes() {
         let gb: Int64 = 1 << 30
-        XCTAssertEqual(SentryScopeTier.bucketStorageSize(1), 32 * gb)
+        // Buckets start at 8 GB — 8/16 GB devices are still in the field.
+        XCTAssertEqual(SentryScopeTier.bucketStorageSize(1), 8 * gb)
+        XCTAssertEqual(SentryScopeTier.bucketStorageSize(8 * gb), 8 * gb)
+        XCTAssertEqual(SentryScopeTier.bucketStorageSize(8 * gb + 1), 16 * gb)
         XCTAssertEqual(SentryScopeTier.bucketStorageSize(32 * gb), 32 * gb)
         XCTAssertEqual(SentryScopeTier.bucketStorageSize(32 * gb + 1), 64 * gb)
         XCTAssertEqual(SentryScopeTier.bucketStorageSize(238 * gb), 256 * gb)
         XCTAssertEqual(SentryScopeTier.bucketStorageSize(4096 * gb), 1024 * gb)
+    }
+
+    // MARK: - Errors keep the full native scope
+
+    func testErrorsKeepFullDeviceScopeButDropCultureAtDiagnostic() {
+        let event = fullEvent()
+        event.level = .error
+        let processed = SentryScopeTier.trimEvent(event, applicationUsageData: false)
+        // Fingerprint-friendly device/os/app fields survive on an error.
+        let device = processed.context?["device"]
+        XCTAssertEqual(device?["locale"] as? String, "es_PE")
+        XCTAssertEqual(device?["screen_width_pixels"] as? Int, 1170)
+        XCTAssertNotNil(device?["thermal_state"])
+        // Storage stays exact (not bucketed) — full detail for debugging.
+        XCTAssertEqual((device?["storage_size"] as? NSNumber)?.int64Value, Int64(119) * (1 << 30))
+        XCTAssertEqual(processed.context?["os"]?["kernel_version"] as? String,
+                       "Darwin Kernel Version 23.5.0")
+        XCTAssertEqual(processed.context?["app"]?["app_name"] as? String, "CoMapeo")
+        // Culture still dropped — no debugging value.
+        XCTAssertNil(processed.context?["culture"])
+    }
+
+    func testErrorsKeepCultureAtUsageTier() {
+        let event = fullEvent()
+        event.level = .fatal
+        let processed = SentryScopeTier.trimEvent(event, applicationUsageData: true)
+        XCTAssertEqual(processed.context?["culture"]?["locale"] as? String, "es_PE")
     }
 
     // MARK: - OS / app / culture contexts

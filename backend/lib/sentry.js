@@ -192,10 +192,9 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame, storageDir }
   // §9b.6: fresh free-memory/free-disk numbers on every backend event.
   // Usage tier only; the processor re-checks the live config per capture
   // (registrations outlive re-init, so gating here would leak across inits).
-  const resolvedStorageDir = storageDir;
   Sentry.addEventProcessor(
     createNodeResourcesProcessor(() =>
-      config?.applicationUsageData ? { storageDir: resolvedStorageDir } : null,
+      config?.applicationUsageData ? { storageDir } : null,
     ),
   );
 

@@ -4,6 +4,7 @@ import io.sentry.EventProcessor
 import io.sentry.Hint
 import io.sentry.SentryBaseEvent
 import io.sentry.SentryEvent
+import io.sentry.SentryLevel
 import io.sentry.protocol.App
 import io.sentry.protocol.Device
 import io.sentry.protocol.OperatingSystem
@@ -21,13 +22,22 @@ import io.sentry.protocol.SentryTransaction
  * Contexts are rebuilt from an allowlist rather than nulling a denylist, so a
  * field added by a future SDK version is dropped by default instead of shipped
  * by accident.
+ *
+ * Error and fatal events are exempt: full device context is most valuable
+ * exactly when something crashed, so they keep the SDK's complete device/os/app
+ * scope. Only `culture` (locale + timezone), a fingerprint surface with no
+ * debugging value, is still dropped from them at the diagnostic tier.
  */
 internal class TierScopeEventProcessor(
     private val applicationUsageData: Boolean,
 ) : EventProcessor {
 
     override fun process(event: SentryEvent, hint: Hint): SentryEvent {
-        trimContexts(event)
+        if (isError(event)) {
+            if (!applicationUsageData) event.contexts.remove("culture")
+        } else {
+            trimContexts(event)
+        }
         return event
     }
 
@@ -38,6 +48,10 @@ internal class TierScopeEventProcessor(
         }
         return transaction
     }
+
+    /** Error/fatal captures keep the full native scope — see the class doc. */
+    private fun isError(event: SentryEvent): Boolean =
+        event.level == SentryLevel.ERROR || event.level == SentryLevel.FATAL
 
     private fun trimContexts(event: SentryBaseEvent) {
         event.contexts.device?.let { event.contexts.setDevice(allowedDevice(it)) }
@@ -103,10 +117,11 @@ internal class TierScopeEventProcessor(
     companion object {
         private const val GB = 1L shl 30
 
-        /** Round up to a standard marketed size (32/64/…/1024 GB) so exact
-         *  formatted-capacity bytes can't fingerprint a device. */
+        /** Round up to a standard marketed size (8/16/32/…/1024 GB) so exact
+         *  formatted-capacity bytes can't fingerprint a device. Starts at 8 GB
+         *  because devices with 8/16 GB of storage are still in the field. */
         internal fun bucketStorageSize(bytes: Long): Long {
-            var bucket = 32 * GB
+            var bucket = 8 * GB
             while (bucket < bytes && bucket < 1024 * GB) bucket = bucket shl 1
             return bucket
         }

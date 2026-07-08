@@ -2,6 +2,7 @@ package com.comapeo.core
 
 import io.sentry.Hint
 import io.sentry.SentryEvent
+import io.sentry.SentryLevel
 import io.sentry.SpanId
 import io.sentry.SpanStatus
 import io.sentry.protocol.App
@@ -112,11 +113,48 @@ class SentryScopeTierTest {
     @Test
     fun bucketStorageSizeRoundsUpToStandardSizes() {
         val gb = 1L shl 30
-        assertEquals(32 * gb, TierScopeEventProcessor.bucketStorageSize(1))
+        // Buckets start at 8 GB — 8/16 GB devices are still in the field.
+        assertEquals(8 * gb, TierScopeEventProcessor.bucketStorageSize(1))
+        assertEquals(8 * gb, TierScopeEventProcessor.bucketStorageSize(8 * gb))
+        assertEquals(16 * gb, TierScopeEventProcessor.bucketStorageSize(8 * gb + 1))
         assertEquals(32 * gb, TierScopeEventProcessor.bucketStorageSize(32 * gb))
         assertEquals(64 * gb, TierScopeEventProcessor.bucketStorageSize(32 * gb + 1))
         assertEquals(256 * gb, TierScopeEventProcessor.bucketStorageSize(238 * gb))
         assertEquals(1024 * gb, TierScopeEventProcessor.bucketStorageSize(4096 * gb))
+    }
+
+    // ── Errors keep the full native scope ───────────────────────────
+
+    @Test
+    fun errorsKeepFullDeviceScopeButDropCultureAtDiagnostic() {
+        val event = SentryEvent().apply {
+            level = SentryLevel.ERROR
+            contexts.setDevice(fullDevice())
+            contexts.setOperatingSystem(fullOs())
+            contexts.setApp(fullApp())
+            contexts.put("culture", mapOf("locale" to "es_PE"))
+        }
+        val processed = diagnostic.process(event, Hint())!!
+        // Fingerprint-friendly device/os/app fields survive on an error.
+        val device = processed.contexts.device!!
+        assertEquals("Maria's Pixel", device.name)
+        assertEquals(1080, device.screenWidthPixels)
+        assertNotNull(device.timezone)
+        // Storage stays exact (not bucketed) — full detail for debugging.
+        assertEquals(119L * (1L shl 30), device.storageSize)
+        assertEquals("5.15.104-android13-9-abc", processed.contexts.operatingSystem!!.kernelVersion)
+        assertEquals("CoMapeo", processed.contexts.app!!.appName)
+        // Culture still dropped — no debugging value.
+        assertNull(processed.contexts.get("culture"))
+    }
+
+    @Test
+    fun errorsKeepCultureAtUsageTier() {
+        val event = SentryEvent().apply {
+            level = SentryLevel.FATAL
+            contexts.put("culture", mapOf("locale" to "es_PE"))
+        }
+        assertNotNull(usage.process(event, Hint())!!.contexts.get("culture"))
     }
 
     // ── OS context ──────────────────────────────────────────────────

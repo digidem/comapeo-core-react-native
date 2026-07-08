@@ -13,6 +13,11 @@ import Sentry
 /// Contexts are filtered through an allowlist rather than deleting a
 /// denylist, so a field added by a future SDK version is dropped by default
 /// instead of shipped by accident.
+///
+/// Error and fatal events are exempt: full device context is most valuable
+/// exactly when something crashed, so they keep the SDK's complete
+/// device/os/app scope. Only `culture` (locale + timezone), a fingerprint
+/// surface with no debugging value, is still dropped from them at diagnostic.
 enum SentryScopeTier {
     private static let deviceKeysDiagnostic: Set<String> = [
         "manufacturer", "brand", "model", "model_id", "family", "arch", "archs",
@@ -39,26 +44,36 @@ enum SentryScopeTier {
 
     /// `beforeSend` hook body. Mutates and returns the event.
     static func trimEvent(_ event: Event, applicationUsageData: Bool) -> Event {
+        // Transactions carry `.error`/`.none` levels inconsistently; gate on
+        // type so only genuine error/fatal captures skip the allowlist.
+        let isError = event.type != "transaction"
+            && (event.level == .error || event.level == .fatal)
         if var context = event.context {
-            trim(&context, key: "device",
-                 keep: deviceKeysDiagnostic, usageExtra: deviceKeysUsageExtra,
-                 applicationUsageData: applicationUsageData)
-            trim(&context, key: "os",
-                 keep: osKeysDiagnostic, usageExtra: osKeysUsageExtra,
-                 applicationUsageData: applicationUsageData)
-            trim(&context, key: "app",
-                 keep: appKeysDiagnostic, usageExtra: appKeysUsageExtra,
-                 applicationUsageData: applicationUsageData)
-            if !applicationUsageData {
-                // Locale + timezone are high-entropy fingerprint surfaces.
-                context["culture"] = nil
-            }
-            if var device = context["device"],
-               let storage = device["storage_size"] as? NSNumber {
-                device["storage_size"] = NSNumber(
-                    value: bucketStorageSize(storage.int64Value)
-                )
-                context["device"] = device
+            if isError {
+                // Errors keep the full native device/os/app scope; only culture
+                // (no debugging value) is dropped at the diagnostic tier.
+                if !applicationUsageData { context["culture"] = nil }
+            } else {
+                trim(&context, key: "device",
+                     keep: deviceKeysDiagnostic, usageExtra: deviceKeysUsageExtra,
+                     applicationUsageData: applicationUsageData)
+                trim(&context, key: "os",
+                     keep: osKeysDiagnostic, usageExtra: osKeysUsageExtra,
+                     applicationUsageData: applicationUsageData)
+                trim(&context, key: "app",
+                     keep: appKeysDiagnostic, usageExtra: appKeysUsageExtra,
+                     applicationUsageData: applicationUsageData)
+                if !applicationUsageData {
+                    // Locale + timezone are high-entropy fingerprint surfaces.
+                    context["culture"] = nil
+                }
+                if var device = context["device"],
+                   let storage = device["storage_size"] as? NSNumber {
+                    device["storage_size"] = NSNumber(
+                        value: bucketStorageSize(storage.int64Value)
+                    )
+                    context["device"] = device
+                }
             }
             event.context = context
         }
@@ -94,10 +109,11 @@ enum SentryScopeTier {
         !applicationUsageData && operation.hasPrefix("boot.")
     }
 
-    /// Round up to a standard marketed size (32/64/…/1024 GB) so exact
-    /// formatted-capacity bytes can't fingerprint a device.
+    /// Round up to a standard marketed size (8/16/32/…/1024 GB) so exact
+    /// formatted-capacity bytes can't fingerprint a device. Starts at 8 GB
+    /// because devices with 8/16 GB of storage are still in the field.
     static func bucketStorageSize(_ bytes: Int64) -> Int64 {
-        var bucket = 32 * gb
+        var bucket = 8 * gb
         while bucket < bytes && bucket < 1024 * gb {
             bucket <<= 1
         }

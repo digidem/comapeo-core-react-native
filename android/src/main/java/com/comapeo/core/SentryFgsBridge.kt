@@ -226,7 +226,8 @@ object SentryFgsBridge {
         if (!initialized) return
         try {
             if (SentryMetricScrub.isForbiddenMetric(name, attributes)) {
-                Log.w(TAG, "countMetric($name) dropped: forbidden attribute")
+                // Debug, not warn: an innocuous, expected drop that can recur often.
+                Log.d(TAG, "countMetric($name) dropped: forbidden attribute")
                 return
             }
             val attrs = attributes.entries
