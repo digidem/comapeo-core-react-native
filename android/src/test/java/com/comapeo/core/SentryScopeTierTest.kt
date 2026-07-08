@@ -249,7 +249,7 @@ class SentryScopeTierTest {
             /* origin = */ null,
             /* tags = */ emptyMap(),
             /* measurements = */ emptyMap(),
-            /* data = */ mutableMapOf("generated" to true),
+            /* data = */ mutableMapOf<String, Any>("generated" to true),
         )
         return SentryTransaction(
             /* transaction = */ "comapeo.boot",
@@ -291,7 +291,7 @@ class SentryScopeTierTest {
         val span = SentrySpan(
             0.0, 1.0, SentryId(), SpanId(), null,
             "rpc.server", "project.observation.create", SpanStatus.OK, null,
-            emptyMap(), emptyMap(), mutableMapOf("rpc.system" to "comapeo-ipc"),
+            emptyMap(), emptyMap(), mutableMapOf<String, Any>("rpc.system" to "comapeo-ipc"),
         )
         val tx = SentryTransaction(
             "project.observation.create", 0.0, 2.0, listOf(span),
