@@ -672,10 +672,13 @@ Three failure surfaces in `backend/index.js`:
 
 1. **`handleFatal(phase, error)`** — the single funnel for uncaught
    exceptions, unhandled rejections, and boot-phase throws. Captures with
-   `tags: { phase, layer: "node" }` and attaches `os.freemem`,
-   `os.totalmem`, and `fs.statfsSync` results as extras (cheap fix for
-   `@sentry/node` not synthesising device context the way the RN / native
-   SDKs do). Flushes for 100 ms before `process.exit(1)`.
+   `tags: { phase, layer: "node" }`. Flushes for 100 ms before
+   `process.exit(1)`. At the usage tier, every backend event (fatal or
+   not) additionally carries a `node_resources` context with
+   capture-time `os.freemem`/`os.totalmem` and `fs.statfsSync` numbers
+   (`backend/lib/node-resources.js`, wired as an event processor in
+   `lib/sentry.js`); diagnostic-tier events omit it because
+   read-at-capture frequency is itself usage-shape data.
 2. **`error-native` handler** — frames forwarded from Android FGS-local
    failures (rootkey, watchdog) reach `handleFatal` with the FGS-supplied
    phase, so they get captured by #1 automatically. Tagged
@@ -1137,6 +1140,17 @@ no issue lifecycle, so nothing sits unresolved in the Issues UI and
 nothing fires regression alerts. Attributes carry the slice axes; query
 in Sentry's Explore UI. Breadcrumb category: `comapeo.exit`.
 
+Toggle-cycle reset: when `diagnosticsEnabled` or `applicationUsageData`
+flips off → on, the setter resets the exit-telemetry anchors to "now" so
+exits recorded while the user had opted out are never reported after
+re-enable. Android resets the per-process high-water marks and duration
+anchors (`BackgroundAnchors.resetExitTelemetryAnchors`); iOS stamps
+`sentry.exitTelemetryResetAtMs` in `ComapeoPrefs` and the collector
+drops MetricKit windows that began before it (24h aggregates can't be
+split, so an overlapping window is dropped whole). Only the off → on
+transition resets; redundant sets and disables leave the anchors
+untouched.
+
 #### 7.5.1 Android — historical exit reasons (`ExitReasonsCollector.kt`)
 
 On each process start (API 30+ only; pre-30 sets a one-time scope tag
@@ -1391,8 +1405,10 @@ The diagnostic tier carries aggregate, low-cardinality operational signal;
 | --- | --- | --- |
 | RPC latency, aggregate (`rpc.{client,server}.duration_ms` with `status` + device tags) | Diagnostics | Latency by status and device bucket is pure performance; no per-operation detail. |
 | RPC `method` attribute on the same metrics (+ `rpc.client.send_ms{method}`) | applicationUsageData | The set and frequency of `@comapeo/core` methods a user invokes reveals what they do (create vs view vs sync) — usage behaviour, not perf. |
-| Boot / shutdown phase timings + outcome | Diagnostics | Startup/teardown performance; no user-specific content. *Shutdown emitter not yet wired ([#190](https://github.com/digidem/comapeo-core-react-native/issues/190)).* |
+| Boot / shutdown phase timings + outcome | Diagnostics | Startup/teardown performance; no user-specific content. |
 | Backend health gauges (memory, heap, uptime, event-loop delay) | Diagnostics | Process resource health; independent of user activity. |
+| Backend `node_resources` event context (capture-time free memory / free disk) | applicationUsageData | Read-at-capture frequency reveals app activity. Attached by `backend/lib/node-resources.js`. |
+| Native event scope extras (kernel version, OS build string, app name, locale + timezone, screen metrics, `boot.kind`, boot span data) | applicationUsageData | High-entropy fingerprint / usage-shape surfaces. The diagnostic tier keeps coarse device identity, OS name+version, and app id/version/build only (`SentryScopeTier.kt` / `SentryScopeTier.swift`) — **except** error/fatal events, which keep the full device/os/app scope (device context matters most on a crash) and drop only `culture`. |
 | Sync session duration + outcome | Diagnostics | Sync performance/reliability is core-function health; that a sync ran is inherent to a P2P app. |
 | Sync `peers_bucket` | applicationUsageData | How many devices a user syncs with is a proxy for their collaboration/social-graph size. Buckets: `0` / `1-3` / `4-10` / `10+`. |
 | Sync `bytes_bucket` | applicationUsageData | Volume of data exchanged is a proxy for how much a user collects/shares. Currently always `unknown`: `@comapeo/core`'s sync state exposes remaining block counts, not byte counters. |
@@ -1401,7 +1417,7 @@ The diagnostic tier carries aggregate, low-cardinality operational signal;
 | App-exit coarse buckets (`uptime_bucket`, `bg_duration_bucket`, OEM-kill flags) | Diagnostics | Aggregate stability signal ("which OEMs kill us"); low-resolution. |
 | App-exit exact-ms (`alive_for_ms`, `backgrounded_for_ms`) | applicationUsageData | Millisecond session/foreground durations are fine-grained usage-shape data. |
 | `device_class` / `os_major` / `platform` tags | Diagnostics | Low-cardinality device-capability buckets; not user-identifying. |
-| `ipc.errors`, `telemetry.forwarding_failures` | Diagnostics | Internal transport health. *Not yet wired ([#190](https://github.com/digidem/comapeo-core-react-native/issues/190)).* |
+| `ipc.errors`, `telemetry.forwarding_failures` | Diagnostics | Internal transport health. |
 | Per-RPC traces / OTel spans / `rpc.args` | `debug` (separate) | Investigation-only; behind the 72h auto-off `debug` toggle, not `applicationUsageData`. |
 
 #### Why restart-to-activate

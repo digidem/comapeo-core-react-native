@@ -245,14 +245,19 @@ class ComapeoCoreModule : Module() {
 
         // Restart-to-activate: writes to disk; on `false`, wipes the sentry-android
         // envelope cache so queued events never ship. The current process keeps
-        // emitting in-memory until next launch.
+        // emitting in-memory until next launch. On an off → on flip the
+        // exit-telemetry anchors reset to "now" so exit records from the
+        // opted-out window are never reported after re-enable.
         AsyncFunction("setDiagnosticsEnabled") { value: Boolean ->
             val ctx = appContext.reactContext
                 ?: throw IllegalStateException(
                     "setDiagnosticsEnabled called before native context attached",
                 )
-            ComapeoPrefs.open(ctx).writeDiagnosticsEnabled(value)
+            val reEnabled = ComapeoPrefs.open(ctx).writeDiagnosticsEnabled(value)
             if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
+            if (reEnabled) {
+                BackgroundAnchors.open(ctx).resetExitTelemetryAnchors(System.currentTimeMillis())
+            }
         }
 
         AsyncFunction("setApplicationUsageData") { value: Boolean ->
@@ -260,8 +265,11 @@ class ComapeoCoreModule : Module() {
                 ?: throw IllegalStateException(
                     "setApplicationUsageData called before native context attached",
                 )
-            ComapeoPrefs.open(ctx).writeApplicationUsageData(value)
+            val reEnabled = ComapeoPrefs.open(ctx).writeApplicationUsageData(value)
             if (!value) ComapeoPrefs.wipeSentryOutbox(ctx)
+            if (reEnabled) {
+                BackgroundAnchors.open(ctx).resetExitTelemetryAnchors(System.currentTimeMillis())
+            }
         }
 
         AsyncFunction("setDebugEnabled") { value: Boolean ->

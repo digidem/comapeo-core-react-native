@@ -121,6 +121,64 @@ class ExitReasonsCollectorTest {
         assertEquals(now - 100_000 + 15_000, result.newLastSeenMs)
     }
 
+    // ── Toggle-cycle anchor reset (§9b.9) ──────────────────────────
+    //
+    // A diagnostics / usage-data off → on flip resets the anchors to the
+    // flip time, so exits recorded while the user had opted out are never
+    // reported and post-re-enable durations can't span the off window.
+
+    @Test
+    fun offWindowRecordsAreNotReportedAfterReEnable() {
+        seedLastSeen(MAIN, now - 1_000_000) // high-water from before the off window
+        val reEnabledAt = now - 100_000
+        val duringOffWindow = record(timestampMs = reEnabledAt - 50_000)
+        val afterReEnable = record(timestampMs = reEnabledAt + 50_000)
+
+        anchors.resetExitTelemetryAnchors(reEnabledAt)
+
+        val metrics = collectMetrics(records = listOf(duringOffWindow, afterReEnable))
+        assertEquals(1, metrics.size)
+        assertEquals(reEnabledAt + 50_000, metrics.single().attributes["exit_timestamp_ms"])
+    }
+
+    @Test
+    fun resetAppliesToBothProcessSlots() {
+        seedLastSeen(FGS, now - 1_000_000)
+        val reEnabledAt = now - 100_000
+        anchors.resetExitTelemetryAnchors(reEnabledAt)
+        val metrics = collectMetrics(
+            procKey = FGS,
+            processName = FGS_PROC_NAME,
+            records = listOf(
+                record(processName = FGS_PROC_NAME, timestampMs = reEnabledAt - 50_000),
+            ),
+        )
+        assertTrue("off-window FGS record must not be reported", metrics.isEmpty())
+        assertEquals(reEnabledAt, anchors.readLastSeenMs(FGS))
+    }
+
+    @Test
+    fun resetTruncatesDurationsToTheReEnableTime() {
+        seedLastSeen(MAIN, now - 1_000_000)
+        val reEnabledAt = now - 300_000
+        // Anchors stamped during the off window.
+        anchors.writeProcessStartedAtMs(MAIN, reEnabledAt - 3_600_000)
+        anchors.writeBackgroundedAtMs(MAIN, reEnabledAt - 600_000)
+
+        anchors.resetExitTelemetryAnchors(reEnabledAt)
+
+        val attrs = collectMetrics(records = listOf(record(timestampMs = reEnabledAt + 120_000)))
+            .single().attributes
+        // alive_for measured from the re-enable, not the off-window start.
+        assertEquals(120_000L, attrs["alive_for_ms"])
+        assertEquals("1-5m", attrs[SentryTags.UPTIME_BUCKET])
+        // The off-window backgrounded_at is neutralised by the fresh
+        // foregrounded_at stamp — no background duration spanning the
+        // opted-out period.
+        assertEquals("unknown", attrs[SentryTags.BG_DURATION_BUCKET])
+        assertFalse(attrs.containsKey("backgrounded_for_ms"))
+    }
+
     // ── Attribute mapping ──────────────────────────────────────────
 
     @Test

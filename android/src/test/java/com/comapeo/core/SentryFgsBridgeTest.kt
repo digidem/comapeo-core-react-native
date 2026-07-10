@@ -263,6 +263,37 @@ class SentryFgsBridgeTest {
         assertEquals(1, transport.envelopes.size)
     }
 
+    // ── countMetric forbidden-tag filter (issue #191) ──────────────
+
+    @Test
+    fun countMetricWithForbiddenAttributeIsDropped() {
+        val recorded = mutableListOf<String>()
+        initBridgeViaSentryOptions(onMetric = { recorded.add(it) })
+        SentryFgsBridge.countMetric(
+            "comapeo.app.exit",
+            attributes = mapOf("project_id" to "abc123"),
+        )
+        assertTrue(
+            "metric with a forbidden attribute must not reach the SDK",
+            recorded.isEmpty(),
+        )
+    }
+
+    @Test
+    fun countMetricWithOrdinaryExitAttributesReachesTheSdk() {
+        val recorded = mutableListOf<String>()
+        initBridgeViaSentryOptions(onMetric = { recorded.add(it) })
+        SentryFgsBridge.countMetric(
+            "comapeo.app.exit",
+            attributes = mapOf(
+                SentryTags.EXIT_REASON to "anr",
+                SentryTags.EXIT_SEVERITY to "error",
+                SentryTags.EXIT_INTENTIONAL to "false",
+            ),
+        )
+        assertEquals(listOf("comapeo.app.exit"), recorded)
+    }
+
     // ── NormalizeDeviceFamilyProcessor tests ───────────────────────
     //
     // Pure-function tests against the processor singleton. They catch
@@ -310,7 +341,10 @@ class SentryFgsBridgeTest {
      * Used by every post-init test in place of
      * [SentryFgsBridge.init] (which requires an Android Context).
      */
-    private fun initBridgeViaSentryOptions(tracesSampleRate: Double = 1.0) {
+    private fun initBridgeViaSentryOptions(
+        tracesSampleRate: Double = 1.0,
+        onMetric: ((name: String) -> Unit)? = null,
+    ) {
         transport = RecordingTransport()
         Sentry.init { options: SentryOptions ->
             options.dsn = "https://abc@sentry.io/1"
@@ -320,6 +354,15 @@ class SentryFgsBridgeTest {
             options.tracesSampleRate = tracesSampleRate
             options.setTag("proc", "fgs")
             options.setTag("layer", "native")
+            if (onMetric != null) {
+                // Runs synchronously inside the client's captureMetric, so a
+                // recorded name proves the bridge forwarded the emission —
+                // no need to wait out the metrics batch window.
+                options.metrics.setBeforeSend { metric, _ ->
+                    onMetric(metric.name)
+                    metric
+                }
+            }
         }
         SentryFgsBridge.markInitializedForTests()
     }

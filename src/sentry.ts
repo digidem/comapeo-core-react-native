@@ -158,7 +158,9 @@ export function getDiagnosticsEnabled(): boolean {
  * wiped. The current process keeps emitting events until the next
  * launch; this is the documented restart-to-activate behaviour, but
  * those events sit in an outbox we've just wiped, so they never
- * upload.
+ * upload. An off → on flip also resets the app-exit telemetry
+ * anchors, so exits recorded while the user had opted out are never
+ * reported after re-enable.
  */
 export function setDiagnosticsEnabled(value: boolean): Promise<void> {
   // Update the in-memory view only after the native write lands — a

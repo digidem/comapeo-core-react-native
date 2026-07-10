@@ -18,7 +18,7 @@ git history stay valid.
 | Phase 5 — capture-application-data opt-in surface                          | Per-RPC method spans, sync session transaction, bg/fg breadcrumbs, memory checkpoints, storage size sample, and the `before_send` privacy processor. The toggle plumbing itself is already done in Phase 9a.                                                                                  |
 | Phase 7b — iOS killed-in-background heuristic (optional)                   | `UserDefaults`-anchored per-event "killed in background" inference layered on top of the landed Phase 7a MetricKit forwarding (which is 24h-aggregate only).                                                                                                                                   |
 | Phase 8 — refinements                                                      | Sample-rate tuning from real data; optional dual-bundle if size matters.                                                                                                                                                                                                                       |
-| Phase 9b — PII scrubber, user.id rotation, context reclassification        | Scrubber (9b.1), user.id rotation (9b.2), network-URL scrubbing (9b.5), and consoleIntegration gating (9b.7, now debug-gated) landed with the Phase 11 branch. Remaining: native-scope field split (9b.3), boot-transaction slimming (9b.4), backend free-mem refresh (9b.6), toggle anchor resets (9b.9). |
+| Phase 9b — PII scrubber, user.id rotation, context reclassification        | Scrubber (9b.1), user.id rotation (9b.2), network-URL scrubbing (9b.5), and consoleIntegration gating (9b.7, now debug-gated) landed with the Phase 11 branch; native-scope field split (9b.3), boot-transaction slimming (9b.4), and backend free-mem refresh (9b.6) landed with issue #79; toggle anchor resets (9b.9) landed separately. Phase 9b complete. |
 | Phase 11 — Metrics-first observability + `debug` tier                      | Shift day-to-day performance signal from per-RPC tracing to Sentry metrics (with bucketed device tags so "Samsung A52 is slow at sync" is a dashboard query). Rename `captureApplicationData` → `applicationUsageData` (now: stable `user.id` + usage events). New user-facing `debug` toggle enables per-RPC tracing for investigation. |
 
 ---
@@ -217,11 +217,16 @@ capture time. Re-specify against the native SDKs' `beforeSend` hook
 (filter scope fields per tier on the wire out), not against a Node-side
 context blob. The privacy goals still apply:
 
-- **Diagnostic tier emits**:
+- **Error/fatal events are exempt**: full device context is most valuable
+  exactly when something crashed, so error and fatal captures keep the SDK's
+  complete `device`/`os`/`app` scope at both tiers. Only `culture` (locale +
+  timezone) is still dropped from them at the diagnostic tier. The allowlist
+  below applies to transactions and non-error events.
+- **Diagnostic tier emits** (non-error events):
   - `device`: `manufacturer`, `brand`, `model`, `model_id`, `family`,
     `arch`, `simulator`, `processor_count`, `memory_size`,
     `storage_size` (bucketed to standard sizes:
-    32/64/128/256/512/1024 GB).
+    8/16/32/64/128/256/512/1024 GB).
   - `os`: `name`, `version` only. **Drop** `kernel_version` (both),
     `build` (Android `Build.DISPLAY`). iOS `kern.osversion` redundant
     with `version`, drop too.
@@ -308,11 +313,17 @@ diagnostic. See `sentry-integration.md` §7.5.
 
 ### 9b.9 Phase 6 timestamp anchor reset on toggle cycle
 
-When `diagnosticsEnabled` flips `false → true`, Phase 6's
-`lastSeenAtMs` high-water key resets to `currentTimeMillis()` so
-records generated during the "off" window are NOT surfaced on
-re-enable. Same behaviour for `captureApplicationData` and the
-duration-anchor keys. Simple per-toggle hook on the setter path.
+**Done.** When `diagnosticsEnabled` or `applicationUsageData` flips
+`false → true`, the setter resets the exit-telemetry anchors to "now"
+so records generated during the "off" window are never surfaced on
+re-enable. Android: `BackgroundAnchors.resetExitTelemetryAnchors` — the
+per-process high-water marks plus the duration anchors
+(`process_started_at`, main's `foregrounded_at`). iOS: `ComapeoPrefs`
+stamps `sentry.exitTelemetryResetAtMs`; `AppExitMetricsCollector`
+drops MetricKit windows that began before the stamp (a 24h aggregate
+can't be split, so an overlapping window is dropped whole). Only an
+off → on transition resets — redundant sets and disables leave the
+anchors alone. See `sentry-integration.md` §7.5.
 
 ---
 

@@ -158,6 +158,7 @@ Test sources by layer:
 | [`e2e-reusable.yml`](../.github/workflows/e2e-reusable.yml) | `workflow_call` | the e2e jobs ([§3.1](#31-the-e2e-jobs)) | Shared body for the two callers above |
 | [`pr-title.yml`](../.github/workflows/pr-title.yml) | `pull_request_target` | `Lint conventional title`, `Apply changelog label` | Conventional-Commits title lint + changelog label |
 | [`release.yml`](../.github/workflows/release.yml) | `workflow_dispatch`, `pull_request: [closed]` | `release` | Two-phase npm release (see CONTRIBUTING.md) |
+| [`sentry-tripwire.yml`](../.github/workflows/sentry-tripwire.yml) | `workflow_dispatch` | `Poll Sentry for the boot trace` | Pre-release Sentry API check against a manually launched test build ([docs/sentry-release-smoke.md](./sentry-release-smoke.md)) |
 
 Plus [`dependabot.yml`](../.github/dependabot.yml) (config, not a workflow):
 opens dependency PRs with a 3-day cooldown.
