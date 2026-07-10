@@ -9,6 +9,7 @@ import { createMapServer } from "./lib/create-map-server.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 import * as sentry from "./lib/sentry.js";
 import * as metrics from "./lib/metrics.js";
+import { observeSyncSessions } from "./lib/sync-observer.js";
 
 // 60s sampler cadence for backend memory + uptime gauges. No-op
 // when Sentry is off (the metrics layer never got its SDK).
@@ -259,6 +260,8 @@ async function withPhase(phase, fn) {
           defaultOnlineStyleUrl,
           rootKey,
         });
+
+        observeSyncSessions(comapeoManager);
 
         // Start the MapeoManager's Fastify so its blob/icon server is
         // reachable. `$blobs.getUrl()` / `$icons.getUrl()` await the server's

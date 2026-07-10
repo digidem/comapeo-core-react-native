@@ -60,6 +60,9 @@ let Sentry = null;
 /** @type {{ rpcArgsBytes: number, applicationUsageData: boolean, debug: boolean, deviceClass: string, osMajor: string, platformTag: string } | null} */
 let config = null;
 
+/** Root span name for the usage-tier sync-session transaction. */
+export const SYNC_SESSION_TRANSACTION = "comapeo.sync.session";
+
 /** Read-only view of the resolved config for the metrics layer. */
 export function getConfig() {
   return config;
@@ -141,18 +144,28 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame, storageDir }
   };
   envelopeToFrame = toFrame;
 
+  // Native (Kotlin/Swift) owns the trace-sampling decision and forwards the
+  // already-resolved rate — it folds in the `debug` window (full sampling
+  // while on) and any plugin-configured cap. Mirror it verbatim here; absent
+  // means 0. Day-to-day perf signal rides the always-on metrics layer.
+  const baseTracesSampleRate = argv.sentryTracesSampleRate
+    ? numericArg(argv.sentryTracesSampleRate)
+    : 0;
+
   Sentry.init({
     dsn: argv.sentryDsn,
     environment: argv.sentryEnvironment,
     release: argv.sentryRelease,
     sampleRate: numericArg(argv.sentrySampleRate),
-    // Native (Kotlin/Swift) owns the trace-sampling decision and forwards the
-    // already-resolved rate — it folds in the `debug` window (full sampling
-    // while on) and any plugin-configured cap. Mirror it verbatim here; absent
-    // means 0. Day-to-day perf signal rides the always-on metrics layer.
-    tracesSampleRate: argv.sentryTracesSampleRate
-      ? numericArg(argv.sentryTracesSampleRate)
-      : 0,
+    // The sync-session transaction is usage-tier, not debug-tier, so it must
+    // sample even while the base rate is 0. Everything else keeps the
+    // parent-based / base-rate behaviour a plain `tracesSampleRate` gives.
+    tracesSampler: ({ name, inheritOrSampleWith }) => {
+      if (name === SYNC_SESSION_TRANSACTION) {
+        return config?.applicationUsageData ? 1 : 0;
+      }
+      return inheritOrSampleWith(baseTracesSampleRate);
+    },
     // v9 moved this out of `_experiments` — keep the CLI flag name so
     // native doesn't have to change.
     enableLogs: argv.sentryEnableLogs,
@@ -318,6 +331,59 @@ export async function withSpan(op, fn) {
       recordPhase();
     }
   });
+}
+
+/**
+ * @typedef {{
+ *   startPhase: (phase: "discover" | "replicate") => void,
+ *   end: (args: { outcome: string, peersBucket: string, bytesBucket: string }) => void,
+ * }} SyncSessionTransaction
+ */
+
+/**
+ * Start the usage-tier `comapeo.sync.session` transaction. Returns
+ * `null` when Sentry is off or `applicationUsageData` is off, so the
+ * caller treats the handle as optional. `end` sets the only attributes
+ * the transaction may carry — bucketed peer count, bucketed bytes,
+ * outcome (§11.3) — never peer identities or project IDs. `startPhase`
+ * ends the previous phase child span and starts the next.
+ *
+ * @returns {SyncSessionTransaction | null}
+ */
+export function startSyncSessionTransaction() {
+  if (!Sentry || !config?.applicationUsageData) return null;
+  const sentryRef = Sentry;
+  // Inactive span: a sync session is long-lived and concurrent with
+  // unrelated work, so it must not occupy the ALS context.
+  const root = sentryRef.startInactiveSpan({
+    name: SYNC_SESSION_TRANSACTION,
+    op: SYNC_SESSION_TRANSACTION,
+    forceTransaction: true,
+  });
+  if (!root) return null;
+  /** @type {ReturnType<typeof sentryRef.startInactiveSpan> | null} */
+  let phaseSpan = null;
+  return {
+    startPhase(phase) {
+      phaseSpan?.end();
+      phaseSpan = sentryRef.startInactiveSpan({
+        name: `sync.${phase}`,
+        op: `sync.${phase}`,
+        parentSpan: root,
+      });
+    },
+    end({ outcome, peersBucket, bytesBucket }) {
+      phaseSpan?.end();
+      phaseSpan = null;
+      root.setAttributes({
+        outcome,
+        peers_bucket: peersBucket,
+        bytes_bucket: bytesBucket,
+      });
+      root.setStatus({ code: 1, message: "ok" });
+      root.end();
+    },
+  };
 }
 
 /**

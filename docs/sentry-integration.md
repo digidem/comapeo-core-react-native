@@ -1409,9 +1409,9 @@ The diagnostic tier carries aggregate, low-cardinality operational signal;
 | Backend health gauges (memory, heap, uptime, event-loop delay) | Diagnostics | Process resource health; independent of user activity. |
 | Backend `node_resources` event context (capture-time free memory / free disk) | applicationUsageData | Read-at-capture frequency reveals app activity. Attached by `backend/lib/node-resources.js`. |
 | Native event scope extras (kernel version, OS build string, app name, locale + timezone, screen metrics, `boot.kind`, boot span data) | applicationUsageData | High-entropy fingerprint / usage-shape surfaces. The diagnostic tier keeps coarse device identity, OS name+version, and app id/version/build only (`SentryScopeTier.kt` / `SentryScopeTier.swift`) — **except** error/fatal events, which keep the full device/os/app scope (device context matters most on a crash) and drop only `culture`. |
-| Sync session duration + outcome | Diagnostics | Sync performance/reliability is core-function health; that a sync ran is inherent to a P2P app. *Not yet wired ([#80](https://github.com/digidem/comapeo-core-react-native/issues/80)).* |
-| Sync `peers_bucket` | applicationUsageData | How many devices a user syncs with is a proxy for their collaboration/social-graph size. *Not yet wired ([#80](https://github.com/digidem/comapeo-core-react-native/issues/80)).* |
-| Sync `bytes_bucket` | applicationUsageData | Volume of data exchanged is a proxy for how much a user collects/shares. *Not yet wired ([#80](https://github.com/digidem/comapeo-core-react-native/issues/80)).* |
+| Sync session duration + outcome | Diagnostics | Sync performance/reliability is core-function health; that a sync ran is inherent to a P2P app. |
+| Sync `peers_bucket` | applicationUsageData | How many devices a user syncs with is a proxy for their collaboration/social-graph size. Buckets: `0` / `1-3` / `4-10` / `10+`. |
+| Sync `bytes_bucket` | applicationUsageData | Volume of data exchanged is a proxy for how much a user collects/shares. Currently always `unknown`: `@comapeo/core`'s sync state exposes remaining block counts, not byte counters. |
 | `state.transitions` | Diagnostics | App lifecycle states; no user content. |
 | `storage.size_bucket` | Diagnostics | Coarse 4-bucket dataset size — kept on so crashes/OOMs can be correlated with data volume. |
 | App-exit coarse buckets (`uptime_bucket`, `bg_duration_bucket`, OEM-kill flags) | Diagnostics | Aggregate stability signal ("which OEMs kill us"); low-resolution. |
