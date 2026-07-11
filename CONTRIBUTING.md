@@ -124,6 +124,8 @@ what each one verifies) has a root script:
 |---|---|---|
 | JS lint | `npm run lint` | ESLint |
 | JS unit | `npm run test` | TypeScript unit tests (`src/__tests__/`) |
+| Type surface | `npm run test:types` | compile-only assertions in `test-d/` pinning the published API against the pinned `@comapeo/core` |
+| Package hygiene | `npm run check:package` | `publint` + `attw` on a packed tarball (exports/types resolution); needs `npm run build` first |
 | Backend unit | `npm run backend:test` | Node `--test` suite in `backend/` |
 | Swift package | `npm run test:swift` | macOS, no simulator (`cd ios && swift test`) |
 | JVM unit | `npm run test:android:unit` | no device |
@@ -190,6 +192,31 @@ supply-chain report — and adds the **`safe-to-test`** label, which triggers th
 isolated [.github/workflows/e2e-trusted.yml](.github/workflows/e2e-trusted.yml).
 The label is removed after the run and on every new commit, so a Dependabot bump
 can never re-run secret-bearing CI without a fresh review.
+
+## Bumping `@comapeo/core`
+
+`@comapeo/core` is declared in two places that must move together:
+
+- `backend/package.json` — the version actually bundled into the embedded
+  Node.js backend.
+- `package.json` (root) — a **types-only** dependency (nothing on the RN side
+  imports core at runtime). It is what the published type declarations resolve
+  against — `@comapeo/ipc`'s client types do
+  `import type { MapeoManager } from '@comapeo/core'` — so it must be pinned
+  **exactly** to the version the backend runs, or consumers typecheck against
+  a different API than the one answering their RPCs.
+
+`scripts/check-core-types-pin.mjs` (run from `prepare`, so on every
+`npm install` and in CI) fails if the two versions differ or the root pin
+isn't exact. To bump:
+
+1. Update the version in **both** files, then `npm install` and
+   `npm run backend:install`.
+2. Run `npm run test:types` — the compile-time assertions in `test-d/` pin
+   the published API surface, so a failure here means core changed the API
+   shape; review the fallout (and flag breaking changes in the PR title)
+   rather than shipping it silently.
+3. Rebuild the backend (`npm run backend:build`) before any native testing.
 
 ## Pull requests and commit conventions
 

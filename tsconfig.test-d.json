@@ -1,0 +1,16 @@
+{
+  // Type-surface tests: compile-time-only assertions in test-d/ that pin the
+  // published API's shape against the pinned @comapeo/core. Run via
+  // `npm run test:types`. Kept out of the main tsconfig so nothing under
+  // test-d/ is emitted into build/.
+  "extends": "expo-module-scripts/tsconfig.base",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "inlineSources": false
+  },
+  "include": ["./src", "./test-d"],
+  "exclude": ["**/__mocks__/*", "**/__tests__/*", "**/__rsc_tests__/*"]
+}

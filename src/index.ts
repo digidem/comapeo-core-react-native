@@ -8,3 +8,9 @@ export {
   requestNotificationPermissionsAsync,
 } from "./ComapeoCoreModule";
 export * from "./ComapeoCore.types";
+export type {
+  ComapeoApi,
+  ComapeoProjectApi,
+  ComapeoServicesApi,
+  OverIpc,
+} from "./rpc-boundary.types";

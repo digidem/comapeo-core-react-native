@@ -43,5 +43,16 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # Compile-only assertions pinning the published type surface against
+      # the exact @comapeo/core the backend bundles (see test-d/ and
+      # scripts/check-core-types-pin.mjs, which `prepare` already ran).
+      - name: Type-surface tests
+        run: npm run test:types
+
+      # publint + attw on a packed tarball: exports/types resolution as a
+      # consumer install sees it. Uses build/ from `prepare`.
+      - name: Package types check
+        run: npm run check:package
+
       - name: Script tests
         run: npm run test:scripts

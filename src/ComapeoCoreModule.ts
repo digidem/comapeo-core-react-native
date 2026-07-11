@@ -13,9 +13,8 @@ import type { MessagePortLike } from "rpc-reflector";
 import {
   createComapeoCoreClient,
   createComapeoServicesClient,
-  type ComapeoCoreClientApi,
-  type ComapeoServicesClientApi,
 } from "@comapeo/ipc/client.js";
+import type { ComapeoApi, ComapeoServicesApi } from "./rpc-boundary.types";
 import * as Sentry from "@sentry/react-native";
 // `getTraceData` / `startNewTrace` aren't re-exported from
 // `@sentry/react-native@7`; `@sentry/core` is a direct dep of RN so
@@ -347,7 +346,11 @@ const debugTracingEnabled = (() => {
   return prefs.diagnosticsEnabled && prefs.debug;
 })();
 
-export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort, {
+// The `as ComapeoApi` re-brand is the one place we assert the JSON-boundary
+// truth over `@comapeo/ipc`'s pre-serialization types: the factory's return
+// type describes core's shapes, but what this client actually resolves with
+// has been through JSON.stringify/parse — see `src/rpc-boundary.types.ts`.
+export const comapeo = createComapeoCoreClient(messagePort, {
   timeout: RPC_TIMEOUT_MS,
   onRequestHook: (request, next) => {
     // Sentry-not-initialised guard. `isInitialized` lives in `@sentry/core`
@@ -449,7 +452,7 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort
       startNewTrace(runSpan);
     }
   },
-});
+}) as ComapeoApi;
 
 type StateEvents = {
   stateChange: (state: ComapeoState, error: ComapeoErrorInfo | null) => void;
@@ -530,7 +533,7 @@ class State extends EventEmitter<StateEvents> {
 
 export const state = new State();
 
-export const comapeoServicesClient: ComapeoServicesClientApi =
-  createComapeoServicesClient(messagePort, {
-    timeout: RPC_TIMEOUT_MS,
-  });
+// Same JSON-boundary re-brand as `comapeo` above.
+export const comapeoServicesClient = createComapeoServicesClient(messagePort, {
+  timeout: RPC_TIMEOUT_MS,
+}) as ComapeoServicesApi;
