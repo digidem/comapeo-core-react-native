@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { inspect } from "node:util";
 import FramedStream from "framed-stream";
 
 import { SimpleRpcServer } from "./simple-rpc.js";
@@ -158,6 +159,47 @@ test("a malformed frame does not crash the server", async (t) => {
 
   await waitFor(() => received.length === 1, { message: "survived bad frame" });
   assert.deepEqual(received[0], { type: "init", ok: true });
+});
+
+// The control socket carries the init frame with the rootKey, so neither
+// the invalid-message path nor the parse-error path may log payload
+// content — V8's JSON.parse SyntaxError even embeds a snippet of the raw
+// input, so logging `event.data` (an Error) would leak key bytes too.
+test("invalid messages and malformed frames are logged without payload content", async (t) => {
+  const SECRET = "MDEyMzQ1Njc4OWFiY2RlZg==";
+  /** @type {unknown[][]} */
+  const logged = [];
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  console.warn = (...args) => logged.push(args);
+  console.error = (...args) => logged.push(args);
+  t.after(() => {
+    console.warn = originalWarn;
+    console.error = originalError;
+  });
+
+  let called = false;
+  const { path } = await startServer(t, {
+    init: () => {
+      called = true;
+    },
+  });
+
+  const socket = await connectSocket(t, path);
+  const raw = new FramedStream(socket);
+  // Unknown-type message carrying the key — the invalid-message warn path.
+  raw.write(Buffer.from(JSON.stringify({ type: "unknown", rootKey: SECRET })));
+  // Truncated init frame — the JSON.parse messageerror path.
+  raw.write(Buffer.from(`{"type":"init","rootKey":"${SECRET}"`));
+  raw.write(Buffer.from(JSON.stringify({ type: "init" })));
+
+  await waitFor(() => called, { message: "valid message still handled" });
+  assert.ok(logged.length >= 2, "both bad frames must have been logged");
+  const flat = logged.map((args) => args.map((a) => inspect(a)).join(" ")).join("\n");
+  assert.ok(
+    !flat.includes(SECRET.slice(0, 12)),
+    `logged output must not contain key material, got: ${flat}`,
+  );
 });
 
 test("a malformed frame on the control socket records comapeo.ipc.errors", async (t) => {

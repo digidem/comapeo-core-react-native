@@ -1301,12 +1301,27 @@ Node; shared test cases in `test-support/scrubber-cases.js` keep the
 two copies from drifting): it walks the event tree — message, exception
 values, extra, contexts, breadcrumbs, structured logs — redacting
 `rootKey`-marked values and coordinate markers (`lat`, `lng`, `lon`,
-`latitude`, `longitude`, in key/value and JSON-serialized forms). A
-broad base64-22-char rule (to catch *bare* unmarked rootkeys) is
-deliberately **not** enabled: it also matched trace IDs and exception
-type names; a narrower design is pending, and until then bare unmarked
-tokens pass through. This is belt-and-suspenders — the fix is always at
-the capture site, but the scrubber catches mistakes before they ship.
+`latitude`, `longitude`, in key/value and JSON-serialized forms).
+
+Rootkey protection filters on the **key, not the value's shape**. The
+marker rule reaches quoted values, so the two realistic leak forms — a
+logged init frame (`{"rootKey":"…"}`) and a console-formatted message
+object (`rootKey: '…'`) — both redact; and any object field *keyed*
+`rootKey`/`root_key`/`root-key` is redacted regardless of value type or
+encoding. There is deliberately **no** value-shape rule for bare
+(unmarked) rootkey-like tokens: the key exists as a base64 string only
+inside the init frame, always adjacent to its field name (it never
+enters the RN JS layer at all); everywhere else it is a `Buffer`, whose
+accidental serialisations (hex dump, byte array) a base64 shape rule
+would not match anyway — and the encoding has changed before (the
+legacy app stored the key as hex, see `LegacyRootKeyDecoder`), so a
+shape rule silently rots when the wire format moves. The complementary
+defence is at the capture sites: the IPC servers
+(`backend/lib/simple-rpc.js`, `backend/lib/comapeo-rpc.js`) never log
+frame payloads or parse-error text (V8's `JSON.parse` errors embed a
+snippet of the raw input), only the frame `type` / error name. This is
+belt-and-suspenders — the fix is always at the capture site, but the
+scrubber catches mistakes before they ship.
 
 ---
 

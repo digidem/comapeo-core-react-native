@@ -93,9 +93,10 @@ describe("sentry-metrics", () => {
     expect(calls).toHaveLength(1);
   });
 
-  // The broad base64-22 value rule is disabled pending a narrower design
-  // (see sentry-scrub.ts), so a bare token tag no longer drops the metric.
-  test("bare base64 tag values pass through while the broad rule is disabled", () => {
+  // Deliberately no value-shape rule for bare tokens (see the
+  // SCRUB_PATTERNS note in sentry-scrub.ts) — the `rootkey` tag-NAME ban
+  // covers the realistic mistake, so a bare token tag value passes.
+  test("bare base64 tag values pass through (no value-shape rule)", () => {
     const { __metricsInternals } = require("../sentry-metrics");
     __metricsInternals.count("comapeo.x", { bucket: "bm90LWEtcmVhbC1rZXktMQ" });
     expect(calls).toHaveLength(1);

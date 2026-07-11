@@ -8,12 +8,14 @@
 // the same scrubbing + drop behaviour runs on Node-side events before
 // they leave the FGS.
 //
-// Mirrored from `src/sentry-scrub.ts`. The broad base64-22 token rule (to
-// catch bare rootKeys / public keys / project ids) is intentionally NOT
-// enabled here either — it over-matched Sentry's own 32-hex trace_ids,
-// PascalCase exception type names, and error_class metric tags, redacting
-// data we need. Pending a narrower design agreed with the team; bare tokens
-// are unscrubbed until then. Object fields keyed
+// Mirrored from `src/sentry-scrub.ts`. rootKey protection filters on the
+// KEY, not the value's encoding: the marker rule reaches quoted values
+// (JSON / util.inspect forms), and object fields keyed
+// rootKey/root_key/root-key are redacted regardless of value type or
+// encoding. There is deliberately NO value-shape rule for bare (unmarked)
+// tokens — see the SCRUB_PATTERNS note in `src/sentry-scrub.ts`; the
+// defence for bare values is that IPC code never logs frame payloads
+// (see lib/simple-rpc.js). Object fields keyed
 // lat/lng/latitude/longitude are redacted regardless of value type; lat/lng
 // markers redact the trailing number; HTTP breadcrumb URLs reduce to host-only.
 
@@ -21,16 +23,20 @@ const REDACTED = "[redacted]";
 
 /** @type {RegExp[]} */
 const SCRUB_PATTERNS = [
-  // Value stops at a field delimiter (whitespace, `,;&`, quote) so co-located
-  // fields in a compact `rootKey=abc,method=x` string survive.
-  /\broot[_-]?key\b\s*["']?\s*[:=]\s*[^\s,;&"']+/gi,
+  // The optional quote AFTER the separator is load-bearing: it reaches the
+  // quoted values in `{"rootKey":"…"}` (a logged init frame) and
+  // `rootKey: '…'` (a console-formatted message object). The value stops at
+  // a field delimiter (whitespace, `,;&`, quote) so co-located fields in a
+  // compact `rootKey=abc,method=x` string survive.
+  /\broot[_-]?key\b\s*["']?\s*[:=]\s*["']?[^\s,;&"']+/gi,
   // `lon` is the field name @comapeo/schema observations actually use.
   // Optional quote so JSON-serialized coordinates (`"lat":-12.3`) match.
   /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
 
-/** Object keys whose value is a raw coordinate — redacted regardless of type. */
-const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude)$/i;
+/** Object keys whose value is a raw coordinate or the device rootkey —
+ *  redacted regardless of value type or encoding. */
+const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude|root[_-]?key)$/i;
 
 // The native metric paths keep hand-mirrored copies of this list in
 // `android/src/main/java/com/comapeo/core/SentryMetricScrub.kt` and

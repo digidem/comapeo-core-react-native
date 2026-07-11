@@ -324,7 +324,9 @@ describe("initSentry", () => {
     expect(payload).toContain("[redacted]");
     expect(payload).not.toContain("aGVsbG8td29ybGQtMTIzNA"); // rootKey value gone
     expect(payload).not.toContain("-12.34"); // lat/lng gone
-    // Broad base64-22 rule disabled: a bare token in `extra` currently survives.
+    // Deliberately no value-shape rule for bare tokens (the key only ever
+    // travels next to its field name — see the SCRUB_PATTERNS note in
+    // sentry-scrub.ts), so a bare token in `extra` survives.
     expect(payload).toContain("bm90LWEtcmVhbC1rZXktMQ");
   });
 

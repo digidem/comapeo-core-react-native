@@ -11,6 +11,9 @@ export const BASE64_43 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 // ~52-char z-base-32 project id.
 export const ZBASE32_52 =
   "ybybybybybybybybybybybybybybybybybybybybybybybybybyb";
+// 16-byte rootkey in the wire format `backend/index.js` enforces:
+// 22 base64 chars + `==` (base64 of the ASCII bytes "0123456789abcdef").
+export const ROOTKEY_PADDED = "MDEyMzQ1Njc4OWFiY2RlZg==";
 
 /** `scrubString(input)` must equal `expect`. */
 export const scrubStringCases = [
@@ -26,8 +29,18 @@ export const scrubStringCases = [
   // co-located fields in a compact string survive.
   { name: "rootKey value stops at comma delimiter", input: "rootKey=abc,method=obs.create,code=500", expect: "[redacted],method=obs.create,code=500" },
   { name: "plain sentence untouched", input: "hello world", expect: "hello world" },
-  // Broad base64-22 rule is intentionally disabled — bare tokens pass through.
+  // Quoted-value forms — the realistic leak shapes. A logged init frame is
+  // JSON; a console.warn'd message object is util.inspect-formatted. The
+  // marker rule must reach the value through the opening quote.
+  { name: "JSON-quoted rootKey value redacted (logged init frame)", input: `{"type":"init","rootKey":"${ROOTKEY_PADDED}"}`, expect: '{"type":"init","[redacted]"}' },
+  { name: "util.inspect-quoted rootKey value redacted (logged message object)", input: `{ type: 'init', rootKey: '${ROOTKEY_PADDED}' }`, expect: "{ type: 'init', [redacted]' }" },
+  { name: "root_key variant with quoted value redacted", input: `root_key: "${ROOTKEY_PADDED}"`, expect: "[redacted]\"" },
+  // There is deliberately NO value-shape rule for bare (unmarked) tokens —
+  // the key only ever exists next to its field name (covered above), and a
+  // shape rule would be coupled to one encoding of the value. See the
+  // SCRUB_PATTERNS note in src/sentry-scrub.ts.
   { name: "bare base64 token passes through", input: "token bm90LWEtcmVhbC1rZXktMQ done", expect: "token bm90LWEtcmVhbC1rZXktMQ done" },
+  { name: `bare padded token passes through (no value-shape rule)`, input: `token ${ROOTKEY_PADDED} done`, expect: `token ${ROOTKEY_PADDED} done` },
   { name: "43-char public key passes through", input: BASE64_43, expect: BASE64_43 },
   { name: "52-char project id passes through", input: ZBASE32_52, expect: ZBASE32_52 },
 ];
@@ -49,8 +62,10 @@ export const forbiddenMetricCases = [
   { name: "forbidden metric name", metricName: "project_id", attributes: { platform: "ios" }, expect: true },
   { name: "lat/lng-shaped tag value", metricName: "comapeo.x", attributes: { coord: "lat=12.34" }, expect: true },
   { name: "lon-shaped tag value", metricName: "comapeo.x", attributes: { coord: "lon=-55.12" }, expect: true },
-  // Broad base64-22 value rule disabled — bare tokens no longer drop a metric.
-  { name: "43-char token value allowed (broad rule off)", metricName: "comapeo.x", attributes: { bucket: BASE64_43 }, expect: false },
-  { name: "52-char token value allowed (broad rule off)", metricName: "comapeo.x", attributes: { bucket: ZBASE32_52 }, expect: false },
+  // Deliberately no value-shape rule for bare tokens (the `rootkey`
+  // tag-NAME ban covers the realistic mistake) — token values pass.
+  { name: "43-char token value allowed (no value-shape rule)", metricName: "comapeo.x", attributes: { bucket: BASE64_43 }, expect: false },
+  { name: "52-char token value allowed (no value-shape rule)", metricName: "comapeo.x", attributes: { bucket: ZBASE32_52 }, expect: false },
+  { name: "rootkey tag NAME drops the metric", metricName: "comapeo.x", attributes: { rootkey: "x" }, expect: true },
   { name: "ordinary rpc tags allowed", metricName: "comapeo.rpc.client.duration_ms", attributes: { method: "read.doc", status: "ok", platform: "ios" }, expect: false },
 ];

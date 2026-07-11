@@ -33,7 +33,10 @@ export class ComapeoRpc extends ServerHelper {
       );
 
       messagePort.addEventListener("messageerror", (event) => {
-        console.error("Client sent invalid message", event.data);
+        // Log the error NAME only, never the message: V8's JSON.parse
+        // SyntaxError embeds a snippet of the raw input, and RPC frames
+        // carry observation data (coordinates).
+        console.error("Client sent invalid message", event.data?.name);
         metrics.ipcError(event.data?.name);
       });
 

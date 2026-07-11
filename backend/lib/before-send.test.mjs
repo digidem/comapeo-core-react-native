@@ -53,6 +53,19 @@ test("scrubEvent redacts numeric lat/lng stored as object fields", () => {
   assert.equal(event.contexts.geo.lng, "[redacted]");
 });
 
+test("scrubEvent redacts rootKey-keyed object fields regardless of encoding", () => {
+  // Hex value on purpose: key-based redaction must not depend on the
+  // base64 wire encoding (the legacy app stored the key as hex).
+  const event = {
+    extra: { rootKey: "30313233343536373839616263646566" },
+    contexts: { boot: { root_key: "MDEyMzQ1Njc4OWFiY2RlZg==", phase: "init" } },
+  };
+  scrubEvent(event);
+  assert.equal(event.extra.rootKey, "[redacted]");
+  assert.equal(event.contexts.boot.root_key, "[redacted]");
+  assert.equal(event.contexts.boot.phase, "init");
+});
+
 test("scrubEvent reduces request.url to host-only and scrubs marked query/headers", () => {
   const event = {
     request: {
