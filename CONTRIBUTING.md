@@ -208,7 +208,20 @@ can never re-run secret-bearing CI without a fresh review.
 
 `scripts/check-core-types-pin.mjs` (run from `prepare`, so on every
 `npm install` and in CI) fails if the two versions differ or the root pin
-isn't exact. To bump:
+isn't exact.
+
+Bumps are normally automated, and both paths update the two directories in a
+**single PR** (a PR touching only one side can never pass the pin check):
+core releases dispatch
+[bump-first-party-deps.yml](.github/workflows/bump-first-party-deps.yml),
+which bumps `/` and `/backend` together; Dependabot is the fallback, with a
+`first-party-sync` group (`group-by: dependency-name`, plus a security-update
+twin) in [.github/dependabot.yml](.github/dependabot.yml) so `@comapeo/*`
+updates span both directories rather than arriving as per-directory PRs that
+would block each other. If separate per-directory bump PRs ever do appear,
+don't try to merge them — close both and run the "Bump first-party dep"
+workflow manually (`workflow_dispatch`, package `@comapeo/core`), or bump by
+hand:
 
 1. Update the version in **both** files, then `npm install` and
    `npm run backend:install`.

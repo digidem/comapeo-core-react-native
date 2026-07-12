@@ -32,12 +32,47 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    # Group order matters: a dependency is included in the FIRST group it
+    # matches, so the @comapeo/* groups must come before the catch-all
+    # minor-and-patch group.
     groups:
+      # @comapeo/core is pin-synced between / and /backend by
+      # scripts/check-core-types-pin.mjs (run in `prepare`, so on every CI
+      # install): a PR that bumps it in only one directory can never go
+      # green. Per-directory PRs are exactly what Dependabot produces for
+      # updates that fall outside a group (e.g. prerelease->release bumps
+      # like #185), which would deadlock — two PRs, each red, each needing
+      # the other's half. `group-by: dependency-name` instead opens one PR
+      # per dependency spanning both directories. Scoped to @comapeo/* since
+      # @comapeo/ipc is version-coupled between the two directories too
+      # (client and server halves of the same wire protocol).
+      first-party-sync:
+        applies-to: version-updates
+        patterns:
+          - "@comapeo/*"
+        group-by: dependency-name
+      # Security updates never join version-update groups; without a
+      # security group of their own they'd arrive as per-directory PRs and
+      # hit the same deadlock. (The usual argument against grouping security
+      # fixes — one bad update blocks the rest — doesn't apply: these are
+      # our own packages, and the pin check blocks half-bumps anyway.)
+      first-party-sync-security:
+        applies-to: security-updates
+        patterns:
+          - "@comapeo/*"
       minor-and-patch:
         update-types:
           - minor
           - patch
     ignore:
+      # No prerelease rules are needed here: Dependabot only proposes a
+      # prerelease version when the current pin is already a prerelease (or
+      # the requirement names one) — a stable pin is never bumped TO a
+      # prerelease. Deps we've pinned to a prerelease DO get normal update
+      # PRs (a newer prerelease or the stable graduation, e.g. #185), which
+      # is wanted; for @comapeo/* those arrive as a single cross-directory
+      # PR via the first-party-sync group above.
+      #
       # Majors are done by hand. We target Node 18 to match nodejs-mobile, so
       # several deps can't move to their latest major (e.g. @types/node stays
       # on 18.x); and a batched major PR we're not ready for is just noise.
