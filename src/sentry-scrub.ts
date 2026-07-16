@@ -11,10 +11,17 @@
  * buggy host (and our own mistakes) before a payload leaves the device.
  *
  * What it redacts (and the false-positive trade-off):
- *   - Explicit `rootKey=…` markers (key=value / json / prose). A broad
- *     "any 22+-char base64url run" rule is deliberately NOT enabled — see
- *     the SCRUB_PATTERNS note below — so bare rootKeys/keys/project-ids
- *     with no marker are currently unscrubbed.
+ *   - Explicit `rootKey` markers (key=value / JSON / util.inspect / prose).
+ *     The value may be quoted — a logged init frame (`{"rootKey":"…"}`) and
+ *     a console.warn'd message object (`rootKey: '…'`) are the realistic
+ *     leak shapes, and both quote the value.
+ *   - Object fields whose KEY is rootKey/root_key/root-key are redacted
+ *     regardless of value type or encoding. Filtering on the key name is
+ *     what makes this robust: every place the key's value exists in JS it
+ *     sits next to its field name (the init frame is the only wire
+ *     crossing), and a key-based rule keeps working if the value's
+ *     encoding ever changes (it has before — the legacy app stored it as
+ *     hex, see android LegacyRootKeyDecoder).
  *   - Object fields whose KEY is lat/lng/latitude/longitude are redacted
  *     regardless of value type — a numeric `{latitude: 12.3}` is the most
  *     likely capture shape and value-only scrubbing would miss it.
@@ -35,24 +42,31 @@ const REDACTED = "[redacted]";
  * scrubbed.
  */
 const SCRUB_PATTERNS: RegExp[] = [
-  // Explicit rootKey markers (key=value, json, prose). The value stops at a
-  // field delimiter (whitespace, `,;&`, quote) so co-located fields in a
-  // compact string like `rootKey=abc,method=x` survive.
-  /\broot[_-]?key\b\s*["']?\s*[:=]\s*[^\s,;&"']+/gi,
-  // NOTE: a broad 22+-char URL-safe base64 rule (to catch bare rootKeys at
-  // 22, public keys at 43, project ids at ~52) is intentionally NOT enabled
-  // — it also matched Sentry's own 32-hex trace_ids, PascalCase exception
-  // type names, and error_class metric tags, redacting data we need. Pending
-  // a narrower design agreed with the team; bare tokens are unscrubbed until
-  // then.
+  // Explicit rootKey markers (key=value, JSON, util.inspect, prose). The
+  // optional quote AFTER the separator is load-bearing: it reaches the
+  // quoted values in `{"rootKey":"…"}` (a logged init frame) and
+  // `rootKey: '…'` (a console-formatted message object). The value stops
+  // at a field delimiter (whitespace, `,;&`, quote) so co-located fields
+  // in a compact string like `rootKey=abc,method=x` survive.
+  /\broot[_-]?key\b\s*["']?\s*[:=]\s*["']?[^\s,;&"']+/gi,
+  // NOTE: there is deliberately NO value-shape rule for bare (unmarked)
+  // rootkey-like tokens. A broad base64 rule over-matched trace ids and
+  // type names, and an exact-shape rule is coupled to one encoding of the
+  // value — but the key exists as a base64 string only inside the init
+  // frame (always adjacent to its `rootKey` field name, covered above);
+  // everywhere else it is a Buffer, whose accidental serialisations (hex
+  // dump, byte array) no base64 rule would match anyway. The defence for
+  // bare values is at the capture sites: IPC code must never log frame
+  // payloads (see backend/lib/simple-rpc.js).
   // Latitude / longitude markers followed by a number. `lon` is the field
   // name @comapeo/schema observations actually use. Optional quote between
   // key and separator so JSON-serialized coordinates (`"lat":-12.3`) match.
   /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
 
-/** Object keys whose value is a raw coordinate — redacted regardless of type. */
-const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude)$/i;
+/** Object keys whose value is a raw coordinate or the device rootkey —
+ *  redacted regardless of value type or encoding. */
+const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude|root[_-]?key)$/i;
 
 /** Tag names/values that must never ride on a metric. The native metric
  *  paths keep hand-mirrored copies of this list in
@@ -74,8 +88,8 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
   "rootkey",
 ]);
 
-/** Forbidden tag *values* — lat/lng shapes. (The broad base64-22 rule is
- *  held back here too; see the SCRUB_PATTERNS note above.) */
+/** Forbidden tag *values* — lat/lng shapes. (No bare-token value rule
+ *  here either; see the SCRUB_PATTERNS note above.) */
 const FORBIDDEN_METRIC_VALUE_PATTERNS: RegExp[] = [
   /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/i,
 ];

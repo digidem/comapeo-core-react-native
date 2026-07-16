@@ -52,6 +52,19 @@ describe("scrubEvent", () => {
     expect(event.contexts.geo.lng).toBe("[redacted]");
   });
 
+  test("redacts rootKey-keyed object fields regardless of encoding", () => {
+    // Hex value on purpose: key-based redaction must not depend on the
+    // base64 wire encoding (the legacy app stored the key as hex).
+    const event = {
+      extra: { rootKey: "30313233343536373839616263646566" },
+      contexts: { boot: { root_key: "MDEyMzQ1Njc4OWFiY2RlZg==", phase: "init" } },
+    };
+    scrubEvent(event);
+    expect(event.extra.rootKey).toBe("[redacted]");
+    expect(event.contexts.boot.root_key).toBe("[redacted]");
+    expect(event.contexts.boot.phase).toBe("init");
+  });
+
   test("reduces breadcrumb HTTP URLs to host-only", () => {
     const event = {
       breadcrumbs: [
