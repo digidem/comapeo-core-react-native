@@ -60,7 +60,12 @@ What each layer is actually for:
 
 - **Layer 1 — JS lint + unit.** The fast gate. ESLint plus the TypeScript unit
   tests under `src/__tests__/` (the RN-facing adapter). Seconds, no native
-  toolchain.
+  toolchain. The same job also runs the type-correctness tooling: the
+  compile-only type-surface assertions in `test-d/` (`npm run test:types`,
+  pinning the published API against the exact `@comapeo/core` the backend
+  bundles — see `scripts/check-core-types-pin.mjs`) and the package-hygiene
+  check (`npm run check:package`, `publint` + `attw` against a packed
+  tarball).
 - **Layer 2 — Swift package.** Builds only the platform-portable Swift sources
   (`NodeJSIPC`, `NodeJSService`, `Log`) and exercises framing / IPC / service
   lifecycle / `waitForFile` against Unix sockets via Darwin APIs — no simulator

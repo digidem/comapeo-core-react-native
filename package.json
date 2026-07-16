@@ -59,12 +59,15 @@
     "clean": "expo-module clean",
     "lint": "expo-module lint --cache .",
     "test": "expo-module test",
+    "test:types": "tsc --project tsconfig.test-d.json",
+    "check:core-pin": "node scripts/check-core-types-pin.mjs",
+    "check:package": "node scripts/check-package-types.mjs",
     "test:scripts": "node --test 'scripts/lib/*.test.mjs'",
     "test:swift": "cd ios && swift test",
     "test:android": "./scripts/run-instrumented-tests.sh",
     "test:android:unit": "./scripts/run-instrumented-tests.sh --unit-only",
     "test:ios": "npm --prefix apps/integration run test:ios",
-    "prepare": "node scripts/write-version.mjs && node scripts/check-sentry-cocoa-pin.mjs && expo-module build --watch false",
+    "prepare": "node scripts/write-version.mjs && node scripts/check-sentry-cocoa-pin.mjs && node scripts/check-core-types-pin.mjs && expo-module build --watch false",
     "prepublishOnly": "expo-module prepublishOnly",
     "prepack": "node scripts/write-version.mjs && npm run backend:build",
     "open:ios": "xed apps/integration/ios",
@@ -92,6 +95,7 @@
   "license": "MIT",
   "homepage": "https://github.com/digidem/comapeo-core-react-native#readme",
   "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
     "@eslint/compat": "2.0.5",
     "@eslint/js": "9.39.4",
     "@sentry/react-native": "^8.13.0",
@@ -104,9 +108,9 @@
     "expo-module-scripts": "56.0.3",
     "globals": "17.5.0",
     "prettier": "3.8.3",
+    "publint": "0.3.14",
     "react": "19.2.3",
     "react-native": "0.85.3",
-    "type-fest": "5.6.0",
     "typescript-eslint": "8.59.0"
   },
   "peerDependencies": {
@@ -116,7 +120,9 @@
     "react-native": "*"
   },
   "dependencies": {
-    "@comapeo/ipc": "9.0.0"
+    "@comapeo/core": "7.3.0",
+    "@comapeo/ipc": "9.0.0",
+    "type-fest": "5.6.0"
   },
   "allowScripts": {
     "@sentry/cli": false,
