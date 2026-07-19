@@ -1,7 +1,10 @@
 package com.comapeo.core.ble
 
 import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
+import androidx.core.content.ContextCompat
 
 /**
  * The runtime permissions BLE discovery needs, by SDK level. Split out
@@ -28,4 +31,27 @@ object BlePermissions {
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
+
+    /**
+     * Whether this app currently satisfies a prerequisite for the
+     * `connectedDevice` foreground-service type (enforced from API 34:
+     * `startForeground` with that type throws SecurityException unless
+     * a qualifying runtime state holds — for us, any granted
+     * Nearby-devices permission). Below API 31 the legacy `BLUETOOTH`
+     * permission is install-time, so it qualifies whenever declared.
+     */
+    fun hasConnectedDeviceFgsPrerequisite(context: Context): Boolean {
+        val candidates = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+            )
+        } else {
+            arrayOf(Manifest.permission.BLUETOOTH)
+        }
+        return candidates.any {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
 }

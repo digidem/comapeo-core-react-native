@@ -45,6 +45,15 @@
     <uses-permission
         android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
+    <!--
+        BLE runs inside the :ComapeoCore FGS so discovery survives
+        backgrounding; `connectedDevice` is the matching FGS type (API 34+
+        enforces type prerequisites). The service starts dataSync-only and
+        re-promotes with connectedDevice once BLE actually starts AND a
+        Nearby-devices permission is granted — see
+        ComapeoCoreService.promoteBleForegroundType.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <!--
         `extractNativeLibs="false"`: native libraries (libnode.so + every
@@ -117,6 +126,6 @@
             android:process=":ComapeoCore"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync"/>
+            android:foregroundServiceType="dataSync|connectedDevice"/>
     </application>
 </manifest>

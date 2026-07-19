@@ -33,10 +33,11 @@ export type BleCapabilities = {
 };
 
 /**
- * A raw sighting of a CoMapeo-filtered advertisement. `payload` is the
- * base64 manufacturer-data payload (company ID already stripped by the
- * platform); `address` is the sender's BLE MAC — randomized by modern
- * devices, so only useful for short-horizon dedup, not identity.
+ * A sighting of a CoMapeo-filtered advertisement, relayed from the
+ * FGS-hosted scanner via the backend's `ble-peer` broadcast. `payload`
+ * is the base64 manufacturer-data payload (company ID already stripped
+ * by the platform); `address` is the sender's BLE MAC — randomized by
+ * modern devices, so only useful for short-horizon dedup, not identity.
  */
 export type BleAdvertisementPayload = {
   payload: string;
@@ -44,8 +45,12 @@ export type BleAdvertisementPayload = {
   address: string;
 };
 
-/** Async failure surfaced by the native side after a start succeeded
- * (e.g. the OS revoked advertising, scan registration failed). */
+/**
+ * Radio failure from the FGS-hosted engine (relayed via the backend).
+ * Discovery is intent-driven, so ALL radio errors — including ones a
+ * start call provokes, like Bluetooth being off — arrive on this
+ * channel, never as a rejection of `start()`.
+ */
 export type BleErrorPayload = {
   scope: "advertise" | "scan";
   code: string;
@@ -61,17 +66,25 @@ export type BleNativeEvents = {
  * The surface `BleDiscovery` needs from the native module. Structural
  * subset of the real Expo `NativeModule` so tests can supply a plain
  * object.
+ *
+ * The discovery methods are asynchronous *controls*, not radio calls:
+ * the native module forwards them to the `:ComapeoCore` foreground
+ * service (where the radios live, so discovery survives backgrounding)
+ * and retains the desired state, re-pushing it if the service
+ * restarts. They resolve on dispatch and reject only on invalid input
+ * or a missing native context — radio failures come back as `bleError`
+ * events.
  */
 export interface BleNativeModuleLike {
   getCapabilities(): BleCapabilities;
   getPermissionsAsync(): Promise<BlePermissionResponse>;
   requestPermissionsAsync(): Promise<BlePermissionResponse>;
-  /** Starts — or, when already advertising, atomically replaces — the
-   * advertisement with the given base64 manufacturer-data payload. */
-  startAdvertising(payloadBase64: string): Promise<void>;
-  stopAdvertising(): Promise<void>;
-  startScanning(): Promise<void>;
-  stopScanning(): Promise<void>;
+  /** Start scanning; `payloadBase64` non-null also starts (or replaces)
+   * the advertisement. */
+  startDiscovery(payloadBase64: string | null): Promise<void>;
+  /** Replace (or with null clear) the advertisement; scan untouched. */
+  updateAdvertisement(payloadBase64: string | null): Promise<void>;
+  stopDiscovery(): Promise<void>;
   addListener<EventName extends keyof BleNativeEvents>(
     eventName: EventName,
     listener: BleNativeEvents[EventName],

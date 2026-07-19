@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import ensureError from "ensure-error";
 import Fastify from "fastify";
 
+import { createBleDiscovery } from "./lib/ble-discovery.js";
 import { ComapeoRpc } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { createMapServer } from "./lib/create-map-server.js";
@@ -65,6 +66,19 @@ const initPromise = new Promise((resolve, reject) => {
   rejectInit = reject;
 });
 let initConsumed = false;
+
+// BLE discovery policy (Android; docs/ble-discovery.md §4). The FGS
+// hosts the radios and forwards `ble-own` / `ble-sighting` / `ble-error`
+// frames here; this side decodes, relays `ble-peer` / `ble-error` to
+// control-socket observers, and auto-connects same-project peers whose
+// sync state differs — which is what keeps discovery→sync working while
+// the main app process is dead. `controlIpcServer` and `comapeoManager`
+// are referenced lazily: frames only arrive after listen(), and connects
+// are skipped until the manager exists.
+const bleDiscovery = createBleDiscovery({
+  getManager: () => comapeoManager,
+  broadcast: (frame) => controlIpcServer.broadcast(frame),
+});
 
 const controlIpcServer = new SimpleRpcServer({
   /**
@@ -167,6 +181,9 @@ const controlIpcServer = new SimpleRpcServer({
     /** @type {Error & { source?: string }} */ (err).source = "native";
     handleFatal(message.phase, err);
   },
+  "ble-own": (message) => bleDiscovery.handleOwn(message),
+  "ble-sighting": (message) => bleDiscovery.handleSighting(message),
+  "ble-error": (message) => bleDiscovery.handleError(message),
 });
 
 /**

@@ -98,6 +98,10 @@ class ComapeoCoreModule : Module() {
                         // Capturing here would double-send.
                         is ControlFrame.SentryEvent -> {}
                         is ControlFrame.SentryEnvelope -> {}
+                        // BLE frames belong to ComapeoBleDiscoveryModule's own
+                        // control-socket observer.
+                        is ControlFrame.BlePeer -> {}
+                        is ControlFrame.BleError -> {}
                         is ControlFrame.Malformed -> emitMessageError(frame.detail)
                     }
                 },

@@ -138,6 +138,34 @@ class ControlFrameTest {
     }
 
     @Test
+    fun parsesBlePeer() {
+        val frame = ControlFrame.parse(
+            """{"type":"ble-peer","payload":"Q00B","rssi":-48,"address":"AA:BB"}"""
+        )
+        assertEquals(
+            ControlFrame.BlePeer(payload = "Q00B", rssi = -48, address = "AA:BB"),
+            frame,
+        )
+    }
+
+    @Test
+    fun blePeerWithoutPayloadIsMalformed() {
+        val frame = ControlFrame.parse("""{"type":"ble-peer","rssi":-48}""")
+        assertTrue(frame is ControlFrame.Malformed)
+    }
+
+    @Test
+    fun parsesBleError() {
+        val frame = ControlFrame.parse(
+            """{"type":"ble-error","scope":"scan","code":"ERR_BLE_SCAN","message":"boom"}"""
+        )
+        assertEquals(
+            ControlFrame.BleError(scope = "scan", code = "ERR_BLE_SCAN", message = "boom"),
+            frame,
+        )
+    }
+
+    @Test
     fun unknownTypeReturnsMalformed() {
         val frame = ControlFrame.parse("""{"type":"forwardCompat"}""")
         assertTrue(frame is ControlFrame.Malformed)

@@ -656,6 +656,10 @@ class NodeJSService(
             is ControlFrame.SentryEnvelope -> {
                 SentryFgsBridge.captureEnvelopeBase64(frame.data)
             }
+            // Backend broadcasts consumed by the main-process BLE module's
+            // observer; the FGS just sees its own sightings echoed back.
+            is ControlFrame.BlePeer -> {}
+            is ControlFrame.BleError -> {}
             is ControlFrame.Malformed -> {
                 // Logged but not raised to ERROR — a single bad frame shouldn't take
                 // down the lifecycle. The main-app Module surfaces `messageerror` separately.
@@ -759,6 +763,28 @@ class NodeJSService(
                 log("Sent error-native frame to backend (phase=$phase)")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to send error-native frame", e)
+            }
+        }
+    }
+
+    /**
+     * Best-effort fire-and-forget control frame to the backend — the
+     * transport for the FGS-hosted BLE engine's `ble-own` /
+     * `ble-sighting` / `ble-error` frames. Same delivery model as
+     * [sendErrorNativeFrame]: bounded wait for the socket, drop on
+     * timeout/failure. BLE frames are inherently lossy (the next
+     * sighting re-carries the state), so a drop needs no capture —
+     * just a log.
+     */
+    fun sendControlFrame(frame: String) {
+        serviceScope.launch {
+            try {
+                val ipc = withTimeoutOrNull(SEND_ERROR_NATIVE_TIMEOUT_MS) {
+                    ipcDeferred.await()
+                } ?: return@launch
+                ipc.sendMessage(frame)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to send control frame", e)
             }
         }
     }

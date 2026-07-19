@@ -63,6 +63,17 @@ describe("advertisement codec", () => {
     expect(decodeAdvertisement(encodeAdvertisement(ad))).toEqual(ad);
   });
 
+  it("matches the shared cross-implementation vector", () => {
+    // Same hex is asserted against the backend's decoder mirror in
+    // backend/lib/ble-codec.test.mjs — drift fails one suite or the other.
+    const KNOWN_PAYLOAD_HEX = "434d0187cf0001e240deadbeefcc02c0a83101a8ca";
+    const payload = encodeAdvertisement(fullAd);
+    expect(Buffer.from(payload).toString("hex")).toBe(KNOWN_PAYLOAD_HEX);
+    expect(
+      decodeAdvertisement(Uint8Array.from(Buffer.from(KNOWN_PAYLOAD_HEX, "hex"))),
+    ).toEqual(fullAd);
+  });
+
   it("has the documented byte layout", () => {
     const payload = encodeAdvertisement(fullAd);
     expect([payload[0], payload[1]]).toEqual([...MAGIC]); // "CM"

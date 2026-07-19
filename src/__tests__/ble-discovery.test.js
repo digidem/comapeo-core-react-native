@@ -30,20 +30,16 @@ function makeFakeNative() {
     getCapabilities: () => ({ available: true, enabled: true }),
     getPermissionsAsync: jest.fn(async () => grantedPermission()),
     requestPermissionsAsync: jest.fn(async () => grantedPermission()),
-    startAdvertising(payload) {
-      this.calls.push(["startAdvertising", payload]);
+    startDiscovery(payload) {
+      this.calls.push(["startDiscovery", payload]);
       return Promise.resolve();
     },
-    stopAdvertising() {
-      this.calls.push(["stopAdvertising"]);
+    updateAdvertisement(payload) {
+      this.calls.push(["updateAdvertisement", payload]);
       return Promise.resolve();
     },
-    startScanning() {
-      this.calls.push(["startScanning"]);
-      return Promise.resolve();
-    },
-    stopScanning() {
-      this.calls.push(["stopScanning"]);
+    stopDiscovery() {
+      this.calls.push(["stopDiscovery"]);
       return Promise.resolve();
     },
     addListener(name, fn) {
@@ -75,15 +71,21 @@ describe("BleDiscovery", () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
 
-  it("starts scanning, then advertising when an advertisement is set", async () => {
+  it("starts discovery with the encoded advertisement payload", async () => {
     const native = makeFakeNative();
     const discovery = new BleDiscovery(native);
     await discovery.start({ advertisement: baseAd });
-    expect(native.calls.map(([name]) => name)).toEqual([
-      "startScanning",
-      "startAdvertising",
+    expect(native.calls).toEqual([
+      ["startDiscovery", bytesToBase64(encodeAdvertisement(baseAd))],
     ]);
     expect(discovery.isRunning).toBe(true);
+  });
+
+  it("starts scan-only when no advertisement is set", async () => {
+    const native = makeFakeNative();
+    const discovery = new BleDiscovery(native);
+    await discovery.start();
+    expect(native.calls).toEqual([["startDiscovery", null]]);
   });
 
   it("emits decoded peers and keys them by advertised ip:port", async () => {
@@ -182,13 +184,12 @@ describe("BleDiscovery", () => {
     await discovery.start({ advertisement: baseAd });
     await discovery.setAdvertisement({ ...baseAd, totalBlocks: 99 });
     await discovery.setAdvertisement(null);
-    const names = native.calls.map(([name]) => name);
-    expect(names).toEqual([
-      "startScanning",
-      "startAdvertising",
-      "startAdvertising",
-      "stopAdvertising",
+    expect(native.calls.map(([name]) => name)).toEqual([
+      "startDiscovery",
+      "updateAdvertisement",
+      "updateAdvertisement",
     ]);
+    expect(native.calls[2][1]).toBeNull();
   });
 
   it("surfaces native errors as BleDiscoveryError events", async () => {
@@ -216,16 +217,15 @@ describe("BleDiscovery", () => {
     expect(discovery.isRunning).toBe(false);
     expect(discovery.getPeers()).toHaveLength(0);
     expect(native.listeners.bleAdvertisement.size).toBe(0);
-    expect(native.calls.map(([name]) => name)).toContain("stopScanning");
-    expect(native.calls.map(([name]) => name)).toContain("stopAdvertising");
+    expect(native.calls.map(([name]) => name)).toContain("stopDiscovery");
     expect(jest.getTimerCount()).toBe(0);
   });
 
-  it("cleans up when startScanning rejects", async () => {
+  it("cleans up when startDiscovery rejects", async () => {
     const native = makeFakeNative();
-    native.startScanning = () => Promise.reject(new Error("bluetooth off"));
+    native.startDiscovery = () => Promise.reject(new Error("no native context"));
     const discovery = new BleDiscovery(native);
-    await expect(discovery.start()).rejects.toThrow("bluetooth off");
+    await expect(discovery.start()).rejects.toThrow("no native context");
     expect(discovery.isRunning).toBe(false);
     expect(native.listeners.bleAdvertisement.size).toBe(0);
   });

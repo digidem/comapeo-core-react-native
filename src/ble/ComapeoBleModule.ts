@@ -16,10 +16,9 @@ declare class ComapeoBleDiscoveryModule extends NativeModule<BleNativeEvents> {
   getCapabilities(): BleCapabilities;
   getPermissionsAsync(): Promise<BlePermissionResponse>;
   requestPermissionsAsync(): Promise<BlePermissionResponse>;
-  startAdvertising(payloadBase64: string): Promise<void>;
-  stopAdvertising(): Promise<void>;
-  startScanning(): Promise<void>;
-  stopScanning(): Promise<void>;
+  startDiscovery(payloadBase64: string | null): Promise<void>;
+  updateAdvertisement(payloadBase64: string | null): Promise<void>;
+  stopDiscovery(): Promise<void>;
 }
 
 /**

@@ -19,6 +19,8 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.comapeo.core.ble.BleDiscoveryEngine
+import com.comapeo.core.ble.BlePermissions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,11 +56,30 @@ class ComapeoCoreService : Service() {
     @Volatile
     private var selfTerminateJob: Job? = null
 
+    /**
+     * FGS-hosted BLE discovery engine (docs/ble-discovery.md). Lives here —
+     * not in the main-process module — so advertising/scanning survive the
+     * app being backgrounded or its main process killed, alongside the Node
+     * backend the sightings feed. Created lazily on the first BLE intent;
+     * in-memory only (an FGS respawn loses it; the main-process module
+     * re-pushes its desired state when it observes the backend come back).
+     */
+    private var bleEngine: BleDiscoveryEngine? = null
+
+    /** Last notification style shown, so a `startForeground` re-promotion
+     *  (BLE type upgrade) can rebuild the same notification. */
+    @Volatile
+    private var notificationIsForeground = true
+
     companion object {
         const val CHANNEL_ID = "ComapeoServiceChannel"
         const val NOTIFICATION_ID = 1
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
         const val CONTROL_SOCKET_FILENAME = "control.sock"
+
+        /** ByteArray extra on [Actions.BLE_START] / [Actions.BLE_UPDATE_ADVERTISEMENT]
+         *  carrying the encoded advertisement payload; absent = scan-only. */
+        const val EXTRA_BLE_PAYLOAD = "com.comapeo.core.blePayload"
 
         /**
          * Grace between a terminal ERROR and the FGS killing its own process
@@ -205,6 +226,29 @@ class ComapeoCoreService : Service() {
                 stopService()
             }
 
+            Actions.BLE_START.name, Actions.BLE_UPDATE_ADVERTISEMENT.name -> {
+                // Only meaningful with a running backend to receive the engine's
+                // frames. A stray intent can cold-create this service without the
+                // FGS boot path; ignoring it leaves an idle Service object that the
+                // system tears down with the process — same envelope as the
+                // USER_BACKGROUND cold-start noted above.
+                if (!isServiceStarted) {
+                    log("Ignoring ${intent.action} (service not started)")
+                } else {
+                    val payload = intent.getByteArrayExtra(EXTRA_BLE_PAYLOAD)
+                    if (intent.action == Actions.BLE_START.name) {
+                        promoteBleForegroundType()
+                        ensureBleEngine().start(payload)
+                    } else {
+                        ensureBleEngine().setAdvertisement(payload)
+                    }
+                }
+            }
+
+            Actions.BLE_STOP.name -> {
+                bleEngine?.stop()
+            }
+
             // Debug-only test seam: force a terminal ERROR with the node thread
             // alive so an instrumented test can assert the self-terminate watchdog
             // kills the process and a USER_FOREGROUND recovers it. Compiled-out
@@ -259,6 +303,10 @@ class ComapeoCoreService : Service() {
         super.onDestroy()
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onDestroy")
         isServiceStarted = false
+        // Radios first — cheap, synchronous, and the backend the frames
+        // feed is about to drain anyway.
+        bleEngine?.stop()
+        bleEngine = null
         serviceScope.launch {
             // nodeJSService is built lazily in startService(); a create→destroy with no
             // start path (e.g. an immediate STOP) leaves it uninitialised.
@@ -305,6 +353,7 @@ class ComapeoCoreService : Service() {
      *  a background-start restriction forced it to stop. */
     private fun startService(serviceStartElapsedMs: Long, bootKind: String): Boolean {
         log("Starting the foreground service")
+        notificationIsForeground = true
         val notification = createNotification(true)
         // On API 33+ the FGS notification is suppressed without a runtime
         // POST_NOTIFICATIONS grant, which lets the system deprioritise or kill
@@ -413,9 +462,50 @@ class ComapeoCoreService : Service() {
         }
     }
 
+    private fun ensureBleEngine(): BleDiscoveryEngine =
+        bleEngine ?: BleDiscoveryEngine(applicationContext, sendFrame = { frame ->
+            // The engine can only be started while isServiceStarted, so the
+            // backend exists; sendControlFrame is itself best-effort.
+            if (::nodeJSService.isInitialized) nodeJSService.sendControlFrame(frame)
+        }).also { bleEngine = it }
+
+    /**
+     * Re-promote with `dataSync|connectedDevice` before starting BLE work.
+     * The initial [startService] promotion is dataSync-only on purpose: from
+     * API 34 `startForeground` with `connectedDevice` throws SecurityException
+     * unless a Nearby-devices permission is already granted, and the FGS must
+     * never fail to start because BLE permissions haven't been requested yet.
+     * Calling `startForeground` again on a running FGS just updates its types.
+     * Best-effort — a refusal here degrades to running BLE under dataSync,
+     * not to losing the service.
+     */
+    private fun promoteBleForegroundType() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        if (!BlePermissions.hasConnectedDeviceFgsPrerequisite(this)) {
+            log("BLE FGS type not promoted (no Nearby-devices grant)")
+            return
+        }
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                createNotification(notificationIsForeground),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        } catch (e: Exception) {
+            logCrumb(
+                SentryCategories.FGS,
+                "BLE FGS type promotion failed: ${e.message}",
+                level = "warning",
+            )
+        }
+    }
+
     private fun stopService() {
         log("Stopping the foreground service")
         isServiceStarted = false
+        bleEngine?.stop()
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -460,6 +550,7 @@ class ComapeoCoreService : Service() {
     }
 
     private fun updateNotification(isForeground: Boolean) {
+        notificationIsForeground = isForeground
         val notification = createNotification(isForeground)
         val notificationManager =
             getSystemService(NOTIFICATION_SERVICE) as NotificationManager

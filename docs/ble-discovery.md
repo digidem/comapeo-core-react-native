@@ -167,10 +167,11 @@ not the default.
 | Discovery manager (peer table, RSSI smoothing + cluster hysteresis, expiry) | ✅ `src/ble/BleDiscovery.ts` |
 | Android advertiser (manufacturer data, balanced/high-TX, non-connectable) | ✅ `android/.../ble/BleAdvertiser.kt` |
 | Android scanner (hardware filter: company 0xFFFF + "CM" mask) | ✅ `android/.../ble/BleScanner.kt` |
-| Expo module + permissions (API 31+ Nearby-devices / legacy location) | ✅ `android/.../ble/ComapeoBleDiscoveryModule.kt`, manifest |
+| **Background discovery**: radios in the `:ComapeoCore` FGS + backend auto-connect | ✅ `BleDiscoveryEngine.kt`, `backend/lib/ble-discovery.js` — see §4a |
+| Expo module (intent controller + frame observer) + permissions | ✅ `android/.../ble/ComapeoBleDiscoveryModule.kt`, manifest |
 | iOS scanner / GATT server (both platforms) | ❌ deferred — blocked on the R4 design round |
 | Scan response (SSID hash, credentials) | ❌ Phase 2/3 (and see R5) |
-| Backend/`MapeoManager` changes | none needed — see §4 |
+| Backend `MapeoManager` API changes | none — the backend only *calls* `connectLocalPeer` |
 
 The GATT server is deliberately **not** in this phase even though the
 proposal's build order lists it: its only Phase 1 consumer is the iOS
@@ -208,10 +209,19 @@ domain-separated under the `"comapeo-ble-v1:"` prefix (see
 
 ## 4. Integration model
 
-This module keeps its existing stance: **it does not perform discovery
-policy, the host app does** (the same shape as the current mDNS story —
-see `app.plugin.js`'s Local Network note). Everything the host needs is
-already reachable:
+Split of responsibilities (the same shape as the module's existing
+stance for mDNS — see `app.plugin.js`'s Local Network note — except
+that *reacting* to discovery had to move where it can run in the
+background, see §4a):
+
+- **Host app (RN JS)** composes the advertisement — sync state from
+  `$sync`, IP:port from `startLocalPeerDiscoveryServer`, battery — and
+  owns the UX (permission prompts, peer lists, cluster UI).
+- **This module** transports it: the JS `BleDiscovery` manager keeps
+  the peer *view*; the FGS-hosted engine keeps the radios on in the
+  background; the backend turns sightings into sync connections.
+
+Host wiring:
 
 ```ts
 import { comapeo } from "@comapeo/core-react-native";
@@ -234,25 +244,14 @@ await bleDiscovery.start({
   },
 });
 
-// 2. Connect peers whose state differs (over the existing
-//    TCP → Noise → Hypercore pipeline; RPC needs no backend change —
-//    createComapeoCoreServer reflects the whole MapeoManager).
-bleDiscovery.addListener("peer", ({ advertisement: ad }) => {
-  if (ad.stateHash !== myStateHash && ad.address && ad.port) {
-    comapeo.connectLocalPeer({
-      address: ad.address,
-      port: ad.port,
-      // core@7 keys local connections by the peer's discovery-server
-      // `name`, which a 21-byte advertisement can't carry — use a
-      // synthetic stable name. Consequence: a peer discovered via BOTH
-      // mDNS and BLE can get two TCP connections until core's
-      // post-handshake identity dedup reconciles them.
-      name: `ble:${ad.address}:${ad.port}`,
-    });
-  }
-});
+// 2. Peer events drive UI only (lists, RSSI clustering). Connecting
+//    peers is NOT the host's job — the backend auto-connects (§4a) so
+//    it also happens while the app is backgrounded.
+bleDiscovery.addListener("peer", (peer) => renderPeerList(peer));
 
-// 3. Re-advertise whenever local state changes.
+// 3. Re-advertise whenever local state changes (foreground only —
+//    while backgrounded the advertisement goes stale, which at worst
+//    causes a redundant, cheap reconnect).
 await bleDiscovery.setAdvertisement({ ...current, totalBlocks, stateHash });
 ```
 
@@ -260,11 +259,66 @@ On platforms without the native module (iOS today, web, Jest),
 `bleDiscovery.isAvailable === false` and everything degrades to no-ops
 — host code never branches on platform.
 
-Native placement: the module runs in the **main app process** (not the
-`:ComapeoCore` FGS). Phase 1 discovery is a foreground activity; the
-Phase 3 hotspot work — which must survive backgrounding and already
-requires an FGS — is the right moment to revisit, together with a
-`connectedDevice` FGS type.
+### 4a. Process model & background discovery
+
+Background discovery is a Phase 1 requirement: the whole point of the
+Android dual-process design is that sync survives backgrounding, and
+discovery must survive with it — devices should keep finding each
+other and syncing with the app in the pocket. Radios in the main app
+process would die exactly when the FGS keeps syncing. So:
+
+```
+main app process                :ComapeoCore FGS process
+┌────────────────────────┐      ┌──────────────────────────────┐
+│ host app JS            │      │ ComapeoCoreService           │
+│  BleDiscovery (view)   │      │  BleDiscoveryEngine          │
+│  ▲ bleAdvertisement/   │      │   BleAdvertiser + BleScanner │
+│  │ bleError events     │      │   + SightingThrottle         │
+│ ComapeoBleDiscovery-   │      │      │ ble-own / ble-sighting│
+│ Module                 │      │      │ / ble-error frames    │
+│  │ control.sock        │      │      ▼                       │
+│  │ (read-only observer)│      │  Node backend                │
+│  │ BLE_* service       │      │   lib/ble-discovery.js       │
+│  ▼ intents ────────────┼──────▶   decode → relay `ble-peer`  │
+└────────────────────────┘      │   → auto-connectLocalPeer    │
+                                └──────────────────────────────┘
+```
+
+- **Radios** live in [`BleDiscoveryEngine`] inside the FGS process,
+  driven by `BLE_START` / `BLE_UPDATE_ADVERTISEMENT` / `BLE_STOP`
+  service intents. The service starts `dataSync`-only and re-promotes
+  itself with the `connectedDevice` FGS type once BLE starts and a
+  Nearby-devices permission is granted (API 34 enforces the
+  prerequisite at `startForeground` time).
+- **Policy** lives in the backend (`lib/ble-discovery.js`): the engine
+  forwards its own advertisement (`ble-own`) and throttled sightings
+  (`ble-sighting`) over the control socket; the backend decodes, relays
+  accepted sightings to observers as `ble-peer`, and calls
+  `manager.connectLocalPeer` for same-project peers whose state hash
+  differs (rate-limited per peer). This is the piece that keeps
+  discovery→sync working **with the main app process dead**. Core
+  dedupes by connection `name` — synthetic `ble:<ip>:<port>` here — so
+  a peer found via both mDNS and BLE can briefly hold two connections
+  until core's post-handshake identity dedup reconciles them.
+- **View** lives in the main process: the module is a read-only
+  control-socket observer that turns `ble-peer` / `ble-error` frames
+  into the events the JS `BleDiscovery` manager consumes. While the
+  main process is dead nobody watches — but nothing stops either; the
+  peer view simply rebuilds on the next foreground.
+- **Resume**: the module retains the desired state and re-pushes it
+  whenever the backend (re)broadcasts `started`, so an FGS respawn
+  resumes discovery without host-app code. If the *main* process is
+  killed and the FGS later restarts, discovery stays down until the
+  next app foreground (known gap, acceptable: the FGS dying means the
+  OS reclaimed a protected process).
+- **Staleness**: the advertisement is composed in JS, so in the
+  background it stops tracking sync progress and the backend keeps
+  comparing against the stale own-hash. The consequence is redundant
+  `connectLocalPeer` calls toward already-connected peers — throttled
+  to one per peer per 30 s, and connect-by-name to an existing
+  connection is cheap at the core layer. Recomposing the advertisement
+  in the backend from `$sync` (removing the staleness entirely) is a
+  listed follow-up.
 
 ## 5. Verification status
 
@@ -272,17 +326,29 @@ requires an FGS — is the right moment to revisit, together with a
   FIPS 180-4 / RFC 4231 hash vectors, discovery-manager lifecycle /
   smoothing / hysteresis / expiry with a fake native module); `tsc`
   strict + `noUncheckedIndexedAccess` clean; ESLint clean.
-- Kotlin: `BlePermissionsTest` (JVM). The advertiser/scanner need
-  on-device validation — emulators don't do BLE — which is exactly the
-  proposal's open question Q1/Q8 (validate the advertisement with nRF
-  Connect on Xiaomi/MIUI + MediaTek targets, and concurrent
-  advertise+scan stability). That hardware pass is the next action for
-  this branch.
+- Backend: `node --test` coverage of the codec mirror (shared
+  cross-implementation vector with the TS suite) and the policy layer
+  (relay, auto-connect decision matrix, per-peer throttle, missing
+  manager, throwing `connectLocalPeer`).
+- Kotlin: JVM tests for `BlePermissions`, `SightingThrottle`, and the
+  new `ControlFrame` cases. The advertiser/scanner/engine and the FGS
+  intent plumbing need on-device validation — emulators don't do BLE —
+  which is exactly the proposal's open question Q1/Q8 (validate the
+  advertisement with nRF Connect on Xiaomi/MIUI + MediaTek targets,
+  concurrent advertise+scan stability, and background survival under
+  aggressive OEM battery managers). That hardware pass is the next
+  action for this branch.
 
 ## 6. Follow-ups (rough order)
 
 1. On-device validation (nRF Connect + two-device Android test;
-   instrumented test for the module surface).
+   instrumented test for the module surface and the FGS engine,
+   including background-sync: background both devices, add data on
+   one via a debug seam, assert convergence).
+1a. Backend-composed advertisements: derive `stateHash`/`totalBlocks`
+   from `$sync` inside the backend so the advertisement stays fresh
+   while the app is backgrounded (removes the §4a staleness caveat and
+   the JS hash round-trip).
 2. The R4 iOS design round → iOS scanner + GATT service definition;
    then the GATT server on both platforms (D4) and connectable
    advertisements.

@@ -91,16 +91,24 @@ const DEFAULT_OPTIONS: Required<Omit<BleDiscoveryOptions, "now">> = {
 
 /**
  * Phase-1 BLE discovery manager: drives the native
- * `ComapeoBleDiscovery` module (scan always; advertise when an
- * advertisement is set and the platform can), decodes sightings,
- * maintains the peer table with RSSI smoothing / cluster
- * classification / staleness expiry, and emits `peer` / `peerLost`.
+ * `ComapeoBleDiscovery` controller (which forwards to the radios in
+ * the `:ComapeoCore` foreground service, so discovery runs in the
+ * background), decodes relayed sightings, maintains the peer table
+ * with RSSI smoothing / cluster classification / staleness expiry, and
+ * emits `peer` / `peerLost`.
  *
- * The manager knows nothing about MapeoManager: the host app composes
- * the `CoMapeoAdvertisement` (sync state from `$sync`, IP:port from
- * `startLocalPeerDiscoveryServer`) and, on `peer` events whose
- * `advertisement.stateHash` differs from its own, feeds
- * `advertisement.address`/`port` into `comapeo.connectLocalPeer(...)`.
+ * The host app composes the `CoMapeoAdvertisement` (sync state from
+ * `$sync`, IP:port from `startLocalPeerDiscoveryServer`) and calls
+ * `setAdvertisement` whenever it changes. It does NOT need to react to
+ * `peer` events to get syncing: the backend auto-connects same-project
+ * peers with differing sync state itself (`backend/lib/ble-discovery.js`)
+ * — that's what keeps discovery→sync working while the app is
+ * backgrounded and this JS runtime isn't running. The peer table here
+ * is the *view* (UI lists, RSSI clustering), not the sync driver.
+ *
+ * Radio errors surface as `error` events, never as rejections of
+ * `start()` — the radios are a service away, and errors can happen at
+ * any time (Bluetooth toggled off, permission revoked).
  */
 export class BleDiscovery extends TypedEmitter<BleDiscoveryEvents> {
   #native: BleNativeModuleLike | null;
@@ -109,7 +117,6 @@ export class BleDiscovery extends TypedEmitter<BleDiscoveryEvents> {
   #peers = new Map<string, BlePeer>();
   #advertisement: CoMapeoAdvertisement | null = null;
   #running = false;
-  #advertising = false;
   #sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -152,22 +159,28 @@ export class BleDiscovery extends TypedEmitter<BleDiscoveryEvents> {
   }
 
   /**
-   * Start scanning (and advertising, when `advertisement` is given or
-   * was previously set). Rejects when the native module is missing —
-   * check `isAvailable` first. Idempotent while running except that a
-   * new `advertisement` replaces the current one.
+   * Start discovery (scanning, plus advertising when `advertisement`
+   * is given or was previously set). Rejects when the native module is
+   * missing (check `isAvailable` first) or on an invalid
+   * advertisement; radio failures arrive as `error` events instead.
+   * Idempotent while running except that a new `advertisement`
+   * replaces the current one. Discovery keeps running — and the
+   * backend keeps connecting peers — while the app is backgrounded;
+   * call `stop()` to actually end it.
    */
   async start(
     { advertisement }: { advertisement?: CoMapeoAdvertisement } = {},
   ): Promise<void> {
     const native = this.#requireNative();
     if (advertisement !== undefined) this.#advertisement = advertisement;
+    // Encode before flipping any state so a RangeError leaves us consistent.
+    const payload = this.#encodedAdvertisement();
     if (!this.#running) {
       native.addListener("bleAdvertisement", this.#handleAdvertisement);
       native.addListener("bleError", this.#handleError);
       this.#running = true;
       try {
-        await native.startScanning();
+        await native.startDiscovery(payload);
       } catch (error) {
         await this.stop();
         throw error;
@@ -176,9 +189,8 @@ export class BleDiscovery extends TypedEmitter<BleDiscoveryEvents> {
         () => this.#sweepStalePeers(),
         Math.max(1_000, this.#options.peerTimeoutMs / 2),
       );
-    }
-    if (this.#advertisement !== null) {
-      await this.#startAdvertising(native, this.#advertisement);
+    } else {
+      await native.updateAdvertisement(payload);
     }
   }
 
@@ -186,25 +198,21 @@ export class BleDiscovery extends TypedEmitter<BleDiscoveryEvents> {
    * Replace (or with `null` clear) this device's advertisement. Takes
    * effect immediately while running; otherwise stored for the next
    * `start()`. Call whenever the advertised sync state goes stale —
-   * block count, state hash, IP or battery changed.
+   * block count, state hash, IP or battery changed. (While the app is
+   * backgrounded this JS doesn't run, so the advertisement naturally
+   * goes stale until the next foreground; the backend's auto-connect
+   * still works, at worst making a redundant connection.)
    */
   async setAdvertisement(
     advertisement: CoMapeoAdvertisement | null,
   ): Promise<void> {
     this.#advertisement = advertisement;
     if (!this.#running || this.#native === null) return;
-    if (advertisement === null) {
-      if (this.#advertising) {
-        this.#advertising = false;
-        await this.#native.stopAdvertising();
-      }
-    } else {
-      await this.#startAdvertising(this.#native, advertisement);
-    }
+    await this.#native.updateAdvertisement(this.#encodedAdvertisement());
   }
 
-  /** Stop scanning/advertising and clear the peer table (no `peerLost`
-   * events — the table is being discarded, not timing out). */
+  /** Stop discovery in the service and clear the peer table (no
+   * `peerLost` events — the table is being discarded, not timing out). */
   async stop(): Promise<void> {
     if (this.#native === null || !this.#running) return;
     this.#running = false;
@@ -215,12 +223,7 @@ export class BleDiscovery extends TypedEmitter<BleDiscoveryEvents> {
     this.#native.removeListener("bleAdvertisement", this.#handleAdvertisement);
     this.#native.removeListener("bleError", this.#handleError);
     this.#peers.clear();
-    const stopScan = this.#native.stopScanning();
-    const stopAdvertise = this.#advertising
-      ? this.#native.stopAdvertising()
-      : Promise.resolve();
-    this.#advertising = false;
-    await Promise.all([stopScan, stopAdvertise]);
+    await this.#native.stopDiscovery();
   }
 
   /** Snapshot of the current peer table. */
@@ -238,14 +241,10 @@ export class BleDiscovery extends TypedEmitter<BleDiscoveryEvents> {
     return this.#native;
   }
 
-  async #startAdvertising(
-    native: BleNativeModuleLike,
-    advertisement: CoMapeoAdvertisement,
-  ): Promise<void> {
-    // Encode before flipping state so a RangeError leaves us consistent.
-    const payload = bytesToBase64(encodeAdvertisement(advertisement));
-    this.#advertising = true;
-    await native.startAdvertising(payload);
+  #encodedAdvertisement(): string | null {
+    return this.#advertisement === null
+      ? null
+      : bytesToBase64(encodeAdvertisement(this.#advertisement));
   }
 
   #handleAdvertisement = (sighting: BleAdvertisementPayload): void => {
@@ -288,7 +287,6 @@ export class BleDiscovery extends TypedEmitter<BleDiscoveryEvents> {
   };
 
   #handleError = (payload: BleErrorPayload): void => {
-    if (payload.scope === "advertise") this.#advertising = false;
     this.emit("error", new BleDiscoveryError(payload));
   };
 
