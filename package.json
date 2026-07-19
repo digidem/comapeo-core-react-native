@@ -16,6 +16,11 @@
       "import": "./build/sentry.js",
       "default": "./build/sentry.js"
     },
+    "./ble": {
+      "types": "./build/ble/index.d.ts",
+      "import": "./build/ble/index.js",
+      "default": "./build/ble/index.js"
+    },
     "./app.plugin": "./app.plugin.js",
     "./package.json": "./package.json"
   },

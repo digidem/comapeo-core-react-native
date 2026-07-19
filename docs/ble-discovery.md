@@ -1,0 +1,292 @@
+# BLE Peer Discovery — Phase 1 design & implementation notes
+
+This document accompanies the Phase 1 implementation of the "CoMapeo
+Peer-to-Peer Discovery & Sync" proposal (BLE discovery + sync-state
+gossip over existing WiFi). It records (1) a critical review of that
+proposal, (2) the amendments Phase 1 makes as a result, and (3) what is
+implemented in this repo and how it wires into the rest of the stack.
+
+The proposal itself (external document) covers the full stack: BLE
+discovery, WiFi hotspot formation, multi-leader coordination. Phase 1
+is the independently useful slice: **devices on the same WiFi network
+discover each other via BLE — replacing/complementing mDNS — and the
+advertisement carries sync state, so peers know who has new data before
+connecting.**
+
+---
+
+## 1. Review summary
+
+The proposal's core architecture is sound and well-researched:
+
+- The **BLE-discovers / WiFi-transfers split** is correct — the cited
+  2–100 KB/s BLE throughput makes Hypercore sync over BLE a non-starter,
+  and nobody should relitigate that.
+- The **rejection of WiFi Direct / WiFi Aware / Multipeer** is
+  well-sourced and matches field reality on budget MediaTek/MIUI
+  hardware; `startLocalOnlyHotspot()` is the right primitive for the
+  later phases.
+- **Advertisement-carried sync state** (D2) is genuinely better than
+  presence-only discovery, and the **write-then-notify** GATT credential
+  pattern (D5) is the correct idiom for parameterised reads.
+- The **phasing** is right: Phase 1 pays for itself even if the hotspot
+  phases never ship.
+
+The review found real gaps, though. In descending severity:
+
+### R1 (blocking): the wire format carries no way to connect
+
+Phase 1's goal is "feed discovered IP:port into the existing connection
+pipeline", and Phase 3 has the leader "advertise its hotspot IP" — but
+**no field in the proposed advertisement or scan response carries an IP
+or port**. As specified, a scanner learns that a peer exists and differs
+in sync state, but not how to reach it. mDNS would still be doing the
+actual discovery, which defeats the phase's purpose on networks where
+mDNS is broken (the motivating case).
+
+**Amendment:** the v1 advertisement adds `ipv4` (4 bytes) + `port`
+(2 bytes). Budget still closes: 21-byte payload, 28 of 31 advertisement
+bytes used (§3).
+
+### R2 (blocking): no version field
+
+The proposed layout has magic bytes but no version. The first format
+change would be silently mis-parsed by old clients as garbage field
+values — in the field, across a 30-device group that never updates in
+lockstep, this is guaranteed to happen.
+
+**Amendment:** 1 version byte after the magic; decoders return `null`
+(not-ours) for unknown versions.
+
+### R3: the privacy story is internally inconsistent
+
+D3's daily-rotated project hash is presented as the anti-tracking
+mechanism, but the surrounding fields undermine it:
+
+- The **scan response carries a stable 4-byte `shortPeerID`** — a
+  permanent tracker that makes the daily rotation of the project hash
+  cosmetic.
+- `totalBlocks` + `stateHash` (6 bytes of slowly-changing,
+  device-specific value) form a strong fingerprint that persists across
+  the daily rotation boundary whenever a device isn't actively syncing.
+
+This doesn't sink Phase 1 — BLE MAC randomization still limits passive
+correlation, and the proposal's own out-of-scope note acknowledges a
+connection-privacy work stream — but the claim "cannot use it as a
+stable identifier for long-term tracking" is overstated and should not
+be repeated to partners as a property of the system. Phase 1 drops the
+`shortPeerID` (the IP:port serves dedup while on-network; it is
+necessarily exposed anyway to be connectable). A future privacy pass
+should consider epoch-salting `stateHash` the way the project hash is
+salted.
+
+### R4: iOS discovery is under-specified and partly contradictory
+
+Three separate issues:
+
+1. **iOS cannot see CoMapeo advertisements in the background at all.**
+   CoreBluetooth background scanning requires a service-UUID filter;
+   D1 removes the service UUID from Android advertisements, so iOS
+   discovers Android peers only while foregrounded. Probably acceptable
+   (iOS is scan-only and sync needs the app open anyway) — but it's a
+   direct, undocumented consequence of D1 and must be a conscious
+   decision.
+2. **"iOS peers are discovered via their GATT service" is circular.**
+   Android can only connect to an iOS GATT server it can *find*, which
+   requires iOS to advertise *something* — i.e. the service UUID the
+   design says nobody advertises. And when an iOS app advertises in the
+   background, Apple moves the UUID to the overflow area, visible only
+   to other iOS scanners — so background iOS devices are undiscoverable
+   by Android regardless. The iOS-visibility story needs its own
+   design round: foreground-only iOS advertising of the GATT service
+   UUID appears to be the only workable option, and Android scanners
+   will need a second scan filter for it.
+3. **Duplicate-coalescing:** foreground iOS scanning without
+   `allowDuplicates` coalesces advertisements, so sync-state *updates*
+   (same device, new payload) can be delayed; the iOS scanner will need
+   `allowDuplicates` and its battery cost accounted for.
+
+Phase 1 therefore ships **Android-native only** (matching the
+proposal's own build order); the JS layer is platform-neutral and
+feature-detects.
+
+### R5: Phase 3's cleartext password broadcast deserves a security note
+
+The scan response broadcasts the hotspot password in cleartext "for
+Android-to-Android joins". Anyone in BLE range — CoMapeo or not — can
+then join the sync network. The network is local-only (no internet to
+steal) and transport security ultimately rests on the Noise handshake,
+but this design means: (a) the WiFi layer provides **zero** access
+control, which must be an explicit assumption everywhere above it, and
+(b) a trivial DoS exists (stranger occupies the ~5–8 client slots).
+The per-project *encrypted* GATT path already specified should be the
+default, with the cleartext fast path a measured optimisation decision,
+not the default.
+
+### R6: minor corrections / open items
+
+- **"Every device computes [leader election] from the shared view of
+  advertisements — no negotiation"** assumes a consistent shared view
+  that lossy BLE scanning does not provide; two candidates *will*
+  occasionally both self-elect. Phase 3 needs an explicit
+  detect-and-yield rule (e.g. higher-priority leader wins, other tears
+  down), not an assumption of convergence.
+- **D2 overclaims slightly:** a differing `stateHash` means "states
+  differ", not "peer has data *I* need" — the correct action (connect
+  and reconcile) is the same, but UX copy like "N devices have new
+  data" shouldn't be built on it.
+- **SSID equality ≠ connectable:** same SSID can be different networks,
+  and AP/client isolation (common on public/guest networks) breaks
+  peer-to-peer TCP on a *shared* SSID. Phase 2's "different network"
+  hint is fine; a "same network so it must work" conclusion is not.
+- **2.4 GHz coexistence** (BLE advertise/scan + WiFi sync concurrently
+  on budget single-antenna chipsets) belongs on the open-questions
+  list alongside Q8.
+- **D8 (company ID 0xFFFF):** the Bluetooth spec reserves 0xFFFF for
+  internal testing "and shall not be used in shipping products". With a
+  "CM" prefix filter the practical collision risk is low, but a SIG
+  membership + company ID (US$0 for the membership tier CoMapeo likely
+  qualifies for, else the cited fee) should be budgeted before wide
+  release; it's a two-constant change (`src/ble/wire-format.ts`,
+  `android/.../BleProtocol.kt`).
+- **D9 (separate `expo-ble-advertiser` repo):** reasonable end-state,
+  premature start. A separate repo means separate release/version
+  coordination while the wire format is still moving. Phase 1
+  implements in-repo (`src/ble/` + `android/.../ble/`, JS-only tests
+  run in the existing fast lane); extraction is mechanical later if
+  reuse materialises.
+
+---
+
+## 2. Phase 1 scope as implemented
+
+| Piece | Status |
+|---|---|
+| v1 wire format (amended: version byte, ipv4+port, no shortPeerID) | ✅ `src/ble/wire-format.ts` |
+| Hash derivations (daily project hash, state hash, SSID hash) | ✅ `src/ble/hashes.ts` (pure TS, FIPS/RFC-4231-verified) |
+| Discovery manager (peer table, RSSI smoothing + cluster hysteresis, expiry) | ✅ `src/ble/BleDiscovery.ts` |
+| Android advertiser (manufacturer data, balanced/high-TX, non-connectable) | ✅ `android/.../ble/BleAdvertiser.kt` |
+| Android scanner (hardware filter: company 0xFFFF + "CM" mask) | ✅ `android/.../ble/BleScanner.kt` |
+| Expo module + permissions (API 31+ Nearby-devices / legacy location) | ✅ `android/.../ble/ComapeoBleDiscoveryModule.kt`, manifest |
+| iOS scanner / GATT server (both platforms) | ❌ deferred — blocked on the R4 design round |
+| Scan response (SSID hash, credentials) | ❌ Phase 2/3 (and see R5) |
+| Backend/`MapeoManager` changes | none needed — see §4 |
+
+The GATT server is deliberately **not** in this phase even though the
+proposal's build order lists it: its only Phase 1 consumer is the iOS
+path, which R4 shows needs re-design first. Shipping an unused GATT
+surface now would freeze wire decisions the iOS round should own.
+Android-to-Android discovery — the dominant field case — is complete
+without it, and the advertisement stays non-connectable (cheaper, and
+nothing to probe) until GATT lands.
+
+## 3. v1 wire format (normative)
+
+Manufacturer-specific data, company ID `0xFFFF`, no service UUID
+(D1 unchanged). Payload after the company ID, all multi-byte fields
+big-endian:
+
+```
+offset len  field
+0      2    magic "CM" (0x43 0x4d)
+2      1    version = 0x01
+3      2    projectHash   HMAC-SHA256(projectKey, "comapeo-ble-v1:project:"+UTC day)[0..2]
+5      4    totalBlocks   Hypercore blocks held (saturates at 2^32−1)
+9      4    stateHash     SHA-256("comapeo-ble-v1:state:"+canonical state)[0..4]
+13     1    battery       bit7 = charging; bits 6..0 = percent (0–100), 127 = unknown
+14     1    flags         bit0 isHotspotLeader, bit1 hasWifi, bit2 inviteMode; rest 0
+15     4    ipv4          sync-interface address; 0.0.0.0 = none
+19     2    port          local peer-discovery server TCP port; 0 = not listening
+            = 21 bytes  (28 of 31 advertisement bytes incl. flags AD + headers)
+```
+
+Decoders MUST treat wrong magic, wrong length, or unknown version as
+"not a CoMapeo advertisement" (return null), never as an error — other
+apps legitimately use company ID 0xFFFF. All hash derivations are
+domain-separated under the `"comapeo-ble-v1:"` prefix (see
+`src/ble/hashes.ts`).
+
+## 4. Integration model
+
+This module keeps its existing stance: **it does not perform discovery
+policy, the host app does** (the same shape as the current mDNS story —
+see `app.plugin.js`'s Local Network note). Everything the host needs is
+already reachable:
+
+```ts
+import { comapeo } from "@comapeo/core-react-native";
+import {
+  bleDiscovery, deriveDailyProjectHash, deriveStateHash,
+} from "@comapeo/core-react-native/ble";
+
+// 1. Start the TCP server core already provides; advertise its port.
+const { port } = await comapeo.startLocalPeerDiscoveryServer();
+await bleDiscovery.requestPermissionsAsync();
+await bleDiscovery.start({
+  advertisement: {
+    projectHash: deriveDailyProjectHash(projectKey),
+    totalBlocks, // from $sync state
+    stateHash: deriveStateHash(canonicalSyncStateBytes),
+    batteryPercent, charging,          // e.g. expo-battery
+    isHotspotLeader: false, hasWifi: true, inviteMode: false,
+    address: deviceIpv4,               // host-side network info
+    port,
+  },
+});
+
+// 2. Connect peers whose state differs (over the existing
+//    TCP → Noise → Hypercore pipeline; RPC needs no backend change —
+//    createComapeoCoreServer reflects the whole MapeoManager).
+bleDiscovery.addListener("peer", ({ advertisement: ad }) => {
+  if (ad.stateHash !== myStateHash && ad.address && ad.port) {
+    comapeo.connectLocalPeer({
+      address: ad.address,
+      port: ad.port,
+      // core@7 keys local connections by the peer's discovery-server
+      // `name`, which a 21-byte advertisement can't carry — use a
+      // synthetic stable name. Consequence: a peer discovered via BOTH
+      // mDNS and BLE can get two TCP connections until core's
+      // post-handshake identity dedup reconciles them.
+      name: `ble:${ad.address}:${ad.port}`,
+    });
+  }
+});
+
+// 3. Re-advertise whenever local state changes.
+await bleDiscovery.setAdvertisement({ ...current, totalBlocks, stateHash });
+```
+
+On platforms without the native module (iOS today, web, Jest),
+`bleDiscovery.isAvailable === false` and everything degrades to no-ops
+— host code never branches on platform.
+
+Native placement: the module runs in the **main app process** (not the
+`:ComapeoCore` FGS). Phase 1 discovery is a foreground activity; the
+Phase 3 hotspot work — which must survive backgrounding and already
+requires an FGS — is the right moment to revisit, together with a
+`connectedDevice` FGS type.
+
+## 5. Verification status
+
+- JS: full Jest coverage (codec round-trips + byte-layout vectors,
+  FIPS 180-4 / RFC 4231 hash vectors, discovery-manager lifecycle /
+  smoothing / hysteresis / expiry with a fake native module); `tsc`
+  strict + `noUncheckedIndexedAccess` clean; ESLint clean.
+- Kotlin: `BlePermissionsTest` (JVM). The advertiser/scanner need
+  on-device validation — emulators don't do BLE — which is exactly the
+  proposal's open question Q1/Q8 (validate the advertisement with nRF
+  Connect on Xiaomi/MIUI + MediaTek targets, and concurrent
+  advertise+scan stability). That hardware pass is the next action for
+  this branch.
+
+## 6. Follow-ups (rough order)
+
+1. On-device validation (nRF Connect + two-device Android test;
+   instrumented test for the module surface).
+2. The R4 iOS design round → iOS scanner + GATT service definition;
+   then the GATT server on both platforms (D4) and connectable
+   advertisements.
+3. Phase 2: scan-response with SSID hash + network-match UX (R6 caveats).
+4. Phase 3: hotspot modules + leader election with an explicit
+   dual-leader yield rule (R6), and the R5 credential-security decision.
+5. SIG company ID registration before wide release (R6/D8).

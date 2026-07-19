@@ -7,6 +7,46 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
+        BLE peer discovery (docs/ble-discovery.md). Marked not-required:
+        the module degrades to mDNS-only discovery on hardware without BLE.
+    -->
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
+    <!--
+        API 31+ "Nearby devices" runtime group. BLUETOOTH_SCAN carries
+        `neverForLocation`: CoMapeo never derives location from scan
+        results (RSSI is only used for near/far clustering), which is
+        what lets scanning run WITHOUT any location permission on 12+.
+        BLUETOOTH_CONNECT is not needed for advertise/scan but is
+        declared now so the upcoming GATT credential/state exchange
+        doesn't force consumers through a second permission rollout —
+        all three land in the same single "Nearby devices" dialog.
+    -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!--
+        Legacy stack (API ≤ 30): install-time BLUETOOTH/BLUETOOTH_ADMIN,
+        plus runtime ACCESS_FINE_LOCATION — those OS versions gate BLE
+        scan *results* on it. maxSdkVersion keeps the location permission
+        out of the manifest (and off the Play listing's data-safety
+        radar) on every modern device.
+    -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="30" />
+
+    <!--
         `extractNativeLibs="false"`: native libraries (libnode.so + every
         per-addon `lib<name>__<version>.so` in `jniLibs/<abi>/`) ship
         uncompressed and aligned inside the APK and Bionic mmaps them in

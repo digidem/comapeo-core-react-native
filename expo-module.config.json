@@ -10,6 +10,9 @@
     ]
   },
   "android": {
-    "modules": ["com.comapeo.core.ComapeoCoreModule"]
+    "modules": [
+      "com.comapeo.core.ComapeoCoreModule",
+      "com.comapeo.core.ble.ComapeoBleDiscoveryModule"
+    ]
   }
 }
