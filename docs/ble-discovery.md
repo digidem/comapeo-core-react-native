@@ -339,7 +339,131 @@ main app process                :ComapeoCore FGS process
   aggressive OEM battery managers). That hardware pass is the next
   action for this branch.
 
-## 6. Follow-ups (rough order)
+## 6. Proposed: drop the Expo module — expose discovery over the existing RPC
+
+**Status: agreed direction, not yet implemented.** Supersedes the
+`ComapeoBleDiscoveryModule` surface described above once done.
+
+With the radios in the FGS and the connect policy in the backend, the
+Expo module is a bespoke side-channel that duplicates what the backend
+already knows, exists only on Android, and re-implements (in JS) a peer
+table the backend must keep anyway. The front end already has exactly
+one interface to everything else this library does — the RPC clients —
+so discovery should surface there too.
+
+### What already reaches the front end today, with zero new surface
+
+- **Connections**: `MapeoManager` emits `local-peers`
+  (`PublicPeerInfo[]`: deviceId, name, `status: "connected" |
+  "disconnected"`, connectedAt) and exposes `listLocalPeers()`; both
+  reflect through `createComapeoCoreServer` → the `comapeo` client.
+  A BLE-triggered `connectLocalPeer` lands here automatically.
+- **Sync progress**: `project.$sync` state, as ever.
+
+The only genuine gap is **pre-connection** state: nearby-but-not-
+connected peers, the discovery machinery's status, and an on/off
+control.
+
+### The proposed surface (app-services RPC)
+
+`backend/index.js` already serves an app-defined services object via
+`createComapeoServicesServer` (today: `mapServer.getBaseUrl`). Extend
+it — rpc-reflector reflects nested methods, and events on the served
+object subscribe from the client via `.on(...)` (verified against
+rpc-reflector's contract):
+
+```ts
+// via comapeoServicesClient
+discovery.getState(): Promise<DiscoveryState>
+discovery.setEnabled(enabled: boolean, opts?: { projectPublicId?: string }): Promise<void>
+on("discovery-state", (state: DiscoveryState) => void)   // throttled snapshots
+
+type DiscoveryState = {
+  enabled: boolean;
+  ble: {
+    scanning: "active" | "stopped" | "unavailable";
+    advertising: "active" | "stopped" | "unsupported" | "unavailable";
+    /** Actionable — drives "Turn on Bluetooth" / permission-prompt UX. */
+    blockers: Array<"bluetooth-off" | "permission-missing" | "no-adapter">;
+  };
+  peers: Array<{
+    id: string;                     // "<ip>:<port>" or "ble:<mac>"
+    sameProject: boolean;
+    hasDifferentSyncState: boolean;
+    rssi: number;
+    inCluster: boolean;             // D7 clustering, computed backend-side
+    lastSeenAt: number;             // backend clock
+    address: string | null;
+    port: number;
+  }>;
+};
+```
+
+Note the deliberate absence of identity on discovered peers: the
+advertisement carries none (R3), so pre-handshake peers are anonymous.
+"Nearby devices" (anonymous, counts, cluster UX) and "connected
+devices" (`local-peers`, identified) are separate truths; the backend
+drops a discovered peer from `peers` once it connects its ip:port.
+
+`ComapeoServicesApi` is typed upstream in `@comapeo/ipc` — extend via
+a local cast on both ends now, with an upstream PR to add the
+`discovery` namespace (it is exactly the "app-provided services"
+contract that type exists for).
+
+### Consequences
+
+- **The backend owns the whole lifecycle.** `setEnabled(true)` makes it
+  start `startLocalPeerDiscoveryServer`, compose the advertisement
+  itself ($sync state, project key → daily hash via `node:crypto`,
+  `os.networkInterfaces()` for the IP) and command the FGS engine over
+  the control socket. This deletes the §4a staleness caveat (the
+  advertisement now tracks sync progress in the background) and
+  follow-up 1a with it.
+- **Resume hardens.** The enabled flag persists in `privateStorageDir`,
+  so an FGS restart resumes discovery *without the main process* —
+  closing the §4a resume gap the module's in-memory desired-state
+  couldn't.
+- **Control frames invert.** Node→FGS: `ble-start {payload}` /
+  `ble-advertise {payload|null}` / `ble-stop`. FGS→Node:
+  `ble-sighting`, `ble-error`, plus a new `ble-status` (scanning/
+  advertising/blockers as observed by the engine — it, not JS, knows
+  whether Bluetooth is off). Broadcast frames reach every control
+  client, so the Kotlin parser gets no-op cases; on iOS the backend
+  never sends them (`index.ios.js` gates the controller), keeping the
+  Swift parser's unknown-frame `messageerror` path quiet until iOS
+  support lands.
+- **Deleted**: `ComapeoBleDiscoveryModule.kt`, the `BLE_*` intents and
+  module registration, the `ble-peer` relay frame, and most of
+  `src/ble/` — the JS peer table, the native-module wrapper, base64,
+  and the pure-TS SHA-256/HMAC (its "must work without the backend"
+  rationale dies with backend-side composition). What remains JS-side
+  is types + the services-client extension. The wire format's
+  normative home becomes the backend codec + this doc.
+- **Permissions stay host-side, with no native module**: request
+  `BLUETOOTH_SCAN` / `BLUETOOTH_ADVERTISE` / `BLUETOOTH_CONNECT` (API
+  31+) or `ACCESS_FINE_LOCATION` (≤30) via React Native's own
+  `PermissionsAndroid`; this package exports the permission-string
+  constants. `blockers: ["permission-missing"]` tells the host *when*
+  to prompt; after granting, `setEnabled(true)` again (or the backend
+  retries on its next status poll). Manifest declarations already ship
+  with the library.
+- **Forward-compatible**: when the iOS scanner lands it feeds the same
+  backend controller in-process, and the front-end surface doesn't
+  change. The same is true for a future backend-side mDNS
+  (`source: "mdns"` peers in the same list) — one "nearby devices"
+  surface regardless of transport.
+
+### Open questions
+
+1. Multi-project advertisement selection (proposal Q2) becomes a
+   backend decision — simplest: advertise the project named in
+   `setEnabled` opts, defaulting to the device's only project.
+2. Battery byte: stamp natively at advertise time (engine knows
+   `BatteryManager`) vs. drop until Phase 3 election needs it.
+3. Upstream `@comapeo/ipc` PR timing for the `discovery` namespace +
+   the services-emitter event, vs. living with the local cast.
+
+## 7. Follow-ups (rough order)
 
 1. On-device validation (nRF Connect + two-device Android test;
    instrumented test for the module surface and the FGS engine,
