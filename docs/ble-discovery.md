@@ -463,6 +463,94 @@ contract that type exists for).
 3. Upstream `@comapeo/ipc` PR timing for the `discovery` namespace +
    the services-emitter event, vs. living with the local cast.
 
+## 6b. Decision record: connect policy in Node, not Kotlin
+
+Considered alternative: the Kotlin engine decodes advertisements,
+compares hashes, and requests connections from Node over the control
+socket ("connect to ip:port"), instead of forwarding sightings for Node
+to decide. Rejected. The comparison:
+
+- **The connection itself always happens in Node** — hyperswarm/Noise
+  live there — so Kotlin-decides moves only the *decision*, not the
+  work, and both variants die with Node. No autonomy is gained.
+- **Decision inputs have data gravity in Node.** The decision needs the
+  peer's decoded fields *and* our own current state: project keys (for
+  the daily hash and its UTC-midnight rollover), live `$sync` state,
+  the multi-project answer, the connect throttle. With backend-composed
+  advertisements (§6) all of that originates in Node; Kotlin-decides
+  would need Node to continuously push own-state down before decisions
+  could be made against it.
+- **Outcome visibility.** The decision loop wants feedback —
+  `connectLocalPeer` exceptions, `local-peers` transitions for
+  backoff/dedup. Node sees these in-process. The control socket is
+  fire-and-forget frames, not RPC; Kotlin-decides is either blind to
+  outcomes or forces request/response correlation onto the control
+  protocol.
+- **One policy implementation, not per-platform.** Kotlin-decides means
+  re-implementing decode + policy in Swift for iOS (§6c) and shipping
+  wire-format/policy changes in native lockstep on two platforms.
+  Node-decides ships them in the backend bundle, tested with
+  `node --test` and no device.
+- **Latency is a wash** (one UDS hop either way), and **traffic is not
+  actually saved** by Kotlin-decides: sightings must reach Node anyway
+  to feed the `DiscoveryState.peers` view.
+- **The honest cost of Node-decides is wakeups**: each forwarded
+  sighting wakes the Node event loop (bounded by the native throttle to
+  ~1 frame/s/peer, so ≤~30/s at target group size). If battery
+  measurements demand it, the fix lives inside this architecture:
+  batch sightings into one frame per interval, and/or lengthen the
+  unchanged-payload interval when no main process is attached (the UI
+  freshness it buys has no consumer in background) — payload *changes*
+  still forward immediately, which is what the connect policy acts on.
+
+Net: Kotlin (and later Swift) stays a dumb, replaceable radio driver;
+policy stays where its inputs, its feedback, and its cheapest test
+harness are.
+
+## 6c. iOS path
+
+The architecture ports because everything above the radios is shared:
+on iOS the backend runs in-process and the Swift side already speaks
+the same control-socket protocol (`ControlFrame.swift` /
+`NodeJSIPC.swift`), so an iOS engine slots in with **zero change to the
+backend policy, the wire format, or the front-end RPC surface**.
+
+What works, concretely:
+
+- **iOS discovering Android (foreground)**: `CBCentralManager` scans
+  and reads `kCBAdvDataManufacturerData` — CoreBluetooth cannot
+  *filter* on manufacturer data, so the Swift engine scans broad (with
+  `allowDuplicates` for the RSSI stream) and forwards only
+  "CM"-prefixed payloads as the same `ble-sighting` frames. Software
+  filtering costs battery vs Android's hardware offload; acceptable
+  foreground-only.
+- **Android discovering iOS**: iOS cannot advertise manufacturer data,
+  but can advertise the CoMapeo **service UUID** (foreground) and host
+  a GATT server (`CBPeripheralManager`) whose *Sync State
+  characteristic value is the same 21-byte v1 payload* — one codec
+  everywhere, resolving R4's circularity: D1 stays true for Android
+  advertisements; iOS visibility comes from the UUID advert. The
+  Android scanner gains a second `ScanFilter` (service UUID) and a
+  small GATT-client read path that turns a characteristic read into
+  the same `ble-sighting` frame.
+- **Background reality**: iOS backgrounding freezes the embedded Node
+  thread today, so iOS discovery is foreground-only *to match its
+  sync reality* — not a new limitation. Two optional wake paths later:
+  Android devices add a companion UUID-bearing advertisement (Android
+  supports concurrent advertise sets) purely as an iOS background
+  wake beacon (background CB scans require a UUID filter); and the
+  `bluetooth-peripheral` background mode lets a backgrounded iPhone be
+  briefly woken to serve its GATT state characteristic.
+- **Never on iOS**: hotspot creation (Phase 3 leader role) and
+  sustained background sync — as in the original proposal.
+
+Plumbing when it lands: `Events`-style engine hooked to
+`AppLifecycleDelegate` foreground transitions, `ble-*` no-op cases in
+`ControlFrame.swift` (its unknown-type path currently surfaces
+`messageerror`), `NSBluetoothAlwaysUsageDescription` via
+`app.plugin.js`, and the backend's iOS entry (`index.ios.js`) stops
+gating the discovery controller.
+
 ## 7. Follow-ups (rough order)
 
 1. On-device validation (nRF Connect + two-device Android test;
