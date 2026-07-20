@@ -16,6 +16,10 @@ import {
   type ComapeoCoreClientApi,
   type ComapeoServicesClientApi,
 } from "@comapeo/ipc/client.js";
+import type {
+  ComapeoServicesClientEvents,
+  DiscoveryApi,
+} from "./discovery.types";
 import * as Sentry from "@sentry/react-native";
 // `getTraceData` / `startNewTrace` aren't re-exported from
 // `@sentry/react-native@7`; `@sentry/core` is a direct dep of RN so
@@ -530,7 +534,28 @@ class State extends EventEmitter<StateEvents> {
 
 export const state = new State();
 
-export const comapeoServicesClient: ComapeoServicesClientApi =
+/**
+ * The upstream `ComapeoServicesApi` type plus the surface this module's
+ * backend adds beyond it: the `discovery` namespace and the
+ * `discovery-state` event stream (docs/ble-discovery.md §4/§6). The
+ * extension is a type-level cast only — rpc-reflector reflects whatever
+ * the backend serves, and the served object IS an emitter carrying
+ * these — pending an upstream @comapeo/ipc PR to make the type
+ * official.
+ */
+export type ComapeoServicesClient = ComapeoServicesClientApi & {
+  discovery: DiscoveryApi;
+  on<EventName extends keyof ComapeoServicesClientEvents>(
+    eventName: EventName,
+    listener: ComapeoServicesClientEvents[EventName],
+  ): unknown;
+  off<EventName extends keyof ComapeoServicesClientEvents>(
+    eventName: EventName,
+    listener: ComapeoServicesClientEvents[EventName],
+  ): unknown;
+};
+
+export const comapeoServicesClient: ComapeoServicesClient =
   createComapeoServicesClient(messagePort, {
     timeout: RPC_TIMEOUT_MS,
-  });
+  }) as ComapeoServicesClient;

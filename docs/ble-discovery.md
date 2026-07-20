@@ -147,7 +147,7 @@ not the default.
   "CM" prefix filter the practical collision risk is low, but a SIG
   membership + company ID (US$0 for the membership tier CoMapeo likely
   qualifies for, else the cited fee) should be budgeted before wide
-  release; it's a two-constant change (`src/ble/wire-format.ts`,
+  release; it's a two-constant change (`backend/lib/ble-codec.js`,
   `android/.../BleProtocol.kt`).
 - **D9 (separate `expo-ble-advertiser` repo):** reasonable end-state,
   premature start. A separate repo means separate release/version
@@ -168,8 +168,11 @@ not the default.
 | Android advertiser (manufacturer data, balanced/high-TX, non-connectable) | ✅ `android/.../ble/BleAdvertiser.kt` |
 | Android scanner (hardware filter: company 0xFFFF + "CM" mask) | ✅ `android/.../ble/BleScanner.kt` |
 | **Background discovery**: radios in the `:ComapeoCore` FGS + backend auto-connect | ✅ `BleDiscoveryEngine.kt`, `backend/lib/ble-discovery.js` — see §4a |
-| Expo module (intent controller + frame observer) + permissions | ✅ `android/.../ble/ComapeoBleDiscoveryModule.kt`, manifest |
-| iOS scanner / GATT server (both platforms) | ❌ deferred — blocked on the R4 design round |
+| **Backend discovery controller** (lifecycle, composition, peer table, persistence) | ✅ `backend/lib/ble-discovery.js` — §6 implemented |
+| **Front-end surface**: `discovery` RPC namespace + `discovery-state` events | ✅ `src/discovery.types.ts`, `comapeoServicesClient` — no native module |
+| **iOS foreground engine** (scan + service-UUID advert + GATT sync-state server) | ✅ `ios/BleDiscoveryEngine.swift` — §6c implemented |
+| **Android GATT read path** for iOS peers (second scan filter + reader) | ✅ `android/.../ble/GattStateReader.kt` |
+| iOS background discovery | ❌ by design for now — §6c wake-path options |
 | Scan response (SSID hash, credentials) | ❌ Phase 2/3 (and see R5) |
 | Backend `MapeoManager` API changes | none — the backend only *calls* `connectLocalPeer` |
 
@@ -204,60 +207,70 @@ offset len  field
 Decoders MUST treat wrong magic, wrong length, or unknown version as
 "not a CoMapeo advertisement" (return null), never as an error — other
 apps legitimately use company ID 0xFFFF. All hash derivations are
-domain-separated under the `"comapeo-ble-v1:"` prefix (see
-`src/ble/hashes.ts`).
+domain-separated under the `"comapeo-ble-v1:"` prefix. The normative
+codec lives in `backend/lib/ble-codec.js`.
+
+**Hash inputs as implemented** (the backend composes; see §4a):
+
+- `projectHash` secret = utf8 bytes of the **project public ID** (a
+  one-way blake2b of the project key — the raw key isn't reachable
+  through the public manager API). Every member knows the public ID; a
+  passive BLE observer doesn't. It leaks more easily than the raw key
+  (URLs, logs), so migrating to a core-provided discovery secret is
+  flagged for the privacy pass.
+- `stateHash` input = newline-joined **sorted `versionId`s of
+  observations + tracks** (incl. deleted). Two fully-synced devices
+  hash equal; blob-only divergence isn't captured (doc-level diff is
+  the connect trigger; blob sync follows the connection).
+- `totalBlocks` currently carries the **doc count**, not Hypercore
+  blocks — advisory "how much data" only.
+- `batteryPercent`/`charging`/flags advertise as unknown/false until
+  Phase 3 election needs them (planned: native stamp of byte 13).
+
+**GATT identifiers** (iOS discoverability, §6c):
+
+```
+Service         c3992d3b-af17-484c-ab89-24ae377279d4   (advertised by iOS)
+├── Sync State  1e2909d4-767b-4635-affe-97f936b91a48   (read → the 21-byte v1 payload)
+```
 
 ## 4. Integration model
 
-Split of responsibilities (the same shape as the module's existing
-stance for mDNS — see `app.plugin.js`'s Local Network note — except
-that *reacting* to discovery had to move where it can run in the
-background, see §4a):
+The backend's **discovery controller** (`backend/lib/ble-discovery.js`)
+is the single owner: lifecycle, advertisement composition (from `$sync`
+docs, the project public ID, `os.networkInterfaces()`, and core's
+local-peer server port), the peer table, and the auto-connect policy.
+Native engines are dumb radio drivers it commands over the control
+socket; the front end observes and controls over the app-services RPC.
+There is **no discovery-specific native module** — see §6 for why.
 
-- **Host app (RN JS)** composes the advertisement — sync state from
-  `$sync`, IP:port from `startLocalPeerDiscoveryServer`, battery — and
-  owns the UX (permission prompts, peer lists, cluster UI).
-- **This module** transports it: the JS `BleDiscovery` manager keeps
-  the peer *view*; the FGS-hosted engine keeps the radios on in the
-  background; the backend turns sightings into sync connections.
-
-Host wiring:
+Host wiring, complete and platform-branch-free:
 
 ```ts
-import { comapeo } from "@comapeo/core-react-native";
-import {
-  bleDiscovery, deriveDailyProjectHash, deriveStateHash,
-} from "@comapeo/core-react-native/ble";
+import { comapeo, comapeoServicesClient } from "@comapeo/core-react-native";
+import { ANDROID_BLE_PERMISSIONS } from "@comapeo/core-react-native";
+import { PermissionsAndroid, Platform } from "react-native";
 
-// 1. Start the TCP server core already provides; advertise its port.
-const { port } = await comapeo.startLocalPeerDiscoveryServer();
-await bleDiscovery.requestPermissionsAsync();
-await bleDiscovery.start({
-  advertisement: {
-    projectHash: deriveDailyProjectHash(projectKey),
-    totalBlocks, // from $sync state
-    stateHash: deriveStateHash(canonicalSyncStateBytes),
-    batteryPercent, charging,          // e.g. expo-battery
-    isHotspotLeader: false, hasWifi: true, inviteMode: false,
-    address: deviceIpv4,               // host-side network info
-    port,
-  },
+// 1. Permissions are the host's UX (they need an Activity). iOS
+//    prompts by itself on first use (plugin injects the usage string).
+if (Platform.OS === "android" && Platform.Version >= 31) {
+  await PermissionsAndroid.requestMultiple([...ANDROID_BLE_PERMISSIONS]);
+}
+
+// 2. Turn discovery on. The backend starts core's TCP server, composes
+//    and broadcasts the advertisement, switches the radios on, and
+//    persists the choice (an FGS restart resumes by itself).
+await comapeoServicesClient.discovery.setEnabled(true);
+
+// 3. Observe. Nearby (anonymous) peers + radio status/blockers:
+comapeoServicesClient.on("discovery-state", ({ peers, ble }) => {
+  renderNearby(peers);                    // sameProject / inCluster / rssi
+  renderBlockers(ble.blockers);           // "bluetooth-off" → prompt UX
 });
-
-// 2. Peer events drive UI only (lists, RSSI clustering). Connecting
-//    peers is NOT the host's job — the backend auto-connects (§4a) so
-//    it also happens while the app is backgrounded.
-bleDiscovery.addListener("peer", (peer) => renderPeerList(peer));
-
-// 3. Re-advertise whenever local state changes (foreground only —
-//    while backgrounded the advertisement goes stale, which at worst
-//    causes a redundant, cheap reconnect).
-await bleDiscovery.setAdvertisement({ ...current, totalBlocks, stateHash });
+// Connections need no wiring at all — the backend auto-connects
+// same-project peers; they surface through the manager as ever:
+comapeo.on("local-peers", (peers) => renderConnected(peers));
 ```
-
-On platforms without the native module (iOS today, web, Jest),
-`bleDiscovery.isAvailable === false` and everything degrades to no-ops
-— host code never branches on platform.
 
 ### 4a. Process model & background discovery
 
@@ -268,57 +281,49 @@ other and syncing with the app in the pocket. Radios in the main app
 process would die exactly when the FGS keeps syncing. So:
 
 ```
-main app process                :ComapeoCore FGS process
-┌────────────────────────┐      ┌──────────────────────────────┐
-│ host app JS            │      │ ComapeoCoreService           │
-│  BleDiscovery (view)   │      │  BleDiscoveryEngine          │
-│  ▲ bleAdvertisement/   │      │   BleAdvertiser + BleScanner │
-│  │ bleError events     │      │   + SightingThrottle         │
-│ ComapeoBleDiscovery-   │      │      │ ble-own / ble-sighting│
-│ Module                 │      │      │ / ble-error frames    │
-│  │ control.sock        │      │      ▼                       │
-│  │ (read-only observer)│      │  Node backend                │
-│  │ BLE_* service       │      │   lib/ble-discovery.js       │
-│  ▼ intents ────────────┼──────▶   decode → relay `ble-peer`  │
-└────────────────────────┘      │   → auto-connectLocalPeer    │
-                                └──────────────────────────────┘
+main app process                 :ComapeoCore FGS process (Android)
+┌─────────────────────────┐      ┌────────────────────────────────┐
+│ host app JS             │      │ Node backend                   │
+│  comapeoServicesClient  │      │  lib/ble-discovery.js          │
+│   .discovery.setEnabled ├──────▶  DiscoveryController           │
+│   .on("discovery-state")◀──────┤   compose ▸ decide ▸ connect   │
+│  comapeo.on("local-     │ RPC  │   persist enabled flag         │
+│   peers") (connections) │      │      │ ble-start/-advertise/   │
+└─────────────────────────┘      │      │ -stop   ▲ ble-sighting/ │
+                                 │      ▼         │ ble-status    │
+   (iOS: same picture, all       │  BleDiscoveryEngine            │
+    in one process; Swift        │   BleAdvertiser + BleScanner   │
+    engine, same frames)         │   + GattStateReader (iOS peers)│
+                                 └────────────────────────────────┘
 ```
 
-- **Radios** live in [`BleDiscoveryEngine`] inside the FGS process,
-  driven by `BLE_START` / `BLE_UPDATE_ADVERTISEMENT` / `BLE_STOP`
-  service intents. The service starts `dataSync`-only and re-promotes
+- **Radios** live in [`BleDiscoveryEngine`] inside the FGS process
+  (and, on iOS, `BleDiscoveryEngine.swift` in-process), driven by
+  `ble-start` / `ble-advertise` / `ble-stop` control frames from the
+  backend. The Android service starts `dataSync`-only and re-promotes
   itself with the `connectedDevice` FGS type once BLE starts and a
   Nearby-devices permission is granted (API 34 enforces the
   prerequisite at `startForeground` time).
-- **Policy** lives in the backend (`lib/ble-discovery.js`): the engine
-  forwards its own advertisement (`ble-own`) and throttled sightings
-  (`ble-sighting`) over the control socket; the backend decodes, relays
-  accepted sightings to observers as `ble-peer`, and calls
+- **Policy and composition** live in the backend controller: it
+  composes the advertisement itself (so it stays fresh in the
+  background — no staleness), receives throttled `ble-sighting` and
+  `ble-status` frames back, folds sightings into the peer table (RSSI
+  smoothing, cluster hysteresis, expiry), and calls
   `manager.connectLocalPeer` for same-project peers whose state hash
-  differs (rate-limited per peer). This is the piece that keeps
-  discovery→sync working **with the main app process dead**. Core
-  dedupes by connection `name` — synthetic `ble:<ip>:<port>` here — so
-  a peer found via both mDNS and BLE can briefly hold two connections
-  until core's post-handshake identity dedup reconciles them.
-- **View** lives in the main process: the module is a read-only
-  control-socket observer that turns `ble-peer` / `ble-error` frames
-  into the events the JS `BleDiscovery` manager consumes. While the
-  main process is dead nobody watches — but nothing stops either; the
-  peer view simply rebuilds on the next foreground.
-- **Resume**: the module retains the desired state and re-pushes it
-  whenever the backend (re)broadcasts `started`, so an FGS respawn
-  resumes discovery without host-app code. If the *main* process is
-  killed and the FGS later restarts, discovery stays down until the
-  next app foreground (known gap, acceptable: the FGS dying means the
-  OS reclaimed a protected process).
-- **Staleness**: the advertisement is composed in JS, so in the
-  background it stops tracking sync progress and the backend keeps
-  comparing against the stale own-hash. The consequence is redundant
-  `connectLocalPeer` calls toward already-connected peers — throttled
-  to one per peer per 30 s, and connect-by-name to an existing
-  connection is cheap at the core layer. Recomposing the advertisement
-  in the backend from `$sync` (removing the staleness entirely) is a
-  listed follow-up.
+  differs (rate-limited per peer). This keeps discovery→sync working
+  **with the main app process dead**. Core dedupes by connection
+  `name` — synthetic `ble:<ip>:<port>` here — so a peer found via both
+  mDNS and BLE can briefly hold two connections until core's
+  post-handshake identity dedup reconciles them.
+- **View** is the RPC surface (§4): `discovery.getState()` +
+  `discovery-state` events on the services client. While the main
+  process is dead nobody watches — but nothing stops either; the view
+  rebuilds on the next foreground.
+- **Resume**: the enabled flag + project persist to
+  `<privateStorageDir>/ble-discovery.json`; the controller re-issues
+  `ble-start` on every backend boot. FGS respawn, app cold start,
+  device reboot into background sync — all self-heal with no
+  main-process involvement.
 
 ## 5. Verification status
 
@@ -341,8 +346,9 @@ main app process                :ComapeoCore FGS process
 
 ## 6. Proposed: drop the Expo module — expose discovery over the existing RPC
 
-**Status: agreed direction, not yet implemented.** Supersedes the
-`ComapeoBleDiscoveryModule` surface described above once done.
+**Status: implemented** (together with the §6c iOS foreground path).
+The `ComapeoBleDiscoveryModule` Expo module described in earlier
+revisions is gone.
 
 With the radios in the FGS and the connect policy in the backend, the
 Expo module is a bespoke side-channel that duplicates what the backend
@@ -508,6 +514,10 @@ policy stays where its inputs, its feedback, and its cheapest test
 harness are.
 
 ## 6c. iOS path
+
+**Status: foreground path implemented** (`ios/BleDiscoveryEngine.swift`
++ the Android `GattStateReader` read path; the wake-path options below
+remain future work).
 
 The architecture ports because everything above the radios is shared:
 on iOS the backend runs in-process and the Swift side already speaks

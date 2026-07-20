@@ -34,18 +34,16 @@ sealed class ControlFrame {
     data class SentryEnvelope(val data: String) : ControlFrame()
 
     /**
-     * A BLE peer sighting relayed by the backend (`lib/ble-discovery.js`
-     * re-broadcasts accepted `ble-sighting` frames). Consumed by the
-     * main-process `ComapeoBleDiscoveryModule` observer; the FGS and the
-     * core module ignore it. `payload` is the base64 v1 advertisement.
+     * BLE engine commands from the backend's discovery controller
+     * (`backend/lib/ble-discovery.js`), which owns the whole discovery
+     * lifecycle. Broadcast frames — the FGS's [NodeJSService] dispatches
+     * them to the engine; every other control client ignores them.
+     * `payload` is the base64 v1 advertisement (null = scan-only /
+     * stop advertising).
      */
-    data class BlePeer(val payload: String, val rssi: Int, val address: String) : ControlFrame()
-
-    /**
-     * A BLE radio failure relayed by the backend (originates in the
-     * FGS-hosted engine, round-trips via Node so every observer hears it).
-     */
-    data class BleError(val scope: String, val code: String, val message: String) : ControlFrame()
+    data class BleStart(val payload: String?) : ControlFrame()
+    data class BleAdvertise(val payload: String?) : ControlFrame()
+    object BleStop : ControlFrame()
 
     /** Frame could not be processed; `detail` is suitable for logs / `messageerror`. */
     data class Malformed(val detail: String) : ControlFrame()
@@ -77,25 +75,15 @@ sealed class ControlFrame {
                     if (data.isEmpty()) Malformed("sentry-envelope frame missing string `data`")
                     else SentryEnvelope(data)
                 }
-                "ble-peer" -> {
-                    val payload = json.optString("payload", "")
-                    if (payload.isEmpty()) {
-                        Malformed("ble-peer frame missing string `payload`")
-                    } else {
-                        BlePeer(
-                            payload = payload,
-                            rssi = json.optInt("rssi", 0),
-                            address = json.optString("address", ""),
-                        )
-                    }
-                }
-                "ble-error" -> BleError(
-                    scope = json.optString("scope", "unknown"),
-                    code = json.optString("code", "ERR_BLE"),
-                    message = json.optString("message", "(no message)"),
-                )
+                "ble-start" -> BleStart(payload = json.optStringOrNull("payload"))
+                "ble-advertise" -> BleAdvertise(payload = json.optStringOrNull("payload"))
+                "ble-stop" -> BleStop
                 else -> Malformed("Unknown control frame type=\"$type\"")
             }
         }
+
+        /** `null` for an absent key or a JSON `null` value. */
+        private fun JSONObject.optStringOrNull(key: String): String? =
+            if (isNull(key)) null else optString(key)
     }
 }

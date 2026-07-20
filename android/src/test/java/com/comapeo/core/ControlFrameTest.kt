@@ -138,31 +138,34 @@ class ControlFrameTest {
     }
 
     @Test
-    fun parsesBlePeer() {
-        val frame = ControlFrame.parse(
-            """{"type":"ble-peer","payload":"Q00B","rssi":-48,"address":"AA:BB"}"""
+    fun parsesBleStartWithPayload() {
+        val frame = ControlFrame.parse("""{"type":"ble-start","payload":"Q00B"}""")
+        assertEquals(ControlFrame.BleStart(payload = "Q00B"), frame)
+    }
+
+    @Test
+    fun bleStartWithNullOrAbsentPayloadIsScanOnly() {
+        assertEquals(
+            ControlFrame.BleStart(payload = null),
+            ControlFrame.parse("""{"type":"ble-start","payload":null}"""),
         )
         assertEquals(
-            ControlFrame.BlePeer(payload = "Q00B", rssi = -48, address = "AA:BB"),
-            frame,
+            ControlFrame.BleStart(payload = null),
+            ControlFrame.parse("""{"type":"ble-start"}"""),
         )
     }
 
     @Test
-    fun blePeerWithoutPayloadIsMalformed() {
-        val frame = ControlFrame.parse("""{"type":"ble-peer","rssi":-48}""")
-        assertTrue(frame is ControlFrame.Malformed)
-    }
-
-    @Test
-    fun parsesBleError() {
-        val frame = ControlFrame.parse(
-            """{"type":"ble-error","scope":"scan","code":"ERR_BLE_SCAN","message":"boom"}"""
+    fun parsesBleAdvertiseAndStop() {
+        assertEquals(
+            ControlFrame.BleAdvertise(payload = "Q00B"),
+            ControlFrame.parse("""{"type":"ble-advertise","payload":"Q00B"}"""),
         )
         assertEquals(
-            ControlFrame.BleError(scope = "scan", code = "ERR_BLE_SCAN", message = "boom"),
-            frame,
+            ControlFrame.BleAdvertise(payload = null),
+            ControlFrame.parse("""{"type":"ble-advertise","payload":null}"""),
         )
+        assertEquals(ControlFrame.BleStop, ControlFrame.parse("""{"type":"ble-stop"}"""))
     }
 
     @Test

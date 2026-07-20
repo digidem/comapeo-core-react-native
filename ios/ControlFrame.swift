@@ -20,6 +20,14 @@ enum ControlFrame {
     /// check-ins, profiles). Base64 bytes handed to
     /// `PrivateSentrySDKOnly`. No native scope merging.
     case sentryEnvelope(data: String)
+    /// BLE engine commands from the backend's discovery controller
+    /// (`backend/lib/ble-discovery.js`). Dispatched to
+    /// `BleDiscoveryEngine` via `NodeJSService.onBleControlFrame`.
+    /// `payload` is the base64 v1 advertisement (nil = scan-only /
+    /// stop advertising).
+    case bleStart(payload: String?)
+    case bleAdvertise(payload: String?)
+    case bleStop
     /// Not JSON, missing `type`, or `type` not in the well-known set.
     /// `detail` is developer-facing — surfaces in the JS `messageerror`.
     case malformed(detail: String)
@@ -59,6 +67,12 @@ enum ControlFrame {
                 return .malformed(detail: "sentry-envelope frame missing string `data`")
             }
             return .sentryEnvelope(data: data)
+        case "ble-start":
+            return .bleStart(payload: obj["payload"] as? String)
+        case "ble-advertise":
+            return .bleAdvertise(payload: obj["payload"] as? String)
+        case "ble-stop":
+            return .bleStop
         default:
             return .malformed(detail: "Unknown control frame type=\"\(type)\"")
         }

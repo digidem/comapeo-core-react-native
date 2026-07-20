@@ -98,10 +98,11 @@ class ComapeoCoreModule : Module() {
                         // Capturing here would double-send.
                         is ControlFrame.SentryEvent -> {}
                         is ControlFrame.SentryEnvelope -> {}
-                        // BLE frames belong to ComapeoBleDiscoveryModule's own
-                        // control-socket observer.
-                        is ControlFrame.BlePeer -> {}
-                        is ControlFrame.BleError -> {}
+                        // BLE engine commands are for the FGS process; the
+                        // front end observes discovery over the services RPC.
+                        is ControlFrame.BleStart -> {}
+                        is ControlFrame.BleAdvertise -> {}
+                        is ControlFrame.BleStop -> {}
                         is ControlFrame.Malformed -> emitMessageError(frame.detail)
                     }
                 },

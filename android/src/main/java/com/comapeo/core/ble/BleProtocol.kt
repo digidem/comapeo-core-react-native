@@ -26,8 +26,22 @@ object BleProtocol {
     /**
      * Ceiling for the manufacturer-data payload in a legacy (31-byte)
      * advertisement: 31 − 3 (flags AD) − 2 (AD header) − 2 (company ID).
-     * The v1 payload is 21 bytes; this guards against a JS-side format
+     * The v1 payload is 21 bytes; this guards against a backend format
      * change silently producing an advertisement the radio rejects.
      */
     const val MAX_PAYLOAD_LENGTH = 24
+
+    /**
+     * The iOS discoverability path (docs/ble-discovery.md §6c): iOS
+     * can't put manufacturer data in an advertisement, so it advertises
+     * this service UUID and serves the same 21-byte payload as the
+     * sync-state characteristic's value. Android scans for the UUID and
+     * reads the characteristic; the result feeds the same `ble-sighting`
+     * frame as a manufacturer-data sighting. Mirrored in
+     * `backend/lib/ble-codec.js` and `ios/BleDiscoveryEngine.swift`.
+     */
+    val SERVICE_UUID: java.util.UUID =
+        java.util.UUID.fromString("c3992d3b-af17-484c-ab89-24ae377279d4")
+    val SYNC_STATE_CHARACTERISTIC_UUID: java.util.UUID =
+        java.util.UUID.fromString("1e2909d4-767b-4635-affe-97f936b91a48")
 }

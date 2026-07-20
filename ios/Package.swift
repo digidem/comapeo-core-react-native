@@ -31,6 +31,9 @@ let package = Package(
                 "ComapeoCoreModule.swift",
                 "AppLifecycleDelegate.swift",
                 "RootKeyStore.swift",
+                // CoreBluetooth radio driver — iOS-only surface; the
+                // pure frame protocol it speaks is tested via ControlFrame.
+                "BleDiscoveryEngine.swift",
             ],
             sources: [
                 "NodeJSIPC.swift",

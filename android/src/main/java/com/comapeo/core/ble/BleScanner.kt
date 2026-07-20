@@ -26,6 +26,12 @@ import android.content.Context
 class BleScanner(
     private val onSighting: (payload: ByteArray, rssi: Int, address: String) -> Unit,
     private val onError: (code: String, message: String) -> Unit,
+    /**
+     * A peer advertising the CoMapeo service UUID with no manufacturer
+     * data — an iPhone (docs/ble-discovery.md §6c). The caller reads its
+     * sync-state characteristic via [GattStateReader].
+     */
+    private val onServiceMatch: (device: android.bluetooth.BluetoothDevice, rssi: Int) -> Unit = { _, _ -> },
 ) {
     private var scanner: BluetoothLeScanner? = null
     private var callback: ScanCallback? = null
@@ -46,13 +52,21 @@ class BleScanner(
                 BleException("ERR_BLE_SCAN_UNSUPPORTED", "No BLE scanner available")
             }
 
-        val filter = ScanFilter.Builder()
-            .setManufacturerData(
-                BleProtocol.COMPANY_ID,
-                BleProtocol.MAGIC,
-                BleProtocol.MAGIC_MASK,
-            )
-            .build()
+        // Two hardware-offloaded filters, OR-ed by the controller:
+        // manufacturer data for Android peers, service UUID for iOS
+        // peers (which cannot advertise manufacturer data).
+        val filters = listOf(
+            ScanFilter.Builder()
+                .setManufacturerData(
+                    BleProtocol.COMPANY_ID,
+                    BleProtocol.MAGIC,
+                    BleProtocol.MAGIC_MASK,
+                )
+                .build(),
+            ScanFilter.Builder()
+                .setServiceUuid(android.os.ParcelUuid(BleProtocol.SERVICE_UUID))
+                .build(),
+        )
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
@@ -60,13 +74,17 @@ class BleScanner(
             .build()
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                // The filter guarantees the record carries our company
-                // ID; getManufacturerSpecificData returns the payload
-                // with the company ID already stripped.
+                // getManufacturerSpecificData returns the payload with
+                // the company ID already stripped. A record without it
+                // matched the service-UUID filter instead — an iOS peer
+                // whose state must be read over GATT.
                 val payload =
                     result.scanRecord?.getManufacturerSpecificData(BleProtocol.COMPANY_ID)
-                        ?: return
-                onSighting(payload, result.rssi, result.device.address)
+                if (payload != null) {
+                    onSighting(payload, result.rssi, result.device.address)
+                } else {
+                    onServiceMatch(result.device, result.rssi)
+                }
             }
 
             override fun onBatchScanResults(results: MutableList<ScanResult>) {
@@ -80,7 +98,7 @@ class BleScanner(
             }
         }
         try {
-            leScanner.startScan(listOf(filter), settings, cb)
+            leScanner.startScan(filters, settings, cb)
         } catch (e: SecurityException) {
             throw BleException(
                 "ERR_BLE_PERMISSION",

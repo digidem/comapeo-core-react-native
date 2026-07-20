@@ -58,11 +58,13 @@ class ComapeoCoreService : Service() {
 
     /**
      * FGS-hosted BLE discovery engine (docs/ble-discovery.md). Lives here —
-     * not in the main-process module — so advertising/scanning survive the
-     * app being backgrounded or its main process killed, alongside the Node
-     * backend the sightings feed. Created lazily on the first BLE intent;
-     * in-memory only (an FGS respawn loses it; the main-process module
-     * re-pushes its desired state when it observes the backend come back).
+     * not in the main app process — so advertising/scanning survive the app
+     * being backgrounded or its main process killed, alongside the Node
+     * backend that commands it (`ble-start`/`ble-advertise`/`ble-stop`
+     * control frames from the discovery controller, dispatched via
+     * [handleBleControlFrame]). Created lazily on the first command; an FGS
+     * respawn is self-healing because the backend persists the enabled flag
+     * and re-issues `ble-start` on its next boot.
      */
     private var bleEngine: BleDiscoveryEngine? = null
 
@@ -76,10 +78,6 @@ class ComapeoCoreService : Service() {
         const val NOTIFICATION_ID = 1
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
         const val CONTROL_SOCKET_FILENAME = "control.sock"
-
-        /** ByteArray extra on [Actions.BLE_START] / [Actions.BLE_UPDATE_ADVERTISEMENT]
-         *  carrying the encoded advertisement payload; absent = scan-only. */
-        const val EXTRA_BLE_PAYLOAD = "com.comapeo.core.blePayload"
 
         /**
          * Grace between a terminal ERROR and the FGS killing its own process
@@ -224,29 +222,6 @@ class ComapeoCoreService : Service() {
 
             Actions.STOP.name -> {
                 stopService()
-            }
-
-            Actions.BLE_START.name, Actions.BLE_UPDATE_ADVERTISEMENT.name -> {
-                // Only meaningful with a running backend to receive the engine's
-                // frames. A stray intent can cold-create this service without the
-                // FGS boot path; ignoring it leaves an idle Service object that the
-                // system tears down with the process — same envelope as the
-                // USER_BACKGROUND cold-start noted above.
-                if (!isServiceStarted) {
-                    log("Ignoring ${intent.action} (service not started)")
-                } else {
-                    val payload = intent.getByteArrayExtra(EXTRA_BLE_PAYLOAD)
-                    if (intent.action == Actions.BLE_START.name) {
-                        promoteBleForegroundType()
-                        ensureBleEngine().start(payload)
-                    } else {
-                        ensureBleEngine().setAdvertisement(payload)
-                    }
-                }
-            }
-
-            Actions.BLE_STOP.name -> {
-                bleEngine?.stop()
             }
 
             // Debug-only test seam: force a terminal ERROR with the node thread
@@ -416,6 +391,7 @@ class ComapeoCoreService : Service() {
         // Arms the self-terminate watchdog on a terminal ERROR. Set before start()
         // so an error during boot (rootkey, startup watchdog) is observed.
         nodeJSService.onStateChange = ::onNodeStateChange
+        nodeJSService.onBleControlFrame = ::handleBleControlFrame
         Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
         nodeJSService.start(nodeJSServiceCallback)
         isServiceStarted = true
@@ -459,6 +435,33 @@ class ComapeoCoreService : Service() {
             )
             // stopService touches the notification manager / stopSelf; keep it on main.
             withContext(Dispatchers.Main) { stopService() }
+        }
+    }
+
+    /**
+     * BLE engine commands from the backend's discovery controller. Runs on
+     * the control-IPC coroutine; the engine's radio calls are quick and
+     * callback-based, so no re-dispatch is needed.
+     */
+    private fun handleBleControlFrame(frame: ControlFrame) {
+        when (frame) {
+            is ControlFrame.BleStart -> {
+                promoteBleForegroundType()
+                ensureBleEngine().start(decodeBlePayload(frame.payload))
+            }
+            is ControlFrame.BleAdvertise ->
+                ensureBleEngine().setAdvertisement(decodeBlePayload(frame.payload))
+            is ControlFrame.BleStop -> bleEngine?.stop()
+            else -> {}
+        }
+    }
+
+    private fun decodeBlePayload(base64: String?): ByteArray? = base64?.let {
+        try {
+            android.util.Base64.decode(it, android.util.Base64.DEFAULT)
+        } catch (e: IllegalArgumentException) {
+            log("Ignoring undecodable BLE payload: ${e.message}")
+            null
         }
     }
 

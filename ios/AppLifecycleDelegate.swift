@@ -114,6 +114,31 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         return base.appendingPathComponent("comapeo", isDirectory: true).path
     }
 
+    /// The iOS BLE discovery engine (docs/ble-discovery.md §6c),
+    /// commanded by the backend over control frames and reporting back
+    /// through the same socket. Foreground-gated below.
+    static let bleEngine = BleDiscoveryEngine { frame in
+        AppLifecycleDelegate.nodeService.sendControlFrame(frame)
+    }
+
+    /// Dispatch the backend's BLE commands to the engine. Static so the
+    /// wiring happens once regardless of how many delegate instances
+    /// Expo creates.
+    private static let bleWiring: Void = {
+        nodeService.onBleControlFrame = { frame in
+            switch frame {
+            case .bleStart(let payload):
+                bleEngine.start(payload: payload.flatMap { Data(base64Encoded: $0) })
+            case .bleAdvertise(let payload):
+                bleEngine.setAdvertisement(payload: payload.flatMap { Data(base64Encoded: $0) })
+            case .bleStop:
+                bleEngine.stop()
+            default:
+                break
+            }
+        }
+    }()
+
     #if DEBUG
     /// Test-only. Tests are reliably on the main thread so the
     /// inherited `@MainActor` init won't trap. Gated to DEBUG so
@@ -159,7 +184,9 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
 
     public func applicationDidBecomeActive(_ application: UIApplication) {
         log("applicationDidBecomeActive")
+        _ = Self.bleWiring
         Self.nodeService.start()
+        Self.bleEngine.onForeground()
     }
 
     public func applicationWillResignActive(_ application: UIApplication) {
@@ -170,6 +197,10 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         log("applicationDidEnterBackground — Node.js continues running")
         // Don't stop Node on background: NodeMobileStartNode is
         // once-per-process. iOS may suspend or kill; next launch is fresh.
+        // BLE scanning IS stopped — discovery is foreground-only on iOS
+        // (a broad scan can't run backgrounded anyway); the service-UUID
+        // advertisement stays up in the overflow area.
+        Self.bleEngine.onBackground()
     }
 
     public func applicationWillTerminate(_ application: UIApplication) {

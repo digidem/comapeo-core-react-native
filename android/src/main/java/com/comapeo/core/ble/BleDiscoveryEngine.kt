@@ -3,31 +3,28 @@ package com.comapeo.core.ble
 import android.content.Context
 import android.os.SystemClock
 import android.util.Base64
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
  * The FGS-hosted half of BLE discovery: owns the radios in the
  * `:ComapeoCore` process so advertising and scanning survive the main
- * app process being backgrounded or killed (the same reason the Node
- * backend lives there — see docs/ble-discovery.md "process model").
+ * app process being backgrounded or killed — the same reason the Node
+ * backend lives there (docs/ble-discovery.md §4a/§6).
  *
- * All *policy* lives elsewhere: the main-process module composes the
- * advertisement payload (opaque bytes here) and drives this engine via
- * service intents; the Node backend receives the frames this engine
- * emits over the control socket and decides what to do with sightings
- * (relay to observers + auto-`connectLocalPeer`).
+ * All *policy* lives in the backend's discovery controller: it composes
+ * the advertisement (opaque bytes here) and drives this engine via
+ * `ble-start` / `ble-advertise` / `ble-stop` control frames; the engine
+ * answers with:
  *
- * Frames sent to Node (via [sendFrame], best-effort):
- * - `ble-own {payload|null}` — what this device is advertising. Sent
- *   *before* the radio call so the backend's connect policy works even
- *   on hardware that can't advertise (scan-only budget chipsets).
- * - `ble-sighting {payload, rssi, address}` — throttled scan results.
- * - `ble-error {scope, code, message}` — radio failures (both the
- *   synchronous start failures, since intents have no reply channel,
- *   and the async callback ones).
- *
- * Errors never throw out of this class: with an intent-driven engine
- * there is nobody to catch them — everything is reported as a frame.
+ * - `ble-sighting {payload, rssi, address}` — throttled scan results
+ *   (from Android manufacturer-data advertisements AND from GATT reads
+ *   of iOS peers via [GattStateReader] — same frame, indistinguishable
+ *   to the backend).
+ * - `ble-status {scanning, advertising, blockers, lastError?}` — the
+ *   engine's view of the radios, surfaced to the front end as
+ *   `DiscoveryState.ble`. Radio failures never throw out of this
+ *   class: frames are the only reply channel.
  */
 class BleDiscoveryEngine(
     private val context: Context,
@@ -35,23 +32,26 @@ class BleDiscoveryEngine(
     private val throttle: SightingThrottle = SightingThrottle(),
     private val nowMs: () -> Long = SystemClock::elapsedRealtime,
 ) {
+    private var scanning = "stopped"
+    private var advertising = "stopped"
+    private val blockers = LinkedHashSet<String>()
+    private var lastError: Triple<String, String, String>? = null
+
     private val advertiser = BleAdvertiser { code, message ->
-        sendError("advertise", code, message)
+        // Async advertise failure (post-start callback).
+        advertising = if (code == "ERR_BLE_ADVERTISE") "unavailable" else advertising
+        recordError("advertise", code, message)
+        sendStatus()
     }
+    private val gattReader = GattStateReader(context, onSighting = ::forwardSighting)
     private val scanner = BleScanner(
-        onSighting = { payload, rssi, address ->
-            if (throttle.shouldForward(address, payload, nowMs())) {
-                sendFrame(
-                    JSONObject()
-                        .put("type", "ble-sighting")
-                        .put("payload", Base64.encodeToString(payload, Base64.NO_WRAP))
-                        .put("rssi", rssi)
-                        .put("address", address)
-                        .toString(),
-                )
-            }
+        onSighting = ::forwardSighting,
+        onError = { code, message ->
+            scanning = "unavailable"
+            recordError("scan", code, message)
+            sendStatus()
         },
-        onError = { code, message -> sendError("scan", code, message) },
+        onServiceMatch = { device, rssi -> gattReader.request(device, rssi) },
     )
 
     var isRunning: Boolean = false
@@ -62,38 +62,25 @@ class BleDiscoveryEngine(
      *  advertisement is replaced. */
     fun start(payload: ByteArray?) {
         isRunning = true
-        try {
+        blockers.clear()
+        lastError = null
+        scanning = try {
             scanner.start(context)
+            "active"
         } catch (e: BleException) {
-            sendError("scan", e.code, e.message ?: "scan start failed")
+            recordError("scan", e.code, e.message ?: "scan start failed")
+            "unavailable"
         }
-        setAdvertisement(payload)
+        applyAdvertisement(payload)
+        sendStatus()
     }
 
     /** Replace (non-null) or stop (null) the advertisement. No-op when
      *  the engine isn't running. */
     fun setAdvertisement(payload: ByteArray?) {
         if (!isRunning) return
-        // Own-state first: the backend can auto-connect on sightings
-        // even if the advertise call below fails on this hardware.
-        sendFrame(
-            JSONObject()
-                .put("type", "ble-own")
-                .put(
-                    "payload",
-                    payload?.let { Base64.encodeToString(it, Base64.NO_WRAP) } ?: JSONObject.NULL,
-                )
-                .toString(),
-        )
-        if (payload == null) {
-            advertiser.stop()
-            return
-        }
-        try {
-            advertiser.start(context, payload)
-        } catch (e: BleException) {
-            sendError("advertise", e.code, e.message ?: "advertise start failed")
-        }
+        applyAdvertisement(payload)
+        sendStatus()
     }
 
     fun stop() {
@@ -101,17 +88,74 @@ class BleDiscoveryEngine(
         isRunning = false
         advertiser.stop()
         scanner.stop()
+        gattReader.clear()
         throttle.clear()
+        scanning = "stopped"
+        advertising = "stopped"
+        sendStatus()
     }
 
-    private fun sendError(scope: String, code: String, message: String) {
+    private fun applyAdvertisement(payload: ByteArray?) {
+        if (payload == null) {
+            advertiser.stop()
+            advertising = "stopped"
+            return
+        }
+        advertising = try {
+            advertiser.start(context, payload)
+            "active"
+        } catch (e: BleException) {
+            recordError("advertise", e.code, e.message ?: "advertise start failed")
+            if (e.code == "ERR_BLE_ADVERTISE_UNSUPPORTED") "unsupported" else "unavailable"
+        }
+    }
+
+    private fun forwardSighting(payload: ByteArray, rssi: Int, address: String) {
+        if (!throttle.shouldForward(address, payload, nowMs())) return
         sendFrame(
             JSONObject()
-                .put("type", "ble-error")
-                .put("scope", scope)
-                .put("code", code)
-                .put("message", message)
+                .put("type", "ble-sighting")
+                .put("payload", Base64.encodeToString(payload, Base64.NO_WRAP))
+                .put("rssi", rssi)
+                .put("address", address)
                 .toString(),
         )
+    }
+
+    private fun recordError(scope: String, code: String, message: String) {
+        blockerFor(code)?.let(blockers::add)
+        lastError = Triple(scope, code, message)
+    }
+
+    private fun sendStatus() {
+        val frame = JSONObject()
+            .put("type", "ble-status")
+            .put("scanning", scanning)
+            .put("advertising", advertising)
+            .put("blockers", JSONArray(blockers.toList()))
+        lastError?.let { (scope, code, message) ->
+            frame.put(
+                "lastError",
+                JSONObject()
+                    .put("scope", scope)
+                    .put("code", code)
+                    .put("message", message),
+            )
+        }
+        sendFrame(frame.toString())
+    }
+
+    companion object {
+        /**
+         * Maps engine error codes onto the actionable blockers the
+         * front end renders ("Turn on Bluetooth", permission prompt…).
+         * Pure — see [BleDiscoveryEngineTest].
+         */
+        fun blockerFor(code: String): String? = when (code) {
+            "ERR_BLE_DISABLED" -> "bluetooth-off"
+            "ERR_BLE_UNAVAILABLE" -> "no-adapter"
+            "ERR_BLE_PERMISSION" -> "permission-missing"
+            else -> null
+        }
     }
 }

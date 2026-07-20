@@ -123,6 +123,11 @@ function withComapeoCore(config, props) {
   // iOS gates that behind the Local Network prompt, so ship a usage
   // description (overridable via `localNetworkPermission`). iOS only.
   config = withLocalNetworkPermissionIos(config, props?.localNetworkPermission);
+  // BLE peer discovery (docs/ble-discovery.md): CoreBluetooth prompts on
+  // first use and requires this usage description; a missing key crashes
+  // the app when discovery is first enabled. iOS only — the Android
+  // permissions ship in the library manifest.
+  config = withBluetoothPermissionIos(config, props?.bluetoothPermission);
   // Skip React Native init in the headless `:ComapeoCore` backend process — running
   // RN there risks a cold-start ANR (see com.comapeo.core.ComapeoProcessGuard).
   config = withComapeoCoreProcessGuard(config);
@@ -247,6 +252,24 @@ function withLocalNetworkPermissionIos(config, usageDescription) {
       typeof usageDescription === "string"
         ? usageDescription
         : DEFAULT_LOCAL_NETWORK_USAGE_DESCRIPTION;
+    return cfg;
+  });
+}
+
+const IOS_BLUETOOTH_USAGE_KEY = "NSBluetoothAlwaysUsageDescription";
+const DEFAULT_BLUETOOTH_USAGE_DESCRIPTION =
+  "Finds nearby CoMapeo devices over Bluetooth so they can sync with each other.";
+
+// The BLE discovery engine (ios/BleDiscoveryEngine.swift) constructs its
+// CoreBluetooth managers lazily, on the backend's first `ble-start`
+// command — which is when iOS shows the permission prompt using this
+// description. Customise the wording via the `bluetoothPermission` prop.
+function withBluetoothPermissionIos(config, usageDescription) {
+  return withInfoPlist(config, (cfg) => {
+    cfg.modResults[IOS_BLUETOOTH_USAGE_KEY] =
+      typeof usageDescription === "string"
+        ? usageDescription
+        : DEFAULT_BLUETOOTH_USAGE_DESCRIPTION;
     return cfg;
   });
 }

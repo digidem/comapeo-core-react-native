@@ -416,9 +416,24 @@ class NodeJSService {
         thread.start()
     }
 
+    /// Sink for the backend's BLE engine commands
+    /// (`ble-start`/`ble-advertise`/`ble-stop`). Set by
+    /// `AppLifecycleDelegate`, which owns the `BleDiscoveryEngine`.
+    /// Invoked on the control-IPC read queue — handlers must be quick.
+    var onBleControlFrame: ((ControlFrame) -> Void)?
+
+    /// Best-effort fire-and-forget control frame to the backend — the
+    /// transport for the BLE engine's `ble-sighting`/`ble-status`
+    /// frames. BLE frames are inherently lossy (the next one re-carries
+    /// the state), so drops need no handling.
+    func sendControlFrame(_ frame: String) {
+        controlIPC?.sendMessage(frame)
+    }
+
     /// Routes parsed control-socket frames into component-state mutations.
     private func handleControlMessage(_ message: String) {
-        switch ControlFrame.parse(message) {
+        let frame = ControlFrame.parse(message)
+        switch frame {
         case .started:
             logCrumb(category: SentryCategories.control, message: "received: started")
             let nodeSpawnSpan = bootSentryQueue.sync {
@@ -450,6 +465,8 @@ class NodeJSService {
             SentryNativeBridge.captureEventJson(payloadJson)
         case .sentryEnvelope(let data):
             SentryNativeBridge.captureEnvelopeBase64(data)
+        case .bleStart, .bleAdvertise, .bleStop:
+            onBleControlFrame?(frame)
         case .malformed(let detail):
             // Forwarded via `onMessageError`. Not raised to `.error` —
             // a single bad frame shouldn't take down a session.

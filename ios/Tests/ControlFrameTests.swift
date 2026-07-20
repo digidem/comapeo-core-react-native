@@ -137,6 +137,36 @@ final class ControlFrameTests: XCTestCase {
         )
     }
 
+    func testParsesBleStartWithPayload() {
+        let frame = ControlFrame.parse(#"{"type":"ble-start","payload":"Q00B"}"#)
+        guard case let .bleStart(payload) = frame else {
+            XCTFail("expected .bleStart, got \(frame)"); return
+        }
+        XCTAssertEqual(payload, "Q00B")
+    }
+
+    func testBleStartWithNullOrAbsentPayloadIsScanOnly() {
+        for raw in [#"{"type":"ble-start","payload":null}"#, #"{"type":"ble-start"}"#] {
+            let frame = ControlFrame.parse(raw)
+            guard case let .bleStart(payload) = frame else {
+                XCTFail("expected .bleStart for \(raw), got \(frame)"); return
+            }
+            XCTAssertNil(payload)
+        }
+    }
+
+    func testParsesBleAdvertiseAndStop() {
+        guard case let .bleAdvertise(payload) =
+            ControlFrame.parse(#"{"type":"ble-advertise","payload":"Q00B"}"#)
+        else {
+            XCTFail("expected .bleAdvertise"); return
+        }
+        XCTAssertEqual(payload, "Q00B")
+        guard case .bleStop = ControlFrame.parse(#"{"type":"ble-stop"}"#) else {
+            XCTFail("expected .bleStop"); return
+        }
+    }
+
     func testUnknownTypeReturnsMalformed() {
         let frame = ControlFrame.parse(#"{"type":"forwardCompat"}"#)
         guard case let .malformed(detail) = frame else {

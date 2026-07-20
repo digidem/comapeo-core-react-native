@@ -3,7 +3,9 @@ import { fileURLToPath } from "node:url";
 import ensureError from "ensure-error";
 import Fastify from "fastify";
 
-import { createBleDiscovery } from "./lib/ble-discovery.js";
+import { TypedEmitter } from "tiny-typed-emitter";
+
+import { DiscoveryController } from "./lib/ble-discovery.js";
 import { ComapeoRpc } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { createMapServer } from "./lib/create-map-server.js";
@@ -67,17 +69,19 @@ const initPromise = new Promise((resolve, reject) => {
 });
 let initConsumed = false;
 
-// BLE discovery policy (Android; docs/ble-discovery.md §4). The FGS
-// hosts the radios and forwards `ble-own` / `ble-sighting` / `ble-error`
-// frames here; this side decodes, relays `ble-peer` / `ble-error` to
-// control-socket observers, and auto-connects same-project peers whose
-// sync state differs — which is what keeps discovery→sync working while
-// the main app process is dead. `controlIpcServer` and `comapeoManager`
-// are referenced lazily: frames only arrive after listen(), and connects
-// are skipped until the manager exists.
-const bleDiscovery = createBleDiscovery({
+// BLE discovery (docs/ble-discovery.md §4/§6): this controller owns the
+// whole lifecycle — advertisement composition, radio commands to the
+// native engines (broadcast `ble-start`/`ble-advertise`/`ble-stop`
+// frames), the peer table, and the auto-connect policy that keeps
+// discovery→sync working while the main app process is dead. The front
+// end reaches it via the app-services RPC (`discovery` namespace +
+// `discovery-state` events, wired below). `controlIpcServer` and
+// `comapeoManager` are referenced lazily: frames only arrive after
+// listen(), and connects are skipped until the manager exists.
+const discoveryController = new DiscoveryController({
   getManager: () => comapeoManager,
   broadcast: (frame) => controlIpcServer.broadcast(frame),
+  storageDir: privateStorageDir,
 });
 
 const controlIpcServer = new SimpleRpcServer({
@@ -132,6 +136,9 @@ const controlIpcServer = new SimpleRpcServer({
     // Broadcast BEFORE close: AF_UNIX guarantees this frame reaches
     // peers before EOF, so they can tell graceful shutdown from a crash.
     controlIpcServer.broadcast({ type: "stopping" });
+    // Timers/subscriptions only — the persisted enabled flag survives
+    // so the next boot resumes discovery.
+    discoveryController.close();
     // Each close is isolated so one failure can't leak the others.
     /**
      * @param {string} label
@@ -181,9 +188,8 @@ const controlIpcServer = new SimpleRpcServer({
     /** @type {Error & { source?: string }} */ (err).source = "native";
     handleFatal(message.phase, err);
   },
-  "ble-own": (message) => bleDiscovery.handleOwn(message),
-  "ble-sighting": (message) => bleDiscovery.handleSighting(message),
-  "ble-error": (message) => bleDiscovery.handleError(message),
+  "ble-sighting": (message) => discoveryController.handleSighting(message),
+  "ble-status": (message) => discoveryController.handleStatus(message),
 });
 
 /**
@@ -306,15 +312,28 @@ async function withPhase(phase, fn) {
             "create-map-server",
           );
         });
-        /** @type {import("@comapeo/ipc/server.js").ComapeoServicesApi} */
-        const comapeoServices = {
+        // The services object is an emitter so rpc-reflector forwards
+        // its events to subscribed clients — `discovery-state` reaches
+        // the front end via `comapeoServicesClient.on(...)`. The
+        // `discovery` namespace extends the upstream ComapeoServicesApi
+        // type (cast below); an @comapeo/ipc PR to make it official is
+        // tracked in docs/ble-discovery.md §6.
+        const servicesWithDiscovery = Object.assign(new TypedEmitter(), {
           mapServer: {
             async getBaseUrl() {
               const { localPort } = await mapServerListenPromise;
               return `http://127.0.0.1:${localPort}`;
             },
           },
-        };
+          discovery: discoveryController.api,
+        });
+        discoveryController.on("discovery-state", (state) => {
+          servicesWithDiscovery.emit("discovery-state", state);
+        });
+        const comapeoServices =
+          /** @type {import("@comapeo/ipc/server.js").ComapeoServicesApi} */ (
+            /** @type {unknown} */ (servicesWithDiscovery)
+          );
 
         comapeoRpcServer = new ComapeoRpc(
           { comapeoManager, comapeoServices },
@@ -327,6 +346,9 @@ async function withPhase(phase, fn) {
     console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
 
     controlIpcServer.setReadinessPhase("ready");
+    // Resume discovery if it was enabled when the process last died —
+    // an FGS restart self-heals without the main app process.
+    discoveryController.onManagerReady();
     metrics.bootOutcome("started");
     startMemorySampler();
     sampleStorageSize(privateStorageDir);

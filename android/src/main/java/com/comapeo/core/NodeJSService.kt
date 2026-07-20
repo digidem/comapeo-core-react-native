@@ -656,10 +656,12 @@ class NodeJSService(
             is ControlFrame.SentryEnvelope -> {
                 SentryFgsBridge.captureEnvelopeBase64(frame.data)
             }
-            // Backend broadcasts consumed by the main-process BLE module's
-            // observer; the FGS just sees its own sightings echoed back.
-            is ControlFrame.BlePeer -> {}
-            is ControlFrame.BleError -> {}
+            // Discovery-controller commands for the FGS-hosted BLE engine.
+            // Other control clients (main-process module, iOS) no-op them.
+            is ControlFrame.BleStart,
+            is ControlFrame.BleAdvertise,
+            is ControlFrame.BleStop,
+            -> onBleControlFrame?.invoke(frame)
             is ControlFrame.Malformed -> {
                 // Logged but not raised to ERROR — a single bad frame shouldn't take
                 // down the lifecycle. The main-app Module surfaces `messageerror` separately.
@@ -768,13 +770,21 @@ class NodeJSService(
     }
 
     /**
+     * Sink for the backend's BLE engine commands
+     * (`ble-start`/`ble-advertise`/`ble-stop`). Set by
+     * [ComapeoCoreService], which owns the engine. Invoked on the
+     * control-IPC coroutine — handlers must be quick and thread-safe.
+     */
+    var onBleControlFrame: ((ControlFrame) -> Unit)? = null
+
+    /**
      * Best-effort fire-and-forget control frame to the backend — the
-     * transport for the FGS-hosted BLE engine's `ble-own` /
-     * `ble-sighting` / `ble-error` frames. Same delivery model as
+     * transport for the FGS-hosted BLE engine's `ble-sighting` /
+     * `ble-status` frames. Same delivery model as
      * [sendErrorNativeFrame]: bounded wait for the socket, drop on
      * timeout/failure. BLE frames are inherently lossy (the next
-     * sighting re-carries the state), so a drop needs no capture —
-     * just a log.
+     * sighting/status re-carries the state), so a drop needs no
+     * capture — just a log.
      */
     fun sendControlFrame(frame: String) {
         serviceScope.launch {
