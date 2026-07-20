@@ -21,6 +21,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.comapeo.core.ble.BleDiscoveryEngine
 import com.comapeo.core.ble.BlePermissions
+import com.comapeo.core.ble.NsdEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -67,6 +68,10 @@ class ComapeoCoreService : Service() {
      * and re-issues `ble-start` on its next boot.
      */
     private var bleEngine: BleDiscoveryEngine? = null
+
+    /** FGS-hosted DNS-SD register+browse, same command/frames contract
+     *  as [bleEngine] — see docs/ble-discovery.md §4b. */
+    private var nsdEngine: NsdEngine? = null
 
     /** Last notification style shown, so a `startForeground` re-promotion
      *  (BLE type upgrade) can rebuild the same notification. */
@@ -282,6 +287,8 @@ class ComapeoCoreService : Service() {
         // feed is about to drain anyway.
         bleEngine?.stop()
         bleEngine = null
+        nsdEngine?.stop()
+        nsdEngine = null
         serviceScope.launch {
             // nodeJSService is built lazily in startService(); a create→destroy with no
             // start path (e.g. an immediate STOP) leaves it uninitialised.
@@ -452,6 +459,8 @@ class ComapeoCoreService : Service() {
             is ControlFrame.BleAdvertise ->
                 ensureBleEngine().setAdvertisement(decodeBlePayload(frame.payload))
             is ControlFrame.BleStop -> bleEngine?.stop()
+            is ControlFrame.NsdStart -> ensureNsdEngine().start(frame.name, frame.port)
+            is ControlFrame.NsdStop -> nsdEngine?.stop()
             else -> {}
         }
     }
@@ -464,6 +473,11 @@ class ComapeoCoreService : Service() {
             null
         }
     }
+
+    private fun ensureNsdEngine(): NsdEngine =
+        nsdEngine ?: NsdEngine(applicationContext, sendFrame = { frame ->
+            if (::nodeJSService.isInitialized) nodeJSService.sendControlFrame(frame)
+        }).also { nsdEngine = it }
 
     private fun ensureBleEngine(): BleDiscoveryEngine =
         bleEngine ?: BleDiscoveryEngine(applicationContext, sendFrame = { frame ->
@@ -509,6 +523,7 @@ class ComapeoCoreService : Service() {
         log("Stopping the foreground service")
         isServiceStarted = false
         bleEngine?.stop()
+        nsdEngine?.stop()
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()

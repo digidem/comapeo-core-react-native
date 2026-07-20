@@ -11,11 +11,12 @@ import {
 } from "./ble-codec.js";
 
 /**
- * The discovery controller — the single owner of BLE peer discovery
- * (docs/ble-discovery.md §4/§6). Native engines (Kotlin in the FGS,
- * Swift in-process on iOS) are dumb radio drivers commanded over the
- * control socket; the front end observes and controls through the
- * app-services RPC. This class owns everything in between:
+ * The discovery controller — the single owner of local peer discovery,
+ * BLE **and** DNS-SD/mDNS (docs/ble-discovery.md §4/§6). Native engines
+ * (Kotlin in the FGS, Swift in-process on iOS) are dumb drivers
+ * commanded over the control socket; the front end observes and
+ * controls through the app-services RPC. This class owns everything in
+ * between:
  *
  * - **Lifecycle**: `setEnabled(true)` starts core's local-peer TCP
  *   server, composes the advertisement, and broadcasts `ble-start`;
@@ -34,6 +35,16 @@ import {
  *   main app process is dead.
  * - **Status** (`ble-status` frames): the engine's view of the radios
  *   (scanning/advertising/blockers), stored and surfaced.
+ * - **DNS-SD** (supplemental to BLE, same lifecycle): `nsd-start
+ *   {name, port}` commands the native mDNS engine to register
+ *   `_comapeo._tcp` under core's discovery-server name AND to browse
+ *   for peers; resolved services come back as `nsd-peer {name,
+ *   address, port}` and connect immediately with their REAL DNS-SD
+ *   instance name — core's native dedup key — throttled per peer.
+ *   `nsd-peer-lost` prunes; `nsd-status` mirrors `ble-status`. mDNS
+ *   carries no sync-state gossip, so unlike BLE it connects on
+ *   presence alone (matching the pre-existing host-app behaviour it
+ *   replaces).
  * - **Observability**: `getState()` snapshots + throttled
  *   `discovery-state` events, re-emitted by the services object so the
  *   front end gets them via `comapeoServicesClient.on(...)`.
@@ -43,11 +54,12 @@ import {
  * is the planned mechanism.
  *
  * @typedef {object} DiscoveredPeer
- * @property {string} id `"<ip>:<port>"`, or `"ble:<sender address>"`
- * @property {boolean} sameProject
- * @property {boolean} hasDifferentSyncState
- * @property {number} rssi latest raw RSSI (dBm)
- * @property {boolean} inCluster
+ * @property {"ble" | "mdns"} source
+ * @property {string} id `"<ip>:<port>"`, `"ble:<sender>"`, or `"mdns:<name>"`
+ * @property {boolean | null} sameProject null = unknown (mDNS carries no gossip)
+ * @property {boolean | null} hasDifferentSyncState null = unknown
+ * @property {number | null} rssi latest raw RSSI (dBm); null for mDNS
+ * @property {boolean} inCluster always false for mDNS
  * @property {number} lastSeenAt ms epoch
  * @property {string | null} address
  * @property {number} port
@@ -57,6 +69,8 @@ import {
  * @property {string | null} projectPublicId
  * @property {{ scanning: string, advertising: string, blockers: string[],
  *   lastError: { scope: string, code: string, message: string } | null }} ble
+ * @property {{ browsing: string, registered: string, blockers: string[],
+ *   lastError: { scope: string, code: string, message: string } | null }} nsd
  * @property {DiscoveredPeer[]} peers
  */
 
@@ -88,16 +102,27 @@ export class DiscoveryController extends TypedEmitter {
   /** @type {string | null} last broadcast payload (base64), for change detection */
   #ownPayloadB64 = null;
   #port = 0;
+  /** DNS-SD instance name from core's discovery server. */
+  #serviceName = "";
   /** @type {any} held project handle while enabled */
   #project = null;
   /** @type {(() => void) | null} unsubscribe from $sync events */
   #unsubscribeSync = null;
 
-  /** @type {Map<string, DiscoveredPeer & { smoothedRssi: number }>} */
+  /** smoothedRssi is BLE-internal (EMA input); absent on mDNS entries. */
+  /** @type {Map<string, DiscoveredPeer & { smoothedRssi?: number }>} */
   #peers = new Map();
   #ble = {
     scanning: "stopped",
     advertising: "stopped",
+    /** @type {string[]} */
+    blockers: [],
+    /** @type {{ scope: string, code: string, message: string } | null} */
+    lastError: null,
+  };
+  #nsd = {
+    browsing: "stopped",
+    registered: "stopped",
     /** @type {string[]} */
     blockers: [],
     /** @type {{ scope: string, code: string, message: string } | null} */
@@ -170,6 +195,12 @@ export class DiscoveryController extends TypedEmitter {
         advertising: this.#ble.advertising,
         blockers: [...this.#ble.blockers],
         lastError: this.#ble.lastError,
+      },
+      nsd: {
+        browsing: this.#nsd.browsing,
+        registered: this.#nsd.registered,
+        blockers: [...this.#nsd.blockers],
+        lastError: this.#nsd.lastError,
       },
       peers: [...this.#peers.values()].map(
         ({ smoothedRssi: _smoothed, ...peer }) => ({ ...peer }),
@@ -254,6 +285,76 @@ export class DiscoveryController extends TypedEmitter {
     this.#scheduleEmit();
   }
 
+  /**
+   * `nsd-peer` from a native mDNS engine: a resolved `_comapeo._tcp`
+   * service. Connects with the peer's real DNS-SD instance name so
+   * core's name-keyed dedup works exactly as with host-driven mDNS.
+   * @param {Record<string, unknown>} message
+   */
+  handleNsdPeer(message) {
+    if (
+      typeof message.name !== "string" ||
+      typeof message.address !== "string" ||
+      typeof message.port !== "number" ||
+      !Number.isInteger(message.port) ||
+      message.port <= 0
+    ) {
+      console.warn("Ignoring malformed nsd-peer frame");
+      return;
+    }
+    // Engines filter their own registration, but belt-and-braces: an
+    // mDNS reflector can echo our own service back.
+    if (message.name === this.#serviceName) return;
+    const { name, address, port } = message;
+    this.#peers.set(`mdns:${name}`, {
+      source: "mdns",
+      id: `mdns:${name}`,
+      sameProject: null,
+      hasDifferentSyncState: null,
+      rssi: null,
+      inCluster: false,
+      lastSeenAt: this.#now(),
+      address,
+      port,
+    });
+    this.#connectThrottled(address, port, name);
+    this.#scheduleEmit();
+  }
+
+  /** @param {Record<string, unknown>} message */
+  handleNsdPeerLost(message) {
+    if (typeof message.name !== "string") return;
+    if (this.#peers.delete(`mdns:${message.name}`)) this.#scheduleEmit();
+  }
+
+  /** @param {Record<string, unknown>} message */
+  handleNsdStatus(message) {
+    if (
+      typeof message.browsing !== "string" ||
+      typeof message.registered !== "string" ||
+      !Array.isArray(message.blockers)
+    ) {
+      console.warn("Ignoring malformed nsd-status frame");
+      return;
+    }
+    this.#nsd.browsing = message.browsing;
+    this.#nsd.registered = message.registered;
+    this.#nsd.blockers = message.blockers.filter(
+      /** @returns {b is string} */ (b) => typeof b === "string",
+    );
+    const err = /** @type {Record<string, unknown> | undefined} */ (
+      message.lastError
+    );
+    this.#nsd.lastError =
+      err &&
+      typeof err.scope === "string" &&
+      typeof err.code === "string" &&
+      typeof err.message === "string"
+        ? { scope: err.scope, code: err.code, message: err.message }
+        : null;
+    this.#scheduleEmit();
+  }
+
   /** @param {string} [projectPublicId] */
   async #start(projectPublicId) {
     const manager = this.#getManager();
@@ -271,9 +372,11 @@ export class DiscoveryController extends TypedEmitter {
     this.#project = project;
     this.#writePersisted();
 
-    const { port } = await manager.startLocalPeerDiscoveryServer();
+    const { name, port } = await manager.startLocalPeerDiscoveryServer();
     this.#port = port;
+    this.#serviceName = name;
     await this.#refreshAdvertisement("ble-start");
+    this.#broadcast({ type: "nsd-start", name, port });
 
     const onSyncState = () => {
       const t = this.#now();
@@ -311,10 +414,14 @@ export class DiscoveryController extends TypedEmitter {
     // a host-driven flow) may share it, and an idle listener is cheap.
     this.#writePersisted();
     this.#broadcast({ type: "ble-stop" });
+    this.#broadcast({ type: "nsd-stop" });
     this.#peers.clear();
     this.#ble.scanning = "stopped";
     this.#ble.advertising = "stopped";
     this.#ble.blockers = [];
+    this.#nsd.browsing = "stopped";
+    this.#nsd.registered = "stopped";
+    this.#nsd.blockers = [];
     this.#scheduleEmit();
   }
 
@@ -424,6 +531,7 @@ export class DiscoveryController extends TypedEmitter {
       ? smoothedRssi >= CLUSTER_EXIT_RSSI
       : smoothedRssi >= CLUSTER_ENTER_RSSI;
     this.#peers.set(id, {
+      source: "ble",
       id,
       sameProject:
         this.#own !== null && ad.projectHash === this.#own.projectHash,
@@ -440,15 +548,31 @@ export class DiscoveryController extends TypedEmitter {
 
   /** @param {import("./ble-codec.js").BleAdvertisement} peer */
   #maybeConnect(peer) {
-    const manager = this.#getManager();
     const own = this.#own;
-    if (!this.#enabled || !manager || own === null) return;
+    if (own === null) return;
     if (peer.projectHash !== own.projectHash) return;
     // Equal hash ⇒ (within 2^-32) same content ⇒ nothing to exchange.
     if (peer.stateHash === own.stateHash) return;
     if (peer.address === null || peer.port === 0) return;
+    // core@7 keys local connections by discovery-server name, which the
+    // advertisement can't carry — synthetic stable stand-in (§4 has the
+    // mDNS-duplicate caveat).
+    this.#connectThrottled(
+      peer.address,
+      peer.port,
+      `ble:${peer.address}:${peer.port}`,
+    );
+  }
 
-    const key = `${peer.address}:${peer.port}`;
+  /**
+   * @param {string} address
+   * @param {number} port
+   * @param {string} name
+   */
+  #connectThrottled(address, port, name) {
+    const manager = this.#getManager();
+    if (!this.#enabled || !manager) return;
+    const key = `${address}:${port}`;
     const t = this.#now();
     const last = this.#lastConnectAt.get(key);
     if (last !== undefined && t - last < this.#minConnectIntervalMs) return;
@@ -457,16 +581,9 @@ export class DiscoveryController extends TypedEmitter {
     }
     this.#lastConnectAt.set(key, t);
     try {
-      manager.connectLocalPeer({
-        address: peer.address,
-        port: peer.port,
-        // core@7 keys local connections by discovery-server name, which
-        // the advertisement can't carry — synthetic stable stand-in
-        // (docs/ble-discovery.md §4 has the mDNS-duplicate caveat).
-        name: `ble:${key}`,
-      });
+      manager.connectLocalPeer({ address, port, name });
     } catch (e) {
-      console.warn(`ble: connectLocalPeer(${key}) threw`, e);
+      console.warn(`discovery: connectLocalPeer(${key}) threw`, e);
     }
   }
 
@@ -474,7 +591,9 @@ export class DiscoveryController extends TypedEmitter {
     const cutoff = this.#now() - PEER_TIMEOUT_MS;
     let changed = false;
     for (const [id, peer] of this.#peers) {
-      if (peer.lastSeenAt < cutoff) {
+      // mDNS peers are event-driven (`nsd-peer-lost`), not TTL-swept —
+      // resolves fire once per appearance, not continuously.
+      if (peer.source === "ble" && peer.lastSeenAt < cutoff) {
         this.#peers.delete(id);
         changed = true;
       }

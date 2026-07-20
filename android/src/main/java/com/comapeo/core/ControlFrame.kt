@@ -45,6 +45,15 @@ sealed class ControlFrame {
     data class BleAdvertise(val payload: String?) : ControlFrame()
     object BleStop : ControlFrame()
 
+    /**
+     * DNS-SD engine commands, same contract as the BLE ones: the
+     * backend's discovery controller tells the FGS-hosted [NsdEngine]
+     * to register `_comapeo._tcp` as `name`:`port` and browse for
+     * peers, or to stop.
+     */
+    data class NsdStart(val name: String, val port: Int) : ControlFrame()
+    object NsdStop : ControlFrame()
+
     /** Frame could not be processed; `detail` is suitable for logs / `messageerror`. */
     data class Malformed(val detail: String) : ControlFrame()
 
@@ -78,6 +87,16 @@ sealed class ControlFrame {
                 "ble-start" -> BleStart(payload = json.optStringOrNull("payload"))
                 "ble-advertise" -> BleAdvertise(payload = json.optStringOrNull("payload"))
                 "ble-stop" -> BleStop
+                "nsd-start" -> {
+                    val name = json.optString("name", "")
+                    val port = json.optInt("port", 0)
+                    if (name.isEmpty() || port <= 0) {
+                        Malformed("nsd-start frame missing `name`/`port`")
+                    } else {
+                        NsdStart(name = name, port = port)
+                    }
+                }
+                "nsd-stop" -> NsdStop
                 else -> Malformed("Unknown control frame type=\"$type\"")
             }
         }

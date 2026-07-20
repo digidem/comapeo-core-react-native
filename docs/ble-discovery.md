@@ -172,6 +172,7 @@ not the default.
 | **Front-end surface**: `discovery` RPC namespace + `discovery-state` events | ✅ `src/discovery.types.ts`, `comapeoServicesClient` — no native module |
 | **iOS foreground engine** (scan + service-UUID advert + GATT sync-state server) | ✅ `ios/BleDiscoveryEngine.swift` — §6c implemented |
 | **Android GATT read path** for iOS peers (second scan filter + reader) | ✅ `android/.../ble/GattStateReader.kt` |
+| **DNS-SD under the same lifecycle** (register + browse in FGS / iOS Bonjour) | ✅ `NsdEngine.kt` / `NsdEngine.swift` — §4b |
 | iOS background discovery | ❌ by design for now — §6c wake-path options |
 | Scan response (SSID hash, credentials) | ❌ Phase 2/3 (and see R5) |
 | Backend `MapeoManager` API changes | none — the backend only *calls* `connectLocalPeer` |
@@ -325,6 +326,47 @@ main app process                 :ComapeoCore FGS process (Android)
   device reboot into background sync — all self-heal with no
   main-process involvement.
 
+### 4b. DNS-SD / mDNS under the same roof
+
+BLE is **supplemental to DNS-SD**, not a replacement — on networks
+where mDNS works it is faster and free, and it carries the peer's real
+discovery-server instance name (core's connection-dedup key). It now
+lives under the same architecture instead of being host-app-driven
+Android NSD in the main process:
+
+- The controller's `setEnabled(true)` also broadcasts
+  `nsd-start {name, port}` (name/port from
+  `startLocalPeerDiscoveryServer`); native engines register
+  `_comapeo._tcp` and browse:
+  - **Android**: `NsdEngine.kt` in the FGS process (NsdManager, serial
+    resolve queue, collision-rename tracking, self-filter) — so mDNS
+    discovery now survives backgrounding exactly like BLE and the
+    backend. NsdManager's known OEM flakiness is the reason BLE exists;
+    a broken NSD degrades to `nsd-status: unavailable` without touching
+    the BLE path.
+  - **iOS**: `NsdEngine.swift` via `NetService` — the Bonjour-daemon
+    API, so no multicast entitlement is needed (raw-socket mDNS in Node
+    would require `com.apple.developer.networking.multicast`, which is
+    Apple-approval-gated — the reason mDNS is NOT done in Node despite
+    the backend owning the policy). The plugin now merges
+    `NSBonjourServices: ["_comapeo._tcp"]` (iOS 14+ blocks browsing
+    otherwise).
+- Resolved peers come back as `nsd-peer {name, address, port}` and
+  connect immediately with their **real** DNS-SD name — mDNS carries no
+  sync-state gossip, so unlike BLE it connects on presence (matching
+  the host-app behaviour it replaces), throttled per peer. This also
+  shrinks the BLE/mDNS duplicate-connection window: mDNS-discovered
+  connections now use the same `connectLocalPeer` entry point and
+  name-keyed dedup as before.
+- `nsd-peer-lost` prunes (mDNS is event-driven; only BLE peers are
+  TTL-swept), and `nsd-status` mirrors `ble-status` into
+  `DiscoveryState.nsd`.
+
+The host app should **stop running its own NSD** against
+`_comapeo._tcp` once on this version — two registrations of the same
+service from one device confuse peers, and the module now owns the key
+(`NSBonjourServices`) it previously left to the app.
+
 ## 5. Verification status
 
 - JS: full Jest coverage (codec round-trips + byte-layout vectors,
@@ -455,9 +497,9 @@ contract that type exists for).
   with the library.
 - **Forward-compatible**: when the iOS scanner lands it feeds the same
   backend controller in-process, and the front-end surface doesn't
-  change. The same is true for a future backend-side mDNS
-  (`source: "mdns"` peers in the same list) — one "nearby devices"
-  surface regardless of transport.
+  change. (Since borne out: §4b's DNS-SD engines landed as
+  `source: "mdns"` peers in the same list — one "nearby devices"
+  surface regardless of transport.)
 
 ### Open questions
 
@@ -561,7 +603,83 @@ Plumbing when it lands: `Events`-style engine hooked to
 `app.plugin.js`, and the backend's iOS entry (`index.ios.js`) stops
 gating the discovery controller.
 
-## 7. Follow-ups (rough order)
+## 7. Considered: per-project connections with a project-key-bound handshake
+
+Question raised in review: today all projects multiplex over one TCP
+connection per peer-pair, secured by a Noise XX handshake on permanent
+device-identity keys (`@hyperswarm/secret-stream`). Should sync instead
+use one connection per project, with a project-derived secret bound
+into the handshake (a Noise psk variant), so that non-members cannot
+even complete a handshake?
+
+### What it buys
+
+- **Transport-layer access control.** XX authenticates *identities*,
+  not *membership*: anyone who can reach the port completes the
+  handshake, learns your permanent device static key, and gets to probe
+  the multiplexed protocol surface (protomux channel negotiation,
+  hypercore discovery-key requests). With a psk derived from the
+  project key, a non-member's handshake fails at message one or two —
+  they learn nothing, not even that this is CoMapeo.
+- **This matters most exactly where the review question aims: internet
+  sync.** DHT announces are public — a crawler harvests topic hashes
+  and IPs and can dial every one. Under XX that yields a linkable
+  device identity per IP plus a probeable protocol; under psk-bound
+  handshakes it yields TCP connections that go dark. On the LAN the
+  same is true in principle, but the exposure window (radio range vs.
+  the entire internet) and the attacker economics differ hugely.
+- **Metadata partitioning.** One connection carrying all shared
+  projects tells a network observer (and the peer) that the two
+  devices co-occur across those projects. Per-project connections keep
+  that linkage inside each project's membership.
+
+### What it costs
+
+- **It cuts against the invite flow.** Invites, device-info exchange,
+  and project-join negotiation happen *before* membership — on the
+  very connection a membership-gated handshake would refuse. LAN
+  onboarding therefore needs a non-psk path regardless; a psk-only
+  world breaks the "invite a nearby phone" flow that is CoMapeo's
+  bread and butter. (Internet sync has no invite story today, so
+  greenfield internet connections dodge this entirely.)
+- **N connections per peer-pair** (N = shared projects): more
+  handshakes, sockets, and keepalives. N is small (1–3) so this is
+  real but minor; it interacts with Phase 3's hotspot client budget
+  only via conntrack, not client slots.
+- **Upstream surface.** `secret-stream` has no psk mode; core's
+  replication stack (one corestore replication stream carrying all
+  projects, connection dedup, `local-peers`) assumes the single
+  multiplexed connection. This is a significant @comapeo/core (and
+  hyperswarm-fork) work item, not a this-repo change.
+- **Mixed-fleet compatibility.** Field fleets never update in
+  lockstep. A psk handshake is not gracefully distinguishable from XX
+  from the wire alone — the responder just fails — so switching the
+  LAN path would need capability signalling *in discovery* (mDNS TXT
+  key, a reserved BLE flags bit) plus dual-stack dialing for at least
+  one long deprecation cycle. Trial-and-fallback dialing is the worst
+  option: slow, and it turns every legacy peer into an
+  indistinguishable "attacker or old friend?".
+
+### Recommendation
+
+Adopt **per-project psk-bound connections for internet sync only**, as
+the review suggests — it is greenfield (no installed base, no
+backwards compatibility to honour), it is where the threat is real
+(DHT snooping), and the DHT rendezvous is already per-project (topics
+derived from the project key), so "connection per project" is the
+natural shape there anyway. Keep the LAN path as multiplexed XX: the
+invite flow needs it, the threat model is radio-range, and the
+connection-privacy work stream (rotating session keys instead of
+permanent identity keys in the LAN handshake) addresses the LAN's real
+leak — identity linkability — without breaking onboarding.
+
+Forward-compatibility hooks worth reserving now, both cheap: a BLE
+`flags` bit (bits 3–7 are reserved) and an mDNS TXT key for "supports
+psk transport", so a future LAN migration can be capability-driven
+rather than trial-and-error. Everything else lives upstream in
+@comapeo/core.
+
+## 8. Follow-ups (rough order)
 
 1. On-device validation (nRF Connect + two-device Android test;
    instrumented test for the module surface and the FGS engine,

@@ -656,11 +656,13 @@ class NodeJSService(
             is ControlFrame.SentryEnvelope -> {
                 SentryFgsBridge.captureEnvelopeBase64(frame.data)
             }
-            // Discovery-controller commands for the FGS-hosted BLE engine.
+            // Discovery-controller commands for the FGS-hosted engines.
             // Other control clients (main-process module, iOS) no-op them.
             is ControlFrame.BleStart,
             is ControlFrame.BleAdvertise,
             is ControlFrame.BleStop,
+            is ControlFrame.NsdStart,
+            is ControlFrame.NsdStop,
             -> onBleControlFrame?.invoke(frame)
             is ControlFrame.Malformed -> {
                 // Logged but not raised to ERROR — a single bad frame shouldn't take
@@ -770,10 +772,11 @@ class NodeJSService(
     }
 
     /**
-     * Sink for the backend's BLE engine commands
-     * (`ble-start`/`ble-advertise`/`ble-stop`). Set by
-     * [ComapeoCoreService], which owns the engine. Invoked on the
-     * control-IPC coroutine — handlers must be quick and thread-safe.
+     * Sink for the backend's discovery engine commands
+     * (`ble-start`/`ble-advertise`/`ble-stop`/`nsd-start`/`nsd-stop`).
+     * Set by [ComapeoCoreService], which owns the engines. Invoked on
+     * the control-IPC coroutine — handlers must be quick and
+     * thread-safe.
      */
     var onBleControlFrame: ((ControlFrame) -> Unit)? = null
 

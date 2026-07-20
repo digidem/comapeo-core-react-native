@@ -244,14 +244,25 @@ const DEFAULT_LOCAL_NETWORK_USAGE_DESCRIPTION =
 // (hyperswarm). Without a usage description iOS denies those connections
 // with no prompt. The module owns this key; customise the wording via the
 // `localNetworkPermission` prop rather than setting the Info.plist key
-// separately. mDNS/Bonjour discovery and the matching `NSBonjourServices`
-// stay the app's concern — the module neither browses nor advertises.
+// separately.
+//
+// The module now ALSO owns Bonjour discovery (NsdEngine.swift publishes
+// and browses `_comapeo._tcp` under the backend's discovery controller —
+// docs/ble-discovery.md §4b), so `NSBonjourServices` is merged here too:
+// iOS 14+ blocks Bonjour browsing for service types not listed in it.
 function withLocalNetworkPermissionIos(config, usageDescription) {
   return withInfoPlist(config, (cfg) => {
     cfg.modResults[IOS_LOCAL_NETWORK_USAGE_KEY] =
       typeof usageDescription === "string"
         ? usageDescription
         : DEFAULT_LOCAL_NETWORK_USAGE_DESCRIPTION;
+    const services = new Set(
+      Array.isArray(cfg.modResults.NSBonjourServices)
+        ? cfg.modResults.NSBonjourServices
+        : [],
+    );
+    services.add("_comapeo._tcp");
+    cfg.modResults.NSBonjourServices = [...services];
     return cfg;
   });
 }

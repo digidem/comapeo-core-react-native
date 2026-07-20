@@ -5,7 +5,7 @@ import Fastify from "fastify";
 
 import { TypedEmitter } from "tiny-typed-emitter";
 
-import { DiscoveryController } from "./lib/ble-discovery.js";
+import { DiscoveryController } from "./lib/discovery.js";
 import { ComapeoRpc } from "./lib/comapeo-rpc.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { createMapServer } from "./lib/create-map-server.js";
@@ -190,6 +190,9 @@ const controlIpcServer = new SimpleRpcServer({
   },
   "ble-sighting": (message) => discoveryController.handleSighting(message),
   "ble-status": (message) => discoveryController.handleStatus(message),
+  "nsd-peer": (message) => discoveryController.handleNsdPeer(message),
+  "nsd-peer-lost": (message) => discoveryController.handleNsdPeerLost(message),
+  "nsd-status": (message) => discoveryController.handleNsdStatus(message),
 });
 
 /**

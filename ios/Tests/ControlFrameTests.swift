@@ -167,6 +167,27 @@ final class ControlFrameTests: XCTestCase {
         }
     }
 
+    func testParsesNsdStartAndStop() {
+        guard case let .nsdStart(name, port) =
+            ControlFrame.parse(#"{"type":"nsd-start","name":"peer-x","port":4242}"#)
+        else {
+            XCTFail("expected .nsdStart"); return
+        }
+        XCTAssertEqual(name, "peer-x")
+        XCTAssertEqual(port, 4242)
+        guard case .nsdStop = ControlFrame.parse(#"{"type":"nsd-stop"}"#) else {
+            XCTFail("expected .nsdStop"); return
+        }
+    }
+
+    func testNsdStartWithoutNameOrPortIsMalformed() {
+        for raw in [#"{"type":"nsd-start","port":1}"#, #"{"type":"nsd-start","name":"x"}"#] {
+            guard case .malformed = ControlFrame.parse(raw) else {
+                XCTFail("expected .malformed for \(raw)"); return
+            }
+        }
+    }
+
     func testUnknownTypeReturnsMalformed() {
         let frame = ControlFrame.parse(#"{"type":"forwardCompat"}"#)
         guard case let .malformed(detail) = frame else {

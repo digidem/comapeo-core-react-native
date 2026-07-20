@@ -121,6 +121,12 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         AppLifecycleDelegate.nodeService.sendControlFrame(frame)
     }
 
+    /// DNS-SD publish/browse via the Bonjour daemon (docs §4b). Not
+    /// foreground-gated: iOS suspension pauses it with everything else.
+    static let nsdEngine = NsdEngine { frame in
+        AppLifecycleDelegate.nodeService.sendControlFrame(frame)
+    }
+
     /// Dispatch the backend's BLE commands to the engine. Static so the
     /// wiring happens once regardless of how many delegate instances
     /// Expo creates.
@@ -133,6 +139,10 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
                 bleEngine.setAdvertisement(payload: payload.flatMap { Data(base64Encoded: $0) })
             case .bleStop:
                 bleEngine.stop()
+            case .nsdStart(let name, let port):
+                nsdEngine.start(name: name, port: port)
+            case .nsdStop:
+                nsdEngine.stop()
             default:
                 break
             }

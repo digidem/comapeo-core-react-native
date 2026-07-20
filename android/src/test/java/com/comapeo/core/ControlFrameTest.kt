@@ -169,6 +169,23 @@ class ControlFrameTest {
     }
 
     @Test
+    fun parsesNsdStartAndStop() {
+        assertEquals(
+            ControlFrame.NsdStart(name = "peer-x", port = 4242),
+            ControlFrame.parse("""{"type":"nsd-start","name":"peer-x","port":4242}"""),
+        )
+        assertEquals(ControlFrame.NsdStop, ControlFrame.parse("""{"type":"nsd-stop"}"""))
+    }
+
+    @Test
+    fun nsdStartWithoutNameOrPortIsMalformed() {
+        assertTrue(ControlFrame.parse("""{"type":"nsd-start","port":1}""") is ControlFrame.Malformed)
+        assertTrue(
+            ControlFrame.parse("""{"type":"nsd-start","name":"x"}""") is ControlFrame.Malformed,
+        )
+    }
+
+    @Test
     fun unknownTypeReturnsMalformed() {
         val frame = ControlFrame.parse("""{"type":"forwardCompat"}""")
         assertTrue(frame is ControlFrame.Malformed)

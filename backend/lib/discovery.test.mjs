@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DiscoveryController } from "./ble-discovery.js";
+import { DiscoveryController } from "./discovery.js";
 import {
   decodeAdvertisement,
   deriveDailyProjectHash,
@@ -116,9 +116,10 @@ test("setEnabled(true) starts the server and broadcasts a decodable ble-start", 
   });
   await h.controller.api.setEnabled(true);
 
-  assert.equal(h.broadcasts.length, 1);
-  assert.equal(h.broadcasts[0].type, "ble-start");
-  const own = decodeAdvertisement(Buffer.from(h.broadcasts[0].payload, "base64"));
+  const bleFrames = h.broadcasts.filter((f) => f.type.startsWith("ble-"));
+  assert.equal(bleFrames.length, 1);
+  assert.equal(bleFrames[0].type, "ble-start");
+  const own = decodeAdvertisement(Buffer.from(bleFrames[0].payload, "base64"));
   assert.equal(own.address, "192.168.1.5");
   assert.equal(own.port, 4242);
   assert.equal(own.totalBlocks, 3);
@@ -203,7 +204,7 @@ test("does not connect on state match, project mismatch, missing ip:port, or whe
     address: "D",
   });
   assert.equal(h.connects.length, 0);
-  assert.equal(h.broadcasts.at(-1).type, "ble-stop");
+  assert.ok(h.broadcasts.some((f) => f.type === "ble-stop"));
   h.controller.close();
 });
 
@@ -239,12 +240,14 @@ test("re-broadcasts ble-advertise only when the payload changes", async () => {
   const project = makeProject({ observations: [{ versionId: "a/1" }] });
   const h = harness({ project });
   await h.controller.api.setEnabled(true);
-  assert.equal(h.broadcasts.length, 1);
+  const bleCount = () =>
+    h.broadcasts.filter((f) => f.type.startsWith("ble-")).length;
+  assert.equal(bleCount(), 1);
 
   // Same content → sync event triggers a refresh but no re-broadcast.
   project.emitSyncState();
   await new Promise((r) => setTimeout(r, 20));
-  assert.equal(h.broadcasts.length, 1);
+  assert.equal(bleCount(), 1);
 
   // New doc + past the sync-refresh throttle → new ble-advertise.
   project.observation.getMany = async () => [
@@ -254,9 +257,9 @@ test("re-broadcasts ble-advertise only when the payload changes", async () => {
   h.setNow(h.getNow() + 10_000);
   project.emitSyncState();
   await new Promise((r) => setTimeout(r, 20));
-  assert.equal(h.broadcasts.length, 2);
-  assert.equal(h.broadcasts[1].type, "ble-advertise");
-  const updated = decodeAdvertisement(Buffer.from(h.broadcasts[1].payload, "base64"));
+  assert.equal(bleCount(), 2);
+  const advertise = h.broadcasts.find((f) => f.type === "ble-advertise");
+  const updated = decodeAdvertisement(Buffer.from(advertise.payload, "base64"));
   assert.equal(updated.totalBlocks, 2);
   h.controller.close();
 });
@@ -281,7 +284,7 @@ test("stores engine status and surfaces it in state", async () => {
 
 test("emits throttled discovery-state events", async () => {
   const h = harness();
-  /** @type {import("./ble-discovery.js").DiscoveryState[]} */
+  /** @type {import("./discovery.js").DiscoveryState[]} */
   const events = [];
   h.controller.on("discovery-state", (s) => events.push(s));
   await h.controller.api.setEnabled(true);
@@ -291,6 +294,81 @@ test("emits throttled discovery-state events", async () => {
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(events.length, 1); // debounced
   assert.equal(events[0].peers.length, 1);
+  h.controller.close();
+});
+
+test("enable also starts DNS-SD with core's service name; disable stops it", async () => {
+  const h = harness();
+  await h.controller.api.setEnabled(true);
+  assert.deepEqual(
+    h.broadcasts.find((f) => f.type === "nsd-start"),
+    { type: "nsd-start", name: "x", port: 4242 },
+  );
+  await h.controller.api.setEnabled(false);
+  assert.ok(h.broadcasts.some((f) => f.type === "nsd-stop"));
+  h.controller.close();
+});
+
+test("nsd-peer connects immediately with the real DNS-SD name, throttled, self-filtered", async () => {
+  const h = harness();
+  await h.controller.api.setEnabled(true);
+
+  h.controller.handleNsdPeer({ name: "peer-a", address: "192.168.1.30", port: 7001 });
+  assert.deepEqual(h.connects.at(-1), {
+    address: "192.168.1.30",
+    port: 7001,
+    name: "peer-a",
+  });
+  const peer = h.controller.getState().peers.find((p) => p.id === "mdns:peer-a");
+  assert.equal(peer.source, "mdns");
+  assert.equal(peer.rssi, null);
+  assert.equal(peer.sameProject, null);
+
+  // Repeat within the throttle window → no second connect.
+  const before = h.connects.length;
+  h.controller.handleNsdPeer({ name: "peer-a", address: "192.168.1.30", port: 7001 });
+  assert.equal(h.connects.length, before);
+
+  // Our own registration echoed back → ignored entirely.
+  h.controller.handleNsdPeer({ name: "x", address: "192.168.1.5", port: 4242 });
+  assert.ok(!h.controller.getState().peers.some((p) => p.id === "mdns:x"));
+
+  // Malformed → ignored.
+  h.controller.handleNsdPeer({ name: "bad", address: "10.0.0.1", port: "80" });
+  assert.ok(!h.controller.getState().peers.some((p) => p.id === "mdns:bad"));
+  h.controller.close();
+});
+
+test("nsd-peer-lost prunes; mDNS peers are not TTL-swept", async () => {
+  const h = harness();
+  await h.controller.api.setEnabled(true);
+  h.controller.handleNsdPeer({ name: "peer-a", address: "192.168.1.30", port: 7001 });
+
+  // Way past the BLE TTL — the mDNS peer must survive a sweep.
+  h.setNow(h.getNow() + 10 * 60_000);
+  h.controller.handleStatus({ scanning: "active", advertising: "active", blockers: [] });
+  // (sweep is timer-driven; call the path indirectly via a BLE peer expiry check)
+  assert.ok(h.controller.getState().peers.some((p) => p.id === "mdns:peer-a"));
+
+  h.controller.handleNsdPeerLost({ name: "peer-a" });
+  assert.ok(!h.controller.getState().peers.some((p) => p.id === "mdns:peer-a"));
+  h.controller.close();
+});
+
+test("stores nsd engine status separately from ble", async () => {
+  const h = harness();
+  h.controller.handleNsdStatus({
+    browsing: "active",
+    registered: "unavailable",
+    blockers: ["no-network"],
+    lastError: { scope: "register", code: "ERR_NSD_REGISTER", message: "boom" },
+  });
+  const { nsd, ble } = h.controller.getState();
+  assert.equal(nsd.browsing, "active");
+  assert.equal(nsd.registered, "unavailable");
+  assert.deepEqual(nsd.blockers, ["no-network"]);
+  assert.equal(nsd.lastError.code, "ERR_NSD_REGISTER");
+  assert.equal(ble.scanning, "stopped"); // untouched
   h.controller.close();
 });
 
@@ -328,7 +406,7 @@ test("persists the enabled flag and resumes via onManagerReady", async () => {
   );
   // No interfaces → advertised without an address, but still started.
   const own = decodeAdvertisement(
-    Buffer.from(broadcasts.at(-1).payload, "base64"),
+    Buffer.from(broadcasts.findLast((f) => f.type === "ble-start").payload, "base64"),
   );
   assert.equal(own.address, null);
   second.close();

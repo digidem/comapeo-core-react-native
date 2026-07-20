@@ -465,7 +465,7 @@ class NodeJSService {
             SentryNativeBridge.captureEventJson(payloadJson)
         case .sentryEnvelope(let data):
             SentryNativeBridge.captureEnvelopeBase64(data)
-        case .bleStart, .bleAdvertise, .bleStop:
+        case .bleStart, .bleAdvertise, .bleStop, .nsdStart, .nsdStop:
             onBleControlFrame?(frame)
         case .malformed(let detail):
             // Forwarded via `onMessageError`. Not raised to `.error` —

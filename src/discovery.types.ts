@@ -26,23 +26,26 @@
  * `blockers` field says when a prompt is actually needed.
  */
 
-/** A nearby-but-not-necessarily-connected peer, from BLE sightings.
- * Pre-handshake peers are anonymous by design (the advertisement
- * carries no identity); connected peers are the separate, identified
- * `local-peers` surface on the `comapeo` client. */
+/** A nearby-but-not-necessarily-connected peer — from BLE sightings or
+ * DNS-SD resolution. Pre-handshake BLE peers are anonymous by design
+ * (the advertisement carries no identity); connected peers are the
+ * separate, identified `local-peers` surface on the `comapeo` client. */
 export type DiscoveredPeer = {
-  /** `"<ip>:<port>"`, or `"ble:<sender address>"` when the peer
-   * advertised no reachable address. */
+  source: "ble" | "mdns";
+  /** `"<ip>:<port>"`, `"ble:<sender address>"`, or `"mdns:<name>"`. */
   id: string;
-  /** Advertised daily project hash matches ours. */
-  sameProject: boolean;
-  /** Sync-state hashes differ — there is (probably) data to exchange. */
-  hasDifferentSyncState: boolean;
-  /** Latest raw RSSI in dBm. */
-  rssi: number;
-  /** RSSI-cluster classification ("phones held together" UX). */
+  /** Advertised daily project hash matches ours; null = unknown (mDNS
+   * carries no sync-state gossip). */
+  sameProject: boolean | null;
+  /** Sync-state hashes differ — there is (probably) data to exchange;
+   * null = unknown (mDNS). */
+  hasDifferentSyncState: boolean | null;
+  /** Latest raw RSSI in dBm; null for mDNS peers. */
+  rssi: number | null;
+  /** RSSI-cluster classification ("phones held together" UX). Always
+   * false for mDNS peers. */
   inCluster: boolean;
-  /** ms epoch (backend clock) of the last sighting. */
+  /** ms epoch (backend clock) of the last sighting/resolution. */
   lastSeenAt: number;
   address: string | null;
   port: number;
@@ -58,11 +61,20 @@ export type BleRadioState = {
   lastError: { scope: string; code: string; message: string } | null;
 };
 
+/** DNS-SD engine state (Android NsdManager / iOS Bonjour). */
+export type NsdState = {
+  browsing: "active" | "stopped" | "unavailable";
+  registered: "active" | "stopped" | "unavailable";
+  blockers: string[];
+  lastError: { scope: string; code: string; message: string } | null;
+};
+
 export type DiscoveryState = {
   enabled: boolean;
   /** The project being advertised (null while disabled). */
   projectPublicId: string | null;
   ble: BleRadioState;
+  nsd: NsdState;
   peers: DiscoveredPeer[];
 };
 

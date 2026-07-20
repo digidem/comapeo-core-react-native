@@ -103,6 +103,8 @@ class ComapeoCoreModule : Module() {
                         is ControlFrame.BleStart -> {}
                         is ControlFrame.BleAdvertise -> {}
                         is ControlFrame.BleStop -> {}
+                        is ControlFrame.NsdStart -> {}
+                        is ControlFrame.NsdStop -> {}
                         is ControlFrame.Malformed -> emitMessageError(frame.detail)
                     }
                 },

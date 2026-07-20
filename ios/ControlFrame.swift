@@ -28,6 +28,10 @@ enum ControlFrame {
     case bleStart(payload: String?)
     case bleAdvertise(payload: String?)
     case bleStop
+    /// DNS-SD engine commands: register `_comapeo._tcp` as name:port and
+    /// browse for peers (`NsdEngine`), or stop.
+    case nsdStart(name: String, port: Int)
+    case nsdStop
     /// Not JSON, missing `type`, or `type` not in the well-known set.
     /// `detail` is developer-facing — surfaces in the JS `messageerror`.
     case malformed(detail: String)
@@ -73,6 +77,15 @@ enum ControlFrame {
             return .bleAdvertise(payload: obj["payload"] as? String)
         case "ble-stop":
             return .bleStop
+        case "nsd-start":
+            guard let name = obj["name"] as? String, !name.isEmpty,
+                  let port = obj["port"] as? Int, port > 0
+            else {
+                return .malformed(detail: "nsd-start frame missing `name`/`port`")
+            }
+            return .nsdStart(name: name, port: port)
+        case "nsd-stop":
+            return .nsdStop
         default:
             return .malformed(detail: "Unknown control frame type=\"\(type)\"")
         }
