@@ -71,7 +71,7 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           # `scripts/build-backend.ts` runs as TS via Node's native type
           # stripping (>=22.6 with `--experimental-strip-types`, default-on
@@ -220,7 +220,7 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version-file: package.json
 
