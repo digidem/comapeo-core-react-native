@@ -82,11 +82,15 @@ class NsdEngine(
             serviceType = SERVICE_TYPE
             setPort(port)
         }
-        val listener = object : NsdManager.RegistrationListener {
+        lateinit var listener: NsdManager.RegistrationListener
+        listener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(registeredInfo: NsdServiceInfo) {
                 handler.post {
-                    // The system renames on collision; track the actual name
-                    // so self-filtering keeps working.
+                    // Identity guard: a stale callback from a previous
+                    // (stopped/replaced) registration must not flip status or
+                    // overwrite `ownName` — which would break self-filtering.
+                    if (registrationListener !== listener) return@post
+                    // The system renames on collision; track the actual name.
                     ownName = registeredInfo.serviceName ?: ownName
                     registered = "active"
                     sendStatus()
@@ -95,6 +99,7 @@ class NsdEngine(
 
             override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {
                 handler.post {
+                    if (registrationListener !== listener) return@post
                     registered = "unavailable"
                     lastError = Triple("register", "ERR_NSD_REGISTER", "code $errorCode")
                     sendStatus()
@@ -116,9 +121,11 @@ class NsdEngine(
     }
 
     private fun discover(manager: NsdManager) {
-        val listener = object : NsdManager.DiscoveryListener {
+        lateinit var listener: NsdManager.DiscoveryListener
+        listener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {
                 handler.post {
+                    if (discoveryListener !== listener) return@post
                     browsing = "active"
                     sendStatus()
                 }
@@ -126,6 +133,10 @@ class NsdEngine(
 
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
                 handler.post {
+                    // Identity guard: without it, a stale failure nulls the
+                    // CURRENT `discoveryListener`, so `stopLocked` can never
+                    // call `stopServiceDiscovery` on it — a leaked browse.
+                    if (discoveryListener !== listener) return@post
                     browsing = "unavailable"
                     discoveryListener = null
                     lastError = Triple("browse", "ERR_NSD_BROWSE", "code $errorCode")
@@ -139,6 +150,7 @@ class NsdEngine(
 
             override fun onServiceFound(info: NsdServiceInfo) {
                 handler.post {
+                    if (discoveryListener !== listener) return@post
                     if (!info.serviceType.contains(SERVICE_TYPE_BARE)) return@post
                     if (info.serviceName == ownName) return@post
                     resolveQueue.add(info)
@@ -148,6 +160,7 @@ class NsdEngine(
 
             override fun onServiceLost(info: NsdServiceInfo) {
                 handler.post {
+                    if (discoveryListener !== listener) return@post
                     if (info.serviceName == ownName) return@post
                     sendFrame(
                         JSONObject()

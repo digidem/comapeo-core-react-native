@@ -27,6 +27,7 @@ import * as Sentry from "@sentry/react-native";
 import { getTraceData, startNewTrace } from "@sentry/core";
 import type { SentryInitConfig } from "./sentry";
 import { rpcClientMetric, rpcStatusFor } from "./sentry-metrics";
+import { SubscriptionLog } from "./rpc-subscriptions";
 
 // `onRequestHook` request type derived from `createComapeoCoreClient` so
 // any hook-signature change up-stream is a compile error here. The
@@ -255,8 +256,23 @@ class CoreMessagePort
   extends EventEmitter<MessagePortEvents>
   implements MessagePortLike
 {
+  // Records rpc-reflector `ON`/`OFF` frames so they can be replayed
+  // after a backend restart — see SubscriptionLog for the why.
+  #subscriptions = new SubscriptionLog();
+
   postMessage(value: JsonValue) {
+    this.#subscriptions.record(value);
     nativeModule.postMessage(JSON.stringify(value));
+  }
+
+  /**
+   * Re-send every active subscription frame. Idempotent (the server
+   * dedups repeat `ON`s), so calling it after each reconnect is safe.
+   */
+  replaySubscriptions() {
+    for (const frame of this.#subscriptions.activeFrames()) {
+      nativeModule.postMessage(JSON.stringify(frame));
+    }
   }
 
   startObserving<EventName extends keyof MessagePortEvents>(
@@ -533,6 +549,31 @@ class State extends EventEmitter<StateEvents> {
 }
 
 export const state = new State();
+
+// Resubscribe RPC event listeners after a backend restart. The embedded
+// backend re-reaches STARTED on every respawn (Android FGS restart, iOS
+// relaunch); its new rpc-reflector server has forgotten every prior
+// subscription, and the clients never resubscribe on their own. Replay
+// the recorded `ON` frames on each STARTED *after the first*, so
+// `discovery-state` and `local-peers` keep flowing across a respawn.
+// The backend binds the data socket before broadcasting `ready`, so by
+// the time STARTED reaches JS the new server is listening; outbound
+// frames are buffered by the native IPC if not. (The initial STARTED
+// needs no replay — the clients' own `ON` frames cover it.)
+let hasReachedStarted = false;
+// Feature-detected: under jest the expo `EventEmitter` is stubbed to a
+// bare class with no `addListener`; the resubscribe wiring is a native-
+// runtime concern, so skip it there like the module's other fallbacks.
+if (typeof state.addListener === "function") {
+  state.addListener("stateChange", (nextState) => {
+    if (nextState !== "STARTED") return;
+    if (hasReachedStarted) {
+      messagePort.replaySubscriptions();
+    } else {
+      hasReachedStarted = true;
+    }
+  });
+}
 
 /**
  * The upstream `ComapeoServicesApi` type plus the surface this module's

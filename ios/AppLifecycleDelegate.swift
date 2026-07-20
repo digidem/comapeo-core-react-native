@@ -208,8 +208,10 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         // Don't stop Node on background: NodeMobileStartNode is
         // once-per-process. iOS may suspend or kill; next launch is fresh.
         // BLE scanning IS stopped — discovery is foreground-only on iOS
-        // (a broad scan can't run backgrounded anyway); the service-UUID
-        // advertisement stays up in the overflow area.
+        // (a broad scan can't run backgrounded anyway). Advertising is
+        // also effectively foreground-only: without the
+        // `bluetooth-peripheral` background mode, iOS suspends us and
+        // stops it shortly after this callback.
         Self.bleEngine.onBackground()
     }
 

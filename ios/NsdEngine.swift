@@ -119,8 +119,12 @@ final class NsdEngine: NSObject {
 
 extension NsdEngine: NetServiceDelegate {
     func netServiceDidPublish(_ sender: NetService) {
+        // Identity guard: a queued callback from a previous (stopped/
+        // replaced) service must not flip `registered` back to active or
+        // emit a status frame after `stop()` reported "stopped".
+        guard sender === published else { return }
         // The daemon renames on collision; track it for self-filtering.
-        if sender === published { ownName = sender.name }
+        ownName = sender.name
         registered = "active"
         sendStatus()
     }
@@ -136,10 +140,19 @@ extension NsdEngine: NetServiceDelegate {
     }
 
     func netServiceDidResolveAddress(_ sender: NetService) {
-        resolving.remove(sender)
+        // `netServiceDidResolveAddress` fires once PER resolved address
+        // (A and AAAA arrive separately, order not guaranteed). If this
+        // callback carries only the IPv6 address, keep the service in
+        // `resolving` (retaining it, and leaving the resolve open) so the
+        // later IPv4 callback still arrives — dropping it here on the
+        // first (v6) callback was a permanent peer loss on dual-stack /
+        // IPv6-first LANs. Once we have an IPv4 we're done: report and
+        // stop.
         guard sender.name != ownName, sender.port > 0,
               let address = ipv4Address(of: sender)
         else { return }
+        resolving.remove(sender)
+        sender.stop()
         send([
             "type": "nsd-peer",
             "name": sender.name,
@@ -159,6 +172,9 @@ extension NsdEngine: NetServiceBrowserDelegate {
         didFind service: NetService,
         moreComing: Bool
     ) {
+        // Identity guard on every browser callback: a stale callback from
+        // a superseded browser must not touch current state.
+        guard browser === self.browser else { return }
         browsing = "active"
         guard service.name != ownName else { return }
         service.delegate = self
@@ -172,6 +188,7 @@ extension NsdEngine: NetServiceBrowserDelegate {
         didRemove service: NetService,
         moreComing: Bool
     ) {
+        guard browser === self.browser else { return }
         guard service.name != ownName else { return }
         send(["type": "nsd-peer-lost", "name": service.name])
     }
@@ -180,6 +197,7 @@ extension NsdEngine: NetServiceBrowserDelegate {
         _ browser: NetServiceBrowser,
         didNotSearch errorDict: [String: NSNumber]
     ) {
+        guard browser === self.browser else { return }
         browsing = "unavailable"
         sendStatus(lastError: (
             scope: "browse",
@@ -189,6 +207,7 @@ extension NsdEngine: NetServiceBrowserDelegate {
     }
 
     func netServiceBrowserWillSearch(_ browser: NetServiceBrowser) {
+        guard browser === self.browser else { return }
         browsing = "active"
         sendStatus()
     }

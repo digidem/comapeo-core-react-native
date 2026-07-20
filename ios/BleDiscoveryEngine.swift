@@ -85,10 +85,15 @@ final class BleDiscoveryEngine: NSObject {
         }
     }
 
-    /// Foreground transitions from `AppLifecycleDelegate`. Scanning is
-    /// foreground-only; the advertisement stays up (backgrounded iOS
-    /// advertising degrades to the overflow area — free, and later
-    /// useful for the GATT-wake path).
+    /// Foreground transitions from `AppLifecycleDelegate`. Both scanning
+    /// and advertising are effectively foreground-only: without the
+    /// `bluetooth-peripheral` UIBackgroundMode (which the Expo plugin
+    /// does NOT declare), iOS suspends the app shortly after
+    /// backgrounding and stops advertising. We don't tear the
+    /// advertisement down on background — there's no point, the OS does
+    /// — but nor should anything rely on it being discoverable in the
+    /// background. A future background-wake path would need that mode
+    /// added in app.plugin.js first.
     func onForeground() {
         queue.async {
             self.inForeground = true

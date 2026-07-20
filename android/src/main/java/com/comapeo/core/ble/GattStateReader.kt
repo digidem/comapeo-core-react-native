@@ -36,6 +36,10 @@ class GattStateReader(
     private val queue = ArrayDeque<Pair<BluetoothDevice, Int>>()
     private var activeGatt: BluetoothGatt? = null
     private var active = false
+    /** Watchdog for the in-flight read; tracked so `finishActive`/`clear`
+     * can cancel it (an un-cancelled stale timeout would fire mid-way
+     * through a *later* read and close its GATT). */
+    private var activeTimeout: Runnable? = null
 
     /** Called from the scan callback on a service-UUID match. */
     fun request(device: BluetoothDevice, rssi: Int) {
@@ -73,6 +77,7 @@ class GattStateReader(
     private fun read(device: BluetoothDevice, rssi: Int) {
         val address = device.address
         val timeout = Runnable { finishActive() }
+        activeTimeout = timeout
         handler.postDelayed(timeout, READ_TIMEOUT_MS)
 
         val callback = object : BluetoothGattCallback() {
@@ -130,10 +135,7 @@ class GattStateReader(
                 }
             }
 
-            private fun finish() {
-                handler.removeCallbacks(timeout)
-                finishActive()
-            }
+            private fun finish() = finishActive()
         }
 
         activeGatt = try {
@@ -141,14 +143,13 @@ class GattStateReader(
         } catch (_: SecurityException) {
             null
         }
-        if (activeGatt == null) {
-            handler.removeCallbacks(timeout)
-            finishActive()
-        }
+        if (activeGatt == null) finishActive()
     }
 
     @SuppressLint("MissingPermission")
     private fun finishActive() {
+        activeTimeout?.let { handler.removeCallbacks(it) }
+        activeTimeout = null
         activeGatt?.let { gatt ->
             try {
                 gatt.close()

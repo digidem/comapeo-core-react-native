@@ -70,6 +70,13 @@ class BleAdvertiser(private val onError: (code: String, message: String) -> Unit
         val cb = object : AdvertiseCallback() {
             override fun onStartFailure(errorCode: Int) {
                 // Async failure path — the start() call already returned.
+                // Identity guard: `applyAdvertisement` does stop()+start()
+                // to replace an advertisement, so a late failure from the
+                // PREVIOUS callback must not null out the CURRENT one (which
+                // would leave a live advertisement `stop()` can no longer
+                // reach). AdvertiseCallback fires on the main looper, same as
+                // the engine's handler, so this compares safely.
+                if (callback !== this) return
                 callback = null
                 advertiser = null
                 onError("ERR_BLE_ADVERTISE", describeAdvertiseError(errorCode))

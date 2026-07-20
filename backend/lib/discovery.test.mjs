@@ -44,9 +44,14 @@ function makeProject({ observations = [], tracks = [] } = {}) {
 /**
  * @param {{ project?: ReturnType<typeof makeProject>,
  *   projects?: { projectId: string, status: string }[],
- *   port?: number }} [options]
+ *   port?: number, sweepIntervalMs?: number }} [options]
  */
-function harness({ project = makeProject(), projects, port = 4242 } = {}) {
+function harness({
+  project = makeProject(),
+  projects,
+  port = 4242,
+  sweepIntervalMs,
+} = {}) {
   /** @type {{ type: string, payload?: string }[]} */
   const broadcasts = [];
   /** @type {object[]} */
@@ -69,6 +74,7 @@ function harness({ project = makeProject(), projects, port = 4242 } = {}) {
     broadcast: (frame) => broadcasts.push(frame),
     storageDir: mkdtempSync(join(tmpdir(), "ble-test-")),
     now: () => nowMs,
+    ...(sweepIntervalMs !== undefined ? { sweepIntervalMs } : {}),
     getInterfaces: () =>
       /** @type {ReturnType<import("node:os")["networkInterfaces"]>} */ (
         /** @type {unknown} */ ({
@@ -266,6 +272,7 @@ test("re-broadcasts ble-advertise only when the payload changes", async () => {
 
 test("stores engine status and surfaces it in state", async () => {
   const h = harness();
+  await h.controller.api.setEnabled(true);
   h.controller.handleStatus({
     scanning: "unavailable",
     advertising: "unsupported",
@@ -339,24 +346,44 @@ test("nsd-peer connects immediately with the real DNS-SD name, throttled, self-f
   h.controller.close();
 });
 
-test("nsd-peer-lost prunes; mDNS peers are not TTL-swept", async () => {
+test("nsd-peer-lost prunes immediately", async () => {
   const h = harness();
   await h.controller.api.setEnabled(true);
   h.controller.handleNsdPeer({ name: "peer-a", address: "192.168.1.30", port: 7001 });
-
-  // Way past the BLE TTL — the mDNS peer must survive a sweep.
-  h.setNow(h.getNow() + 10 * 60_000);
-  h.controller.handleStatus({ scanning: "active", advertising: "active", blockers: [] });
-  // (sweep is timer-driven; call the path indirectly via a BLE peer expiry check)
   assert.ok(h.controller.getState().peers.some((p) => p.id === "mdns:peer-a"));
-
   h.controller.handleNsdPeerLost({ name: "peer-a" });
   assert.ok(!h.controller.getState().peers.some((p) => p.id === "mdns:peer-a"));
   h.controller.close();
 });
 
+test("the sweep evicts stale BLE peers quickly but mDNS peers only after the long fallback TTL", async () => {
+  // sweepIntervalMs is tiny so the real interval fires promptly; the
+  // TTL comparison uses the injected clock, so we advance `now` to age
+  // peers deterministically.
+  const h = harness({ sweepIntervalMs: 10 });
+  await h.controller.api.setEnabled(true);
+  const own = decodeAdvertisement(Buffer.from(h.ownPayload(), "base64"));
+  h.controller.handleSighting({ payload: peerPayload(own), rssi: -50, address: "AA" });
+  h.controller.handleNsdPeer({ name: "peer-a", address: "192.168.1.30", port: 7001 });
+
+  // 45s later: past the 30s BLE TTL, well under the 5-min mDNS TTL.
+  h.setNow(h.getNow() + 45_000);
+  await new Promise((r) => setTimeout(r, 40));
+  let ids = h.controller.getState().peers.map((p) => p.id);
+  assert.ok(!ids.includes("192.168.1.20:9000"), "BLE peer swept");
+  assert.ok(ids.includes("mdns:peer-a"), "mDNS peer survives the short TTL");
+
+  // 6 min total: past the mDNS fallback TTL too.
+  h.setNow(h.getNow() + 6 * 60_000);
+  await new Promise((r) => setTimeout(r, 40));
+  ids = h.controller.getState().peers.map((p) => p.id);
+  assert.ok(!ids.includes("mdns:peer-a"), "mDNS peer swept after fallback TTL");
+  h.controller.close();
+});
+
 test("stores nsd engine status separately from ble", async () => {
   const h = harness();
+  await h.controller.api.setEnabled(true);
   h.controller.handleNsdStatus({
     browsing: "active",
     registered: "unavailable",
@@ -418,4 +445,164 @@ test("persists the enabled flag and resumes via onManagerReady", async () => {
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(third.getState().enabled, false);
   third.close();
+});
+
+/**
+ * A project mock whose `getMany` blocks until released, so a test can
+ * park `#start` inside its compose await and interleave another call.
+ */
+function makeGatedProject() {
+  /** @type {(value?: unknown) => void} */
+  let release = () => {};
+  const gate = new Promise((r) => (release = r));
+  const project = makeProject();
+  project.observation.getMany = async () => {
+    await gate;
+    return [];
+  };
+  return { project, release };
+}
+
+test("RACE: setEnabled(false) during #start's await does not re-arm the radios", async () => {
+  const { project, release } = makeGatedProject();
+  const h = harness({ project });
+
+  const startPromise = h.controller.api.setEnabled(true); // parks in getMany
+  await h.controller.api.setEnabled(false); // synchronous #stop
+  release();
+  await startPromise;
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(h.controller.getState().enabled, false);
+  // The parked start must NOT have emitted ble-start / nsd-start after the stop.
+  assert.ok(
+    !h.broadcasts.some((f) => f.type === "ble-start"),
+    `no ble-start expected, got ${JSON.stringify(h.broadcasts.map((f) => f.type))}`,
+  );
+  assert.ok(!h.broadcasts.some((f) => f.type === "nsd-start"));
+  assert.equal(h.project.syncListeners.size, 0, "no leaked $sync listener");
+  h.controller.close();
+});
+
+test("RACE: two overlapping setEnabled(true) leave exactly one live run", async () => {
+  const g1 = makeGatedProject();
+  const h = harness({ project: g1.project });
+  // Second run uses a distinct gated project so we can prove only one wins.
+  const g2 = makeGatedProject();
+  h.manager.getProject = async () => {
+    // First call → g1, subsequent → g2.
+    return callCount++ === 0 ? g1.project : g2.project;
+  };
+  let callCount = 0;
+
+  const p1 = h.controller.api.setEnabled(true);
+  const p2 = h.controller.api.setEnabled(true);
+  g1.release();
+  g2.release();
+  await Promise.all([p1, p2]);
+  await new Promise((r) => setTimeout(r, 10));
+
+  // Whichever committed last, only ONE run's listener/timers are live.
+  const total = g1.project.syncListeners.size + g2.project.syncListeners.size;
+  assert.equal(total, 1, "exactly one $sync listener across both runs");
+  assert.equal(h.controller.getState().enabled, true);
+  h.controller.close();
+  assert.equal(
+    g1.project.syncListeners.size + g2.project.syncListeners.size,
+    0,
+    "close() clears the live listener with none leaked",
+  );
+});
+
+test("RACE: a start that throws after resolving leaves enabled=false and unpersisted", async () => {
+  const h = harness();
+  h.manager.startLocalPeerDiscoveryServer = async () => {
+    throw new Error("bind failed");
+  };
+  await assert.rejects(() => h.controller.api.setEnabled(true), /bind failed/);
+  assert.equal(h.controller.getState().enabled, false);
+  assert.ok(!h.broadcasts.some((f) => f.type === "ble-start"));
+  h.controller.close();
+});
+
+test("resume of a left project clears the persisted flag instead of looping", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ble-left-"));
+  /** @type {{ type: string, payload?: string }[]} */
+  const broadcasts = [];
+  let joined = true;
+  const manager = {
+    listProjects: async () => [
+      { projectId: PID, status: joined ? "joined" : "left" },
+    ],
+    getProject: async () => makeProject(),
+    startLocalPeerDiscoveryServer: async () => ({ name: "x", port: 7 }),
+    connectLocalPeer: () => {},
+  };
+  const make = () =>
+    new DiscoveryController({
+      getManager: () => manager,
+      broadcast: (f) => broadcasts.push(f),
+      storageDir: dir,
+      getInterfaces: () => ({}),
+    });
+
+  const first = make();
+  await first.api.setEnabled(true);
+  first.close();
+
+  joined = false; // user left the project between sessions
+  const second = make();
+  second.onManagerReady();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(second.getState().enabled, false);
+  second.close();
+
+  // The doomed flag was cleared, so a third boot does not retry.
+  const before = broadcasts.filter((f) => f.type === "ble-start").length;
+  const third = make();
+  third.onManagerReady();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(
+    broadcasts.filter((f) => f.type === "ble-start").length,
+    before,
+    "no further ble-start after the flag was cleared",
+  );
+  third.close();
+});
+
+test("explicit setEnabled with a non-joined project rejects", async () => {
+  const h = harness({
+    projects: [{ projectId: PID, status: "left" }],
+  });
+  await assert.rejects(
+    () => h.controller.api.setEnabled(true, { projectPublicId: PID }),
+    /not joined/,
+  );
+  assert.equal(h.controller.getState().enabled, false);
+  h.controller.close();
+});
+
+test("frames arriving while disabled are dropped (no ghost peers)", async () => {
+  const h = harness();
+  await h.controller.api.setEnabled(true);
+  const own = decodeAdvertisement(Buffer.from(h.ownPayload(), "base64"));
+  await h.controller.api.setEnabled(false);
+
+  h.controller.handleSighting({ payload: peerPayload(own), rssi: -50, address: "AA" });
+  h.controller.handleNsdPeer({ name: "late", address: "192.168.1.9", port: 9 });
+  h.controller.handleStatus({ scanning: "active", advertising: "active", blockers: [] });
+
+  assert.equal(h.controller.getState().peers.length, 0);
+  assert.equal(h.controller.getState().ble.scanning, "stopped");
+  h.controller.close();
+});
+
+test("rejects NaN rssi and out-of-range nsd port", async () => {
+  const h = harness();
+  await h.controller.api.setEnabled(true);
+  const own = decodeAdvertisement(Buffer.from(h.ownPayload(), "base64"));
+  h.controller.handleSighting({ payload: peerPayload(own), rssi: NaN, address: "AA" });
+  h.controller.handleNsdPeer({ name: "x", address: "10.0.0.1", port: 70000 });
+  assert.equal(h.controller.getState().peers.length, 0);
+  h.controller.close();
 });

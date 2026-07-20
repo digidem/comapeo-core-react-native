@@ -92,6 +92,9 @@ class BleScanner(
             }
 
             override fun onScanFailed(errorCode: Int) {
+                // Identity guard, as in BleAdvertiser: a stale failure from
+                // a superseded scan must not clear the current registration.
+                if (callback !== this) return
                 callback = null
                 scanner = null
                 onError("ERR_BLE_SCAN", describeScanError(errorCode))

@@ -1,6 +1,8 @@
 package com.comapeo.core.ble
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Base64
 import org.json.JSONArray
@@ -25,6 +27,16 @@ import org.json.JSONObject
  *   engine's view of the radios, surfaced to the front end as
  *   `DiscoveryState.ble`. Radio failures never throw out of this
  *   class: frames are the only reply channel.
+ *
+ * **Threading.** Commands (`start`/`setAdvertisement`/`stop`) arrive on
+ * the control-IPC coroutine, while the scanner/advertiser/GATT
+ * callbacks fire on the Bluetooth stack's main looper. To keep the
+ * shared state (`scanning`/`advertising`/`blockers`/`lastError`/
+ * `isRunning`) and the [SightingThrottle] map single-threaded, every
+ * public method hops onto [handler] (the main looper) — the same
+ * confinement [NsdEngine] and [GattStateReader] use. `isRunning` is
+ * additionally `@Volatile` because [ComapeoCoreService] reads it off
+ * the handler thread.
  */
 class BleDiscoveryEngine(
     private val context: Context,
@@ -32,28 +44,35 @@ class BleDiscoveryEngine(
     private val throttle: SightingThrottle = SightingThrottle(),
     private val nowMs: () -> Long = SystemClock::elapsedRealtime,
 ) {
+    private val handler = Handler(Looper.getMainLooper())
     private var scanning = "stopped"
     private var advertising = "stopped"
     private val blockers = LinkedHashSet<String>()
     private var lastError: Triple<String, String, String>? = null
 
     private val advertiser = BleAdvertiser { code, message ->
-        // Async advertise failure (post-start callback).
-        advertising = if (code == "ERR_BLE_ADVERTISE") "unavailable" else advertising
-        recordError("advertise", code, message)
-        sendStatus()
+        // Async advertise failure — hop to the handler so it can't race
+        // an in-flight command mutating the same state.
+        handler.post {
+            advertising = if (code == "ERR_BLE_ADVERTISE") "unavailable" else advertising
+            recordError("advertise", code, message)
+            sendStatus()
+        }
     }
     private val gattReader = GattStateReader(context, onSighting = ::forwardSighting)
     private val scanner = BleScanner(
         onSighting = ::forwardSighting,
         onError = { code, message ->
-            scanning = "unavailable"
-            recordError("scan", code, message)
-            sendStatus()
+            handler.post {
+                scanning = "unavailable"
+                recordError("scan", code, message)
+                sendStatus()
+            }
         },
         onServiceMatch = { device, rssi -> gattReader.request(device, rssi) },
     )
 
+    @Volatile
     var isRunning: Boolean = false
         private set
 
@@ -61,39 +80,47 @@ class BleDiscoveryEngine(
      *  Safe to call repeatedly — a running scan is kept, the
      *  advertisement is replaced. */
     fun start(payload: ByteArray?) {
-        isRunning = true
-        blockers.clear()
-        lastError = null
-        scanning = try {
-            scanner.start(context)
-            "active"
-        } catch (e: BleException) {
-            recordError("scan", e.code, e.message ?: "scan start failed")
-            "unavailable"
+        handler.post {
+            isRunning = true
+            blockers.clear()
+            lastError = null
+            scanning = try {
+                scanner.start(context)
+                "active"
+            } catch (e: BleException) {
+                recordError("scan", e.code, e.message ?: "scan start failed")
+                "unavailable"
+            }
+            applyAdvertisement(payload)
+            sendStatus()
         }
-        applyAdvertisement(payload)
-        sendStatus()
     }
 
     /** Replace (non-null) or stop (null) the advertisement. No-op when
      *  the engine isn't running. */
     fun setAdvertisement(payload: ByteArray?) {
-        if (!isRunning) return
-        applyAdvertisement(payload)
-        sendStatus()
+        handler.post {
+            if (!isRunning) return@post
+            applyAdvertisement(payload)
+            sendStatus()
+        }
     }
 
     fun stop() {
-        if (!isRunning) return
-        isRunning = false
-        advertiser.stop()
-        scanner.stop()
-        gattReader.clear()
-        throttle.clear()
-        scanning = "stopped"
-        advertising = "stopped"
-        sendStatus()
+        handler.post {
+            if (!isRunning) return@post
+            isRunning = false
+            advertiser.stop()
+            scanner.stop()
+            gattReader.clear()
+            throttle.clear()
+            scanning = "stopped"
+            advertising = "stopped"
+            sendStatus()
+        }
     }
+
+    // Handler-thread only from here down.
 
     private fun applyAdvertisement(payload: ByteArray?) {
         if (payload == null) {

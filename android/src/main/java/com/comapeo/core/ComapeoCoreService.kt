@@ -78,6 +78,10 @@ class ComapeoCoreService : Service() {
     @Volatile
     private var notificationIsForeground = true
 
+    /** Serialises discovery-engine commands with `onDestroy`/`stopService`
+     *  (both main-thread) — see [handleBleControlFrame]. */
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
     companion object {
         const val CHANNEL_ID = "ComapeoServiceChannel"
         const val NOTIFICATION_ID = 1
@@ -446,22 +450,33 @@ class ComapeoCoreService : Service() {
     }
 
     /**
-     * BLE engine commands from the backend's discovery controller. Runs on
-     * the control-IPC coroutine; the engine's radio calls are quick and
-     * callback-based, so no re-dispatch is needed.
+     * BLE/NSD engine commands from the backend's discovery controller.
+     * Arrives on the control-IPC coroutine but is dispatched onto the
+     * main thread, where `onDestroy`/`stopService` also run — so the
+     * `isServiceStarted` gate, the lazy engine creation, and the
+     * teardown's null-out are serialised on one thread and a frame that
+     * races a destroy cannot resurrect an engine nothing will ever stop.
+     * The engines confine their own work to the main looper anyway, so
+     * calling them here is cheap.
      */
     private fun handleBleControlFrame(frame: ControlFrame) {
-        when (frame) {
-            is ControlFrame.BleStart -> {
-                promoteBleForegroundType()
-                ensureBleEngine().start(decodeBlePayload(frame.payload))
+        mainHandler.post {
+            if (!isServiceStarted) {
+                log("Ignoring ${frame::class.simpleName} — service not started")
+                return@post
             }
-            is ControlFrame.BleAdvertise ->
-                ensureBleEngine().setAdvertisement(decodeBlePayload(frame.payload))
-            is ControlFrame.BleStop -> bleEngine?.stop()
-            is ControlFrame.NsdStart -> ensureNsdEngine().start(frame.name, frame.port)
-            is ControlFrame.NsdStop -> nsdEngine?.stop()
-            else -> {}
+            when (frame) {
+                is ControlFrame.BleStart -> {
+                    promoteBleForegroundType()
+                    ensureBleEngine().start(decodeBlePayload(frame.payload))
+                }
+                is ControlFrame.BleAdvertise ->
+                    ensureBleEngine().setAdvertisement(decodeBlePayload(frame.payload))
+                is ControlFrame.BleStop -> bleEngine?.stop()
+                is ControlFrame.NsdStart -> ensureNsdEngine().start(frame.name, frame.port)
+                is ControlFrame.NsdStop -> nsdEngine?.stop()
+                else -> {}
+            }
         }
     }
 

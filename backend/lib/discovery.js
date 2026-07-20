@@ -78,6 +78,9 @@ const PERSIST_FILENAME = "ble-discovery.json";
 const REFRESH_INTERVAL_MS = 60_000;
 const SYNC_EVENT_REFRESH_MIN_INTERVAL_MS = 5_000;
 const PEER_TIMEOUT_MS = 30_000;
+/** Fallback TTL for mDNS peers (removal is normally the `nsd-peer-lost`
+ * event; this only catches silent disappearances). */
+const MDNS_PEER_TIMEOUT_MS = 5 * 60_000;
 const PEER_SWEEP_INTERVAL_MS = 15_000;
 const EMIT_DEBOUNCE_MS = 300;
 const CLUSTER_ENTER_RSSI = -60;
@@ -86,6 +89,16 @@ const RSSI_SMOOTHING = 0.3;
 const DEFAULT_MIN_CONNECT_INTERVAL_MS = 30_000;
 const CONNECT_ENTRY_TTL_MS = 10 * 60_000;
 
+/** Enabling discovery for a project that isn't currently joined (left,
+ * deleted, or an ambiguous auto-select). Distinguished so the resume
+ * path can clear a permanently-invalid persisted flag. */
+export class ProjectMembershipError extends Error {
+  constructor(/** @type {string} */ message) {
+    super(message);
+    this.name = "ProjectMembershipError";
+  }
+}
+
 export class DiscoveryController extends TypedEmitter {
   #getManager;
   #broadcast;
@@ -93,6 +106,7 @@ export class DiscoveryController extends TypedEmitter {
   #now;
   #minConnectIntervalMs;
   #getInterfaces;
+  #sweepIntervalMs;
 
   #enabled = false;
   /** @type {string | null} */
@@ -108,6 +122,17 @@ export class DiscoveryController extends TypedEmitter {
   #project = null;
   /** @type {(() => void) | null} unsubscribe from $sync events */
   #unsubscribeSync = null;
+
+  /**
+   * Monotonic lifecycle generation. Bumped at the start of every
+   * `#start` and every `#stop`; an in-flight async `#start` captures its
+   * generation and bails at each checkpoint if it has been superseded.
+   * This serialises the two mutating entry points — without it, a
+   * `setEnabled(false)` (or a second `setEnabled(true)`) that lands
+   * while `#start` is awaiting the DB re-arms the radios after the stop
+   * and leaks the first run's listeners/timers.
+   */
+  #generation = 0;
 
   /** smoothedRssi is BLE-internal (EMA input); absent on mDNS entries. */
   /** @type {Map<string, DiscoveredPeer & { smoothedRssi?: number }>} */
@@ -167,6 +192,8 @@ export class DiscoveryController extends TypedEmitter {
    * @param {() => number} [options.now]
    * @param {number} [options.minConnectIntervalMs]
    * @param {() => ReturnType<typeof networkInterfaces>} [options.getInterfaces]
+   * @param {number} [options.sweepIntervalMs] Peer-sweep cadence; small
+   *   values let tests drive the sweep against an injected `now`.
    */
   constructor({
     getManager,
@@ -175,6 +202,7 @@ export class DiscoveryController extends TypedEmitter {
     now = Date.now,
     minConnectIntervalMs = DEFAULT_MIN_CONNECT_INTERVAL_MS,
     getInterfaces = networkInterfaces,
+    sweepIntervalMs = PEER_SWEEP_INTERVAL_MS,
   }) {
     super();
     this.#getManager = getManager;
@@ -183,6 +211,7 @@ export class DiscoveryController extends TypedEmitter {
     this.#now = now;
     this.#minConnectIntervalMs = minConnectIntervalMs;
     this.#getInterfaces = getInterfaces;
+    this.#sweepIntervalMs = sweepIntervalMs;
   }
 
   /** @returns {DiscoveryState} */
@@ -218,11 +247,22 @@ export class DiscoveryController extends TypedEmitter {
     if (!persisted?.enabled) return;
     this.#start(persisted.projectPublicId ?? undefined).catch((e) => {
       console.warn("ble: failed to resume discovery", e);
+      // A left/deleted project can never resume — clear the flag so we
+      // don't retry the doomed start on every boot. Transient failures
+      // (e.g. a not-yet-ready dependency) keep the flag and retry next
+      // boot.
+      if (e instanceof ProjectMembershipError) {
+        this.#enabled = false;
+        this.#projectPublicId = null;
+        this.#writePersisted();
+      }
     });
   }
 
-  /** Stop timers/subscriptions (process shutdown). */
+  /** Stop timers/subscriptions (process shutdown). Bumps the generation
+   * so a resume `#start` still in flight aborts. */
   close() {
+    this.#generation++;
     this.#teardownRuntime();
   }
 
@@ -231,8 +271,13 @@ export class DiscoveryController extends TypedEmitter {
    * @param {Record<string, unknown>} message
    */
   handleSighting(message) {
+    // Native engine stop is async; its last frames race the stop. Drop
+    // anything that arrives while disabled so a straggler can't
+    // resurrect a peer into a table the sweeper no longer tends.
+    if (!this.#enabled) return;
     if (
       typeof message.payload !== "string" ||
+      Number.isNaN(message.rssi) ||
       typeof message.rssi !== "number" ||
       typeof message.address !== "string"
     ) {
@@ -259,6 +304,7 @@ export class DiscoveryController extends TypedEmitter {
    * @param {Record<string, unknown>} message
    */
   handleStatus(message) {
+    if (!this.#enabled) return;
     if (
       typeof message.scanning !== "string" ||
       typeof message.advertising !== "string" ||
@@ -292,12 +338,14 @@ export class DiscoveryController extends TypedEmitter {
    * @param {Record<string, unknown>} message
    */
   handleNsdPeer(message) {
+    if (!this.#enabled) return;
     if (
       typeof message.name !== "string" ||
       typeof message.address !== "string" ||
       typeof message.port !== "number" ||
       !Number.isInteger(message.port) ||
-      message.port <= 0
+      message.port <= 0 ||
+      message.port > 65535
     ) {
       console.warn("Ignoring malformed nsd-peer frame");
       return;
@@ -323,12 +371,14 @@ export class DiscoveryController extends TypedEmitter {
 
   /** @param {Record<string, unknown>} message */
   handleNsdPeerLost(message) {
+    if (!this.#enabled) return;
     if (typeof message.name !== "string") return;
     if (this.#peers.delete(`mdns:${message.name}`)) this.#scheduleEmit();
   }
 
   /** @param {Record<string, unknown>} message */
   handleNsdStatus(message) {
+    if (!this.#enabled) return;
     if (
       typeof message.browsing !== "string" ||
       typeof message.registered !== "string" ||
@@ -355,27 +405,51 @@ export class DiscoveryController extends TypedEmitter {
     this.#scheduleEmit();
   }
 
-  /** @param {string} [projectPublicId] */
+  /**
+   * All async work runs against locals and re-checks the captured
+   * generation after every await, so a concurrent `#stop`/`#start`
+   * aborts this run before it mutates shared state or turns any radio
+   * on. Nothing is committed (memory, disk, or broadcast) until every
+   * step has succeeded and this run is still current — a failed start
+   * therefore leaves `enabled` unchanged rather than stranding it
+   * `true` with the radios off.
+   *
+   * @param {string} [projectPublicId]
+   */
   async #start(projectPublicId) {
+    const gen = ++this.#generation;
     const manager = this.#getManager();
     if (!manager) {
       throw new Error("Cannot enable discovery before the backend is ready");
     }
-    const pid = projectPublicId ?? (await this.#soleJoinedProjectId(manager));
-    const project = await manager.getProject(pid);
+    const pid = await this.#resolveJoinedProjectId(manager, projectPublicId);
+    if (gen !== this.#generation) return;
 
-    // From here on we are committed; tear down any previous run first
-    // (setEnabled(true) with a different project is a restart).
+    const project = await manager.getProject(pid);
+    if (gen !== this.#generation) return;
+
+    const { name, port } = await manager.startLocalPeerDiscoveryServer();
+    if (gen !== this.#generation) return;
+
+    const { ad, payloadB64 } = await this.#composeAdvertisement(
+      project,
+      pid,
+      port,
+    );
+    if (gen !== this.#generation) return;
+
+    // Commit point: everything succeeded and we are still current. Tear
+    // down any previous run, then atomically adopt this one.
     this.#teardownRuntime();
     this.#enabled = true;
     this.#projectPublicId = pid;
     this.#project = project;
-    this.#writePersisted();
-
-    const { name, port } = await manager.startLocalPeerDiscoveryServer();
     this.#port = port;
     this.#serviceName = name;
-    await this.#refreshAdvertisement("ble-start");
+    this.#own = ad;
+    this.#ownPayloadB64 = payloadB64;
+    this.#writePersisted();
+    this.#broadcast({ type: "ble-start", payload: payloadB64 });
     this.#broadcast({ type: "nsd-start", name, port });
 
     const onSyncState = () => {
@@ -401,13 +475,16 @@ export class DiscoveryController extends TypedEmitter {
     this.#refreshTimer.unref?.();
     this.#sweepTimer = setInterval(
       () => this.#sweepStalePeers(),
-      PEER_SWEEP_INTERVAL_MS,
+      this.#sweepIntervalMs,
     );
     this.#sweepTimer.unref?.();
     this.#scheduleEmit();
   }
 
   #stop() {
+    // Bump the generation so any in-flight `#start` aborts at its next
+    // checkpoint instead of re-arming the radios after this stop.
+    this.#generation++;
     this.#teardownRuntime();
     this.#enabled = false;
     // Deliberately does NOT stop core's local-peer TCP server: mDNS (or
@@ -437,26 +514,52 @@ export class DiscoveryController extends TypedEmitter {
     this.#ownPayloadB64 = null;
   }
 
-  /** @param {any} manager */
-  async #soleJoinedProjectId(manager) {
+  /**
+   * Resolve the project to advertise and assert it is currently
+   * *joined* — applied to all three paths (auto, explicit
+   * `projectPublicId`, and persisted resume), because core's
+   * `getProject` succeeds for a project the user has left, which would
+   * otherwise keep advertising and auto-connecting a left project after
+   * a restart. A membership failure throws `ProjectMembershipError` so
+   * `onManagerReady` can clear a now-invalid persisted flag.
+   *
+   * @param {any} manager
+   * @param {string} [projectPublicId]
+   * @returns {Promise<string>}
+   */
+  async #resolveJoinedProjectId(manager, projectPublicId) {
     const projects = await manager.listProjects();
     const joined = projects.filter(
       (/** @type {{ status?: string }} */ p) => p.status === "joined",
     );
+    if (projectPublicId !== undefined) {
+      if (!joined.some((/** @type {{ projectId: string }} */ p) => p.projectId === projectPublicId)) {
+        throw new ProjectMembershipError(
+          `Cannot enable discovery: project ${projectPublicId} is not joined`,
+        );
+      }
+      return projectPublicId;
+    }
     if (joined.length === 1) return joined[0].projectId;
-    throw new Error(
+    throw new ProjectMembershipError(
       joined.length === 0
         ? "Cannot enable discovery: no joined project"
         : "Cannot enable discovery: multiple projects — pass opts.projectPublicId",
     );
   }
 
-  /** @param {"ble-start" | "ble-advertise"} [frameType] */
-  async #refreshAdvertisement(frameType = "ble-advertise") {
-    const project = this.#project;
-    const pid = this.#projectPublicId;
-    if (!this.#enabled || !project || pid === null) return;
-
+  /**
+   * Build the advertisement + its base64 payload from a project, with
+   * no side effects on instance state — so `#start` can compose into a
+   * local before committing, and `#refreshAdvertisement` can compose
+   * against live state.
+   *
+   * @param {any} project
+   * @param {string} pid
+   * @param {number} port
+   * @returns {Promise<{ ad: import("./ble-codec.js").BleAdvertisement, payloadB64: string }>}
+   */
+  async #composeAdvertisement(project, pid, port) {
     const [observations, tracks] = await Promise.all([
       project.observation.getMany({ includeDeleted: true }),
       project.track.getMany({ includeDeleted: true }),
@@ -481,17 +584,29 @@ export class DiscoveryController extends TypedEmitter {
       hasWifi: false,
       inviteMode: false,
       address: this.#pickIpv4(),
-      port: this.#port,
+      port,
     };
-    const payloadB64 = encodeAdvertisement(ad).toString("base64");
-    // A start frame always ships (it also switches the radios on);
-    // refreshes only re-broadcast on change.
-    if (frameType === "ble-advertise" && payloadB64 === this.#ownPayloadB64) {
-      return;
-    }
+    return { ad, payloadB64: encodeAdvertisement(ad).toString("base64") };
+  }
+
+  async #refreshAdvertisement() {
+    const gen = this.#generation;
+    const project = this.#project;
+    const pid = this.#projectPublicId;
+    if (!this.#enabled || !project || pid === null) return;
+
+    const { ad, payloadB64 } = await this.#composeAdvertisement(
+      project,
+      pid,
+      this.#port,
+    );
+    // A stop or restart during the compose await supersedes us.
+    if (gen !== this.#generation || !this.#enabled) return;
+    // Refreshes only re-broadcast when the payload actually moved.
+    if (payloadB64 === this.#ownPayloadB64) return;
     this.#own = ad;
     this.#ownPayloadB64 = payloadB64;
-    this.#broadcast({ type: frameType, payload: payloadB64 });
+    this.#broadcast({ type: "ble-advertise", payload: payloadB64 });
     this.#scheduleEmit();
   }
 
@@ -501,6 +616,10 @@ export class DiscoveryController extends TypedEmitter {
     /** @type {string | null} */
     let fallback = null;
     for (const [name, addresses] of Object.entries(interfaces)) {
+      // Cellular interfaces carry a routable-looking IPv4 that no local
+      // peer can reach — advertising it just makes peers dial (and 30s-
+      // throttle against) a dead address, worse than advertising none.
+      if (/^(rmnet|ccmni|pdp_ip|rev_rmnet|clat)/.test(name)) continue;
       for (const addr of addresses ?? []) {
         const isV4 = addr.family === "IPv4" || /** @type {unknown} */ (addr.family) === 4;
         if (!isV4 || addr.internal) continue;
@@ -588,12 +707,18 @@ export class DiscoveryController extends TypedEmitter {
   }
 
   #sweepStalePeers() {
-    const cutoff = this.#now() - PEER_TIMEOUT_MS;
+    const now = this.#now();
     let changed = false;
     for (const [id, peer] of this.#peers) {
-      // mDNS peers are event-driven (`nsd-peer-lost`), not TTL-swept —
-      // resolves fire once per appearance, not continuously.
-      if (peer.source === "ble" && peer.lastSeenAt < cutoff) {
+      // BLE peers re-advertise continuously, so a short TTL is right.
+      // mDNS peers are event-driven (`nsd-peer-lost` is the primary
+      // removal), but that event never comes if the browse dies or the
+      // engine stops mid-session — so a long fallback TTL bounds the
+      // table under a hostile mDNS flooder and clears silent
+      // disappearances, while staying long enough not to evict a live
+      // peer that simply isn't re-announcing.
+      const ttl = peer.source === "ble" ? PEER_TIMEOUT_MS : MDNS_PEER_TIMEOUT_MS;
+      if (now - peer.lastSeenAt > ttl) {
         this.#peers.delete(id);
         changed = true;
       }
