@@ -190,15 +190,14 @@ existing root key (nothing new to back up):
 
 **Clock skew and overlap.** Because the PSK is epoch-derived, two devices
 on different epochs (near a boundary, or a skewed clock) would derive
-different PSKs and fail to handshake — *unless* the responder knows which
-epoch to use. It does: the initiator sends the daily project hash as a
-selector (§5.2), and **the hash and the PSK share the epoch**, so
-matching the selector *is* selecting the PSK's epoch. The responder
-accepts the selector against the same ±1-epoch window the scanner uses
-for discovery (§6.3) and derives the PSK for whichever epoch the selector
-identifies — not necessarily its own current one. So the handshake
-tolerates exactly the same skew as discovery, with no separate mechanism:
-one epoch, matched once, drives both the hash and the PSK.
+different PSKs. This is absorbed by the very trial the responder already
+runs to pick the project (§5.2): it tries its candidate PSKs across the
+prev/current/next epoch window the scanner uses for discovery (§6.3), so
+the epoch is found in the same loop as the project — no separate mechanism.
+The initiator does not trial: having matched the peer's advertised hash
+within its own overlap window, it already knows which epoch's PSK to build
+the handshake with. So the handshake tolerates exactly the same skew as
+discovery.
 
 ### 4.4 Ephemeral session keypair — new, random
 
@@ -249,76 +248,52 @@ regardless of how many projects they share.
 > connection structure, so the single multiplexed connection is the right
 > default.
 
-### 5.2 Selecting the project
+### 5.2 Selecting the project by trial decryption
 
 In `XXpsk0` the PSK is mixed (`MixKeyAndHash`) at the very start of
-message 1, before the payload — so message 1's payload is already
-AEAD-encrypted under a PSK-derived key, and the responder must choose
-*which* project's PSK to load **before** it can process the message at
-all. The selector that resolves this therefore cannot live *inside* the
-Noise payload (that would be circular); it rides as a **short cleartext
-prefix framed ahead of the first Noise message**, in the same transport
-framing that already length-prefixes each handshake message:
+message 1, so the responder must load *which* project's PSK before it can
+process the message. The **initiator** has no such problem — discovery
+already told it which project (and which epoch) matched (§6), so it builds
+message 1 with that exact PSK. The only question is how the **responder**,
+which may belong to several projects, finds the matching one.
 
-```
-[version byte | 2-byte project selector] [ Noise msg 1: e, enc(payload) ]
-└──────────── cleartext prefix ─────────┘ └──────── XXpsk0 ────────────┘
-```
+**The responder trial-decrypts.** It buffers message 1 and replays it
+against each of its own candidate PSKs — one per (project × epoch) across
+the prev/current/next overlap window (§6.3) — until one verifies.
+Verification is built in: message 1 ends with an AEAD tag over its
+(possibly empty) payload, so the wrong PSK fails `decryptAndHash` and the
+right one passes (`mixKeyAndHash(psk)` → read cleartext `e` →
+`decryptAndHash`). Cost is O(*projects on this device* × 3) symmetric
+verifies — a one-time, sub-millisecond step at connection setup for the
+common 2–3 projects, which never recurs during the session. The
+epoch-overlap window is absorbed into this same loop, so clock skew needs
+no separate handling on the connection.
 
-**Discovery already tells the initiator which project matched** (the daily
-project hash, §6), so it sets the selector to that hash and the responder
-does an O(1) PSK lookup, loads the matching per-project PSK + connection
-keypair, and only then runs the Noise state machine. Three properties make
-this safe:
+**No project marker goes on the wire, on any transport.** An earlier
+approach put a cleartext 2-byte "selector" prefix ahead of message 1 so the
+responder could skip the trial with an O(1) lookup. It isn't worth it: the
+trial is negligible, and a fixed-format cleartext prefix is a standing
+fingerprint — "this connection is CoMapeo, project = ⟨rotating hash⟩" —
+readable by a passive observer or a DPI middlebox. On BLE/mDNS that leaks
+nothing new (presence is already public there), but on the internet it
+would throw away a central benefit of mixing the PSK first: that a
+non-member sees *no* protocol marker at all (§8.4). Trial decryption gives
+the same selection with nothing identifying on the wire **and a single code
+path across every transport**, so it is the mechanism everywhere — no
+selector, no prefix framing, no prologue binding.
 
-- **It leaks nothing new.** The selector *is* the daily project hash,
-  which is already broadcast in discovery (and, on the DHT, is the topic
-  itself). It rotates daily like everything else.
-- **It authenticates nothing by itself — it only routes.** An attacker can
-  put any selector on the wire, but must still hold the real PSK to
-  complete `XXpsk0`; a forged or wrong selector just makes the responder
-  load a PSK the initiator doesn't share, and the handshake fails closed.
-- **It is bound into the transcript** by setting the Noise **prologue** to
-  the prefix bytes (both sides mix the prologue before message 1). A MITM
-  that rewrites the selector to redirect PSK selection also breaks the
-  transcript hash, so tampering fails rather than confusing the parties.
+**Selection is orthogonal to multiplexing.** Whichever project's PSK
+completes the handshake, that one connection then multiplexes *all* shared
+projects (§5.1), each core still capability-gated. The trial only decides
+which PSK *opens* the connection, not which projects flow over it.
 
-Clock skew is absorbed by trying the selector against the small
-epoch-overlap window (§6.3) — a handful of symmetric lookups, not a full
-trial.
-
-**The cleartext selector is a *local-transport* default, not a universal
-one.** It is acceptable precisely where a device's CoMapeo presence is
-*already* public on that medium — a BLE beacon and an mDNS TXT record
-announce "CoMapeo is here" regardless, so a 2-byte rotating prefix on the
-connection reveals nothing new. On the **internet path it is the wrong
-default**: one of the main reasons for a PSK-mixed-first handshake there is
-that the flow carries *no* fixed marker, so a passive observer or DPI
-middlebox cannot tell a CoMapeo connection from random traffic — and a
-fixed-format cleartext prefix would hand exactly that fingerprint back
-(§8.4). Two **selector-free** mechanisms give project selection with
-nothing identifying on the wire, and are the default on the DHT (and on
-the fully-private mDNS mode of §6.6):
-
-- *Trial decryption:* the responder buffers message 1 and retries it
-  against each of its own project PSKs; the one whose AEAD tag verifies is
-  the match (`mixKeyAndHash(psk)` → read cleartext `e` → `decryptAndHash`,
-  which fails the tag on a wrong PSK). Cost is O(*projects on this device*)
-  symmetric verifies per inbound connection — negligible for the common
-  2–3 projects — and puts **no** project tag on the wire.
-- *Out-of-band topic selection:* on the DHT the initiator already dialled
-  the peer *via* the per-project swarm topic, so the project is known from
-  the rendezvous, not the flow. Where the responder can recover the
-  discovery topic for an inbound connection it needs no trial at all; where
-  it cannot, trial decryption is the fallback.
-- *In-channel pre-match:* on the private mDNS path the peers first open an
-  anonymous Type B channel and run the §6.6 bloom exchange, so both already
-  know the shared project's PSK before the Type A handshake.
-
-Selection is orthogonal to multiplexing: whichever mechanism identifies the
-one shared project's PSK, that single connection then multiplexes *all*
-shared projects (§5.1) — so dropping the selector costs nothing structural,
-only a few symmetric operations on the responder.
+**The one case the trial can't cover** is when the initiator has *no*
+discovery hint at all — the fully-private mDNS mode of §6.6 — because then
+it doesn't know which project it shares and so can't pick a PSK to build
+message 1. That case is resolved *before* the Type A handshake by the
+in-channel bloom match of §6.6, over an anonymous Type B channel. Wherever
+a discovery hint exists (BLE, mDNS TXT, DHT topic), the initiator knows the
+project and only the responder trials.
 
 ### 5.3 Two connection types
 
@@ -427,9 +402,9 @@ next epoch (a few extra HMACs, cached). Without this, every epoch
 boundary and any clock skew silently drops peers — the exact "discovery
 is flaky" failure this design exists to avoid. Accepting more on the scan
 side leaks nothing (scanning is passive and local) and costs no bytes.
-The matched epoch also tells the scanner which salt the peer used, so the
-state-hash comparison and the §5.2 handshake selector stay consistent
-across the boundary.
+The matched epoch also tells the initiator which salt the peer used, so the
+state-hash comparison and the epoch's PSK for the §5.2 handshake stay
+consistent across the boundary.
 
 ### 6.4 Multiple projects per device
 
@@ -721,32 +696,31 @@ window only if a shorter DHT epoch is later justified, and treat the exact
 DHT epoch length as an open question (§13) rather than inheriting BLE's
 24 h by default.
 
-### 8.4 No cleartext project selector on the internet path
+### 8.4 The internet path carries no CoMapeo marker
 
-On BLE and mDNS a device's CoMapeo presence is public by construction — the
-beacon and the service record announce it — so the §5.2 cleartext project
-selector reveals nothing new there. **The internet path is different, and
-should not carry that selector.** A distinctive benefit of mixing the PSK
-*before* anything is transmitted is that, to a party without the PSK, the
-handshake bytes carry no protocol handshake, no version, no service
-name — ideally nothing that marks the flow as CoMapeo at all. That matters
-on the open internet, where a passive observer or a DPI/censorship
-middlebox that could fingerprint "this is CoMapeo" can throttle, block, or
-target its users. A fixed-format cleartext prefix (`version ‖ 2-byte
-selector`) at the start of every connection is precisely the kind of
-trivially-matchable marker that gives the fingerprint back.
+Because project selection is by trial decryption on every transport (§5.2),
+the internet path needs no special-casing — and it inherits an important
+property for free. A distinctive benefit of mixing the PSK *before*
+anything is transmitted is that, to a party without the PSK, the handshake
+bytes carry no protocol version, no service name, **nothing that marks the
+flow as CoMapeo.** That matters on the open internet, where a passive
+observer or a DPI/censorship middlebox that could fingerprint "this is
+CoMapeo" can throttle, block, or target its users. Since there is no
+cleartext selector or any other fixed prefix ahead of the handshake,
+message 1 is just an ephemeral key and an AEAD tag — no marker to match.
+(On BLE/mDNS this property is moot, because the beacon and service record
+already announce CoMapeo's presence.)
 
-**We do not need the selector to multiplex.** The selector was only ever an
-O(1) convenience so the responder could skip trying PSKs; multiplexing
-depends on none of it (§5.1). So the internet path drops the cleartext
-selector and selects the project by the **selector-free** means of §5.2 —
-out-of-band from the DHT topic when the responder can recover it, otherwise
-**trial decryption** (O(*projects on this device*) AEAD verifies, small in
-practice). The single connection still multiplexes every shared project.
+This is also *why* the responder must trial-decrypt on the DHT rather than
+read the project from the rendezvous: **Hyperswarm does not surface the
+discovery topic for an inbound connection** — an incoming connection
+carries no indication of which topic led to it — so there is no out-of-band
+shortcut, and the responder trials its PSKs exactly as it does on the LAN.
+That is fine: the trial is O(projects) and one-time.
 
 **Residual caveat — full indistinguishability is a bigger job.** Removing
-the cleartext prefix eliminates the *cheap, reliable* fingerprint, but it
-does not by itself make the flow bytes uniformly random: `XXpsk0` message 1
+any fixed prefix eliminates the *cheap, reliable* fingerprint, but it does
+not by itself make the flow bytes uniformly random: `XXpsk0` message 1
 still sends a raw ephemeral public key, and raw curve points are
 statistically distinguishable from random to a determined DPI. Achieving
 true "indistinguishable from random" additionally requires an
@@ -1013,7 +987,8 @@ per-project floor.
 
 **Phase 3 — PSK-bound authenticated sync (per-project).**
 - The `XXpsk0` handshake with per-project connection key + PSK for Type A;
-  the §5.2 selector; dedup by connection key.
+  responder-side trial decryption to select the project (§5.2); dedup by
+  connection key.
 - Activated **per project via the version floor** (§9.4): a project uses
   it once all members are capable; until then it keeps the legacy
   fallback for its legacy members.
@@ -1033,20 +1008,19 @@ per-project floor.
 
 ## 13. Open questions / to verify
 
-1. **PSK plumbing + selector framing.** `noise-handshake` already ships
-   the `XXpsk0` pattern and reads an `opts.psk`, but `@hyperswarm/secret-
-   stream` does not thread it: its `lib/handshake.js` calls
-   `new Noise(pattern, …, { curve })` and hard-codes `initialise(EMPTY, …)`,
-   so it exposes neither `psk` nor a `prologue`. The change is a small,
-   contained patch (thread `psk` and `prologue` through the `Handshake`
-   wrapper and the `NoiseSecretStream` options) — confirm as an upstream
-   PR or a vendored shim. Separately, the §5.2 selector is **not** a Noise
-   payload field (message 1's payload is PSK-encrypted); it is a cleartext
-   prefix the backend reads off the raw socket *before* constructing the
-   `SecretStream` (using `autoStart:false` + deferred `start()`), then
-   binds into the `prologue`. Verify the byte-exact framing (no bytes lost
-   between the prefix read and the handshake), and confirm `XXpsk0`'s
-   early-PSK placement gives the identity-hiding property as intended.
+1. **PSK plumbing + responder trial.** `noise-handshake` already ships the
+   `XXpsk0` pattern and reads an `opts.psk`, but `@hyperswarm/secret-stream`
+   does not thread it: its `lib/handshake.js` calls
+   `new Noise(pattern, …, { curve })`. The change is a small, contained
+   patch to thread `psk` through the `Handshake` wrapper and the
+   `NoiseSecretStream` options — confirm as an upstream PR or a vendored
+   shim. Because the project is selected by trial decryption (§5.2, no
+   on-wire selector), the connection-setup layer must be able to **buffer
+   message 1 and retry it** against each candidate PSK before committing to
+   a `SecretStream` — verify secret-stream supports this cleanly (e.g.
+   `autoStart:false` + deferred `start()` once the PSK is known, or a thin
+   pre-read of the framed first message), and confirm `XXpsk0`'s early-PSK
+   placement gives the identity-hiding property as intended.
 2. **Project secret for derivation.** Fix which project-internal secret
    derives the PSK, the DHT topic, and the daily hash, and confirm none is
    derivable from anything in an export. Define its rotation.
@@ -1077,12 +1051,13 @@ per-project floor.
    location; iOS entitlement), and that omitting the token degrades
    cleanly. Decide the exact 2-byte derivation and whether BSSID (per-AP)
    or SSID (per-network) is the right equality granularity.
-8. **Selector strategy per transport.** Confirm the split from §5.2/§8.4:
-   cleartext selector on BLE/mDNS (presence already public), and
-   selector-free selection on the internet path — verify whether
-   Hyperswarm reliably surfaces the discovery topic for an *inbound*
-   connection (out-of-band selection) or whether trial decryption is
-   always needed, and bound the per-connection trial cost / DoS surface.
+8. **Trial-decryption bound.** Confirm the per-inbound-connection trial
+   cost — O(projects × epoch-window) AEAD verifies — is negligible on
+   target hardware even for the rare many-project device, and that it adds
+   no meaningful DoS surface beyond existing connection rate-limiting.
+   (Hyperswarm does not surface the discovery topic for an inbound
+   connection, so trial decryption — not out-of-band topic selection — is
+   the mechanism on every transport, §8.4.)
 8a. **Full flow indistinguishability (future).** Decide whether the
    internet path should go beyond "no fixed marker" to genuine
    indistinguishable-from-random — Elligator-encoded ephemeral keys and
