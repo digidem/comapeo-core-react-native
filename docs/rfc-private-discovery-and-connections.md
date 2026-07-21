@@ -613,6 +613,99 @@ release:
   the right choice: UDX's hole-punching is moot on a local link and its
   userspace per-packet cost is a regression on budget devices.
 
+### 8.1 Topic rotation and clock skew: not the same as BLE
+
+The discovery layer rotates its project hint on a daily epoch and leans on
+a **scan-side overlap** to absorb clock skew: a device advertises one
+epoch's hash but *accepts* prev/current/next when scanning (§6.3). That
+overlap is free on BLE and mDNS because **scanning is passive** — the
+radio hears whatever is broadcast nearby and the device simply tries a few
+extra HMAC matches locally. Widening the accept window costs nothing and
+tells no one.
+
+**Rotating a DHT swarm topic on an epoch does not inherit that free
+overlap, because DHT rendezvous is not passive.** Hyperswarm joins a topic
+in two roles:
+
+- **`server` (announce):** you publish yourself on the DHT nodes closest
+  to the topic, so others can find you. This is inherently *active and
+  self-revealing* — to be discoverable on a topic you must advertise on
+  it.
+- **`client` (lookup):** you query those same DHT nodes for who has
+  announced. Client-only mode lets you *find* announcers without
+  announcing yourself — so there is a "look but don't advertise" mode — but
+  it is still an **active query** that tells the ~handful of DHT nodes
+  nearest the topic that you are interested in it. There is no primitive
+  that "hears every topic and matches locally" the way a BLE scanner does.
+
+Two consequences:
+
+1. **You cannot make both sides passive.** For any connection at least one
+   peer must be in `server` mode on the shared topic; if both are
+   client-only, neither announces and neither is found. So the BLE model —
+   everyone advertises one epoch, everyone accepts three — has no direct
+   analogue.
+2. **Naively "accepting ±1 epoch" means *announcing* on ±1 epochs**, and
+   that actively undermines the rotation. Because epoch topics are
+   deterministic, a watcher who holds the project secret and sees a node
+   announce on both epoch *N* and epoch *N+1* can **stitch the rotation
+   across the boundary** — pre-announcing the next epoch links the two
+   identities, which is exactly the long-term linkage the rotation was
+   meant to break.
+
+### 8.2 How skew is actually handled on the DHT
+
+The overlap is therefore made **asymmetric**, mirroring §9.1's shape:
+
+- A device **announces (`server`) on its *current* epoch topic only** —
+  never on an adjacent epoch — so it never pre-advertises a future topic
+  and gives a secret-holding watcher no cross-boundary link.
+- A device **looks up (`client`) on the previous, current, and next epoch
+  topics**. Lookup is the cheaper, less-revealing role, and it is where
+  the tolerance lives: if two peers are within one epoch of each other,
+  at least one side's 3-topic lookup window covers the other side's
+  single announce topic, so they find each other. (A finds B because A's
+  lookup set `{N-1,N,N+1}` contains B's announce epoch; the reverse holds
+  symmetrically.)
+
+The residual cost is real but bounded: **~3× the lookup traffic** and a
+disclosure of interest in three topics (rather than one) to the DHT nodes
+nearest them — not zero, unlike BLE, but no extra *announce* footprint and
+no cross-boundary announce-linkage. Because a 24 h epoch makes boundaries
+rare, the widened lookup can be **restricted to a margin around the
+rollover** (e.g. ±30 min) and collapse to a single-topic lookup the rest
+of the day, cutting even that cost to a brief daily window.
+
+### 8.3 Why a longer — or no — DHT epoch is defensible
+
+Crucially, **on the DHT the topic's confidentiality does not come from
+rotation in the first place — it comes from being derived from the project
+secret.** A DHT crawler that does not hold the secret cannot compute the
+topic at all, so cannot watch it, enumerate it, or connect (the PSK
+handshake stops the last step regardless). Rotation on the DHT only
+narrows a *narrower* threat: a party who *has* held the secret (a current
+member, an ex-member, or a leak) watching a stable topic to observe which
+members come online over time.
+
+That is a weaker threat than the BLE physical-tracking case that motivates
+a short epoch, so the DHT can reasonably trade some of it away:
+
+- Use a **longer epoch on the DHT than on BLE** (say weekly, or even a
+  fixed per-project topic), making boundaries rare-to-nonexistent and the
+  skew problem nearly moot, at the price of coarser long-term
+  unlinkability against a secret-holding watcher; **or**
+- Keep a **stable per-project topic** for rendezvous and rely entirely on
+  the PSK handshake for privacy — a crawler on the topic still cannot
+  connect or identify anyone — accepting that a secret-holder could count
+  online members.
+
+The recommendation is to **decouple the DHT epoch from the BLE epoch**:
+default the DHT to a long (weekly) or fixed topic to sidestep the skew and
+announce-linkage cost, apply the asymmetric announce-current / lookup-±1
+window only if a shorter DHT epoch is later justified, and treat the exact
+DHT epoch length as an open question (§13) rather than inheriting BLE's
+24 h by default.
+
 The rest of this RFC's migration concern (§9) is therefore **local-only**.
 
 ---
@@ -903,6 +996,13 @@ per-project floor.
 2. **Project secret for derivation.** Fix which project-internal secret
    derives the PSK, the DHT topic, and the daily hash, and confirm none is
    derivable from anything in an export. Define its rotation.
+2a. **DHT epoch length (decoupled from BLE).** Decide the swarm-topic
+   rotation period independently of the 24 h discovery epoch (§8.3):
+   long/weekly, fixed-per-project, or short-with-overlap. If short, confirm
+   the asymmetric announce-current / lookup-±1 window (§8.2) and whether to
+   restrict the widened lookup to a rollover margin. Validate against the
+   secret-holding-watcher threat, which is the only one topic rotation
+   addresses on the DHT.
 3. **Connection-key derivation context.** Finalise the
    `deriveKeypair` context scheme for per-project connection keys;
    guarantee determinism across app versions.
