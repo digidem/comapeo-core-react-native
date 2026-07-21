@@ -249,18 +249,61 @@ regardless of how many projects they share.
 > connection structure, so the single multiplexed connection is the right
 > default.
 
-### 5.2 Selecting the project without a trial
+### 5.2 Selecting the project
 
-Because the PSK is mixed first, the responder must know *which* project's
-PSK to use before it can reply — it cannot cheaply try every PSK in one
-handshake. It doesn't need to: **discovery already tells the initiator
-which project matched** (the daily project hash, §6), so the initiator
-includes that 2-byte hash as a cleartext selector in the first handshake
-message and the responder does an O(1) PSK lookup. The selector leaks
-nothing new — that same hash is already broadcast in discovery, and on
-the DHT the topic is already per-project — and it rotates daily. Clock
-skew is absorbed by trying the selector against the small epoch-overlap
-window (§6.3), a handful of symmetric operations, not a full trial.
+In `XXpsk0` the PSK is mixed (`MixKeyAndHash`) at the very start of
+message 1, before the payload — so message 1's payload is already
+AEAD-encrypted under a PSK-derived key, and the responder must choose
+*which* project's PSK to load **before** it can process the message at
+all. The selector that resolves this therefore cannot live *inside* the
+Noise payload (that would be circular); it rides as a **short cleartext
+prefix framed ahead of the first Noise message**, in the same transport
+framing that already length-prefixes each handshake message:
+
+```
+[version byte | 2-byte project selector] [ Noise msg 1: e, enc(payload) ]
+└──────────── cleartext prefix ─────────┘ └──────── XXpsk0 ────────────┘
+```
+
+**Discovery already tells the initiator which project matched** (the daily
+project hash, §6), so it sets the selector to that hash and the responder
+does an O(1) PSK lookup, loads the matching per-project PSK + connection
+keypair, and only then runs the Noise state machine. Three properties make
+this safe:
+
+- **It leaks nothing new.** The selector *is* the daily project hash,
+  which is already broadcast in discovery (and, on the DHT, is the topic
+  itself). It rotates daily like everything else.
+- **It authenticates nothing by itself — it only routes.** An attacker can
+  put any selector on the wire, but must still hold the real PSK to
+  complete `XXpsk0`; a forged or wrong selector just makes the responder
+  load a PSK the initiator doesn't share, and the handshake fails closed.
+- **It is bound into the transcript** by setting the Noise **prologue** to
+  the prefix bytes (both sides mix the prologue before message 1). A MITM
+  that rewrites the selector to redirect PSK selection also breaks the
+  transcript hash, so tampering fails rather than confusing the parties.
+
+Clock skew is absorbed by trying the selector against the small
+epoch-overlap window (§6.3) — a handful of symmetric lookups, not a full
+trial.
+
+**Two selector-free alternatives** exist where exposing even the
+already-public hash on the connection is unwanted (notably the
+fully-private mDNS mode of §6.6, which deliberately keeps the hash off the
+LAN):
+
+- *Trial decryption:* the responder buffers message 1 and retries it
+  against each of its own project PSKs; the one whose AEAD tag verifies is
+  the match. Cost is O(*projects on this device*) symmetric verifies per
+  inbound connection — negligible for the common 2–3 projects — and puts
+  **no** project tag on the wire.
+- *In-channel pre-match:* the peers first open an anonymous Type B channel
+  and run the §6.6 bloom exchange, so both already know the shared
+  project's PSK before the Type A handshake and no selector is needed.
+
+The cleartext selector is the default only on paths where the hash is
+already public anyway (BLE beacon, mDNS TXT per §6.1, DHT topic); the
+alternatives cover the private-mDNS path.
 
 ### 5.3 Two connection types
 
@@ -492,38 +535,65 @@ outsider).
 
 ## 7. Lazy device-name exchange and invites
 
-The device name is never sent eagerly.
+This section covers when a device reveals its **name** ("Maria's phone")
+and its **identity key**, both of which leak eagerly today (§2). The
+answer depends on which of the two connection types from §5.3 is in play,
+so as a reminder:
 
-- On a **Type A** connection the name is not needed — attribution data is
-  already in the project database.
-- On a **Type B** connection the name is exchanged **only when both sides
-  are in invite mode** (a human has opened the invite screen on each
-  device):
+- A **Type A (authenticated sync) connection** is one where the two
+  devices have *already proven they share a project*: the `XXpsk0`
+  handshake completed, which means each side holds the other's per-project
+  **connection** key and the shared **PSK**. They are known co-members of
+  at least one project.
+- A **Type B (anonymous) connection** is one where *no shared project is
+  known* — a fresh contact, an onboarding/invite candidate, or a stranger.
+  It is a plain encrypted channel built from **ephemeral** keys, so
+  neither side has presented any stable identifier. It is the only channel
+  available before membership exists.
 
-  ```
-  A (invite screen open) → invite_beacon
-  B (invite screen open) → invite_beacon_ack
-  A → device_info { name }        B → device_info { name }
-  ```
+The rule is: **the name and identity key are never sent eagerly on either
+type; they are disclosed only by deliberate human action, and only over a
+Type B channel.**
 
-- When a human sends and accepts an invite, the **identity public key and
-  project key are transmitted inside this encrypted channel**, after
-  explicit approval on both ends. The new member derives its per-project
-  connection key and both devices register each other's identity +
-  connection keys in the project's authorisation table. All subsequent
-  connections for this project are Type A.
+**On a Type A connection, neither is sent.** The name isn't needed —
+attribution data is already in the project database that both members
+sync — and the identity key stays off the wire entirely (that is the whole
+point of the per-project connection key). Two co-members sync all their
+shared projects without ever re-exchanging a name or an identity key.
 
-This is the only path on which the identity key is transmitted, and it
+**On a Type B connection, the name is exchanged only when both sides are
+in invite mode** — i.e. a human has opened the invite screen on *each*
+device. Until that mutual signal, a Type B channel stays silent and yields
+nothing:
+
+```
+A (invite screen open) → invite_beacon
+B (invite screen open) → invite_beacon_ack
+A → device_info { name }        B → device_info { name }
+```
+
+**The identity key is transmitted only on invite acceptance**, still
+inside that Type B channel, after an explicit human approve on both ends.
+At that point the **identity public key and the project key** cross the
+channel; the joining device derives its per-project connection key, and
+both devices register each other's identity + connection keys in the
+project's authorisation table. From then on, every connection for that
+project is **Type A** — so the identity key is disclosed exactly once, to
+exactly the person the user chose to invite, and never rides a connection
+again.
+
+This is the *only* path on which the identity key is transmitted, and it
 requires deliberate human action on both ends. An adversary sitting on an
-idle Type B channel, or on any Type A channel, never receives a name or
-an identity key.
+idle Type B channel — or on any Type A channel — receives neither a name
+nor an identity key.
 
-The invite handshake is unauthenticated (ephemeral keys), so a MITM on a
-Type B connection is theoretically possible; mitigations are that
-acceptance is human-gated inside the channel and an optional short
-verification code derived from the handshake hash can be shown for users
-to compare. Type A connections are not exposed to this (mutual
-per-project auth).
+Because the Type B channel uses ephemeral keys, the invite handshake is
+unauthenticated, so a MITM is theoretically possible on it. Two things
+contain that: acceptance is human-gated *inside* the channel, and an
+optional short verification code derived from the handshake hash can be
+shown on both devices for the users to compare (a standard
+authenticated-channel confirmation). Type A connections are not exposed to
+this at all — they are mutually authenticated by the per-project keys.
 
 ---
 
@@ -816,10 +886,20 @@ per-project floor.
 
 ## 13. Open questions / to verify
 
-1. **PSK plumbing.** `secret-stream` does not currently expose the `psk`
-   option that `noise-handshake` supports; confirm the minimal extension
-   (or fork/PR) and that `XXpsk0`'s early-PSK placement gives the
-   identity-hiding property as intended.
+1. **PSK plumbing + selector framing.** `noise-handshake` already ships
+   the `XXpsk0` pattern and reads an `opts.psk`, but `@hyperswarm/secret-
+   stream` does not thread it: its `lib/handshake.js` calls
+   `new Noise(pattern, …, { curve })` and hard-codes `initialise(EMPTY, …)`,
+   so it exposes neither `psk` nor a `prologue`. The change is a small,
+   contained patch (thread `psk` and `prologue` through the `Handshake`
+   wrapper and the `NoiseSecretStream` options) — confirm as an upstream
+   PR or a vendored shim. Separately, the §5.2 selector is **not** a Noise
+   payload field (message 1's payload is PSK-encrypted); it is a cleartext
+   prefix the backend reads off the raw socket *before* constructing the
+   `SecretStream` (using `autoStart:false` + deferred `start()`), then
+   binds into the `prologue`. Verify the byte-exact framing (no bytes lost
+   between the prefix read and the handshake), and confirm `XXpsk0`'s
+   early-PSK placement gives the identity-hiding property as intended.
 2. **Project secret for derivation.** Fix which project-internal secret
    derives the PSK, the DHT topic, and the daily hash, and confirm none is
    derivable from anything in an export. Define its rotation.
