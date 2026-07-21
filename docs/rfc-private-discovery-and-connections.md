@@ -9,36 +9,71 @@
 ## 1. Summary
 
 CoMapeo lets nearby and remote devices find each other and synchronise
-encrypted project data. The privacy of that sync is currently bounded by
-the connection layer underneath it: **today every local connection
-reveals the device's permanent identity public key to whoever connects,
-and the device name to whoever completes a connection.** That identity
-key is the same key that identifies the device in reports and data
-exports, so anyone who holds an export can correlate a named person's
-device with network or (future) internet activity.
+encrypted project data. This RFC improves that in two directions at once,
+because they are the same layer: **how devices find each other, and what
+they reveal in doing so.**
 
-This RFC redesigns discovery and connections so that:
+**Discovery is too narrow today.** Local discovery is *mDNS-only*
+(host-app advertising `_comapeo._tcp`), which fails on some networks and
+routers, and can find a peer only when both devices already share a WiFi
+network. This RFC adds **Bluetooth Low Energy as a second discovery
+transport** — which works with the screen off, across the room, and
+independent of any shared network — and adds **network-match detection**,
+so a device discovered over BLE that sits on a *different* WiFi network is
+identified as such instead of silently failing to connect. (Forming a
+new WiFi network to bridge those devices — hotspot negotiation — is
+deliberately **out of scope**; see Non-goals.)
 
-1. The **permanent identity key never appears on any wire** — local or
+**Discovery and connections are too revealing today.** Every local
+connection **reveals the device's permanent identity public key to
+whoever connects, and the device name to whoever completes a
+connection.** That identity key is the same key that identifies the
+device in reports and data exports, so anyone who holds an export can
+correlate a named person's device with network or (future) internet
+activity.
+
+The RFC therefore has two thrusts that share one protocol:
+
+*Discovery*
+
+1. **BLE discovery** complements mDNS: peers are found across the room and
+   with the screen off, not only when they already share a network.
+2. **Sync-state gossip in discovery:** a discovery hint says not just "a
+   peer that shares a project is here" but "and its data differs from
+   mine," so a device knows whether a connection is worth making.
+3. **Network-match detection:** a peer discovered over BLE but on a
+   different WiFi network is surfaced to the user as such.
+
+*Privacy*
+
+4. The **permanent identity key never appears on any wire** — local or
    internet — except inside an already-encrypted channel during a
    human-approved invite.
-2. **Connecting to a stranger reveals nothing stable.** A device that is
-   not a member of a shared project cannot complete a connection, learn
-   an identifier, or elicit a device name.
-3. **Membership is proven with per-project derived keys**, so proving "I
+5. **Connecting to a stranger reveals nothing stable.** A non-member of a
+   shared project cannot complete a connection, learn an identifier, or
+   elicit a device name.
+6. **Membership is proven with per-project derived keys**, so proving "I
    belong to this project" never discloses "I am this specific device in
-   your export," and a device cannot be correlated across the projects it
-   belongs to.
-4. **Discovery broadcasts carry no stable fingerprint** — only
-   short-lived, rotating hints — while still letting members recognise
-   each other and gossip sync state.
-5. The change is **safe to roll out incrementally**, with a defined path
-   for a mixed fleet of updated and not-yet-updated devices.
+   your export," and a device cannot be correlated across projects.
+7. **Discovery broadcasts carry no stable fingerprint** — only
+   short-lived, rotating hints.
 
-It applies uniformly across the discovery transports CoMapeo uses or
-plans to use — local mDNS/DNS-SD, Bluetooth Low Energy, WiFi hotspot,
-and Hyperswarm/DHT internet connectivity — because all of them feed the
-same connection protocol.
+It is **safe to roll out incrementally**, with a defined path for a mixed
+fleet of updated and not-yet-updated devices, and it applies uniformly
+across every discovery transport — mDNS/DNS-SD, BLE, and Hyperswarm/DHT
+internet connectivity — because all of them feed the same connection
+protocol.
+
+### Non-goals
+
+- **WiFi hotspot / network formation.** When two devices share no
+  network, *creating* one for them to sync over (local-only hotspot,
+  multi-leader coordination, credential exchange) is a substantial topic
+  of its own and is covered by a separate RFC. This RFC stops at
+  *detecting* that peers are on different networks (§6.5).
+- **Changing the data/replication or attribution model.** The identity
+  key's role in authorship and authorisation is unchanged; only its
+  presence on the wire changes.
 
 ---
 
@@ -144,14 +179,26 @@ existing root key (nothing new to back up):
 
 - Derived per project from a **project-internal secret** (an encryption
   key shared only among members — *not* the project ID, which appears in
-  exports), rotated on a coarse epoch: `psk_P = KDF(projectSecret_P,
-  epoch)`.
+  exports), on the **same daily epoch as the discovery hash**:
+  `psk_P = KDF(projectSecret_P, epoch)`.
 - Mixed into the Noise handshake (§5) so that **a non-member cannot
   complete the handshake at all** and cannot read the static keys in
   transit.
 - The PSK is no more sensitive than the project's data-encryption keys (a
   member already holds both), so binding the connection to it introduces
   no new secret-management burden and matches the existing trust model.
+
+**Clock skew and overlap.** Because the PSK is epoch-derived, two devices
+on different epochs (near a boundary, or a skewed clock) would derive
+different PSKs and fail to handshake — *unless* the responder knows which
+epoch to use. It does: the initiator sends the daily project hash as a
+selector (§5.2), and **the hash and the PSK share the epoch**, so
+matching the selector *is* selecting the PSK's epoch. The responder
+accepts the selector against the same ±1-epoch window the scanner uses
+for discovery (§6.3) and derives the PSK for whichever epoch the selector
+identifies — not necessarily its own current one. So the handshake
+tolerates exactly the same skew as discovery, with no separate mechanism:
+one epoch, matched once, drives both the hash and the PSK.
 
 ### 4.4 Ephemeral session keypair — new, random
 
@@ -255,18 +302,24 @@ membership over the long term.
   **sync-state hash** so a scanner learns not just "shares a project" but
   "and our states differ, worth connecting." A scanner matches the hash
   against its own projects' daily hashes.
-- **mDNS / general fallback:** the advertisement carries no project hint.
-  Connect first as an anonymous **Type B** connection, then privately
-  determine shared projects *inside the encrypted channel* (§6.5), then
-  run the Type A handshake for each match over its muxed channel.
+- **mDNS:** carries the *same* rotating hint as BLE, in the service's
+  **TXT records**. A DNS-SD TXT record is far roomier than a 31-byte BLE
+  advertisement, so mDNS can carry a project's daily hash, its sync-state
+  hash, the SSID hash (§6.5), and the version tag directly — a scanner
+  matches and connects Type A without first opening a blind connection.
+  (Because TXT has room for several hashes at once, whether to advertise
+  one project or a small set is a privacy/latency trade — see §6.4.) The
+  in-channel matching of §6.6 remains only as an optional fully-private
+  fallback, not the primary mDNS path.
 
-### 6.2 The BLE advertisement carries no stable fingerprint
+### 6.2 The discovery payload carries no stable fingerprint
 
-The advertisement is a small manufacturer-data payload (no 128-bit
-service UUID, to save space; a short magic marker plus a version byte
-identify it). It carries, per project being advertised: the daily project
-hash, a sync-state hash, a coarse-bucketed data-volume indicator, and
-device flags — **all rotating or non-identifying**:
+The same payload rides both transports — a small manufacturer-data
+blob on BLE (no 128-bit service UUID, to save space; a magic marker plus
+version byte identify it) and TXT records on mDNS. Per project, it
+carries the daily project hash, a sync-state hash, a coarse-bucketed
+data-volume indicator, and device flags — **all rotating or
+non-identifying**:
 
 - The **project hash rotates daily**, so a passive observer cannot use it
   as a stable identifier or confirm membership of a known project beyond
@@ -277,11 +330,18 @@ device flags — **all rotating or non-identifying**:
 - The **data-volume indicator is bucketed** (order-of-magnitude), not a
   raw count, so it is not a precise device fingerprint.
 
-There is deliberately **no membership bloom filter in the broadcast**: a
+There is deliberately **no membership bloom filter in any broadcast**: a
 bloom filter over a device's project set is a stable, multi-bit
 fingerprint of exactly the thing we're trying not to leak, and is more
 identifying than a single rotating hash. (A bloom filter *is* used, but
-only inside the encrypted channel — §6.5 — where it is safe.)
+only inside the encrypted channel — §6.6 — where it is safe.)
+
+One nuance follows from mDNS's roomier records: advertising *several*
+project hashes at once (which TXT allows but a BLE beacon does not) makes
+the set of hashes a *within-day* correlatable fingerprint of a device's
+project membership — the same objection as the bloom filter, just
+readable by anyone on the LAN rather than in radio range. §6.4 covers
+when that trade is worth taking.
 
 ### 6.3 Salt rotation period and overlap
 
@@ -317,8 +377,28 @@ across the boundary.
 
 A device commonly belongs to 2–3 projects (>10 is rare). The BLE
 advertisement holds one project hash at a time, so a multi-project device
-**rotates through its projects, weighted toward the active one**, rather
-than trying to encode all of them at once.
+**rotates through its projects on a weighted round-robin**, rather than
+trying to encode all of them at once.
+
+**What "weighted toward the active one" means concretely.** The
+advertiser re-broadcasts its manufacturer-data payload on a fixed cadence
+(say every ~1 s, well under the BLE scan window). Each broadcast carries
+one project's hash. Rather than a flat cycle `P1, P2, P3, P1, P2, P3…`,
+the schedule is built so the **foreground project** (the one currently
+open on screen, or most-recently synced if the app is backgrounded) takes
+a majority of the slots and the rest cycle through the remainder:
+
+```
+active, active, P2, active, active, P3, active, active, P4, …
+```
+
+Implementation is a small weighted scheduler: assign the active project
+weight *w* (e.g. 3) and every background project weight 1, then emit
+project *i* for a fraction `weight_i / Σ weight` of broadcasts (e.g. an
+interleaved/deficit round-robin so the active one is evenly spread, not
+bursted). If there is no foreground project (backgrounded, or none opened
+this session) the weights flatten to a plain round-robin. The weight is a
+single tunable; `w = 1` degenerates to flat rotation.
 
 This scales gracefully because of §5.1: **finding one shared project is
 enough** — it triggers the single connection, over which *all* shared
@@ -329,14 +409,58 @@ time to first contact is proportional to the number of projects on the
 advertiser and inversely proportional to how many they share — fast for
 the common case, merely slower (not broken) for the rare many-project
 case. Weighting the active project keeps the everyday "sync the project
-I'm looking at" case instant and full-featured.
+I'm looking at" case near-instant even on a device carrying several
+projects, while the background projects still get discovered within a few
+rotation periods. (On mDNS this trade largely dissolves — TXT records can
+carry several project hashes at once, §6.1 — so the rotation is a
+BLE-specific accommodation of the 31-byte advertisement budget; see the
+set-fingerprint caveat in §6.2.)
 
-### 6.5 Private multi-project matching on the mDNS path (in-channel)
+### 6.5 Network-match detection (different-SSID peers)
 
-When the transport gives no project hint (mDNS), two devices determine
-shared projects *after* opening an anonymous Type B channel, by
-exchanging an **epoch-salted bloom filter** of their project hashes over
-the encrypted connection:
+BLE discovery finds a peer *regardless of network*, which surfaces a case
+mDNS never could: a co-member who is **in Bluetooth range but on a
+different WiFi network** (or on no network). Today those two devices
+cannot sync even though they can see each other, and — worse — the app
+gives no signal about *why*. This section adds that signal.
+
+- The advertisement (and the mDNS TXT record) carries a **2-byte
+  daily-salted hash of the device's current network** —
+  `HMAC(SSID/BSSID, UTC-day)` truncated — under the same epoch as the
+  project hash (§6.3). It is a coarse *equality* token, not the network
+  name: two devices on the same network derive the same 2 bytes; an
+  observer cannot recover the SSID from it, and it rotates daily like
+  everything else in the payload.
+- A scanner compares the peer's network token against its own. **Same
+  token → same network:** connect over mDNS/TCP as usual (BLE was just
+  the finder). **Different token → different network:** the peer is
+  surfaced to the user as *"nearby, but on a different WiFi network"*,
+  rather than silently failing to connect.
+- What the app does with that signal — prompt the user to join a common
+  network, hand off to a hotspot flow, or just display it — is **out of
+  scope** (that is the separate network-formation RFC, see Non-goals).
+  This RFC's contribution is only the *detection*.
+
+Platform notes: reading the connected network's identifier is
+permission-gated — Android's `NEARBY_WIFI_DEVICES` (API 33+) or
+coarse/fine location below it, iOS's `NEHotspotNetwork` /
+`CNCopyCurrentNetworkInfo` entitlement. Where the identifier is
+unavailable (permission denied, platform restriction), the device simply
+**omits the network token**; a peer that sees no token treats network
+match as *unknown* and falls back to today's behaviour (attempt the
+connection, let it fail if unreachable). The feature degrades to exactly
+the status quo, never worse.
+
+### 6.6 Private multi-project matching on the mDNS path (in-channel fallback)
+
+The primary mDNS path advertises project hashes directly in TXT records
+(§6.1), so most matching needs no connection. This in-channel mechanism is
+an **optional fully-private fallback** — used when a deployment chooses
+*not* to expose any project hint in mDNS TXT (§6.2's set-fingerprint
+concern), trading a little latency for leaking nothing to a passive
+LAN observer. When engaged, two devices determine shared projects *after*
+opening an anonymous Type B channel, by exchanging an **epoch-salted bloom
+filter** of their project hashes over the encrypted connection:
 
 - Each builds a bloom filter over `hash(projectHash ‖ epoch)`, with the
   epoch carried in the message (single-epoch match, no skew guessing; a
@@ -348,9 +472,10 @@ the encrypted connection:
   nothing.
 
 This bloom filter is safe here precisely because it lives **only on the
-encrypted connection**, never in a broadcast.
+encrypted connection**, never in a broadcast — which is exactly why it is
+*not* the mechanism used in the (broadcast) discovery payload of §6.2.
 
-### 6.6 Connection address
+### 6.7 Connection address
 
 Discovery must eventually yield an address to dial. On mDNS the resolved
 service provides it. On BLE the advertisement can carry the device's
@@ -484,16 +609,57 @@ discloses nothing the co-member did not already have.
 Cost: one extra handshake per new↔legacy connection. This is confined to
 the migration window and to the specific peers that are still legacy.
 
-### 9.3 Invites across the boundary
+### 9.3 Invites across the boundary: require both devices to be capable
 
-Invites happen before any shared project exists, so the membership check
-cannot gate them. An invite involving a legacy peer therefore uses the
-**anonymous ephemeral channel**, and the permanent identity is revealed
-**only on explicit human acceptance** — identical in spirit to the
-new-to-new invite flow (§7). This is acceptable because the disclosure is
-consent-gated and an invite inherently establishes a trust relationship;
-the ephemeral channel protects everything up to the moment a human on
-both ends approves.
+Invites are the one flow where the boundary cannot be made transparent,
+and it is worth being precise about *why* — the answer falls out of how
+the legacy invite protocol actually binds identity.
+
+**How legacy invites bind identity.** On a legacy connection the peer
+identifier used throughout the invite machinery *is* the connection's
+Noise static key (`peerId = noiseStream.remotePublicKey`), which on the
+legacy stack is the **permanent identity key**, exchanged in the XX
+handshake **before** any human sees or accepts the invite. Invite
+messages, the accept/reject, and the project-key hand-off are all keyed to
+that peer. There is no point in the legacy protocol at which identity is
+withheld and then "revealed on acceptance" — by the time the invite dialog
+appears, both identity keys are already on the wire. So an ephemeral-key
+channel *cannot* carry a legacy invite: the moment the new device presents
+an ephemeral key as its static key, it is presenting that ephemeral key as
+its identity, and the resulting membership records would authorise a
+throwaway key rather than the device. This is a protocol fact, not a
+tuning choice.
+
+That forces the honest position: **an invite that must stay private
+requires both devices to be privacy-capable.** Rather than silently
+leaking identity to make a cross-version invite "work," a new device
+detects the boundary and surfaces it.
+
+- **New → legacy (new device wants to invite a legacy device):** the new
+  device *can* see the legacy peer (it browses the legacy identifier,
+  §9.1). But completing the invite on the legacy protocol means running
+  the XX handshake with its **real identity key** up front — the very leak
+  this RFC removes. So instead of doing that silently, the new device
+  surfaces the peer with a blocking status: *"This device must be updated
+  before it can be invited."* The invite proceeds only once that peer is
+  new, at which point it is an ordinary §7 flow.
+- **Legacy → new (legacy device wants to invite a new device):** the
+  discovery asymmetry (§9.1) already prevents this — a legacy device
+  cannot see a new device to start an invite, because new devices never
+  advertise the legacy identifier. From the legacy user's side the new
+  device simply isn't in the invite list; the new device can explain why
+  (it knows it is hiding from legacy browsers) with the same *"update the
+  other device"* guidance.
+
+This is a deliberately accepted limitation, not a gap: during the
+migration window, **forming a *new* project membership across the version
+boundary is blocked, with a clear "must upgrade" prompt**, while *existing*
+shared-project sync across the boundary keeps working via the ephemeral
+probe (§9.2). Invites are rare, deliberate, human-driven events where a
+one-time "update this device first" is acceptable; ongoing background sync,
+which must not break, is precisely what §9.2 preserves. Once a project
+meets its version floor (§9.4) the boundary is gone and invites are fully
+private again.
 
 ### 9.4 Per-project version floor: when a project becomes fully private
 
@@ -534,6 +700,11 @@ admin confirmation step; the exact trigger is an open question (§12).
   member reaches out. This is a minor availability limitation, acceptable
   because sync sessions are typically mutual and active, and it disappears
   once the project's floor is met.
+- **Cross-version invites are blocked, not leaked** (§9.3): forming a new
+  project membership across the boundary requires the other device to
+  update first (the legacy invite protocol cannot hide identity). Existing
+  shared-project sync across the boundary is unaffected — only *new*
+  memberships wait for the upgrade.
 
 ---
 
@@ -597,13 +768,22 @@ per-project floor.
   identity from the project database.
 - *Ships:* schema + derivation groundwork, invisible to users.
 
-**Phase 1 — private discovery (additive).**
+**Phase 1 — BLE discovery + private discovery hints (additive).**
+- **Add BLE as a second discovery transport** alongside mDNS: a compact
+  manufacturer-data beacon (§6.2) found with the screen off and across the
+  room, managed by the same background sync service as mDNS.
 - Rotating daily project hash + salted state hash + bucketed volume in the
-  discovery layer; scan-side epoch overlap; multi-project rotation.
+  discovery payload, on both transports; scan-side epoch overlap (§6.3);
+  weighted multi-project rotation on BLE (§6.4); project hashes in mDNS
+  TXT records.
+- **Network-match detection** (§6.5): the daily-salted network token, so a
+  BLE-discovered peer on a different WiFi network is surfaced as such
+  rather than silently unreachable.
 - New discovery identifier and asymmetric browse (§9.1) — new devices
   become invisible to legacy but still find them.
-- *Ships:* discovery stops broadcasting stable fingerprints; still uses
-  the current handshake, so no interop risk.
+- *Ships:* discovery works off-network and screen-off, stops broadcasting
+  stable fingerprints, and explains different-network peers; still uses the
+  current handshake, so no interop risk.
 
 **Phase 2 — anonymous connections and lazy naming (additive).**
 - Ephemeral Type B connections; lazy name exchange; invite-beacon flow;
@@ -651,15 +831,25 @@ per-project floor.
 5. **Version-floor trigger.** Automatic (all member records flagged) vs.
    admin-confirmed; how a re-added legacy device or a new member resets a
    graduated project; how the "N of M updated" status is surfaced.
-6. **Bloom-filter parameters** for the mDNS path, validated against a
-   realistic adversary probing model.
-7. **Selector privacy on non-BLE transports.** Confirm the cleartext
+6. **mDNS TXT set-fingerprint policy.** Decide whether the mDNS TXT record
+   advertises several project hashes at once (fast, but a within-day
+   membership fingerprint to a LAN observer, §6.2) or a single rotating
+   hash like BLE (private, slightly slower), and whether that is a global
+   default or a per-deployment toggle that engages the §6.6 in-channel
+   fallback. Set the **bloom-filter parameters** for that fallback against
+   a realistic adversary probing model.
+7. **Network token** (§6.5): confirm the SSID/BSSID source and the
+   permission story on each platform (Android `NEARBY_WIFI_DEVICES` vs.
+   location; iOS entitlement), and that omitting the token degrades
+   cleanly. Decide the exact 2-byte derivation and whether BSSID (per-AP)
+   or SSID (per-network) is the right equality granularity.
+8. **Selector privacy on non-BLE transports.** Confirm the cleartext
    project-hash selector (§5.2) is acceptable on every transport (it is
    already exposed on BLE and via the DHT topic).
-8. **Multi-project Type A ordering** when a peer shares several projects:
+9. **Multi-project Type A ordering** when a peer shares several projects:
    which project's PSK selects the connection, and confirm all shared
    projects then replicate over it.
-9. **On-device validation** of the discovery layer (advertisement packing,
+10. **On-device validation** of the discovery layer (advertisement packing,
    scan filtering, battery, concurrent radios) on representative budget
    hardware — the discovery hints and rotation are only as good as their
    behaviour on the target devices.
