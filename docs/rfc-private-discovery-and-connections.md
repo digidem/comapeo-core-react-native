@@ -716,7 +716,14 @@ read the project from the rendezvous: **Hyperswarm does not surface the
 discovery topic for an inbound connection** — an incoming connection
 carries no indication of which topic led to it — so there is no out-of-band
 shortcut, and the responder trials its PSKs exactly as it does on the LAN.
-That is fine: the trial is O(projects) and one-time.
+That is fine: the trial is O(projects) and one-time. (Confirmed against the
+source: at the HyperDHT layer a connection is made *to a public key* and
+the server learns only the remote's Noise `remotePublicKey`; "topic" is a
+Hyperswarm-level notion never transmitted at connect time. Hyperswarm's
+`PeerInfo.topics` *can* be non-empty for an inbound peer, but only as a
+side effect of *this* node's own outbound lookups — it reflects which
+topics **we** searched, not which topic the remote used — so it is empty
+precisely when we are announce-only, and cannot substitute for selection.)
 
 **Residual caveat — full indistinguishability is a bigger job.** Removing
 any fixed prefix eliminates the *cheap, reliable* fingerprint, but it does
@@ -1008,19 +1015,32 @@ per-project floor.
 
 ## 13. Open questions / to verify
 
-1. **PSK plumbing + responder trial.** `noise-handshake` already ships the
-   `XXpsk0` pattern and reads an `opts.psk`, but `@hyperswarm/secret-stream`
-   does not thread it: its `lib/handshake.js` calls
-   `new Noise(pattern, …, { curve })`. The change is a small, contained
-   patch to thread `psk` through the `Handshake` wrapper and the
-   `NoiseSecretStream` options — confirm as an upstream PR or a vendored
-   shim. Because the project is selected by trial decryption (§5.2, no
-   on-wire selector), the connection-setup layer must be able to **buffer
-   message 1 and retry it** against each candidate PSK before committing to
-   a `SecretStream` — verify secret-stream supports this cleanly (e.g.
-   `autoStart:false` + deferred `start()` once the PSK is known, or a thin
-   pre-read of the framed first message), and confirm `XXpsk0`'s early-PSK
-   placement gives the identity-hiding property as intended.
+1. **PSK plumbing + responder trial (checked against source).** Verified
+   against `@hyperswarm/secret-stream` 6.9.1 and its `noise-handshake`:
+   - `noise-handshake` already ships the `XXpsk0` pattern and reads
+     `opts.psk`, and a wrong-PSK `recv` **throws** (it does not touch the
+     socket) — so trial decryption is safe *at that layer*.
+   - `secret-stream` forwards `opts.pattern` but **not** `opts.psk` or a
+     prologue (`lib/handshake.js` calls `new Noise(pattern, …, { curve })`
+     and hardcodes an empty prologue), and it **commits the Noise state at
+     construction, before message 1 is read** — there is no "peek message 1,
+     then choose the PSK" seam (an earlier draft's `autoStart:false` idea
+     does not give one; `start()` locks the handshake in). A wrong-PSK
+     `recv` routed *through* `NoiseSecretStream` is turned **fatal** — it
+     errors the open callback and destroys the raw socket — so you cannot
+     retry in place.
+
+   Responder trial decryption therefore takes one of two concrete
+   approaches, not a one-line option: **(a)** fork/patch `secret-stream` to
+   thread `psk` and add a "recv failed → retry the next PSK on a fresh
+   handshake" loop ahead of the fatal path; or **(b)** drive the `XXpsk0`
+   handshake directly at the `noise-handshake` layer over a self-buffered
+   first frame (retry is safe there — `recv` throws rather than destroying),
+   then hand `secret-stream` only the *completed* transport keys via
+   `opts.handshake` (`{ tx, rx, hash, publicKey, remotePublicKey }`) and use
+   it purely as the transport-cipher wrapper. Approach (b) needs no fork.
+   Either way, confirm `XXpsk0`'s early-PSK placement gives the
+   identity-hiding property as intended.
 2. **Project secret for derivation.** Fix which project-internal secret
    derives the PSK, the DHT topic, and the daily hash, and confirm none is
    derivable from anything in an export. Define its rotation.
