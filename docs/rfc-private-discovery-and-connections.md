@@ -287,23 +287,38 @@ Clock skew is absorbed by trying the selector against the small
 epoch-overlap window (§6.3) — a handful of symmetric lookups, not a full
 trial.
 
-**Two selector-free alternatives** exist where exposing even the
-already-public hash on the connection is unwanted (notably the
-fully-private mDNS mode of §6.6, which deliberately keeps the hash off the
-LAN):
+**The cleartext selector is a *local-transport* default, not a universal
+one.** It is acceptable precisely where a device's CoMapeo presence is
+*already* public on that medium — a BLE beacon and an mDNS TXT record
+announce "CoMapeo is here" regardless, so a 2-byte rotating prefix on the
+connection reveals nothing new. On the **internet path it is the wrong
+default**: one of the main reasons for a PSK-mixed-first handshake there is
+that the flow carries *no* fixed marker, so a passive observer or DPI
+middlebox cannot tell a CoMapeo connection from random traffic — and a
+fixed-format cleartext prefix would hand exactly that fingerprint back
+(§8.4). Two **selector-free** mechanisms give project selection with
+nothing identifying on the wire, and are the default on the DHT (and on
+the fully-private mDNS mode of §6.6):
 
 - *Trial decryption:* the responder buffers message 1 and retries it
   against each of its own project PSKs; the one whose AEAD tag verifies is
-  the match. Cost is O(*projects on this device*) symmetric verifies per
-  inbound connection — negligible for the common 2–3 projects — and puts
-  **no** project tag on the wire.
-- *In-channel pre-match:* the peers first open an anonymous Type B channel
-  and run the §6.6 bloom exchange, so both already know the shared
-  project's PSK before the Type A handshake and no selector is needed.
+  the match (`mixKeyAndHash(psk)` → read cleartext `e` → `decryptAndHash`,
+  which fails the tag on a wrong PSK). Cost is O(*projects on this device*)
+  symmetric verifies per inbound connection — negligible for the common
+  2–3 projects — and puts **no** project tag on the wire.
+- *Out-of-band topic selection:* on the DHT the initiator already dialled
+  the peer *via* the per-project swarm topic, so the project is known from
+  the rendezvous, not the flow. Where the responder can recover the
+  discovery topic for an inbound connection it needs no trial at all; where
+  it cannot, trial decryption is the fallback.
+- *In-channel pre-match:* on the private mDNS path the peers first open an
+  anonymous Type B channel and run the §6.6 bloom exchange, so both already
+  know the shared project's PSK before the Type A handshake.
 
-The cleartext selector is the default only on paths where the hash is
-already public anyway (BLE beacon, mDNS TXT per §6.1, DHT topic); the
-alternatives cover the private-mDNS path.
+Selection is orthogonal to multiplexing: whichever mechanism identifies the
+one shared project's PSK, that single connection then multiplexes *all*
+shared projects (§5.1) — so dropping the selector costs nothing structural,
+only a few symmetric operations on the responder.
 
 ### 5.3 Two connection types
 
@@ -706,6 +721,41 @@ window only if a shorter DHT epoch is later justified, and treat the exact
 DHT epoch length as an open question (§13) rather than inheriting BLE's
 24 h by default.
 
+### 8.4 No cleartext project selector on the internet path
+
+On BLE and mDNS a device's CoMapeo presence is public by construction — the
+beacon and the service record announce it — so the §5.2 cleartext project
+selector reveals nothing new there. **The internet path is different, and
+should not carry that selector.** A distinctive benefit of mixing the PSK
+*before* anything is transmitted is that, to a party without the PSK, the
+handshake bytes carry no protocol handshake, no version, no service
+name — ideally nothing that marks the flow as CoMapeo at all. That matters
+on the open internet, where a passive observer or a DPI/censorship
+middlebox that could fingerprint "this is CoMapeo" can throttle, block, or
+target its users. A fixed-format cleartext prefix (`version ‖ 2-byte
+selector`) at the start of every connection is precisely the kind of
+trivially-matchable marker that gives the fingerprint back.
+
+**We do not need the selector to multiplex.** The selector was only ever an
+O(1) convenience so the responder could skip trying PSKs; multiplexing
+depends on none of it (§5.1). So the internet path drops the cleartext
+selector and selects the project by the **selector-free** means of §5.2 —
+out-of-band from the DHT topic when the responder can recover it, otherwise
+**trial decryption** (O(*projects on this device*) AEAD verifies, small in
+practice). The single connection still multiplexes every shared project.
+
+**Residual caveat — full indistinguishability is a bigger job.** Removing
+the cleartext prefix eliminates the *cheap, reliable* fingerprint, but it
+does not by itself make the flow bytes uniformly random: `XXpsk0` message 1
+still sends a raw ephemeral public key, and raw curve points are
+statistically distinguishable from random to a determined DPI. Achieving
+true "indistinguishable from random" additionally requires an
+Elligator-style encoding of the ephemeral key (as pluggable transports do)
+and traffic-shaping considerations — a substantially larger effort. This
+RFC's goal for the internet path is the achievable one: **carry no trivial,
+fixed CoMapeo marker.** Full obfuscation is noted as future work (§13),
+not delivered here.
+
 The rest of this RFC's migration concern (§9) is therefore **local-only**.
 
 ---
@@ -897,7 +947,11 @@ feature degrades independently:
   keys (not in exports, not correlatable to named devices, distinct per
   project) or ephemeral keys (meaningless), and rotating discovery hints.
   Cannot recover identity keys, cannot correlate a device across
-  projects, cannot map network/DHT activity to exported device IDs.
+  projects, cannot map network/DHT activity to exported device IDs. On the
+  internet path, because no cleartext selector or protocol marker precedes
+  the PSK-mixed handshake (§8.4), a crawler without the project secret also
+  cannot cheaply fingerprint the flow as CoMapeo at all (full
+  indistinguishability from random is future work, §13).
 - **Active attacker who connects (new-stack peer):** Type A requires a
   valid per-project PSK + connection key — a non-member cannot complete
   the handshake and learns nothing. Type B yields only an anonymous
@@ -1023,9 +1077,18 @@ per-project floor.
    location; iOS entitlement), and that omitting the token degrades
    cleanly. Decide the exact 2-byte derivation and whether BSSID (per-AP)
    or SSID (per-network) is the right equality granularity.
-8. **Selector privacy on non-BLE transports.** Confirm the cleartext
-   project-hash selector (§5.2) is acceptable on every transport (it is
-   already exposed on BLE and via the DHT topic).
+8. **Selector strategy per transport.** Confirm the split from §5.2/§8.4:
+   cleartext selector on BLE/mDNS (presence already public), and
+   selector-free selection on the internet path — verify whether
+   Hyperswarm reliably surfaces the discovery topic for an *inbound*
+   connection (out-of-band selection) or whether trial decryption is
+   always needed, and bound the per-connection trial cost / DoS surface.
+8a. **Full flow indistinguishability (future).** Decide whether the
+   internet path should go beyond "no fixed marker" to genuine
+   indistinguishable-from-random — Elligator-encoded ephemeral keys and
+   traffic shaping — as a pluggable-transport-style obfuscation layer, and
+   whether that is in scope for a later phase or delegated to an external
+   transport.
 9. **Multi-project Type A ordering** when a peer shares several projects:
    which project's PSK selects the connection, and confirm all shared
    projects then replicate over it.
