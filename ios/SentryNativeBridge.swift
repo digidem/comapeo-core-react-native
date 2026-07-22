@@ -22,8 +22,14 @@ enum SentryNativeBridge {
     /// Idempotent. Caller must pass non-nil config; skip the call when
     /// `loadFromMainBundle()` returns nil. Mirror of Android
     /// `SentryFgsBridge.init` — the iOS process IS the "FGS" since iOS
-    /// is single-process.
-    static func initFromConfig(_ config: SentryConfig) {
+    /// is single-process. `userId` is the derived Sentry user.id (monthly
+    /// or permanent hash — never the root ID). `applicationUsageData`
+    /// selects the scope tier (see `SentryScopeTier`).
+    static func initFromConfig(
+        _ config: SentryConfig,
+        userId: String? = nil,
+        applicationUsageData: Bool = false
+    ) {
         if SentrySDK.isEnabled { return }
         let opts = Options()
         opts.dsn = config.dsn
@@ -32,11 +38,22 @@ enum SentryNativeBridge {
         opts.sampleRate = NSNumber(value: config.sampleRate ?? 1.0)
         opts.tracesSampleRate = NSNumber(value: config.tracesSampleRate ?? 0.0)
         opts.sendDefaultPii = false
+        opts.beforeSend = { event in
+            SentryScopeTier.trimEvent(event, applicationUsageData: applicationUsageData)
+        }
+        opts.beforeSendSpan = { span in
+            SentryScopeTier.trimSpan(span, applicationUsageData: applicationUsageData)
+        }
         // initialScope runs once on init; same shape Android achieves
         // via `options.setTag(...)` in its `SentryAndroid.init` block.
         opts.initialScope = { scope in
             scope.setTag(value: SentryTags.procMain, key: SentryTags.proc)
             scope.setTag(value: SentryTags.layerNative, key: SentryTags.layer)
+            if let userId = userId {
+                let user = User()
+                user.userId = userId
+                scope.setUser(user)
+            }
             return scope
         }
         SentrySDK.start(options: opts)
@@ -91,6 +108,9 @@ enum SentryNativeBridge {
     /// not started, and drops with a log when `options.enableMetrics` is
     /// false (it defaults to true).
     static func countMetric(_ key: String, value: UInt, attributes: [String: Any]) {
+        // Silently drop a metric carrying a forbidden name/attribute — an
+        // expected, innocuous gate that isn't worth a log line.
+        if SentryMetricScrub.isForbiddenMetric(name: key, attributes: attributes) { return }
         var converted: [String: SentryAttributeValue] = [:]
         for (k, v) in attributes {
             switch v {

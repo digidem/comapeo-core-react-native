@@ -1,3 +1,4 @@
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import ensureError from "ensure-error";
 import Fastify from "fastify";
@@ -7,6 +8,12 @@ import { createComapeo } from "./lib/create-comapeo.js";
 import { createMapServer } from "./lib/create-map-server.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 import * as sentry from "./lib/sentry.js";
+import * as metrics from "./lib/metrics.js";
+import { observeSyncSessions } from "./lib/sync-observer.js";
+
+// 60s sampler cadence for backend memory + uptime gauges. No-op
+// when Sentry is off (the metrics layer never got its SDK).
+const MEMORY_SAMPLE_INTERVAL_MS = 60_000;
 
 // Shared/Android entry. Android's nodejs-mobile build ships the
 // undici-backed `fetch`/`Response`/`Request` globals the map server needs;
@@ -120,13 +127,25 @@ const controlIpcServer = new SimpleRpcServer({
       Promise.resolve(p).catch((e) =>
         console.error(`shutdown: ${label} close failed`, e),
       );
-    await Promise.all([
-      settle("control", controlIpcServer.close()),
-      settle("fastify", fastify.close()),
-      ...(comapeoRpcServer ? [settle("rpc", comapeoRpcServer.close())] : []),
-    ]);
-    if (comapeoManager) await settle("manager", comapeoManager.close());
-    if (mapServer) await settle("map-server", mapServer.close());
+    // withSpan records each phase to `comapeo.shutdown.phase_duration_ms`
+    // even when traces are off, mirroring the boot phases.
+    await sentry.withSpan("shutdown.close-servers", () =>
+      Promise.all([
+        settle("control", controlIpcServer.close()),
+        settle("fastify", fastify.close()),
+        ...(comapeoRpcServer ? [settle("rpc", comapeoRpcServer.close())] : []),
+      ]),
+    );
+    if (comapeoManager) {
+      await sentry.withSpan("shutdown.close-manager", () =>
+        settle("manager", comapeoManager.close()),
+      );
+    }
+    if (mapServer) {
+      await sentry.withSpan("shutdown.close-map-server", () =>
+        settle("map-server", mapServer.close()),
+      );
+    }
   },
   /**
    * Android-only attribution channel: FGS-local failures (rootkey load,
@@ -242,6 +261,8 @@ async function withPhase(phase, fn) {
           rootKey,
         });
 
+        observeSyncSessions(comapeoManager);
+
         // Start the MapeoManager's Fastify so its blob/icon server is
         // reachable. `$blobs.getUrl()` / `$icons.getUrl()` await the server's
         // address (5s timeout, else AbortError). Non-fatal: surface listen
@@ -289,11 +310,78 @@ async function withPhase(phase, fn) {
     console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
 
     controlIpcServer.setReadinessPhase("ready");
+    metrics.bootOutcome("started");
+    startMemorySampler();
+    sampleStorageSize(privateStorageDir);
   } catch (error) {
     const phase = getStringProp(error, "phase") || "boot";
+    metrics.bootOutcome("error", phase);
     handleFatal(phase, error);
   }
 })();
+
+/**
+ * 60s sampler for backend heap + event-loop delay. `unref()` so the timer
+ * never keeps the process alive past shutdown. No-op when Sentry is off —
+ * everything it does is emit metrics, so skip the timer entirely rather than
+ * firing a perpetual no-op wakeup.
+ *
+ * Event-loop delay comes from `monitorEventLoopDelay` (a real high-res
+ * histogram). We report the window **max** — the worst single stall in the
+ * interval — because that's what surfaces a stall; the mean buried a brief
+ * 800ms stall in ~6000 samples. Reset each tick so windows are independent.
+ * `monitorEventLoopDelay` is pure libuv (no native addon / worker / inspector),
+ * so it works in nodejs-mobile; and because its own sampling timer freezes when
+ * iOS suspends the app, a background suspension is correctly NOT counted as delay.
+ */
+function startMemorySampler() {
+  if (!metrics.isEnabled()) return;
+  const eld = monitorEventLoopDelay({ resolution: 10 });
+  eld.enable();
+  const timer = setInterval(() => {
+    metrics.backendMemorySample();
+    metrics.eventLoopDelaySample(eld.max / 1e6);
+    eld.reset();
+  }, MEMORY_SAMPLE_INTERVAL_MS);
+  timer.unref?.();
+}
+
+/**
+ * One-shot bucketed storage-size counter at STARTED. Reads the
+ * private storage dir recursively; best-effort — a stat error skips the
+ * sample rather than failing boot.
+ *
+ * @param {string | undefined} dir
+ */
+function sampleStorageSize(dir) {
+  if (!dir) return;
+  // The recursive stat-walk below is only worth running if its bucket
+  // metric will actually be recorded; skip it entirely when Sentry is off.
+  if (!metrics.isEnabled()) return;
+  import("node:fs")
+    .then(async ({ promises: fs }) => {
+      let total = 0;
+      /** @param {string} path */
+      const walk = async (path) => {
+        const entries = await fs.readdir(path, { withFileTypes: true });
+        for (const entry of entries) {
+          const full = `${path}/${entry.name}`;
+          if (entry.isDirectory()) {
+            await walk(full);
+          } else {
+            try {
+              total += (await fs.stat(full)).size;
+            } catch {
+              // Vanished mid-walk — skip.
+            }
+          }
+        }
+      };
+      await walk(dir);
+      metrics.storageSizeBucket(metrics.storageBucket(total));
+    })
+    .catch(() => {});
+}
 
 process.on("exit", () => {
   console.log("node exiting");

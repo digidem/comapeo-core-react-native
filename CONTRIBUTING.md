@@ -232,6 +232,10 @@ Releases are cut by the `release` workflow
 ([.github/workflows/release.yml](.github/workflows/release.yml)), which wraps
 `optic-release-automation-action`:
 
+0. Run the [Sentry release smoke test](docs/sentry-release-smoke.md) — a
+   ~10-minute manual checklist plus the scripted API tripwire
+   (`scripts/sentry-tripwire.mjs`) that verify telemetry actually reaches
+   Sentry from a test build.
 1. Trigger the workflow manually (`workflow_dispatch`) and pick the semver bump
    (`auto`, `patch`, `minor`, `major`, or a `pre*` prerelease). This opens a
    release PR with the generated changelog.

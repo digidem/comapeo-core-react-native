@@ -674,7 +674,7 @@ rates. At `expo prebuild` it writes:
 - **Android**: meta-data on the main `<application>` tag
   (`com.comapeo.core.sentry.dsn`, `…environment`, `…release`,
   `…sampleRate`, `…tracesSampleRate`, `…rpcArgsBytes`,
-  `…captureApplicationDataDefault`). meta-data is shared across
+  `…applicationUsageDataDefault`, `…debugDefault`). meta-data is shared across
   processes within the package, so both the main process and
   the `:ComapeoCore` FGS process read the same values.
 - **iOS**: keys in `Info.plist` with the `ComapeoCore` prefix
@@ -702,7 +702,7 @@ The same plugin-baked subset is also exported as `sentryConfig` for
 read-only inspection — empty `{}` when the plugin isn't registered.
 It is NOT meant to be spread into a separate `Sentry.init` call;
 `initSentry` is the supported entrypoint. Plugin-internal fields
-(`rpcArgsBytes`, `captureApplicationDataDefault`) stay on the
+(`rpcArgsBytes`, `applicationUsageDataDefault`, `debugDefault`) stay on the
 native-side `SentryConfig` only.
 
 The FGS process's Sentry SDK is initialised in
@@ -759,7 +759,7 @@ classpath, and the two halves were merged back into a single
 - **PII capture**. Per the plan §7.4.9, observation contents,
   precise location, peer identities, raw project IDs, and
   user-entered text are never captured even with the
-  capture-application-data toggle on.
+  application-usage-data toggle on.
 
 ### 7.5 Metadata reference
 
@@ -840,9 +840,99 @@ single timeline in Sentry's Trace view. Cross-layer with the RN-side
 
 The plan's §7.4.9 never-capture list is enforced at every emit
 site (no observation contents, precise location, peer
-identities, raw project IDs, or user-entered text). Phase 5's
-`before_send` processor will add a defensive substring scrub
-on top.
+identities, raw project IDs, or user-entered text). The
+`before_send`/`beforeBreadcrumb`/`beforeSendLog` scrubbers
+(`src/sentry-scrub.ts` + the mirrored `backend/before-send.js`)
+add a defensive substring scrub on top.
+
+#### Metrics
+
+The metrics layer (`src/sentry-metrics.ts` on RN, the mirrored
+`backend/lib/metrics.js` on Node) emits aggregate counters /
+distributions / gauges via `Sentry.metrics.*` (Sentry Application
+Metrics). It is the always-on day-to-day performance signal,
+distinct from the per-RPC and boot **traces**, which are
+investigation-only and gated behind the `debug` toggle.
+
+**One metric per measurement, sliced by attributes.** Application
+Metrics bills by ingested volume, not cardinality (high cardinality
+is the default, not a limit), so each measurement is a single
+high-cardinality metric carrying every dimension you'd slice by —
+`status`, `phase`, and the device tags all ride together, and you
+break down with group-by / filter at query time (e.g. `p95 group by
+device_class`, or `group by method, device_class`). There is no
+primary + `.by_device` split: that would double the emitted volume
+for no cardinality saving and make the method × device query
+impossible.
+
+**Privacy tiers.** `diagnosticsEnabled` (default on) gates whether
+anything ships. The opt-in `applicationUsageData` toggle (default
+off) gates the dimensions that reveal *what* the user does — the RPC
+`method` attribute and the sync collaboration/volume bucket counters.
+Those are gated for privacy, not cardinality.
+
+Every metric carries `platform` (`ios`/`android`). Latency/duration
+metrics also carry the low-cardinality `device_class`
+(`low`/`mid`/`high`) and `os_major` (`<platform>.<major>`) tags,
+attached only inside the metrics layer so a hot call site can't emit
+raw device data. The forbidden-tag list (`device.*`, `locale`,
+`project_id`, `peer_id`, raw coordinates, …) is dropped defensively
+by `isForbiddenMetric`.
+
+| Metric | Type · unit | Attributes | Emitted by / when | What it tells us |
+|---|---|---|---|---|
+| `comapeo.rpc.client.duration_ms` | distribution · ms | `status`, `device_class`, `os_major`, `method` (usage-gated) | RN request hook — end-to-end client-observed RPC latency (IPC + serialize + handler + response delivery) | The primary UX-latency signal: how slow core operations feel end-to-end, which device classes are sluggish, and (usage tier) which methods are slowest. |
+| `comapeo.rpc.server.duration_ms` | distribution · ms | `status`, `device_class`, `os_major`, `method` (usage-gated) | Node request hook — server-side handler latency (pairs with the client metric to separate handler vs IPC) | Handler-only cost. Paired with the client metric it separates "the core operation is slow" from "IPC / serialization / JS-thread overhead". |
+| `comapeo.boot.phase_duration_ms` | distribution · ms | `phase`, `device_class`, `os_major` | Node — per boot phase | Where boot time goes (which phase dominates), per device class — the input to boot- and ANR-margin optimisation. |
+| `comapeo.boot.outcome` | count | `outcome` (`started`/`error`), `error_phase?` | Node — once per boot | Boot success-vs-failure rate and which phase fails — the backend reliability signal. |
+| `comapeo.storage.size_bucket` | count | `bucket` (`<10MB`/`10-100MB`/`100MB-1GB`/`>1GB`) | Node — one-shot at STARTED (recursive size of the private storage dir) | The population's storage-footprint distribution — context for correlating large DBs with slow sync/query. Coarse, one-shot: context, not an alerting signal. |
+| `comapeo.backend.heap_used_bytes` | gauge · byte | — | Node — 60s sampler (V8 JS heap; `rss` is omitted, it measures the whole process) | Backend JS-heap ceiling, and across a session's samples a heap-growth (leak) signal. Coarse on iOS, where the runtime suspends in the background. |
+| `comapeo.backend.event_loop_delay_ms` | distribution · ms | `device_class`, `os_major` | Node — 60s sampler; each emission is the window **max** from `monitorEventLoopDelay` | The worst event-loop stall per minute (sync work blocking async I/O). As a distribution, Sentry gives fleet percentiles of the per-minute worst stall, sliceable by device class. |
+| `comapeo.sync.session.duration_ms` | distribution · ms | `outcome`, `device_class`, `os_major` | Node — **scaffolding, not yet wired** | (When wired) sync-session latency by outcome and device — core sync performance. |
+| `comapeo.sync.session.peers_bucket` | count | `bucket` (usage-gated) | Node — **scaffolding, not yet wired** | (When wired) collaboration scale — how many peers took part in a sync. |
+| `comapeo.sync.bytes_bucket` | count | `bucket` (usage-gated) | Node — **scaffolding, not yet wired** | (When wired) data volume moved per sync. |
+| `comapeo.shutdown.phase_duration_ms` | distribution · ms | `phase` | Node — **scaffolding, not yet wired** | (When wired) shutdown timing — guards the stop-path ANR / timeout margin. |
+| `comapeo.ipc.errors` | count | `error_class` | Node — **scaffolding, not yet wired** | (When wired) IPC failure rate by class — a transport-reliability signal distinct from backend errors. |
+| `comapeo.telemetry.forwarding_failures` | count | — | Node — **scaffolding, not yet wired** | (When wired) whether our own telemetry sink is dropping/failing — a self-health check on the metrics pipeline. |
+
+Rows marked *scaffolding, not yet wired* have a metrics-layer
+function and tests but no production call site yet — the meaning
+is fixed so the emit point can be added without a dashboard
+change.
+
+Three earlier metrics were dropped for carrying no actionable signal:
+`comapeo.fgs.uptime_s` (a 60s-sampled monotonic gauge — average
+meaningless, max ≈ session length and better derived from boot
+frequency); `comapeo.rpc.client.send_ms` (redundant with the
+`rn.send.syncMs` attribute already on the debug client span); and
+`comapeo.state.transitions` (started/error overlapped `boot.outcome`,
+the rest was routine lifecycle noise).
+
+`comapeo.backend.event_loop_delay_ms` reports the per-window **max**
+(worst stall per minute) rather than the mean, which buried brief
+stalls. `monitorEventLoopDelay` is pure libuv (no addon / worker /
+inspector), so it's the one mechanism that definitely runs on device.
+
+Capturing a stall as an *event with a stack trace* (Sentry's ANR /
+event-loop-block integrations) isn't available off the shelf. The
+deprecated `anrIntegration` captures the stack via `node:inspector`,
+which [nodejs-mobile doesn't ship](https://nodejs-mobile.github.io/docs/api/differences/)
+("The V8 inspector is not available … due to a dependency on the `intl`
+module"), so it's out. The current `eventLoopBlockIntegration` is a
+native `@sentry/node-native` addon: no prebuilt binary targets the
+nodejs-mobile ABIs, but this repo already builds addons for those
+targets, so it's buildable *in principle* — gated on two unverified
+questions (does its C++ compile against nodejs-mobile's headers, and
+does its own stack capture avoid the absent inspector?). A stack-on-stall
+event is a viable follow-up if that spike pans out; the max metric is the
+always-on signal in the meantime.
+
+**Viewing.** In Sentry, open **Metrics** (Explore → Metrics),
+filter by the metric name, and group by an attribute (`method`,
+`status`, `phase`, `device_class`, …) — one metric can be sliced
+along any dimension it carries. The per-RPC and boot **traces**
+(spans above) live under Explore → Traces and only exist while
+`debug` is on.
 
 ### 7.6 When to log, when to breadcrumb, when to capture
 

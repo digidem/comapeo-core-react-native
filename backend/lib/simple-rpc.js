@@ -1,5 +1,6 @@
 import { ServerHelper } from "./server-helper.js";
 import { SocketMessagePort } from "./message-port.js";
+import * as metrics from "./metrics.js";
 
 /**
  * @typedef {{ type: "stopping" } | { type: "error", phase: string, message: string, stack?: string }} TerminalFrame
@@ -47,7 +48,11 @@ export class SimpleRpcServer extends ServerHelper {
     const messagePort = new SocketMessagePort(socket);
     messagePort.addEventListener("message", this.#handleMessageEvent);
     messagePort.addEventListener("messageerror", (event) => {
-      console.error("Client sent invalid message", event.data);
+      // Log the error NAME only, never the message: V8's JSON.parse
+      // SyntaxError embeds a snippet of the raw input, and a mangled init
+      // frame would put rootKey bytes in it.
+      console.error("Client sent invalid message", event.data?.name);
+      metrics.ipcError(event.data?.name);
     });
     messagePort.addEventListener("close", () => {
       this.#clients.delete(messagePort);
@@ -83,7 +88,14 @@ export class SimpleRpcServer extends ServerHelper {
       typeof message.type !== "string" ||
       !(message.type in this.#methods)
     ) {
-      console.warn("Received invalid message", message);
+      // Log the routing field only, never the payload: the init frame
+      // carries the rootKey, and this socket is where it travels.
+      console.warn(
+        "Received invalid message",
+        message && typeof message === "object" && typeof message.type === "string"
+          ? `type=${message.type}`
+          : typeof message,
+      );
       return;
     }
     const method = this.#methods[message.type];
@@ -138,6 +150,7 @@ export class SimpleRpcServer extends ServerHelper {
         client.postMessage(message);
       } catch (e) {
         console.error("broadcast: client postMessage threw", e);
+        metrics.ipcError(e instanceof Error ? e.name : undefined);
       }
     }
   }

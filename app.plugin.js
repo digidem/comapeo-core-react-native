@@ -51,8 +51,9 @@ const ANDROID_KEYS = {
   rpcArgsBytes: "com.comapeo.core.sentry.rpcArgsBytes",
   diagnosticsEnabledDefault:
     "com.comapeo.core.sentry.diagnosticsEnabledDefault",
-  captureApplicationDataDefault:
-    "com.comapeo.core.sentry.captureApplicationDataDefault",
+  applicationUsageDataDefault:
+    "com.comapeo.core.sentry.applicationUsageDataDefault",
+  debugDefault: "com.comapeo.core.sentry.debugDefault",
   enableLogs: "com.comapeo.core.sentry.enableLogs",
   // Identifies the @comapeo/core-react-native module build the FGS
   // process is running. Set on the FGS-side `sentry-android` scope
@@ -81,8 +82,9 @@ const IOS_KEYS = {
   rpcArgsBytes: "ComapeoCoreSentryRpcArgsBytes",
   diagnosticsEnabledDefault:
     "ComapeoCoreSentryDiagnosticsEnabledDefault",
-  captureApplicationDataDefault:
-    "ComapeoCoreSentryCaptureApplicationDataDefault",
+  applicationUsageDataDefault:
+    "ComapeoCoreSentryApplicationUsageDataDefault",
+  debugDefault: "ComapeoCoreSentryDebugDefault",
   enableLogs: "ComapeoCoreSentryEnableLogs",
 };
 
@@ -504,7 +506,7 @@ function normalizeSentryProps(sentry) {
   if (!sentry.environment || typeof sentry.environment !== "string") {
     throw new Error(
       "@comapeo/core-react-native plugin: `sentry.environment` is required when sentry is configured. " +
-        "Sourced per build profile via EAS env vars (see plan §4.1).",
+        "Sourced per build profile via EAS env vars.",
     );
   }
 
@@ -529,10 +531,13 @@ function normalizeSentryProps(sentry) {
       ? "true"
       : "false";
   }
-  if (sentry.captureApplicationDataDefault !== undefined) {
-    normalized.captureApplicationDataDefault = sentry.captureApplicationDataDefault
+  if (sentry.applicationUsageDataDefault !== undefined) {
+    normalized.applicationUsageDataDefault = sentry.applicationUsageDataDefault
       ? "true"
       : "false";
+  }
+  if (sentry.debugDefault !== undefined) {
+    normalized.debugDefault = sentry.debugDefault ? "true" : "false";
   }
   if (sentry.enableLogs !== undefined) {
     normalized.enableLogs = sentry.enableLogs ? "true" : "false";
@@ -589,8 +594,13 @@ function withSentryAndroid(config, sentry, moduleIdent) {
     );
     syncAndroidMetaData(
       application,
-      ANDROID_KEYS.captureApplicationDataDefault,
-      sentry.captureApplicationDataDefault,
+      ANDROID_KEYS.applicationUsageDataDefault,
+      sentry.applicationUsageDataDefault,
+    );
+    syncAndroidMetaData(
+      application,
+      ANDROID_KEYS.debugDefault,
+      sentry.debugDefault,
     );
     syncAndroidMetaData(
       application,
@@ -658,9 +668,10 @@ function withSentryIos(config, sentry) {
     );
     setOrDelete(
       plist,
-      IOS_KEYS.captureApplicationDataDefault,
-      sentry.captureApplicationDataDefault,
+      IOS_KEYS.applicationUsageDataDefault,
+      sentry.applicationUsageDataDefault,
     );
+    setOrDelete(plist, IOS_KEYS.debugDefault, sentry.debugDefault);
     setOrDelete(plist, IOS_KEYS.enableLogs, sentry.enableLogs);
     return cfg;
   });

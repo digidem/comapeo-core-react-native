@@ -40,7 +40,11 @@ let package = Package(
                 "ComapeoPrefs.swift",
                 "SentryConfig.swift",
                 "SentryNativeBridge.swift",
+                "SentryScopeTier.swift",
+                "SentryMetricScrub.swift",
                 "SentryTags.swift",
+                "SentryUserId.swift",
+                "DeviceTags.swift",
                 // MetricKit subscriber is #if os(iOS); only the pure
                 // AppExitDecoder compiles (and is tested) on macOS.
                 "AppExitMetricsCollector.swift",

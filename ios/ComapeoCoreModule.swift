@@ -85,17 +85,51 @@ public class ComapeoCoreModule: Module {
 
         // Plist-baked Sentry options, re-exported by the JS `/sentry`
         // sub-export. Empty map when DSN absent so spreading is safe.
+        // `userId` is derived with the same launch snapshot the native init
+        // uses, so all layers report the same Sentry user.id.
         Constant("sentryConfig") { () -> [String: Any] in
-            SentryConfig.loadFromMainBundle()?.toSentryInitMap() ?? [:]
+            let prefs = ComapeoPrefs.open()
+            return SentryConfig.loadFromMainBundle()?.toSentryInitMap(
+                deviceTags: DeviceTags.compute(),
+                userId: prefs.deriveSentryUserId(
+                    applicationUsageData: prefs.readApplicationUsageData()
+                )
+            ) ?? [:]
         }
 
-        // Snapshot-at-launch. Toggle changes take effect on next launch
-        // (see `setDiagnosticsEnabled` / `setCaptureApplicationData`).
-        Constant("sentryPreferences") { () -> [String: Any] in
+        // The permanent root user ID (lazily generated on first read). Local
+        // debugging aid only — Sentry sees derived hashes, never this value.
+        // The host app may show it in a debug/about screen so a user can
+        // share it and support can recompute their historical monthly
+        // user.ids.
+        Function("getSentryRootUserId") { () -> String in
+            ComapeoPrefs.open().readRootUserId()
+        }
+
+        // The snapshot in effect this session. Toggle changes take effect on
+        // next launch (see `setDiagnosticsEnabled` / `setApplicationUsageData`
+        // / `setDebugEnabled`). For the current saved value use
+        // `getCurrentSentryPreferences`.
+        Constant("sentryPreferencesAtLaunch") { () -> [String: Any] in
             let prefs = ComapeoPrefs.open()
             return [
                 "diagnosticsEnabled": prefs.readDiagnosticsEnabled(),
-                "captureApplicationData": prefs.readCaptureApplicationData(),
+                "applicationUsageData": prefs.readApplicationUsageData(),
+                "debug": prefs.readDebugEnabled(),
+            ]
+        }
+
+        // Live read of the current persisted values — reflects a `setX` made
+        // this session and survives a JS reload (unlike the
+        // `sentryPreferencesAtLaunch` Constant), so a settings screen can read
+        // the user's choice without keeping its own copy. Raw `debug` (no 72h
+        // auto-off side effect — that's applied by readDebugEnabled at launch).
+        Function("getCurrentSentryPreferences") { () -> [String: Any] in
+            let prefs = ComapeoPrefs.open()
+            return [
+                "diagnosticsEnabled": prefs.readDiagnosticsEnabled(),
+                "applicationUsageData": prefs.readApplicationUsageData(),
+                "debug": prefs.readDebugStored(),
             ]
         }
 
@@ -107,8 +141,13 @@ public class ComapeoCoreModule: Module {
             if !value { ComapeoPrefs.wipeSentryOutbox() }
         }
 
-        AsyncFunction("setCaptureApplicationData") { (value: Bool) in
-            ComapeoPrefs.open().writeCaptureApplicationData(value)
+        AsyncFunction("setApplicationUsageData") { (value: Bool) in
+            ComapeoPrefs.open().writeApplicationUsageData(value)
+            if !value { ComapeoPrefs.wipeSentryOutbox() }
+        }
+
+        AsyncFunction("setDebugEnabled") { (value: Bool) in
+            ComapeoPrefs.open().writeDebugEnabled(value)
             if !value { ComapeoPrefs.wipeSentryOutbox() }
         }
 

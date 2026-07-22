@@ -3,7 +3,7 @@ package com.comapeo.core
 /**
  * Tag keys for Sentry events. Centralised so a typo can't silently route an
  * event to the wrong dashboard column. Values are documented in
- * `docs/sentry-integration-plan.md` and `docs/ARCHITECTURE.md` §7.
+ * `docs/ARCHITECTURE.md`.
  *
  * `proc` reflects the OS process, not a logical layer: iOS is always `main`;
  * Android is `main` for RN/native in the host UI process and `fgs` for code

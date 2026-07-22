@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: package.json
 
@@ -42,3 +42,6 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      - name: Script tests
+        run: npm run test:scripts

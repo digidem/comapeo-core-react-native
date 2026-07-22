@@ -1,0 +1,79 @@
+name: Sentry Tripwire
+
+# Pre-release check (issue #69): asserts that a test build's comapeo.boot
+# trace actually arrived in Sentry with the expected span structure —
+# the regression class unit tests can't see (wiring/transport, not logic).
+#
+# This workflow only runs the API-polling script. It does NOT build or
+# launch an app: launch a build pointed at the test DSN yourself (local
+# device/emulator or a BrowserStack session, per
+# docs/sentry-release-smoke.md), then dispatch this with the same
+# environment (or trace id) the build sends. Building + driving an
+# emulator in CI was judged disproportionate for a manual pre-release
+# check — see the discussion on #69.
+#
+# Requires the SENTRY_TRIPWIRE_TOKEN secret: a Sentry auth token with
+# read access to the test project's events (org auth token or a user
+# token with event:read).
+on:
+  workflow_dispatch:
+    inputs:
+      org:
+        description: "Sentry org slug"
+        required: true
+      project:
+        description: "Sentry project slug (the dedicated test project)"
+        required: true
+      environment:
+        description: "Environment the test build sends (plugin `sentry.environment`); leave empty when passing a trace id"
+        required: false
+        default: "e2e"
+      trace:
+        description: "Specific 32-hex trace id to poll for instead of an environment"
+        required: false
+      platform:
+        description: "Platform the build ran on"
+        required: true
+        type: choice
+        default: android
+        options: [android, ios]
+      timeout:
+        description: "Polling window in seconds"
+        required: false
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  tripwire:
+    name: Poll Sentry for the boot trace
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: package.json
+
+      # The script is dependency-free (built-in fetch), so no npm install.
+      - name: Run tripwire
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_TRIPWIRE_TOKEN }}
+          SENTRY_ORG: ${{ inputs.org }}
+          SENTRY_PROJECT: ${{ inputs.project }}
+          TRACE: ${{ inputs.trace }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          PLATFORM: ${{ inputs.platform }}
+          TIMEOUT: ${{ inputs.timeout }}
+        run: |
+          if [ -n "$TRACE" ]; then
+            marker=(--trace "$TRACE")
+          else
+            marker=(--environment "$ENVIRONMENT")
+          fi
+          node scripts/sentry-tripwire.mjs \
+            --platform "$PLATFORM" \
+            --timeout "$TIMEOUT" \
+            "${marker[@]}"

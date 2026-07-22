@@ -24,11 +24,11 @@ class ExitReasonsCollectorTest {
 
     /** Snapshots [anchors] at call time — seed anchors first, like production
      *  snapshots before stamping the current run's values. */
-    private fun collector(procKey: String = MAIN, captureApplicationData: Boolean = true) =
+    private fun collector(procKey: String = MAIN, applicationUsageData: Boolean = true) =
         ExitReasonsCollector(
             anchors = anchors,
             snapshot = AnchorSnapshot.from(anchors, procKey),
-            captureApplicationData = captureApplicationData,
+            applicationUsageData = applicationUsageData,
             nowMs = { now },
         )
 
@@ -51,8 +51,8 @@ class ExitReasonsCollectorTest {
         procKey: String = MAIN,
         processName: String = MAIN_PROC_NAME,
         records: List<ExitRecord>,
-        captureApplicationData: Boolean = true,
-    ) = collector(procKey, captureApplicationData).collect(processName, procKey, records).metrics
+        applicationUsageData: Boolean = true,
+    ) = collector(procKey, applicationUsageData).collect(processName, procKey, records).metrics
 
     // ── First run / high-water behaviour ───────────────────────────
 
@@ -119,6 +119,64 @@ class ExitReasonsCollectorTest {
             result.metrics.first().attributes["exit_timestamp_ms"],
         )
         assertEquals(now - 100_000 + 15_000, result.newLastSeenMs)
+    }
+
+    // ── Toggle-cycle anchor reset (§9b.9) ──────────────────────────
+    //
+    // A diagnostics / usage-data off → on flip resets the anchors to the
+    // flip time, so exits recorded while the user had opted out are never
+    // reported and post-re-enable durations can't span the off window.
+
+    @Test
+    fun offWindowRecordsAreNotReportedAfterReEnable() {
+        seedLastSeen(MAIN, now - 1_000_000) // high-water from before the off window
+        val reEnabledAt = now - 100_000
+        val duringOffWindow = record(timestampMs = reEnabledAt - 50_000)
+        val afterReEnable = record(timestampMs = reEnabledAt + 50_000)
+
+        anchors.resetExitTelemetryAnchors(reEnabledAt)
+
+        val metrics = collectMetrics(records = listOf(duringOffWindow, afterReEnable))
+        assertEquals(1, metrics.size)
+        assertEquals(reEnabledAt + 50_000, metrics.single().attributes["exit_timestamp_ms"])
+    }
+
+    @Test
+    fun resetAppliesToBothProcessSlots() {
+        seedLastSeen(FGS, now - 1_000_000)
+        val reEnabledAt = now - 100_000
+        anchors.resetExitTelemetryAnchors(reEnabledAt)
+        val metrics = collectMetrics(
+            procKey = FGS,
+            processName = FGS_PROC_NAME,
+            records = listOf(
+                record(processName = FGS_PROC_NAME, timestampMs = reEnabledAt - 50_000),
+            ),
+        )
+        assertTrue("off-window FGS record must not be reported", metrics.isEmpty())
+        assertEquals(reEnabledAt, anchors.readLastSeenMs(FGS))
+    }
+
+    @Test
+    fun resetTruncatesDurationsToTheReEnableTime() {
+        seedLastSeen(MAIN, now - 1_000_000)
+        val reEnabledAt = now - 300_000
+        // Anchors stamped during the off window.
+        anchors.writeProcessStartedAtMs(MAIN, reEnabledAt - 3_600_000)
+        anchors.writeBackgroundedAtMs(MAIN, reEnabledAt - 600_000)
+
+        anchors.resetExitTelemetryAnchors(reEnabledAt)
+
+        val attrs = collectMetrics(records = listOf(record(timestampMs = reEnabledAt + 120_000)))
+            .single().attributes
+        // alive_for measured from the re-enable, not the off-window start.
+        assertEquals(120_000L, attrs["alive_for_ms"])
+        assertEquals("1-5m", attrs[SentryTags.UPTIME_BUCKET])
+        // The off-window backgrounded_at is neutralised by the fresh
+        // foregrounded_at stamp — no background duration spanning the
+        // opted-out period.
+        assertEquals("unknown", attrs[SentryTags.BG_DURATION_BUCKET])
+        assertFalse(attrs.containsKey("backgrounded_for_ms"))
     }
 
     // ── Attribute mapping ──────────────────────────────────────────
@@ -288,7 +346,7 @@ class ExitReasonsCollectorTest {
     //
     // Coarse buckets are aggregate-resolution data and flow at the
     // diagnostic tier; exact millisecond durations are usage-shape data
-    // and only flow when capture-application-data is on.
+    // and only flow when application-usage-data is on.
 
     @Test
     fun diagnosticTierKeepsBucketsButOmitsExactDurations() {
@@ -300,7 +358,7 @@ class ExitReasonsCollectorTest {
             procKey = FGS,
             processName = FGS_PROC_NAME,
             records = listOf(record(processName = FGS_PROC_NAME, timestampMs = exitAt)),
-            captureApplicationData = false,
+            applicationUsageData = false,
         ).single().attributes
         assertEquals("1-5m", attrs[SentryTags.UPTIME_BUCKET])
         assertEquals("5-15m", attrs[SentryTags.BG_DURATION_BUCKET])
@@ -316,7 +374,7 @@ class ExitReasonsCollectorTest {
         anchors.writeProcessStartedAtMs(MAIN, exitAt - 120_000)
         val attrs = collectMetrics(
             records = listOf(record(timestampMs = exitAt)),
-            captureApplicationData = true,
+            applicationUsageData = true,
         ).single().attributes
         assertEquals(120_000L, attrs["alive_for_ms"])
     }

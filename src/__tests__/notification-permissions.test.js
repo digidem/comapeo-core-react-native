@@ -47,6 +47,13 @@ describe("notification permission wrappers", () => {
       getTraceData: jest.fn(() => ({})),
       startNewTrace: jest.fn(),
     }));
+    // The metrics layer pulls `./sentry` (→ `react-native`) and forms an
+    // eager import cycle back into this module. The notification wrappers
+    // don't touch it, so stub it out like the other transitive deps.
+    jest.doMock("../sentry-metrics", () => ({
+      rpcClientMetric: jest.fn(),
+      rpcStatusFor: jest.fn(() => "ok"),
+    }));
 
     return require("../ComapeoCoreModule");
   }

@@ -41,7 +41,10 @@ class ComapeoCoreService : Service() {
     // Snapshotted in onCreate, consumed when the Node backend is built lazily in
     // ensureBackendInitialized() after startForeground().
     private var effectiveSentryConfig: SentryConfig? = null
-    private var captureApplicationData: Boolean = false
+    private var applicationUsageData: Boolean = false
+    private var debug: Boolean = false
+    private var deviceTags: DeviceTags? = null
+    private var sentryUserId: String? = null
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     /** Active self-terminate watchdog (see [onNodeStateChange]). Armed at most once
@@ -88,14 +91,21 @@ class ComapeoCoreService : Service() {
         val sentryConfig = SentryConfig.loadFromManifest(applicationContext)
         val prefs = ComapeoPrefs.open(applicationContext)
         effectiveSentryConfig = if (prefs.readDiagnosticsEnabled()) sentryConfig else null
-        captureApplicationData = prefs.readCaptureApplicationData()
+
+        // Read debug + usage before SentryFgsBridge.init: readDebugEnabled()
+        // may queue the auto_disabled breadcrumb, which init drains — read
+        // first or that crumb is lost on the auto-off launch. Independent of
+        // the diagnostics gate.
+        applicationUsageData = prefs.readApplicationUsageData()
+        debug = prefs.readDebugEnabled()
 
         // Init the Sentry bridge here, not after startForeground: breadcrumbs no-op
         // until it's initialised, so deferring it would drop the pre-start trail.
         // It's cheap relative to the Node backend (libnode load), which is the only
         // part deferred to ensureBackendInitialized() to keep off the FGS deadline.
         effectiveSentryConfig?.let { cfg ->
-            SentryFgsBridge.init(applicationContext, cfg)
+            sentryUserId = prefs.deriveSentryUserId(applicationUsageData)
+            SentryFgsBridge.init(applicationContext, cfg, sentryUserId, applicationUsageData)
         }
 
         logCrumb(SentryCategories.FGS, "ComapeoCoreService.onCreate")
@@ -119,6 +129,7 @@ class ComapeoCoreService : Service() {
             )
         }
 
+        deviceTags = DeviceTags.compute(applicationContext)
         serviceScope.launch(Dispatchers.IO) {
             // Snapshot the previous FGS session's anchors before stamping
             // this run's — the decoder must see what was true at the old exit.
@@ -131,7 +142,7 @@ class ComapeoCoreService : Service() {
                 // android:process — a rename can't silently break the filter.
                 processName = currentProcessName(applicationContext),
                 procKey = SentryTags.PROC_FGS,
-                captureApplicationData = captureApplicationData,
+                applicationUsageData = applicationUsageData,
                 snapshot = snapshot,
             )
         }
@@ -145,7 +156,10 @@ class ComapeoCoreService : Service() {
         nodeJSService = NodeJSService(
             applicationContext,
             sentryConfig = effectiveSentryConfig,
-            captureApplicationData = captureApplicationData,
+            applicationUsageData = applicationUsageData,
+            debug = debug,
+            deviceTags = deviceTags,
+            sentryUserId = sentryUserId,
         )
     }
 

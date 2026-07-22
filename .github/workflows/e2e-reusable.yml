@@ -135,7 +135,7 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: package.json
 
@@ -149,7 +149,7 @@ jobs:
 
       - name: Cache nodejs-mobile binaries
         id: cache-libnode
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: android/libnode
           # hashFiles(...) folds the BASE_URL (defined inside the
@@ -214,13 +214,13 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.4.1.app/Contents/Developer
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: package.json
 
       - name: Cache nodejs-mobile binaries
         id: cache-ios-framework
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           # android/libnode is needed even on iOS builds:
           # `readNodeJsMobileVersions()` in scripts/lib/node-versions.ts
