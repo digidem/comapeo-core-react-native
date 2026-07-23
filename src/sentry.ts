@@ -25,14 +25,11 @@ import {
   setApplicationUsageDataNative,
   setDebugEnabledNative,
   type SentryPreferences,
-} from "./ComapeoCoreModule";
-import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types";
-import { SentryTags, SENTRY_OWNED_GLOBAL_KEY } from "./sentry-tags";
-import { scrubEvent, scrubBreadcrumb, scrubLog } from "./sentry-scrub";
-import {
-  BACKEND_MODULES,
-  COMAPEO_MODULE_VERSION_LABEL,
-} from "./version";
+} from "./ComapeoCoreModule.js";
+import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types.js";
+import { SentryTags, SENTRY_OWNED_GLOBAL_KEY } from "./sentry-tags.js";
+import { scrubEvent, scrubBreadcrumb, scrubLog } from "./sentry-scrub.js";
+import { BACKEND_MODULES, COMAPEO_MODULE_VERSION_LABEL } from "./version.js";
 
 /**
  * Subset of `Sentry.init` options that map cleanly from values the
@@ -287,9 +284,11 @@ export function initSentry(options: InitSentryOptions = {}): void {
   // surface (it lives in `@sentry/core`'s utilities and is exposed
   // through the namespace at runtime). Defensive accessor handles
   // older SDK releases where the helper isn't wired through.
-  const maybeIsInitialized = (Sentry as unknown as {
-    isInitialized?: () => boolean;
-  }).isInitialized;
+  const maybeIsInitialized = (
+    Sentry as unknown as {
+      isInitialized?: () => boolean;
+    }
+  ).isInitialized;
   const sdkInitialized =
     typeof maybeIsInitialized === "function" && maybeIsInitialized();
 
@@ -555,4 +554,3 @@ function handleAppStateChange(next: AppStateStatus): void {
 }
 
 AppState.addEventListener("change", handleAppStateChange);
-
