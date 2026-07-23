@@ -8,7 +8,7 @@ import {
   type MessageEventPayload,
   type NotificationPermissionResponse,
   type StateChangeEventPayload,
-} from "./ComapeoCore.types";
+} from "./ComapeoCore.types.js";
 import type { MessagePortLike } from "rpc-reflector";
 import {
   createComapeoCoreClient,
@@ -21,8 +21,8 @@ import * as Sentry from "@sentry/react-native";
 // `@sentry/react-native@7`; `@sentry/core` is a direct dep of RN so
 // the import is safe.
 import { getTraceData, startNewTrace } from "@sentry/core";
-import type { SentryInitConfig } from "./sentry";
-import { rpcClientMetric, rpcStatusFor } from "./sentry-metrics";
+import type { SentryInitConfig } from "./sentry.js";
+import { rpcClientMetric, rpcStatusFor } from "./sentry-metrics.js";
 
 // `onRequestHook` request type derived from `createComapeoCoreClient` so
 // any hook-signature change up-stream is a compile error here. The
@@ -347,109 +347,111 @@ const debugTracingEnabled = (() => {
   return prefs.diagnosticsEnabled && prefs.debug;
 })();
 
-export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(messagePort, {
-  timeout: RPC_TIMEOUT_MS,
-  onRequestHook: (request, next) => {
-    // Sentry-not-initialised guard. `isInitialized` lives in `@sentry/core`
-    // and is reachable through the namespace at runtime but isn't on the
-    // public type surface — defensive accessor in case the helper isn't
-    // wired through in older SDK releases.
-    const isInitialized = (
-      Sentry as unknown as {
-        isInitialized?: () => boolean;
+export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(
+  messagePort,
+  {
+    timeout: RPC_TIMEOUT_MS,
+    onRequestHook: (request, next) => {
+      // Sentry-not-initialised guard. `isInitialized` lives in `@sentry/core`
+      // and is reachable through the namespace at runtime but isn't on the
+      // public type surface — defensive accessor in case the helper isn't
+      // wired through in older SDK releases.
+      const isInitialized = (
+        Sentry as unknown as {
+          isInitialized?: () => boolean;
+        }
+      ).isInitialized;
+      const sentryUp = typeof isInitialized !== "function" || isInitialized();
+      const method = request.method.join(".");
+
+      // Metrics/tracing only — the hook never captures exceptions. An RPC
+      // rejection is often expected control flow (e.g. NotFound) that the
+      // caller may not want reported; deciding what's report-worthy is the
+      // caller's job, at the call site. The metric layer no-ops when Sentry is
+      // off. Per-RPC traces (below) only run under `debug`.
+      const recordMetric = (start: number, status: string) => {
+        rpcClientMetric(method, status, performance.now() - start);
+      };
+
+      if (!sentryUp || !debugTracingEnabled) {
+        const start = performance.now();
+        const responsePromise = next(request);
+        responsePromise
+          .then(
+            () => recordMetric(start, "ok"),
+            (error: unknown) => recordMetric(start, rpcStatusFor(error)),
+          )
+          .catch(noop);
+        return;
       }
-    ).isInitialized;
-    const sentryUp =
-      typeof isInitialized !== "function" || isInitialized();
-    const method = request.method.join(".");
 
-    // Metrics/tracing only — the hook never captures exceptions. An RPC
-    // rejection is often expected control flow (e.g. NotFound) that the
-    // caller may not want reported; deciding what's report-worthy is the
-    // caller's job, at the call site. The metric layer no-ops when Sentry is
-    // off. Per-RPC traces (below) only run under `debug`.
-    const recordMetric = (start: number, status: string) => {
-      rpcClientMetric(method, status, performance.now() - start);
-    };
-
-    if (!sentryUp || !debugTracingEnabled) {
-      const start = performance.now();
-      const responsePromise = next(request);
-      responsePromise
-        .then(
-          () => recordMetric(start, "ok"),
-          (error: unknown) => recordMetric(start, rpcStatusFor(error)),
-        )
-        .catch(noop);
-      return;
-    }
-
-    const runSpan = () =>
-      Sentry.startSpan(
-        {
-          name: method,
-          op: "rpc.client",
-          forceTransaction: true,
-          attributes: {
-            "rpc.system": "comapeo-ipc",
-            "rpc.method": method,
+      const runSpan = () =>
+        Sentry.startSpan(
+          {
+            name: method,
+            op: "rpc.client",
+            forceTransaction: true,
+            attributes: {
+              "rpc.system": "comapeo-ipc",
+              "rpc.method": method,
+            },
           },
-        },
-        async (span) => {
-          const { "sentry-trace": sentryTrace, baggage } = getTraceData({
-            span,
-          });
-          const tracedRequest: IpcRequestWithMetadata = sentryTrace
-            ? {
-                ...request,
-                metadata: {
-                  "sentry-trace": sentryTrace,
-                  baggage: baggage ?? "",
-                },
-              }
-            : request;
-          // Record the metric while the span is active so it links to the
-          // trace. Duration is measured around the same round-trip the
-          // span brackets.
-          const start = performance.now();
-          try {
-            // Split the span duration into "sync send" (JSI hop + UDS write
-            // to Node) and "await" (entire round-trip incl. response delivery
-            // back to the JS thread). If the gap between this span and the
-            // Node-side rpc span is dominated by JS-thread contention on
-            // cold boot, `rn.send.syncMs` stays small while total stays high.
-            const sendStart = performance.now();
-            const responsePromise = next(tracedRequest);
-            const sendMs = performance.now() - sendStart;
-            span.setAttribute?.("rn.send.syncMs", sendMs);
-            await responsePromise;
-            span.setStatus?.({ code: 1, message: "ok" });
-            recordMetric(start, "ok");
-          } catch (error) {
-            // Mark the span errored for tracing, but do not capture an issue
-            // — see the metrics-only note on the non-debug path above.
-            span.setStatus?.({ code: 2, message: "internal_error" });
-            recordMetric(start, rpcStatusFor(error));
-          }
-        },
-      );
-    // Mint a fresh trace_id when there's no caller context worth
-    // inheriting. Without `startNewTrace`, every standalone RPC pulls
-    // the trace_id from the isolation-scope's propagation context,
-    // which is set once at SDK init and never rotates — so unrelated
-    // RPC calls (across reloads, even across days) end up sharing
-    // one trace. Skip `app.start.*` parents specifically: the
-    // `appStartIntegration` keeps its transaction open for ~10s
-    // post-launch, which would otherwise sweep any RPC fired during
-    // that window into the App Start trace and make the dashboard
-    // render them as nested under it.
-    if (hasInheritableActiveSpan()) {
-      runSpan();
-    } else {
-      startNewTrace(runSpan);
-    }
+          async (span) => {
+            const { "sentry-trace": sentryTrace, baggage } = getTraceData({
+              span,
+            });
+            const tracedRequest: IpcRequestWithMetadata = sentryTrace
+              ? {
+                  ...request,
+                  metadata: {
+                    "sentry-trace": sentryTrace,
+                    baggage: baggage ?? "",
+                  },
+                }
+              : request;
+            // Record the metric while the span is active so it links to the
+            // trace. Duration is measured around the same round-trip the
+            // span brackets.
+            const start = performance.now();
+            try {
+              // Split the span duration into "sync send" (JSI hop + UDS write
+              // to Node) and "await" (entire round-trip incl. response delivery
+              // back to the JS thread). If the gap between this span and the
+              // Node-side rpc span is dominated by JS-thread contention on
+              // cold boot, `rn.send.syncMs` stays small while total stays high.
+              const sendStart = performance.now();
+              const responsePromise = next(tracedRequest);
+              const sendMs = performance.now() - sendStart;
+              span.setAttribute?.("rn.send.syncMs", sendMs);
+              await responsePromise;
+              span.setStatus?.({ code: 1, message: "ok" });
+              recordMetric(start, "ok");
+            } catch (error) {
+              // Mark the span errored for tracing, but do not capture an issue
+              // — see the metrics-only note on the non-debug path above.
+              span.setStatus?.({ code: 2, message: "internal_error" });
+              recordMetric(start, rpcStatusFor(error));
+            }
+          },
+        );
+      // Mint a fresh trace_id when there's no caller context worth
+      // inheriting. Without `startNewTrace`, every standalone RPC pulls
+      // the trace_id from the isolation-scope's propagation context,
+      // which is set once at SDK init and never rotates — so unrelated
+      // RPC calls (across reloads, even across days) end up sharing
+      // one trace. Skip `app.start.*` parents specifically: the
+      // `appStartIntegration` keeps its transaction open for ~10s
+      // post-launch, which would otherwise sweep any RPC fired during
+      // that window into the App Start trace and make the dashboard
+      // render them as nested under it.
+      if (hasInheritableActiveSpan()) {
+        runSpan();
+      } else {
+        startNewTrace(runSpan);
+      }
+    },
   },
-});
+);
 
 type StateEvents = {
   stateChange: (state: ComapeoState, error: ComapeoErrorInfo | null) => void;

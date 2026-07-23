@@ -19,9 +19,9 @@ import * as Sentry from "@sentry/react-native";
 import {
   readSentryConfig,
   readSentryPreferencesAtLaunch,
-} from "./ComapeoCoreModule";
-import type { SentryDeviceTags } from "./sentry";
-import { isForbiddenMetric } from "./sentry-scrub";
+} from "./ComapeoCoreModule.js";
+import type { SentryDeviceTags } from "./sentry.js";
+import { isForbiddenMetric } from "./sentry-scrub.js";
 
 type MetricAttributes = Record<string, string | number | boolean>;
 
@@ -55,9 +55,8 @@ function deviceTags(): { device_class: string; os_major: string } {
 }
 
 function sentryUp(): boolean {
-  const isInitialized = (
-    Sentry as unknown as { isInitialized?: () => boolean }
-  ).isInitialized;
+  const isInitialized = (Sentry as unknown as { isInitialized?: () => boolean })
+    .isInitialized;
   return typeof isInitialized !== "function" || isInitialized();
 }
 
@@ -127,7 +126,9 @@ function gauge(
  */
 export function rpcStatusFor(error: unknown): string {
   const name =
-    error instanceof Error ? error.name : String((error as { name?: string })?.name);
+    error instanceof Error
+      ? error.name
+      : String((error as { name?: string })?.name);
   if (/timeout/i.test(name)) return "timeout";
   return "error";
 }
