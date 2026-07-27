@@ -31,8 +31,10 @@ class NodeJSService {
     enum State: String {
         case stopped = "STOPPED"
         case starting = "STARTING"
+        case migrating = "MIGRATING"
         case started = "STARTED"
         case stopping = "STOPPING"
+        case lowSpace = "LOW_SPACE"
         case error = "ERROR"
     }
 
@@ -68,8 +70,10 @@ class NodeJSService {
     enum BackendState: Equatable {
         case unknown
         case controlBound
+        case migrating
         case ready
         case stopping
+        case lowSpace
         case error(phase: String, message: String)
     }
 
@@ -218,8 +222,9 @@ class NodeJSService {
     /// 3. Stop requested → STOPPED if runtime is gone, else STOPPING.
     /// 4. Backend `stopping` → STOPPING.
     /// 5. Backend `ready` → STARTED.
-    /// 6. Runtime running OR backend `controlBound` → STARTING.
-    /// 7. Otherwise → STOPPED.
+    /// 6. Backend `migrating` → MIGRATING.
+    /// 7. Runtime running OR backend `controlBound` → STARTING.
+    /// 8. Otherwise → STOPPED.
     static func deriveState(
         nodeRuntime: NodeRuntimeState,
         backendState: BackendState,
@@ -227,6 +232,9 @@ class NodeJSService {
     ) -> State {
         if case .error = backendState { return .error }
         if case .exited(_, .unexpected) = nodeRuntime { return .error }
+
+        // Terminal/parking state
+        if case .lowSpace = backendState { return .lowSpace }
 
         if stopRequested {
             switch nodeRuntime {
@@ -238,6 +246,7 @@ class NodeJSService {
         }
         if case .stopping = backendState { return .stopping }
         if case .ready = backendState { return .started }
+        if case .migrating = backendState { return .migrating }
 
         if case .running = nodeRuntime { return .starting }
         if case .controlBound = backendState { return .starting }
@@ -435,6 +444,19 @@ class NodeJSService {
         case .stopping:
             logCrumb(category: SentryCategories.control, message: "received: stopping")
             applyAndEmit { self.backendState = .stopping }
+        case .migrating(let progress):
+            logCrumb(
+                category: SentryCategories.control,
+                message: "received: migrating" + (progress.map { " \($0)" } ?? ""),
+            )
+            applyAndEmit { self.backendState = .migrating }
+        case .lowSpace:
+            logCrumb(
+                category: SentryCategories.control,
+                message: "received: low-space",
+                level: .warning,
+            )
+            applyAndEmit { self.backendState = .lowSpace }
         case .error(let phase, let message):
             logCrumb(
                 category: SentryCategories.control,
@@ -638,6 +660,17 @@ class NodeJSService {
         let defaultConfigPath = resolveDefaultConfigPath() ?? ""
         // 5th positional: consumer's online map style URL, or "" when unset.
         let defaultOnlineStyleUrl = resolveDefaultOnlineStyleUrl() ?? ""
+        // 6th positional: available disk space in bytes for migration decision.
+        guard
+            let docsURL = try? FileManager.default
+                .url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false),
+            let capacity = try? docsURL
+                .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+                .volumeAvailableCapacityForImportantUsage
+        else {
+            fatalError("Cannot determine available disk space")
+        }
+        let availableDiskSpace = Int(capacity)
         var args: [String] = ["node", "--no-experimental-fetch"]
         // Debug builds ship the backend's `.map` next to the bundle via the
         // Debug-only `ComapeoCoreSourcemaps` companion pod. `--enable-source-maps`
@@ -655,6 +688,7 @@ class NodeJSService {
             privateStorageDir,
             defaultConfigPath,
             defaultOnlineStyleUrl,
+            String(availableDiskSpace),
         ])
         args.append(contentsOf: buildSentryArgs())
         let exitCode = nodeEntryPoint(args)

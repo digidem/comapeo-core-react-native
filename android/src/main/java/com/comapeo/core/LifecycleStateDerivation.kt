@@ -19,6 +19,9 @@ internal fun deriveLifecycleState(
         return NodeJSService.State.ERROR
     }
 
+    // Terminal/parking states (not behind stopRequested)
+    if (backendState is NodeJSService.BackendState.LowSpace) return NodeJSService.State.LOW_SPACE
+
     if (stopRequested) {
         return when (nodeRuntime) {
             NodeJSService.NodeRuntimeState.NotRunning,
@@ -28,6 +31,7 @@ internal fun deriveLifecycleState(
     }
     if (backendState is NodeJSService.BackendState.Stopping) return NodeJSService.State.STOPPING
     if (backendState is NodeJSService.BackendState.Ready) return NodeJSService.State.STARTED
+    if (backendState is NodeJSService.BackendState.Migrating) return NodeJSService.State.MIGRATING
 
     if (nodeRuntime is NodeJSService.NodeRuntimeState.Running) return NodeJSService.State.STARTING
     if (backendState is NodeJSService.BackendState.ControlBound) return NodeJSService.State.STARTING

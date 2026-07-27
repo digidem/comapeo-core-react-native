@@ -92,7 +92,7 @@ class NodeJSService(
      * The node thread may still be alive on ERROR — `destroy()` releases it.
      */
     enum class State {
-        STOPPED, STARTING, STARTED, STOPPING, ERROR
+        STOPPED, STARTING, MIGRATING, STARTED, STOPPING, LOW_SPACE, ERROR
     }
 
     /**
@@ -130,8 +130,10 @@ class NodeJSService(
     sealed class BackendState {
         object Unknown : BackendState()
         object ControlBound : BackendState()
+        object Migrating : BackendState()
         object Ready : BackendState()
         object Stopping : BackendState()
+        object LowSpace : BackendState()
         data class Error(val phase: String, val message: String) : BackendState()
     }
 
@@ -363,6 +365,9 @@ class NodeJSService(
         // 5th positional: consumer's online map style URL, or "" when unset.
         val defaultOnlineStyleUrl =
             SentryConfig.readApplicationMetaDataString(this, META_DEFAULT_ONLINE_STYLE_URL) ?: ""
+        // 6th positional: available disk space in bytes for migration decision.
+        val availableDiskSpace =
+            java.nio.file.Files.getFileStore(java.nio.file.Paths.get(dataDir)).usableSpace
         val args = mutableListOf("node")
         // Debug builds ship the backend's `.map` colocated with the bundle
         // (src/debug only). `--enable-source-maps` (a Node runtime flag, so
@@ -380,6 +385,7 @@ class NodeJSService(
             dataDir,
             defaultConfigPath,
             defaultOnlineStyleUrl,
+            availableDiskSpace.toString(),
         )
         sentryConfig?.let { cfg ->
             args += "--sentryDsn=${cfg.dsn}"
@@ -637,6 +643,17 @@ class NodeJSService(
                 // Graceful shutdown — next we see the socket close; derivation maps
                 // this to STOPPING and the subsequent runtime exit to STOPPED.
                 applyAndEmit { it.copy(backendState = BackendState.Stopping) }
+            }
+            is ControlFrame.Migrating -> {
+                logCrumb(
+                    SentryCategories.CONTROL,
+                    "received: migrating${if (frame.progress != null) " ${frame.progress}" else ""}",
+                )
+                applyAndEmit { it.copy(backendState = BackendState.Migrating) }
+            }
+            ControlFrame.LowSpace -> {
+                logCrumb(SentryCategories.CONTROL, "received: low-space", level = "warning")
+                applyAndEmit { it.copy(backendState = BackendState.LowSpace) }
             }
             is ControlFrame.Error -> {
                 logCrumb(

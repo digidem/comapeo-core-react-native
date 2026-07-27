@@ -136,6 +136,7 @@ function redirectLoaderIndexToPolywasmEntryPlugin(): Plugin {
 const STATIC_ASSET_PATHS = [
   "package.json",
   "node_modules/@comapeo/core/drizzle",
+  "node_modules/comapeo-core-old/drizzle",
   "node_modules/@comapeo/fallback-smp",
 ] as const;
 

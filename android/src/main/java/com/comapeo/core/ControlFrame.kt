@@ -16,6 +16,12 @@ sealed class ControlFrame {
     /** Graceful shutdown — sent before close so peers can tell expected from crash. */
     object Stopping : ControlFrame()
 
+    /** Migration in progress; `progress` is "done/total" or absent on first frame. */
+    data class Migrating(val progress: String?) : ControlFrame()
+
+    /** Disk space too low to migrate; backend exited gracefully. */
+    object LowSpace : ControlFrame()
+
     data class Error(val phase: String, val message: String) : ControlFrame()
 
     /**
@@ -48,6 +54,8 @@ sealed class ControlFrame {
                 "started" -> Started
                 "ready" -> Ready
                 "stopping" -> Stopping
+                "migrating" -> Migrating(progress = json.optString("progress", null))
+                "low-space" -> LowSpace
                 "error" -> Error(
                     phase = json.optString("phase", "unknown"),
                     message = json.optString("message", "(no message)"),

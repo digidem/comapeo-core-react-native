@@ -11,8 +11,14 @@ export type OnLoadEventPayload = {
  * - `STARTING` — Node has spawned and the rootkey handshake is in flight,
  *                or the JS bridge has not yet received the backend's `ready`
  *                broadcast.
+ * - `MIGRATING` — storage migration in progress (v0 → v1 hypercore format).
+ *                 Progress frames carry a `progress` field ("done/total").
  * - `STARTED`  — `MapeoManager` is constructed and RPC is safe to use.
  * - `STOPPING` — graceful shutdown initiated.
+ * - `LOW_SPACE` — disk space insufficient for migration. The backend is
+ *                 parked; the host app can surface a prompt to free space
+ *                 and then trigger a retry (native sends `{type:"retry"}`
+ *                 on the control socket to resume with fallback manager).
  * - `ERROR`    — observable failure (rootkey load, backend boot, shutdown
  *                timeout, IPC connect). The native layer does not tear
  *                down the node thread on ERROR — recovery is the
@@ -24,8 +30,10 @@ export type OnLoadEventPayload = {
 export type ComapeoState =
   | "STOPPED"
   | "STARTING"
+  | "MIGRATING"
   | "STARTED"
   | "STOPPING"
+  | "LOW_SPACE"
   | "ERROR";
 
 export type ComapeoCoreModuleEvents = {

@@ -11,6 +11,10 @@ enum ControlFrame {
     /// Backend has begun graceful shutdown. A control-socket close
     /// without a preceding `.stopping` is unambiguously a crash or kill.
     case stopping
+    /// Migration in progress; `progress` is "done/total" or nil on first frame.
+    case migrating(progress: String?)
+    /// Disk space too low to migrate; backend exited gracefully.
+    case lowSpace
     case error(phase: String, message: String)
     /// Sentry error event from `@sentry/node`, forwarded as JSON for
     /// `SentryEventDecoder.decodeEvent(jsonData:)`. Native scope (device,
@@ -39,6 +43,10 @@ enum ControlFrame {
             return .ready
         case "stopping":
             return .stopping
+        case "migrating":
+            return .migrating(progress: obj["progress"] as? String)
+        case "low-space":
+            return .lowSpace
         case "error":
             let phase = (obj["phase"] as? String) ?? "unknown"
             let message = (obj["message"] as? String) ?? "(no message)"
