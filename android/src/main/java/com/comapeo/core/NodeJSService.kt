@@ -330,7 +330,8 @@ class NodeJSService(
                 State.STARTED -> "ok"
                 State.ERROR -> "internal_error"
                 State.STOPPING, State.STOPPED -> "cancelled"
-                State.STARTING -> null
+                // Non-terminal: boot transaction stays open for resume.
+                State.STARTING, State.MIGRATING, State.LOW_SPACE -> null
             }
             if (terminalStatus != null) {
                 // Drain in-flight phase spans BEFORE finishing the parent: Sentry's

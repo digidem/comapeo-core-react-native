@@ -311,7 +311,8 @@ class NodeJSService {
             case .started: return .ok
             case .error: return .internalError
             case .stopping, .stopped: return .cancelled
-            case .starting: return nil
+            // Non-terminal: boot transaction stays open for resume.
+            case .starting, .migrating, .lowSpace: return nil
             }
         }() : nil
         var drainTx: Any?
