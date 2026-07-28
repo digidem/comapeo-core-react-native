@@ -302,9 +302,12 @@ async function withPhase(phase, fn) {
      * Run migration check + execute if needed.
      * @param {boolean} forceFallback When true and disk is full, skip migration
      *   and use the old MapeoManager version instead of throwing.
-     * @returns {Promise<{ useFallback: boolean }>}  
+     * @returns {Promise<{ useFallback: boolean }>}
      */
     async function runMigration(forceFallback) {
+      if (forceFallback) {
+        return { useFallback: true }
+      }
       const { shouldUpgrade, useFallback, reason, spaceNeeded } = await withPhase(
         "migrate-check",
         () => checkShouldMigrate(coreStorageDir, availableDiskSpace),
