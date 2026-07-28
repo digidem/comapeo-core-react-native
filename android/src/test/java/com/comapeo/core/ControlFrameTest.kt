@@ -162,4 +162,21 @@ class ControlFrameTest {
             detail.length < long.length,
         )
     }
+
+    @Test
+    fun parsesMigratingWithoutProgress() {
+        val frame = ControlFrame.parse("""{"type":"migrating"}""")
+        assertEquals(ControlFrame.Migrating(progress = null), frame)
+    }
+
+    @Test
+    fun parsesMigratingWithProgress() {
+        val frame = ControlFrame.parse("""{"type":"migrating","progress":"3/7"}""")
+        assertEquals(ControlFrame.Migrating(progress = "3/7"), frame)
+    }
+
+    @Test
+    fun parsesLowSpace() {
+        assertEquals(ControlFrame.LowSpace, ControlFrame.parse("""{"type":"low-space"}"""))
+    }
 }

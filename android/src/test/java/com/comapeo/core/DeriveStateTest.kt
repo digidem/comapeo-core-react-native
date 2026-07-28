@@ -117,6 +117,26 @@ class DeriveStateTest {
         assertEquals(State.STARTED, derive(NodeRuntimeState.Running, BackendState.Ready))
     }
 
+    // MARK: - Terminal/parking states
+
+    @Test
+    fun lowSpaceDerivesLowSpace() {
+        // LOW_SPACE is terminal — overrides runtime state and stop intent.
+        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.Running, BackendState.LowSpace))
+        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.NotRunning, BackendState.LowSpace))
+        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.Running, BackendState.LowSpace, stop = true))
+    }
+
+    @Test
+    fun migratingDerivesMigrating() {
+        // MIGRATING is active migration — overrides starting/ready.
+        assertEquals(State.MIGRATING, derive(NodeRuntimeState.Running, BackendState.Migrating))
+        assertEquals(State.MIGRATING, derive(NodeRuntimeState.Running, BackendState.Migrating, stop = true))
+        // Migration with runtime not running shouldn't happen in practice
+        // but derivation still says MIGRATING (backend said so).
+        assertEquals(State.MIGRATING, derive(NodeRuntimeState.NotRunning, BackendState.Migrating))
+    }
+
     // MARK: - Rule 6: starting
 
     @Test
