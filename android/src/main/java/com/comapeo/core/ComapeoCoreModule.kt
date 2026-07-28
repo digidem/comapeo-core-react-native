@@ -173,6 +173,13 @@ class ComapeoCoreModule : Module() {
             synchronized(stateLock) { lastError }
         }
 
+        // Send `{type:"retry"}` on the control socket to resume the backend
+        // boot after a `LOW_SPACE` park. Only the first retry is honoured
+        // by the backend; subsequent calls are no-ops.
+        Function("sendRetry") {
+            controlIpc.sendMessage("{\"type\":\"retry\"}")
+        }
+
         // `sentryConfig` — baked-in by app.plugin.js at prebuild; spread into
         // `Sentry.init(...)` by the JS `/sentry` sub-export. Empty map when the
         // plugin isn't registered so spreading is always safe. `userId` is

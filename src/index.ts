@@ -6,5 +6,6 @@ export {
   comapeoServicesClient,
   getNotificationPermissionsAsync,
   requestNotificationPermissionsAsync,
+  sendRetry,
 } from "./ComapeoCoreModule";
 export * from "./ComapeoCore.types";

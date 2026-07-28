@@ -54,6 +54,11 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   getState(): ComapeoState;
   getLastError(): ComapeoErrorInfo | null;
   /**
+   * Resume the backend boot after a `LOW_SPACE` park. Sends `{type:"retry"}`
+   * on the control socket; only the first retry is honoured by the backend.
+   */
+  sendRetry(): void;
+  /**
    * Sentry options the Expo plugin baked into the native config.
    * Empty object when the plugin isn't registered (or DSN absent).
    */
@@ -198,6 +203,16 @@ export function setDebugEnabledNative(value: boolean): Promise<void> {
  */
 export function readRootUserIdNative(): string {
   return nativeModule.getSentryRootUserId?.() ?? "";
+}
+
+/**
+ * Resume the backend boot after a `LOW_SPACE` park. Sends `{type:"retry"}`
+ * on the control socket; only the first retry is honoured by the backend.
+ * Safe to call from any state — if not parked, the backend ignores the
+ * frame (subsequent retries after the first are no-ops in the backend).
+ */
+export function sendRetry(): void {
+  nativeModule.sendRetry?.();
 }
 
 const GRANTED_PERMISSION: NotificationPermissionResponse = {

@@ -579,6 +579,18 @@ class NodeJSService {
         log("Sent error-native frame to backend (phase=\(phase))")
     }
 
+    /// Sends `{type:"retry"}` on the control socket to resume the backend
+    /// boot after a `LOW_SPACE` park. Only the first retry is honoured
+    /// by the backend; subsequent calls are no-ops.
+    func sendRetry() {
+        guard let ipc = controlIPC else {
+            log("Cannot send retry: controlIPC not connected")
+            return
+        }
+        ipc.sendMessage("{\"type\":\"retry\"}")
+        logCrumb(category: SentryCategories.control, message: "sent: retry")
+    }
+
     /// Gracefully stops Node.js. `timeout` bounds the wait for the
     /// thread to exit; on timeout the service lands in `.error`.
     func stop(timeout: TimeInterval = 10) {

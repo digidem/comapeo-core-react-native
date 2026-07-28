@@ -17,8 +17,10 @@ export type OnLoadEventPayload = {
  * - `STOPPING` — graceful shutdown initiated.
  * - `LOW_SPACE` — disk space insufficient for migration. The backend is
  *                 parked; the host app can surface a prompt to free space
- *                 and then trigger a retry (native sends `{type:"retry"}`
+ *                 and then call `sendRetry()` (native sends `{type:"retry"}`
  *                 on the control socket to resume with fallback manager).
+ *                 Only the first retry is honoured; subsequent calls are
+ *                 no-ops so a misbehaving native side can't loop the boot.
  * - `ERROR`    — observable failure (rootkey load, backend boot, shutdown
  *                timeout, IPC connect). The native layer does not tear
  *                down the node thread on ERROR — recovery is the
