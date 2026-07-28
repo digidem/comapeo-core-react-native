@@ -12,10 +12,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { access, constants } from "node:fs/promises";
+import { access, constants, mkdtemp, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import net from "node:net";
 import test from "node:test";
@@ -23,7 +22,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 
 import FramedStream from "framed-stream";
-import { socketPath, delay, waitFor } from "./test-helpers.mjs";
+import { socketPath, waitFor } from "./test-helpers.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INDEX_JS = join(__dirname, "..", "index.js");

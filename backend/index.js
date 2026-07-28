@@ -364,7 +364,6 @@ async function withPhase(phase, fn) {
       const result = await runMigration(false);
       migrationUseFallback = result.useFallback;
     } catch (error) {
-      /** @type {Error & { __lowSpace?: boolean }} */ (error)
       if (error && typeof error === "object" && "__lowSpace" in error && error.__lowSpace) {
         controlIpcServer.broadcast({ type: "low-space" });
         // Park until native sends `retry` (e.g. after user frees space or

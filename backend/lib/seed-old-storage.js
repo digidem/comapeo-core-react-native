@@ -99,7 +99,7 @@ export async function seedOldStorage(privateStorageDir, rootKeyBase64) {
 
   // Create observations using mock data (same pattern as comapeo-core e2e tests)
   for (let i = 0; i < 5; i++) {
-    let mockObs = valueOf(generate("observation")[0]);
+    const mockObs = valueOf(generate("observation")[0]);
     const { docId } = await project.observation.create(mockObs);
     await project.observation.getByDocId(docId);
   }
