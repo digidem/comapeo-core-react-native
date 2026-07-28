@@ -188,7 +188,6 @@ test.only("migration: emits migrating frames with progress", async (t) => {
   const { seedOldStorage } = await import("./seed-old-storage.js");
   const storageDir = await mkdtemp(join(tmpdir(), "comapeo-test-"));
   const rootKey = makeRootKey();
-  console.log(`[migration-test] Seeding old storage in ${storageDir}`);
   await seedOldStorage(storageDir, rootKey);
   t.after(async () => rm(storageDir, { recursive: true, force: true }));
 
@@ -196,9 +195,7 @@ test.only("migration: emits migrating frames with progress", async (t) => {
   const handle = spawnBackend({ storageDir, availableDiskSpace: 400000 });
   t.after(() => handle.shutdown());
 
-  console.log(`[migration-test] Waiting for control socket ${handle.controlSocket}`);
   await waitForSocket(handle.controlSocket);
-  console.log(`[migration-test] Connecting to control socket`);
   const { socket, framed, collector } = await connectControl(handle.controlSocket);
   t.after(() => socket.destroy());
 
@@ -206,15 +203,12 @@ test.only("migration: emits migrating frames with progress", async (t) => {
     /** @type {(frame: any) => boolean} */ ((f) => f.type === "started"),
     { timeout: 10000, message: "backend 'started' frame" },
   );
-  console.log(`[migration-test] Got 'started', frames so far:`, collector.frames.map(f => f.type));
   framed.pause();
 
-  console.log(`[migration-test] Sending init with rootKey`);
   sendFrame(framed, { type: "init", rootKey });
 
   // Backend should migrate and emit migrating frames with progress
   framed.resume();
-  console.log(`[migration-test] Waiting for 'ready' (up to 60s)`);
   try {
     await collector.wait(
       /** @type {(frame: any) => boolean} */ ((f) => f.type === "ready"),
@@ -224,7 +218,6 @@ test.only("migration: emits migrating frames with progress", async (t) => {
     console.error(`[migration-test] Wait failed. Collected frames:`, collector.frames);
     throw err;
   }
-  console.log(`[migration-test] All frames received:`, collector.frames.map(f => `${f.type}${f.progress ? `(${f.progress})` : ''}`));
 
   const migratingFrames = collector.frames.filter(
     /** @type {(f: any) => boolean} */ ((f) => f.type === "migrating"),
