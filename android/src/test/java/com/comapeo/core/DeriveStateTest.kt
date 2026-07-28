@@ -131,10 +131,16 @@ class DeriveStateTest {
     fun migratingDerivesMigrating() {
         // MIGRATING is active migration — overrides starting/ready.
         assertEquals(State.MIGRATING, derive(NodeRuntimeState.Running, BackendState.Migrating))
-        assertEquals(State.MIGRATING, derive(NodeRuntimeState.Running, BackendState.Migrating, stop = true))
         // Migration with runtime not running shouldn't happen in practice
         // but derivation still says MIGRATING (backend said so).
         assertEquals(State.MIGRATING, derive(NodeRuntimeState.NotRunning, BackendState.Migrating))
+    }
+
+    @Test
+    fun stopRequestedOverridesMigrating() {
+        // stopRequested is checked before Migrating in the derivation,
+        // so a stop during migration derives STOPPING (not MIGRATING).
+        assertEquals(State.STOPPING, derive(NodeRuntimeState.Running, BackendState.Migrating, stop = true))
     }
 
     // MARK: - Rule 6: starting
