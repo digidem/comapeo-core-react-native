@@ -133,7 +133,7 @@ class NodeJSService(
         object Migrating : BackendState()
         object Ready : BackendState()
         object Stopping : BackendState()
-        object LowSpace : BackendState()
+        data class LowSpace(val spaceNeeded: Long) : BackendState()
         data class Error(val phase: String, val message: String) : BackendState()
     }
 
@@ -652,9 +652,13 @@ class NodeJSService(
                 )
                 applyAndEmit { it.copy(backendState = BackendState.Migrating) }
             }
-            ControlFrame.LowSpace -> {
-                logCrumb(SentryCategories.CONTROL, "received: low-space", level = "warning")
-                applyAndEmit { it.copy(backendState = BackendState.LowSpace) }
+            is ControlFrame.LowSpace -> {
+                logCrumb(
+                    SentryCategories.CONTROL,
+                    "received: low-space (spaceNeeded=${frame.spaceNeeded})",
+                    level = "warning",
+                )
+                applyAndEmit { it.copy(backendState = BackendState.LowSpace(frame.spaceNeeded)) }
             }
             is ControlFrame.Error -> {
                 logCrumb(

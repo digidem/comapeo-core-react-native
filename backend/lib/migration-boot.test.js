@@ -294,6 +294,15 @@ test("low-space: broadcasts low-space, parks, resumes on retry", async (t) => {
     { timeout: 15000, message: "backend 'low-space' frame" },
   );
 
+  // Verify spaceNeeded is present and positive
+  const lowSpaceFrame = collector.frames.find(
+    /** @type {(f: any) => boolean} */ ((f) => f.type === "low-space"),
+  );
+  assert.ok(
+    lowSpaceFrame?.spaceNeeded !== undefined && lowSpaceFrame.spaceNeeded > 0,
+    `low-space frame should include positive spaceNeeded, got ${lowSpaceFrame?.spaceNeeded}`,
+  );
+
   // Verify no `ready` frame yet
   const preRetryTypes = collector.frames.map(/** @type {(f: any) => string} */ ((f) => f.type));
   assert.ok(

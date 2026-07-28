@@ -177,6 +177,12 @@ class ControlFrameTest {
 
     @Test
     fun parsesLowSpace() {
-        assertEquals(ControlFrame.LowSpace, ControlFrame.parse("""{"type":"low-space"}"""))
+        assertEquals(ControlFrame.LowSpace(spaceNeeded = 0), ControlFrame.parse("""{"type":"low-space"}"""))
+    }
+
+    @Test
+    fun parsesLowSpaceWithSpaceNeeded() {
+        val frame = ControlFrame.parse("""{"type":"low-space","spaceNeeded":123456}""")
+        assertEquals(ControlFrame.LowSpace(spaceNeeded = 123456L), frame)
     }
 }

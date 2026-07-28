@@ -13,8 +13,8 @@ enum ControlFrame {
     case stopping
     /// Migration in progress; `progress` is "done/total" or nil on first frame.
     case migrating(progress: String?)
-    /// Disk space too low to migrate; backend exited gracefully.
-    case lowSpace
+    /// Disk space too low to migrate; `spaceNeeded` is bytes deficit.
+    case lowSpace(spaceNeeded: Int64)
     case error(phase: String, message: String)
     /// Sentry error event from `@sentry/node`, forwarded as JSON for
     /// `SentryEventDecoder.decodeEvent(jsonData:)`. Native scope (device,
@@ -46,7 +46,8 @@ enum ControlFrame {
         case "migrating":
             return .migrating(progress: obj["progress"] as? String)
         case "low-space":
-            return .lowSpace
+            let spaceNeeded = obj["spaceNeeded"] as? Int64 ?? 0
+            return .lowSpace(spaceNeeded: spaceNeeded)
         case "error":
             let phase = (obj["phase"] as? String) ?? "unknown"
             let message = (obj["message"] as? String) ?? "(no message)"

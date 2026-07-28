@@ -88,7 +88,10 @@ class ComapeoCoreModule : Module() {
                         ControlFrame.Ready -> setState(JsState.STARTED)
                         ControlFrame.Stopping -> setState(JsState.STOPPING)
                         is ControlFrame.Migrating -> setState(JsState.MIGRATING)
-                        ControlFrame.LowSpace -> setState(JsState.LOW_SPACE)
+                        is ControlFrame.LowSpace -> setState(
+                            JsState.LOW_SPACE,
+                            mapOf("spaceNeeded" to frame.spaceNeeded),
+                        )
                         is ControlFrame.Error -> setState(
                             JsState.ERROR,
                             mapOf(

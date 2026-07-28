@@ -19,6 +19,8 @@ export type OnLoadEventPayload = {
  *                 parked; the host app can surface a prompt to free space
  *                 and then call `sendRetry()` (native sends `{type:"retry"}`
  *                 on the control socket to resume with fallback manager).
+ *                 The event payload carries `spaceNeeded` (bytes deficit)
+ *                 so the host can show the user how much space to free.
  *                 Only the first retry is honoured; subsequent calls are
  *                 no-ops so a misbehaving native side can't loop the boot.
  * - `ERROR`    — observable failure (rootkey load, backend boot, shutdown
@@ -75,6 +77,12 @@ export type StateChangeEventPayload = {
    */
   errorPhase?: string;
   errorMessage?: string;
+  /**
+   * Set when `state` is `"LOW_SPACE"`. Bytes the host needs to free (or
+   * accept fallback) to allow the migration to proceed. A positive value
+   * means the migration needs more space than is currently available.
+   */
+  spaceNeeded?: number;
 };
 
 /**

@@ -305,7 +305,7 @@ async function withPhase(phase, fn) {
      * @returns {Promise<{ useFallback: boolean }>}  
      */
     async function runMigration(forceFallback) {
-      const { shouldUpgrade, useFallback, reason } = await withPhase(
+      const { shouldUpgrade, useFallback, reason, spaceNeeded } = await withPhase(
         "migrate-check",
         () => checkShouldMigrate(coreStorageDir, availableDiskSpace),
       );
@@ -319,6 +319,7 @@ async function withPhase(phase, fn) {
         }
         throw Object.assign(new Error("No disk space for migration"), {
           __lowSpace: true,
+          spaceNeeded,
         });
       }
 
@@ -365,7 +366,7 @@ async function withPhase(phase, fn) {
       migrationUseFallback = result.useFallback;
     } catch (error) {
       if (error && typeof error === "object" && "__lowSpace" in error && error.__lowSpace) {
-        controlIpcServer.broadcast({ type: "low-space" });
+        controlIpcServer.broadcast({ type: "low-space", spaceNeeded: error.spaceNeeded });
         // Park until native sends `retry` (e.g. after user frees space or
         // accepts fallback). Event loop stays alive — Node won't exit.
         await retryPromise;

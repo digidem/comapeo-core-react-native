@@ -122,9 +122,10 @@ class DeriveStateTest {
     @Test
     fun lowSpaceDerivesLowSpace() {
         // LOW_SPACE is terminal — overrides runtime state and stop intent.
-        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.Running, BackendState.LowSpace))
-        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.NotRunning, BackendState.LowSpace))
-        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.Running, BackendState.LowSpace, stop = true))
+        val lowSpace = BackendState.LowSpace(spaceNeeded = 123_456)
+        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.Running, lowSpace))
+        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.NotRunning, lowSpace))
+        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.Running, lowSpace, stop = true))
     }
 
     @Test

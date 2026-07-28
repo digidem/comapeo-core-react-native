@@ -73,7 +73,7 @@ class NodeJSService {
         case migrating
         case ready
         case stopping
-        case lowSpace
+        case lowSpace(spaceNeeded: Int64)
         case error(phase: String, message: String)
     }
 
@@ -451,13 +451,13 @@ class NodeJSService {
                 message: "received: migrating" + (progress.map { " \($0)" } ?? ""),
             )
             applyAndEmit { self.backendState = .migrating }
-        case .lowSpace:
+        case .lowSpace(let spaceNeeded):
             logCrumb(
                 category: SentryCategories.control,
-                message: "received: low-space",
+                message: "received: low-space (spaceNeeded=\(spaceNeeded))",
                 level: .warning,
             )
-            applyAndEmit { self.backendState = .lowSpace }
+            applyAndEmit { self.backendState = .lowSpace(spaceNeeded: spaceNeeded) }
         case .error(let phase, let message):
             logCrumb(
                 category: SentryCategories.control,
