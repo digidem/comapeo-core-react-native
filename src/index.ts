@@ -7,5 +7,5 @@ export {
   getNotificationPermissionsAsync,
   requestNotificationPermissionsAsync,
   sendRetry,
-} from "./ComapeoCoreModule";
-export * from "./ComapeoCore.types";
+} from "./ComapeoCoreModule.js";
+export * from "./ComapeoCore.types.js";
