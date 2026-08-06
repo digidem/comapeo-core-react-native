@@ -1,0 +1,130 @@
+diff --git a/node_modules/@comapeo/core/src/fastify-plugins/utils.js b/node_modules/@comapeo/core/src/fastify-plugins/utils.js
+index c62cd8b..6084bc3 100644
+--- a/node_modules/@comapeo/core/src/fastify-plugins/utils.js
++++ b/node_modules/@comapeo/core/src/fastify-plugins/utils.js
+@@ -29,7 +29,13 @@ export async function getFastifyServerAddress(server, { timeout } = {}) {
+   }
+ 
+   if (typeof address === 'string') {
+-    return address
++    // UDS-bound: server.address() returns the socket path, not host:port.
++    // Return an empty base so MapeoManager#getMediaBaseUrl produces
++    // relative paths like '/blobs/<projectPublicId>/...'. How (and at what
++    // absolute URL) those paths are served is the embedder's concern —
++    // @comapeo/core-react-native rewrites them to platform-native URLs
++    // (content:// on Android, comapeo:// on iOS) outside of core.
++    return ''
+   }
+ 
+   // Full address construction for non unix-socket address
+diff --git a/node_modules/@comapeo/core/src/mapeo-manager.js b/node_modules/@comapeo/core/src/mapeo-manager.js
+index b2c09c4..3c34237 100644
+--- a/node_modules/@comapeo/core/src/mapeo-manager.js
++++ b/node_modules/@comapeo/core/src/mapeo-manager.js
+@@ -1046,21 +1046,46 @@ export class MapeoManager extends TypedEmitter {
+       .where(eq(projectSettingsTable.docId, projectId))
+       .run()
+ 
++    let phaseStart = Date.now()
+     const project = await this.getProject(projectPublicId)
++    this.#l.log(
++      'leaveProject %S: getProject took %d ms',
++      projectPublicId,
++      Date.now() - phaseStart
++    )
+ 
++    phaseStart = Date.now()
+     await project[kProjectLeave]()
++    this.#l.log(
++      'leaveProject %S: project leave (role + clear data) took %d ms',
++      projectPublicId,
++      Date.now() - phaseStart
++    )
+ 
+     // Failure to sync the leave action (e.g. due to poor connectivity with a
+     // peer) should not throw this `leaveProject()` action, because an API
+     // consumer reads the error as a failure to leave, but leave has already
+     // happened. This is a "best effort" attempt to sync the leave state. If it
+     // fails, it will sync on the next connection.
++    phaseStart = Date.now()
+     try {
+       await project.$sync.waitForSync('initial', {
+         timeoutMs: INITIAL_SYNC_TIMEOUT_MS,
+       })
++      this.#l.log(
++        'leaveProject %S: initial sync after leave took %d ms',
++        projectPublicId,
++        Date.now() - phaseStart
++      )
+     } catch {
+-      // Ignore — propagation is opportunistic.
++      // Ignore — propagation is opportunistic. Log the sync state so a
++      // stalled or disconnected peer is distinguishable from slow local IO.
++      this.#l.log(
++        'leaveProject %S: gave up waiting for initial sync after %d ms, sync state: %j',
++        projectPublicId,
++        Date.now() - phaseStart,
++        project.$sync.getState()
++      )
+     }
+   }
+ 
+diff --git a/node_modules/@comapeo/core/src/mapeo-project.js b/node_modules/@comapeo/core/src/mapeo-project.js
+index 44e3be1..6f9bf77 100644
+--- a/node_modules/@comapeo/core/src/mapeo-project.js
++++ b/node_modules/@comapeo/core/src/mapeo-project.js
+@@ -1343,13 +1343,22 @@ export class MapeoProject extends ReadyResource {
+   }
+ 
+   async [kProjectLeave]() {
++    let phaseStart = Date.now()
+     const ownRole = await this.$getOwnRole()
++    this.#l.log('projectLeave: getOwnRole took %d ms', Date.now() - phaseStart)
+ 
+     if (ownRole.roleId !== BLOCKED_ROLE_ID) {
++      phaseStart = Date.now()
+       await this.#roles.assignRole(this.#deviceId, LEFT_ROLE_ID)
++      this.#l.log(
++        'projectLeave: assign LEFT role took %d ms',
++        Date.now() - phaseStart
++      )
+     }
+ 
++    phaseStart = Date.now()
+     await this[kClearData]()
++    this.#l.log('projectLeave: clear data took %d ms', Date.now() - phaseStart)
+   }
+ 
+   /**
+@@ -1368,16 +1377,31 @@ export class MapeoProject extends ReadyResource {
+       (dataStore) => dataStore.namespace !== 'auth'
+     )
+ 
++    let phaseStart = Date.now()
+     await Promise.all(dataStoresToUnlink.map((ds) => ds.close()))
++    this.#l.log(
++      'clearData: close data stores took %d ms',
++      Date.now() - phaseStart
++    )
+ 
++    phaseStart = Date.now()
+     await Promise.all(
+       namespacesWithoutAuth.flatMap((namespace) => [
+         this.#coreManager.getWriterCore(namespace).core.close(),
+         this.#coreManager.deleteOthersData(namespace),
+       ])
+     )
++    this.#l.log(
++      'clearData: close writer cores + delete others data took %d ms',
++      Date.now() - phaseStart
++    )
+ 
++    phaseStart = Date.now()
+     await Promise.all(dataStoresToUnlink.map((ds) => ds.unlink()))
++    this.#l.log(
++      'clearData: unlink data stores took %d ms',
++      Date.now() - phaseStart
++    )
+ 
+     /** @type {Set<string>} */
+     const authSchemas = new Set(NAMESPACE_SCHEMAS.auth)

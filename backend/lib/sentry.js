@@ -6,6 +6,8 @@
 
 /** @typedef {import("./sentry-frame.js").SentryFrame} SentryFrame */
 
+import createDebug from "debug";
+
 import { scrubEvent, scrubLog } from "../before-send.js";
 import * as metrics from "./metrics.js";
 import { createNodeResourcesProcessor } from "./node-resources.js";
@@ -184,6 +186,10 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame, storageDir }
     // privacy-expensive and only useful during an investigation window.
     integrations: (defaults) =>
       config?.debug ? [...defaults, Sentry.consoleIntegration()] : defaults,
+    // Under debug the console + mapeo:* breadcrumb streams are chatty
+    // enough that the default 100 would evict the start of a slow
+    // operation's timeline before it is captured.
+    maxBreadcrumbs: config.debug ? 300 : 100,
     initialScope: {
       tags: { proc: "fgs", layer: "node" },
       // Native-derived user.id (monthly/permanent hash) — same value the
@@ -226,6 +232,37 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame, storageDir }
     osMajor: config.osMajor,
     applicationUsageData: config.applicationUsageData,
   });
+
+  if (config.debug) bridgeCoreDebugLogs(Sentry);
+}
+
+/**
+ * Debug-tier only: mirror `debug`-package log lines (`@comapeo/core`
+ * logs under `mapeo:*`) into Sentry breadcrumbs, so captures during a
+ * slow operation carry a timeline of what core was doing (e.g. the
+ * per-phase leaveProject timings). Keeps the original stderr sink so
+ * logcat output is unchanged.
+ *
+ * @param {typeof import("@sentry/node-core")} sentryRef
+ */
+function bridgeCoreDebugLogs(sentryRef) {
+  const namespaces = [process.env.DEBUG, "mapeo:*"].filter(Boolean).join(",");
+  createDebug.enable(namespaces);
+  const originalLog = createDebug.log;
+  createDebug.log = function (...args) {
+    Reflect.apply(originalLog, this, args);
+    let message;
+    try {
+      message = args.map(String).join(" ");
+    } catch {
+      return;
+    }
+    sentryRef.addBreadcrumb({
+      category: "mapeo.debug",
+      level: "debug",
+      message: message.length > 500 ? `${message.slice(0, 500)}…` : message,
+    });
+  };
 }
 
 /**
@@ -513,16 +550,16 @@ export function rpcHook() {
           try {
             await next(request);
             span.setStatus({ code: 1, message: "ok" });
-            metrics.rpcServer(method, "ok", performance.now() - start);
+            const durationMs = performance.now() - start;
+            metrics.rpcServer(method, "ok", durationMs);
+            maybeCaptureSlowRpc(sentryRef, method, "ok", durationMs);
           } catch (error) {
             // Mark the span errored for tracing, but do not capture an issue
             // — see the metrics-only note on the non-debug path above.
             span.setStatus({ code: 2, message: "internal_error" });
-            metrics.rpcServer(
-              method,
-              statusFor(error),
-              performance.now() - start,
-            );
+            const durationMs = performance.now() - start;
+            metrics.rpcServer(method, statusFor(error), durationMs);
+            maybeCaptureSlowRpc(sentryRef, method, statusFor(error), durationMs);
           }
         },
       );
@@ -538,5 +575,29 @@ function statusFor(error) {
   const name = error && error.name;
   if (typeof name === "string" && /timeout/i.test(name)) return "timeout";
   return "error";
+}
+
+// Debug-tier: server-side RPCs slower than this are captured as warning
+// events so the breadcrumb timeline (console + mapeo:* debug logs) is
+// attached. The RN ipc client times out at 30s, so anything at or past
+// this threshold is on its way to a client-visible RpcTimeout — e.g.
+// leaveProject blocking on its up-to-45s best-effort waitForSync.
+const SLOW_RPC_CAPTURE_MS = 20_000;
+// Methods that legitimately block on a human response on another device.
+const SLOW_RPC_EXEMPT = new Set(["$member.invite"]);
+
+/**
+ * @param {typeof import("@sentry/node-core")} sentryRef
+ * @param {string} method
+ * @param {string} status
+ * @param {number} durationMs
+ */
+function maybeCaptureSlowRpc(sentryRef, method, status, durationMs) {
+  if (durationMs < SLOW_RPC_CAPTURE_MS || SLOW_RPC_EXEMPT.has(method)) return;
+  sentryRef.captureMessage(`Slow RPC: ${method}`, {
+    level: "warning",
+    fingerprint: ["slow-rpc", method],
+    extra: { durationMs: Math.round(durationMs), status },
+  });
 }
 

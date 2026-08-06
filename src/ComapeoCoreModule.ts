@@ -370,7 +370,20 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(
       // caller's job, at the call site. The metric layer no-ops when Sentry is
       // off. Per-RPC traces (below) only run under `debug`.
       const recordMetric = (start: number, status: string) => {
-        rpcClientMetric(method, status, performance.now() - start);
+        const durationMs = performance.now() - start;
+        rpcClientMetric(method, status, durationMs);
+        // A timeout rejects the caller with a generic RpcTimeout that
+        // doesn't name the method; breadcrumb it so whatever error the
+        // caller captures (error sheet, error boundary) identifies
+        // which RPC timed out.
+        if (status === "timeout" && sentryUp) {
+          Sentry.addBreadcrumb({
+            category: "rpc",
+            level: "warning",
+            message: `RPC timeout: ${method}`,
+            data: { durationMs: Math.round(durationMs) },
+          });
+        }
       };
 
       if (!sentryUp || !debugTracingEnabled) {
