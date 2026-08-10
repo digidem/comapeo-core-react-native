@@ -8,6 +8,7 @@
 
 import createDebug from "debug";
 
+import * as diagnostics from "./diagnostics.js";
 import { scrubEvent, scrubLog } from "../before-send.js";
 import * as metrics from "./metrics.js";
 import { createNodeResourcesProcessor } from "./node-resources.js";
@@ -234,6 +235,11 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame, storageDir }
   });
 
   if (config.debug) bridgeCoreDebugLogs(Sentry);
+
+  // Cause-level probes for the leaveProject-stall investigation: RPC
+  // CPU profiling, sync-sqlite ledger, GC-pause breadcrumbs. Async
+  // (dynamic import of better-sqlite3) but nothing awaits it.
+  diagnostics.init({ Sentry }).catch(() => {});
 }
 
 /**
@@ -498,9 +504,12 @@ export function rpcHook() {
     // `debug`; the span block below adds per-RPC tracing under `debug`. The
     // trailing `.catch` keeps a throw from a metrics call out of the
     // unhandledRejection → handleFatal path.
+    const invoke = () =>
+      diagnostics.profileRpc(method, () => Promise.resolve(next(request)));
+
     if (!debug) {
       const start = performance.now();
-      Promise.resolve(next(request))
+      invoke()
         .then(
           () => {
             const durationMs = performance.now() - start;
@@ -555,7 +564,7 @@ export function rpcHook() {
         async (span) => {
           const start = performance.now();
           try {
-            await next(request);
+            await invoke();
             span.setStatus({ code: 1, message: "ok" });
             const durationMs = performance.now() - start;
             metrics.rpcServer(method, "ok", durationMs);
