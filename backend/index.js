@@ -340,7 +340,13 @@ function startMemorySampler() {
   eld.enable();
   const timer = setInterval(() => {
     metrics.backendMemorySample();
-    metrics.eventLoopDelaySample(eld.max / 1e6);
+    const maxDelayMs = eld.max / 1e6;
+    metrics.eventLoopDelaySample(maxDelayMs);
+    // A multi-second stall means the backend stopped answering RPCs
+    // entirely (the RN client times out at 30s) — capture it as an event
+    // so it is visible per-occurrence, not only as a metric percentile.
+    // Fires on the first tick after the loop unblocks.
+    sentry.captureEventLoopStall(maxDelayMs);
     eld.reset();
   }, MEMORY_SAMPLE_INTERVAL_MS);
   timer.unref?.();

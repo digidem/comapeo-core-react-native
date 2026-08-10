@@ -502,12 +502,19 @@ export function rpcHook() {
       const start = performance.now();
       Promise.resolve(next(request))
         .then(
-          () => metrics.rpcServer(method, "ok", performance.now() - start),
+          () => {
+            const durationMs = performance.now() - start;
+            metrics.rpcServer(method, "ok", durationMs);
+            maybeCaptureSlowRpc(sentryRef, method, "ok", durationMs);
+          },
           (error) => {
-            metrics.rpcServer(
+            const durationMs = performance.now() - start;
+            metrics.rpcServer(method, statusFor(error), durationMs);
+            maybeCaptureSlowRpc(
+              sentryRef,
               method,
               statusFor(error),
-              performance.now() - start,
+              durationMs,
             );
           },
         )
@@ -577,11 +584,31 @@ function statusFor(error) {
   return "error";
 }
 
-// Debug-tier: server-side RPCs slower than this are captured as warning
-// events so the breadcrumb timeline (console + mapeo:* debug logs) is
-// attached. The RN ipc client times out at 30s, so anything at or past
-// this threshold is on its way to a client-visible RpcTimeout — e.g.
-// leaveProject blocking on its up-to-45s best-effort waitForSync.
+/**
+ * Warning capture for a multi-second event-loop stall, called from the
+ * memory-sampler tick with the window's worst delay. Runs at every tier:
+ * a stalled loop means the backend stopped answering RPCs entirely, and
+ * captures are rare by construction (at most one per sample window).
+ *
+ * @param {number} maxDelayMs
+ */
+export function captureEventLoopStall(maxDelayMs) {
+  if (!Sentry || maxDelayMs < EVENT_LOOP_STALL_CAPTURE_MS) return;
+  Sentry.captureMessage("Backend event loop stalled", {
+    level: "warning",
+    fingerprint: ["event-loop-stall"],
+    extra: { maxDelayMs: Math.round(maxDelayMs) },
+  });
+}
+const EVENT_LOOP_STALL_CAPTURE_MS = 5_000;
+
+// Server-side RPCs slower than this are captured as warning events so
+// each occurrence is visible with breadcrumbs attached (the mapeo:* and
+// console timeline under debug). The RN ipc client times out at 30s, so
+// anything at or past this threshold is on its way to a client-visible
+// RpcTimeout — e.g. leaveProject blocking on its up-to-45s best-effort
+// waitForSync. Runs at every tier: captures are rare and each one is a
+// client-visible failure.
 const SLOW_RPC_CAPTURE_MS = 20_000;
 // Methods that legitimately block on a human response on another device.
 const SLOW_RPC_EXEMPT = new Set(["$member.invite"]);
