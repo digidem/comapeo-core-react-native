@@ -35,6 +35,52 @@ test("single-item event envelope routes as sentry-event with raw payload", () =>
   assert.equal(frame.payload, payload);
 });
 
+test("captureMessage event: string message is coerced to {formatted} object", () => {
+  // sentry-java's SentryEvent.Deserializer requires `message` to be a
+  // Message object; the JS SDK emits a string. Without coercion the
+  // native decoder throws and the event is silently dropped.
+  const payload = {
+    event_id: "m1",
+    level: "warning",
+    message: "Slow RPC: leaveProject",
+  };
+  const env = envelope([[{ type: "event", length: 0 }, payload]]);
+
+  const frame = envelopeToFrame(env);
+
+  assert.equal(frame.type, "sentry-event");
+  assert.deepEqual(frame.payload.message, {
+    formatted: "Slow RPC: leaveProject",
+  });
+});
+
+test("message coercion also runs on the serialized-envelope path", () => {
+  // Multi-item event envelopes go through native's hybrid envelope
+  // capture, which decodes with the same Java deserializer.
+  const payload = { event_id: "m2", message: "stalled" };
+  const env = envelope([
+    [{ type: "event" }, payload],
+    [{ type: "attachment", filename: "x.txt" }, "hello"],
+  ]);
+
+  const frame = envelopeToFrame(env);
+
+  assert.equal(frame.type, "sentry-envelope");
+  const decoded = Buffer.from(frame.data, "base64").toString("utf-8");
+  assert.ok(decoded.includes('"message":{"formatted":"stalled"}'));
+});
+
+test("event with an already-object message is left untouched", () => {
+  const message = { formatted: "already fine" };
+  const payload = { event_id: "m3", message };
+  const env = envelope([[{ type: "event", length: 0 }, payload]]);
+
+  const frame = envelopeToFrame(env);
+
+  assert.equal(frame.type, "sentry-event");
+  assert.equal(frame.payload.message, message);
+});
+
 test("transaction envelope routes as sentry-envelope (no transaction decoder on iOS)", () => {
   const env = envelope([
     [{ type: "transaction", length: 0 }, { event_id: "t1", type: "transaction" }],

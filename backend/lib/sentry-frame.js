@@ -24,6 +24,22 @@ import { serializeEnvelope } from "@sentry/core";
  */
 export function envelopeToFrame(envelope) {
   const items = envelope[1];
+  // The JS SDK emits `captureMessage` events with `message` as a plain
+  // string, but sentry-java's `SentryEvent.Deserializer` (behind native
+  // `captureEventJson` AND the hybrid envelope-capture path) requires the
+  // protocol's object form and throws on a string — silently dropping the
+  // event. Coerce before forwarding on either path.
+  if (Array.isArray(items)) {
+    for (const [itemHeader, payload] of items) {
+      if (
+        itemHeader?.type === "event" &&
+        payload &&
+        typeof payload.message === "string"
+      ) {
+        payload.message = { formatted: payload.message };
+      }
+    }
+  }
   if (Array.isArray(items) && items.length === 1) {
     const [itemHeader, payload] = items[0];
     if (itemHeader && itemHeader.type === "event") {
