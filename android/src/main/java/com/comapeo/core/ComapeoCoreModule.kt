@@ -177,10 +177,11 @@ class ComapeoCoreModule : Module() {
         }
 
         // Send `{type:"retry"}` on the control socket to resume the backend
-        // boot after a `LOW_SPACE` park. Only the first retry is honoured
-        // by the backend; subsequent calls are no-ops.
+        // boot after a `LOW_SPACE` park.
         Function("sendRetry") {
-            controlIpc.sendMessage("{\"type\":\"retry\"}")
+          val availableDiskSpace =
+            java.nio.file.Files.getFileStore(java.nio.file.Paths.get(dataDir)).usableSpace
+            controlIpc.sendMessage("{\"type\":\"retry\", \"availableDiskSpace\": $availableDiskSpace}")
         }
 
         // `sentryConfig` — baked-in by app.plugin.js at prebuild; spread into

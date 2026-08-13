@@ -580,16 +580,34 @@ class NodeJSService {
         log("Sent error-native frame to backend (phase=\(phase))")
     }
 
-    /// Sends `{type:"retry"}` on the control socket to resume the backend
-    /// boot after a `LOW_SPACE` park. Only the first retry is honoured
-    /// by the backend; subsequent calls are no-ops.
+    /// Sends `{type:"retry",availableDiskSpace:...}` on the control socket
+    /// to resume the backend boot after a `LOW_SPACE` park. Only the first
+    /// retry is honoured by the backend; subsequent calls are no-ops.
     func sendRetry() {
         guard let ipc = controlIPC else {
             log("Cannot send retry: controlIPC not connected")
             return
         }
-        ipc.sendMessage("{\"type\":\"retry\"}")
+        let diskSpace = getAvailableDiskSpace()
+        let frame = "{\"type\":\"retry\",\"availableDiskSpace\":\(diskSpace)}"
+        ipc.sendMessage(frame)
         logCrumb(category: SentryCategories.control, message: "sent: retry")
+    }
+
+    /// Returns available disk space in bytes for the app's document
+    /// directory. Used at boot and on retry so the backend can decide
+    /// whether a migration is feasible.
+    private func getAvailableDiskSpace() -> Int {
+        guard
+            let docsURL = try? FileManager.default
+                .url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false),
+            let capacity = try? docsURL
+                .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+                .volumeAvailableCapacityForImportantUsage
+        else {
+            return 0
+        }
+        return Int(capacity)
     }
 
     /// Gracefully stops Node.js. `timeout` bounds the wait for the
@@ -674,16 +692,10 @@ class NodeJSService {
         // 5th positional: consumer's online map style URL, or "" when unset.
         let defaultOnlineStyleUrl = resolveDefaultOnlineStyleUrl() ?? ""
         // 6th positional: available disk space in bytes for migration decision.
-        guard
-            let docsURL = try? FileManager.default
-                .url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false),
-            let capacity = try? docsURL
-                .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-                .volumeAvailableCapacityForImportantUsage
-        else {
+        let availableDiskSpace = getAvailableDiskSpace()
+        guard availableDiskSpace > 0 else {
             fatalError("Cannot determine available disk space")
         }
-        let availableDiskSpace = Int(capacity)
         var args: [String] = ["node", "--no-experimental-fetch"]
         // Debug builds ship the backend's `.map` next to the bundle via the
         // Debug-only `ComapeoCoreSourcemaps` companion pod. `--enable-source-maps`

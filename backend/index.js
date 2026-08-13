@@ -17,6 +17,8 @@ import {
   MIGRATION_REASON_NO_SPACE,
 } from "@comapeo/core/migration.js";
 
+/** @typedef {{availableDiskSpace: number}} RetryMessage */
+
 // 60s sampler cadence for backend memory + uptime gauges. No-op
 // when Sentry is off (the metrics layer never got its SDK).
 const MEMORY_SAMPLE_INTERVAL_MS = 60_000;
@@ -55,7 +57,7 @@ const [
 ] = process.argv.slice(2);
 const defaultConfigPath = configArg || undefined;
 const defaultOnlineStyleUrl = styleUrlArg || undefined;
-const availableDiskSpace =
+let availableDiskSpace =
   availableDiskSpaceArg !== undefined
     ? Number(availableDiskSpaceArg)
     : undefined;
@@ -88,11 +90,11 @@ let initConsumed = false;
  * Declared at module scope so the SimpleRpcServer `retry` handler can
  * reference it; the boot IIFE awaits the promise.
  */
-/** @type {(() => void) | undefined} */
+/** @type {((message: RetryMessage) => void) | undefined} */
 let resolveRetry;
 const retryPromise = new Promise((resolve) => {
-  resolveRetry = () => {
-    resolve();
+  resolveRetry = (message) => {
+    resolve(message);
     resolveRetry = undefined;
   };
 });
@@ -204,14 +206,15 @@ const controlIpcServer = new SimpleRpcServer({
    * host app surfaces the `low-space` event and the user acts (frees space,
    * accepts fallback). Only the first retry is honoured; subsequent retries
    * are no-ops so a misbehaving native side can't loop the boot.
+   * @param {RetryMessage} message
    */
-  retry: () => {
+  retry: (message) => {
     if (retryConsumed) {
       console.warn("Received retry after boot already resumed; ignoring");
       return;
     }
     retryConsumed = true;
-    resolveRetry?.();
+    resolveRetry?.(message);
   },
 });
 
@@ -372,7 +375,7 @@ async function withPhase(phase, fn) {
         controlIpcServer.broadcast({ type: "low-space", spaceNeeded: error.spaceNeeded });
         // Park until native sends `retry` (e.g. after user frees space or
         // accepts fallback). Event loop stays alive — Node won't exit.
-        await retryPromise;
+        availableDiskSpace = (await retryPromise).availableDiskSpace;
         const result = await runMigration(true);
         migrationUseFallback = result.useFallback;
       } else {
