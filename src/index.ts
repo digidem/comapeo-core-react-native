@@ -6,5 +6,7 @@ export {
   comapeoServicesClient,
   getNotificationPermissionsAsync,
   requestNotificationPermissionsAsync,
+  subscribeToBackendRestart,
+  TransportClosedError,
 } from "./ComapeoCoreModule.js";
 export * from "./ComapeoCore.types.js";
