@@ -1,3 +1,4 @@
+import { state } from '@comapeo/core-react-native'
 import { useState } from 'react'
 import jasmineRequire, {
 	type JasmineDoneInfo,
@@ -21,6 +22,37 @@ type TestState =
 
 // Default of 5s is too short for IPC-heavy tests on slow CI devices.
 const DEFAULT_TIMEOUT_INTERVAL_MS = 60_000
+
+// Guard for a local run without Maestro (the CI flow already waits for the
+// backend-state-STARTED indicator before tapping "Run tests").
+const STARTUP_WAIT_MS = 120_000
+
+// Must stay under DEFAULT_TIMEOUT_INTERVAL_MS so a backend that never
+// recovers fails the spec with this wait's message, not a bare timeout.
+const BEFORE_EACH_WAIT_MS = 45_000
+
+function waitForBackendStarted(timeoutMs: number): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const sub = state.addListener('stateChange', (next) => {
+			if (next === 'STARTED') settle()
+		})
+		const timer = setTimeout(() => {
+			sub.remove()
+			reject(
+				new Error(
+					`Backend state is '${state.getState()}', not STARTED, after ${timeoutMs}ms`,
+				),
+			)
+		}, timeoutMs)
+		function settle() {
+			clearTimeout(timer)
+			sub.remove()
+			resolve()
+		}
+		// Checked after subscribing so a transition between the two can't be missed.
+		if (state.getState() === 'STARTED') settle()
+	})
+}
 
 export function TestRunner() {
 	const [testState, setTestState] = useState<TestState>({
@@ -119,10 +151,23 @@ export function TestRunner() {
 			afterEach,
 		}
 
+		// If a mid-suite backend restart (e.g. the low-memory killer taking the
+		// :ComapeoCore FGS) moves the state away from STARTED, pause the next
+		// spec until it recovers instead of firing an RPC into a dead socket.
+		beforeEach(() => waitForBackendStarted(BEFORE_EACH_WAIT_MS))
+
 		// 👇 Register tests here!
 		basicTest(ctx)
 		mapServerTest(ctx)
 		projectCrudTest(ctx)
+
+		try {
+			await waitForBackendStarted(STARTUP_WAIT_MS)
+		} catch (err) {
+			// Run the suite anyway: the specs' own failures carry more detail
+			// than aborting here would.
+			console.log(`[e2e] ${err instanceof Error ? err.message : String(err)}`)
+		}
 
 		await jasmineEnv.execute()
 	}

@@ -10,6 +10,14 @@ env:
 ---
 - launchApp:
     clearState: true
+# Don't start the suite during the boot window: JS bundle + Node backend
+# starting together is peak memory, when low-RAM devices are most likely to
+# kill the :ComapeoCore FGS (and RPCs sent pre-`ready` hang until timeout).
+# Matches fgs-restart.yaml and rootkey-persistence.yaml.
+- extendedWaitUntil:
+    visible:
+        id: "backend-state-STARTED"
+    timeout: ${TIMEOUT}
 - tapOn: "Run tests"
 - extendedWaitUntil:
     visible:
