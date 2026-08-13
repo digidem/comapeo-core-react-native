@@ -6,6 +6,9 @@
 # dev-build workarounds are needed.
 appId: com.comapeo.core.e2e
 env:
+    # Boot gate below uses the same 180s budget as fgs-restart.yaml and
+    # rootkey-persistence.yaml; TIMEOUT is the all-tests-done suite budget.
+    BOOT_TIMEOUT: 180000
     TIMEOUT: 300000
 ---
 - launchApp:
@@ -13,11 +16,10 @@ env:
 # Don't start the suite during the boot window: JS bundle + Node backend
 # starting together is peak memory, when low-RAM devices are most likely to
 # kill the :ComapeoCore FGS (and RPCs sent pre-`ready` hang until timeout).
-# Matches fgs-restart.yaml and rootkey-persistence.yaml.
 - extendedWaitUntil:
     visible:
         id: "backend-state-STARTED"
-    timeout: ${TIMEOUT}
+    timeout: ${BOOT_TIMEOUT}
 - tapOn: "Run tests"
 - extendedWaitUntil:
     visible:
