@@ -180,7 +180,7 @@ class ComapeoCoreModule : Module() {
         // boot after a `LOW_SPACE` park.
         Function("sendRetry") {
           val availableDiskSpace =
-            java.nio.file.Files.getFileStore(java.nio.file.Paths.get(dataDir)).usableSpace
+            java.nio.file.Files.getFileStore(java.nio.file.Paths.get(appContext.filesDir.path)).usableSpace
             controlIpc.sendMessage("{\"type\":\"retry\", \"availableDiskSpace\": $availableDiskSpace}")
         }
 
