@@ -562,6 +562,54 @@ codebases.
 
 ---
 
+### 5.8 Backend restart recovery (Android)
+
+Android can kill the `:ComapeoCore` process (low-memory killer, user
+action) and restart it seconds later while the app keeps running. The
+module recovers in layers:
+
+1. **Sockets reconnect themselves.** Both module-side `NodeJSIPC`
+   instances are constructed with `reconnectOnDrop = true`: an
+   unexpected drop schedules reconnection with backoff (~250 ms
+   doubling to a few seconds, giving up into `State.Error` after
+   ~60 s; any manual `connect()` — foreground transition or a
+   `postMessage` — starts a fresh cycle). The control socket's
+   `started`/`ready` replay then converges the JS-visible state back
+   to `STARTED` on its own. `NodeJSService`'s FGS-side IPC keeps the
+   default (no reconnect): in-process Node death ends that process.
+2. **In-flight calls fail fast.** The message socket reports
+   `transportStateChange` to JS; on `disconnected`/`error` the module
+   calls `@comapeo/ipc`'s transport-reset helpers, which reject every
+   in-flight call with `TransportClosedError`
+   (`code: "RPC_TRANSPORT_CLOSED"`, re-exported by this package)
+   instead of letting them run into the 30 s RPC timeout. A read is
+   safe to retry after recovery; replaying mutations is the caller's
+   judgement — the module never re-sends requests.
+3. **Event subscriptions are replayed.** The restarted backend has
+   none of the client's event registrations, so the same reset
+   re-sends them for the long-lived channels (manager, project
+   routing, services). Per-project channels can't be replayed — their
+   instance ids died with the old server — so the reset hard-closes
+   stale project clients; the next `getProject` mints a working one.
+4. **The app layer re-fetches.** `subscribeToBackendRestart(listener)`
+   fires once the backend is `STARTED` again after a transport drop.
+   Pass it to `@comapeo/core-react`'s `ComapeoCoreProvider`
+   (`subscribeToBackendRestart` prop) to invalidate its query caches —
+   that re-runs `getProject` for mounted hooks and cascades fresh
+   client identity through its effects. Never fires on iOS (§2.1:
+   in-process Node — a backend death ends the app).
+
+**What the host app must still handle.** Recovery only reaches state
+the module and `@comapeo/core-react` own. App code that captures
+clients or results at module scope survives the restart holding dead
+references — in comapeo-mobile today that includes the `useLocalPeers`
+first-client singleton, the local-discovery controller's captured
+client, and the cached map-server `listen()` port promise. Such state
+must be re-derived on the restart signal when mobile adopts this
+module.
+
+---
+
 ## 6. Residual limitations
 
 The per-component lifecycle model in §5 closes the previously-known

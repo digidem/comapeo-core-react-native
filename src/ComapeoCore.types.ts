@@ -32,6 +32,7 @@ export type ComapeoCoreModuleEvents = {
   message: (params: MessageEventPayload) => void;
   messageerror: (params: MessageErrorEventPayload) => void;
   stateChange: (params: StateChangeEventPayload) => void;
+  transportStateChange: (params: TransportStateChangeEventPayload) => void;
 };
 
 export type MessageEventPayload = {
@@ -51,6 +52,18 @@ export type MessageEventPayload = {
  */
 export type MessageErrorEventPayload = {
   data: string;
+};
+
+/**
+ * Payload for the `transportStateChange` event (Android only — on iOS the
+ * backend is in-process, so a backend death takes the app with it and the
+ * event never fires). Reports the message-socket (RPC transport) connection
+ * state: `disconnected`/`error` mean any in-flight RPC call can no longer
+ * complete; `connected` means the socket is up again (the backend may still
+ * be booting — `stateChange` reaching `STARTED` is the "safe to use" signal).
+ */
+export type TransportStateChangeEventPayload = {
+  state: "connected" | "disconnected" | "error";
 };
 
 export type StateChangeEventPayload = {

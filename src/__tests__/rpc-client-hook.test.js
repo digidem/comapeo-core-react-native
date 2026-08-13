@@ -54,6 +54,12 @@ function setup({ debug, diagnosticsEnabled = true, sentryInitialized = true }) {
       return {};
     },
     createComapeoServicesClient: () => ({}),
+    notifyCoreClientTransportReset: jest.fn(),
+    notifyServicesClientTransportReset: jest.fn(),
+  }));
+
+  jest.doMock("@comapeo/ipc/errors.js", () => ({
+    TransportClosedError: class TransportClosedError extends Error {},
   }));
 
   jest.doMock("@sentry/react-native", () => ({
