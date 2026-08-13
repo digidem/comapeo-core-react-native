@@ -33,20 +33,18 @@ or touch the backend. The individual steps are also available on their own
 
 ### Backend sourcemaps
 
-`backend:build` symbolicates backend errors two ways, split by build type so
-release artifacts stay lean:
+`backend:build` emits one bundle per platform, with its sourcemap relocated to a
+sibling `nodejs-sourcemaps/` directory so it never enters the APK/IPA.
+Symbolication is server-side: `@sentry/rollup-plugin` embeds a content-derived
+debug ID in the bundle, the consuming app uploads the maps with
+`comapeo-rn-upload-sourcemaps`, and Sentry matches them by that ID.
 
-- **Debug builds** ship the bundle's sourcemap colocated with it and pass Node's
-  `--enable-source-maps` flag (Android `BuildConfig.DEBUG`, iOS `#if DEBUG`), so
-  errors are remapped to original positions in-process and reach Sentry already
-  symbolicated — no upload or Sentry auth token needed. On Android the map rides
-  the `src/debug/` asset tree (debug variants only); on iOS the config plugin
-  adds a Debug-only `ComapeoCoreSourcemaps` companion pod
-  (`:configurations => ['Debug']`) whose maps merge next to the bundle in the
-  app — no custom build phase.
-- **Release builds** keep the map out of the app entirely; the consuming app
-  uploads it to Sentry from CI with `comapeo-rn-upload-sourcemaps` (debug-ID
-  matched, symbolicated server-side).
+The backend deliberately does **not** run with `--enable-source-maps` in any
+variant. nodejs-mobile pins Node 18, whose `findSourceMap()` re-parses the whole
+map on every `Error.stack` format — roughly 320 ms and 250–470 MB of garbage per
+error for our 19 MB map, enough to wedge the event loop for tens of seconds on a
+low-end device. For a stack you have in a terminal rather than in Sentry,
+`comapeo-rn-symbolicate` remaps it offline from the shipped maps.
 
 ## Repository layout
 
@@ -99,10 +97,10 @@ npm --prefix apps/integration run build:android  # integration, Android Release
 (`expo run:android --variant release`) build the **Release** configuration onto
 a connected simulator/emulator — what the e2e suite drives locally (see below),
 and handy for release-only behaviour and FGS cold-start timing (debug is ~10×
-slower). They are *not* the BrowserStack artifacts: CI builds those separately in
+slower). They are _not_ the BrowserStack artifacts: CI builds those separately in
 [e2e-reusable.yml](.github/workflows/e2e-reusable.yml) — Android via
 `gradlew assembleRelease` (an APK) and iOS via `xcodebuild archive` (an unsigned
-arm64 *device* `.ipa` that can't run on a simulator at all).
+arm64 _device_ `.ipa` that can't run on a simulator at all).
 
 For a plain dev/demo run with Metro and fast JS reload (not e2e — see
 [§"End-to-end locally"](#end-to-end-locally) for why a dev build doesn't help
@@ -120,16 +118,16 @@ e2e trust boundary, why some checks run where they do) is documented in
 Each of the seven test layers (see [docs/TESTING.md §2](./docs/TESTING.md) for
 what each one verifies) has a root script:
 
-| Layer | Command | Notes |
-|---|---|---|
-| JS lint | `npm run lint` | ESLint |
-| JS unit | `npm run test` | TypeScript unit tests (`src/__tests__/`) |
-| Backend unit | `npm run backend:test` | Node `--test` suite in `backend/` |
-| Swift package | `npm run test:swift` | macOS, no simulator (`cd ios && swift test`) |
-| JVM unit | `npm run test:android:unit` | no device |
-| Android instrumented | `npm run test:android` | needs a booted emulator / device |
-| iOS integration | `npm run test:ios` | needs the integration app prebuilt + a simulator |
-| End-to-end (local) | `npm run e2e:ios` / `e2e:android`, then `npm run e2e:test` | Release build + Maestro; see below |
+| Layer                | Command                                                    | Notes                                            |
+| -------------------- | ---------------------------------------------------------- | ------------------------------------------------ |
+| JS lint              | `npm run lint`                                             | ESLint                                           |
+| JS unit              | `npm run test`                                             | TypeScript unit tests (`src/__tests__/`)         |
+| Backend unit         | `npm run backend:test`                                     | Node `--test` suite in `backend/`                |
+| Swift package        | `npm run test:swift`                                       | macOS, no simulator (`cd ios && swift test`)     |
+| JVM unit             | `npm run test:android:unit`                                | no device                                        |
+| Android instrumented | `npm run test:android`                                     | needs a booted emulator / device                 |
+| iOS integration      | `npm run test:ios`                                         | needs the integration app prebuilt + a simulator |
+| End-to-end (local)   | `npm run e2e:ios` / `e2e:android`, then `npm run e2e:test` | Release build + Maestro; see below               |
 
 The native/integration commands are slower and platform-specific. The CI
 workflows remain the source of truth for the exact flags and device matrix:
@@ -209,15 +207,15 @@ Allowed types: `feat`, `fix`, `perf`, `docs`, `refactor`, `test`, `chore`,
 The workflow reads the type/scope and applies one changelog label, which
 [.github/release.yml](.github/release.yml) groups into the release notes:
 
-| Title | Changelog section |
-|---|---|
-| `feat: …` | Features |
-| `fix: …` | Bug Fixes |
-| `perf: …` | Performance |
-| `docs: …` | Documentation |
-| `refactor` / `test` / `chore` / `ci` / `build` | Maintenance |
-| any `…(deps): …` | Dependencies |
-| `feat!: …` or a `BREAKING CHANGE:` footer in the body | Breaking Changes |
+| Title                                                 | Changelog section |
+| ----------------------------------------------------- | ----------------- |
+| `feat: …`                                             | Features          |
+| `fix: …`                                              | Bug Fixes         |
+| `perf: …`                                             | Performance       |
+| `docs: …`                                             | Documentation     |
+| `refactor` / `test` / `chore` / `ci` / `build`        | Maintenance       |
+| any `…(deps): …`                                      | Dependencies      |
+| `feat!: …` or a `BREAKING CHANGE:` footer in the body | Breaking Changes  |
 
 The label is derived from the title automatically — don't set the changelog
 labels by hand; editing the title updates them. Add the `skip-changelog` label

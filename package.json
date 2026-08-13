@@ -20,21 +20,20 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "comapeo-rn-upload-sourcemaps": "./build/cli/upload-sourcemaps.js"
+    "comapeo-rn-upload-sourcemaps": "./build/cli/upload-sourcemaps.js",
+    "comapeo-rn-symbolicate": "./build/cli/symbolicate.js"
   },
   "files": [
     "expo-module.config.json",
     "app.plugin.js",
     "android/build.gradle",
     "android/CMakeLists.txt",
-    "android/src/debug/",
     "android/src/main/",
     "android/libnode/",
     "build/",
     "ios/*.{h,m,mm,swift,hpp,cpp}",
     "!ios/Package.swift",
     "ios/ComapeoCore.podspec",
-    "ios/ComapeoCoreSourcemaps.podspec",
     "ios/NodeMobile.xcframework",
     "ios/Frameworks/",
     "ios/nodejs-project/",

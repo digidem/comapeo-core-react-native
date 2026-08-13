@@ -355,20 +355,23 @@ SENTRY_AUTH_TOKEN=… npx comapeo-rn-upload-sourcemaps \
   --org your-org --project your-project
 ```
 
-Run it from your release CI (after `eas build`, or wherever you build the app).
 Re-uploading is idempotent (Sentry de-dupes by debug ID). The CLI finds
 `@sentry/cli` via `@sentry/react-native`'s dependency chain — if you don't have
 `@sentry/react-native` installed, add `@sentry/cli` to your devDependencies.
-`--targets <list>` restricts the upload to a subset of
-`android-main, ios`; `--url` points at self-hosted Sentry;
-`SENTRY_ORG` / `SENTRY_PROJECT` work in place of the flags.
+`--targets <list>` restricts the upload to a subset of `android-main, ios`;
+`--url` points at self-hosted Sentry; `SENTRY_ORG` / `SENTRY_PROJECT` work in
+place of the flags.
 
-Only **release** builds need this upload. Debug builds ship the backend
-sourcemap alongside the bundle and enable Node's `--enable-source-maps`, so
-backend errors are symbolicated in-process — no upload or Sentry auth token
-required. In release builds the maps live in sibling `nodejs-sourcemaps/`
-directories (not under the bundled `nodejs-project/` assets), so they are
-**not** shipped inside your release APK/IPA.
+The maps live in sibling `nodejs-sourcemaps/` directories (not under the bundled
+`nodejs-project/` assets), so they are **not** shipped inside your APK/IPA. The
+backend runs without Node's `--enable-source-maps` in every variant — on the
+Node 18 that nodejs-mobile pins, that flag re-parses the entire map on every
+error stack and can wedge the event loop for tens of seconds on a low-end
+device. To remap a stack you have in a terminal rather than in Sentry:
+
+```sh
+adb logcat -d | npx comapeo-rn-symbolicate
+```
 
 #### JS bundle sourcemaps and native debug symbols (your app)
 
