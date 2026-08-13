@@ -16,6 +16,8 @@ import {
   createComapeoServicesClient,
   notifyCoreClientTransportReset,
   notifyServicesClientTransportReset,
+  resubscribeCoreClient,
+  resubscribeServicesClient,
   type ComapeoCoreClientApi,
   type ComapeoServicesClientApi,
 } from "@comapeo/ipc/client.js";
@@ -543,45 +545,74 @@ export const comapeoServicesClient: ComapeoServicesClientApi =
 /**
  * A call that was in flight when the RPC transport dropped rejects with this
  * error (`code: "RPC_TRANSPORT_CLOSED"`) instead of hanging until the RPC
- * timeout. The call never completed on the backend's side of the connection,
- * so a read is safe to retry once the backend is back (`stateChange` →
- * `STARTED`, or [subscribeToBackendRestart]); whether a mutation is safe to
- * replay is the caller's judgement.
+ * timeout. The call's response will never arrive — the call itself may or may
+ * not have executed on the backend before it went away — so a read is safe to
+ * retry once the backend is back (`stateChange` → `STARTED`, or
+ * [subscribeToBackendRestart]); whether a mutation is safe to replay is the
+ * caller's judgement.
  */
 export { TransportClosedError } from "@comapeo/ipc/errors.js";
 
-// Android only: fires when the message socket (the RPC transport) drops or
-// reconnects — e.g. the low-memory killer taking the :ComapeoCore service.
-// On a drop, fail every in-flight call now rather than at the 30s timeout,
-// and re-send event subscriptions so the restarted backend knows about them.
-// The re-sent subscription frames ride the native send queue, which buffers
-// until the socket reconnects.
+// Android only: transport-drop recovery in two phases. At drop time, fail
+// every in-flight call now rather than at the 30s timeout and hard-close
+// stale project clients. Resubscription waits for recovery — the backend
+// STARTED again AND the message socket reconnected — because resubscribing
+// at drop time would nudge the native connect out of its terminal Error
+// state in a tight loop while the backend stays down, and there is nothing
+// to resubscribe to until a new server exists. Both recovery conditions are
+// tracked separately: the lifecycle state comes from the control socket,
+// which reconnects independently of the message socket the RPC traffic
+// actually rides on.
 let transportDropped = false;
+let transportConnected = false;
+
+const restartListeners = new Set<() => void>();
+
+function maybeCompleteRecovery() {
+  if (!transportDropped || !transportConnected) return;
+  if (nativeModule.getState() !== "STARTED") return;
+  transportDropped = false;
+  resubscribeCoreClient(comapeo);
+  resubscribeServicesClient(comapeoServicesClient);
+  for (const listener of [...restartListeners]) {
+    try {
+      listener();
+    } catch (err) {
+      console.error("backend-restart listener threw", err);
+    }
+  }
+}
 
 // Optional calls, matching the other absent-native fallbacks (test contexts).
 nativeModule.addListener?.(
   "transportStateChange",
   (event: TransportStateChangeEventPayload) => {
-    if (event.state === "connected") return;
+    if (event.state === "connected") {
+      transportConnected = true;
+      // Covers a message-socket-only drop: the control-socket state never
+      // left STARTED, so no stateChange event will arrive to finish the job.
+      maybeCompleteRecovery();
+      return;
+    }
+    transportConnected = false;
     transportDropped = true;
     notifyCoreClientTransportReset(comapeo);
     notifyServicesClientTransportReset(comapeoServicesClient);
   },
 );
 
-const restartListeners = new Set<() => void>();
-
 nativeModule.addListener?.("stateChange", (event: StateChangeEventPayload) => {
-  if (event.state !== "STARTED" || !transportDropped) return;
-  transportDropped = false;
-  for (const listener of [...restartListeners]) listener();
+  if (event.state !== "STARTED") return;
+  maybeCompleteRecovery();
 });
 
 /**
- * Subscribe to backend restarts: fires when the backend is running again
- * (`STARTED`) after the RPC transport dropped mid-session — on Android that
- * means the OS killed and restarted the `:ComapeoCore` service while the app
- * kept running. Never fires on iOS (the backend is in-process there).
+ * Subscribe to backend restarts: fires once the backend is running again
+ * (`STARTED`) AND the RPC transport has reconnected, after the transport
+ * dropped mid-session — on Android that means the OS killed and restarted the
+ * `:ComapeoCore` service while the app kept running. Never fires on iOS (the
+ * backend is in-process there). A backend that was stopped deliberately and
+ * later cold-started also fires this — the caches are equally stale there.
  *
  * By the time a listener fires, in-flight calls have been rejected with
  * [TransportClosedError] and event subscriptions have been replayed to the
