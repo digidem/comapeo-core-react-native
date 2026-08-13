@@ -370,15 +370,6 @@ class NodeJSService(
         val availableDiskSpace =
             java.nio.file.Files.getFileStore(java.nio.file.Paths.get(dataDir)).usableSpace
         val args = mutableListOf("node")
-        // Debug builds ship the backend's `.map` colocated with the bundle
-        // (src/debug only). `--enable-source-maps` (a Node runtime flag, so
-        // it must precede the script path) makes Node remap stacks to
-        // original positions in-process, so Sentry events are symbolicated
-        // without a map upload. Release builds omit it and rely on
-        // consumer-uploaded maps (debug-ID matched, symbolicated by Sentry).
-        if (BuildConfig.DEBUG) {
-            args += "--enable-source-maps"
-        }
         args += listOf(
             entryPath,
             comapeoSocketFile.absolutePath,

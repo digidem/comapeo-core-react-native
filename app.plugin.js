@@ -27,8 +27,7 @@ import configPlugins from "@expo/config-plugins";
 import { createRequire } from "node:module";
 import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join } from "node:path";
 const { withAndroidManifest } = configPlugins;
 const { withMainApplication } = configPlugins;
 const { withInfoPlist } = configPlugins;
@@ -62,6 +61,7 @@ const ANDROID_KEYS = {
   // module / backend-dep identification as RN-side events do via
   // `initSentry`.
   moduleVersion: "com.comapeo.core.module.version",
+  moduleSha: "com.comapeo.core.module.sha",
   backendModulesJson: "com.comapeo.core.backend.modules",
 };
 
@@ -80,10 +80,8 @@ const IOS_KEYS = {
   sampleRate: "ComapeoCoreSentrySampleRate",
   tracesSampleRate: "ComapeoCoreSentryTracesSampleRate",
   rpcArgsBytes: "ComapeoCoreSentryRpcArgsBytes",
-  diagnosticsEnabledDefault:
-    "ComapeoCoreSentryDiagnosticsEnabledDefault",
-  applicationUsageDataDefault:
-    "ComapeoCoreSentryApplicationUsageDataDefault",
+  diagnosticsEnabledDefault: "ComapeoCoreSentryDiagnosticsEnabledDefault",
+  applicationUsageDataDefault: "ComapeoCoreSentryApplicationUsageDataDefault",
   debugDefault: "ComapeoCoreSentryDebugDefault",
   enableLogs: "ComapeoCoreSentryEnableLogs",
 };
@@ -98,12 +96,6 @@ function withComapeoCore(config, props) {
   config = withSentryAndroid(config, sentry, moduleIdent);
   config = withSentryIos(config, sentry);
   config = withSentryLibraryEvolution(config);
-  // iOS Debug builds: ship the backend sourcemaps next to the bundle so
-  // Node's `--enable-source-maps` (passed by NodeJSService under #if DEBUG)
-  // symbolicates backend errors in-process — no Sentry upload needed.
-  // Release builds skip the copy (the bundle's map stays out of the IPA).
-  // Android handles the debug case via its `src/debug/` asset tree instead.
-  config = withDebugSourcemapsIos(config);
   // Optional default project config (presets/categories) supplied by the
   // consuming app. The module no longer ships @comapeo/default-categories;
   // when this prop is absent, new projects get no default config.
@@ -112,7 +104,10 @@ function withComapeoCore(config, props) {
   // Optional online map style URL. Absent → the backend uses its built-in
   // default. Always passed through both mods so a `--no-clean` re-prebuild
   // after removing the prop strips the stale value.
-  config = withDefaultOnlineStyleUrlAndroid(config, props?.defaultOnlineStyleUrl);
+  config = withDefaultOnlineStyleUrlAndroid(
+    config,
+    props?.defaultOnlineStyleUrl,
+  );
   config = withDefaultOnlineStyleUrlIos(config, props?.defaultOnlineStyleUrl);
   // The embedded map server serves tiles over cleartext HTTP on
   // loopback; release builds block cleartext by default. Permit it
@@ -422,37 +417,6 @@ function withSentryLibraryEvolution(config) {
   });
 }
 
-// Adds the Debug-only `ComapeoCoreSourcemaps` companion pod to the consumer's
-// Podfile. `:configurations => ['Debug']` makes CocoaPods copy its resources
-// (the backend `.map` files, shaped as a `nodejs-project` dir) only in Debug
-// builds — they merge next to the bundle in the `.app`, where Node resolves
-// them via `--enable-source-maps` (passed by NodeJSService under #if DEBUG).
-// Release builds never include the pod, so the IPA stays lean.
-//
-// The pod is added explicitly here, never autolinked — see
-// `ComapeoCoreSourcemaps.podspec` and the pinned `apple.podspecPath` in
-// `expo-module.config.json`. `:path` is computed per-consumer so it survives
-// monorepo node_modules hoisting.
-function withDebugSourcemapsIos(config) {
-  return withPodfile(config, (cfg) => {
-    const podDir = join(dirname(fileURLToPath(import.meta.url)), "ios");
-    const relPodPath =
-      relative(cfg.modRequest.platformProjectRoot, podDir) || ".";
-    const podLine =
-      `  pod 'ComapeoCoreSourcemaps', :path => '${relPodPath}', ` +
-      `:configurations => ['Debug']`;
-    cfg.modResults.contents = mergeContents({
-      tag: "comapeo-core-debug-sourcemaps",
-      src: cfg.modResults.contents,
-      newSrc: podLine,
-      anchor: /use_expo_modules!/,
-      offset: 1,
-      comment: "#",
-    }).contents;
-    return cfg;
-  });
-}
-
 /**
  * Module version label + bundled-backend dep map — the same values
  * `src/version.ts` exposes to the RN-side `initSentry`. Used only on
@@ -462,9 +426,21 @@ function withDebugSourcemapsIos(config) {
  * prebuilds.
  */
 function readModuleIdentification() {
+  // Both values come from the generated `build/version.js`, never from
+  // `backend/package.json` — `backend/` is not in `files`, so it is absent
+  // from the published tarball and reading it there silently yields `{}`,
+  // leaving every FGS/backend event with an empty `comapeoBackend` context.
+  // `write-version.mjs` bakes the same dep map in at prepack time.
   let moduleVersion;
+  // `""` outside a git checkout at build time; stays undefined when we fell
+  // back to package.json, so the manifest entry is dropped rather than blank.
+  let moduleSha;
+  let backendModules = {};
   try {
-    moduleVersion = require("./build/version.js").COMAPEO_MODULE_VERSION_LABEL;
+    const version = require("./build/version.js");
+    moduleVersion = version.COMAPEO_MODULE_VERSION_LABEL;
+    moduleSha = version.COMAPEO_MODULE_GIT_SHA || undefined;
+    backendModules = version.BACKEND_MODULES ?? {};
   } catch {
     try {
       moduleVersion = require("./package.json").version;
@@ -472,21 +448,9 @@ function readModuleIdentification() {
       return null;
     }
   }
-  let backendModules = {};
-  try {
-    const backendPkg = require("./backend/package.json");
-    backendModules = Object.fromEntries(
-      Object.entries(backendPkg.dependencies ?? {}).filter(
-        ([name]) =>
-          name.startsWith("@comapeo/") || name === "@mapeo/crypto",
-      ),
-    );
-  } catch {
-    // Backend package.json missing — ship the version label without
-    // the dep map. Better than failing prebuild.
-  }
   return {
     moduleVersion,
+    moduleSha,
     backendModulesJson: JSON.stringify(backendModules),
   };
 }
@@ -611,6 +575,11 @@ function withSentryAndroid(config, sentry, moduleIdent) {
       application,
       ANDROID_KEYS.moduleVersion,
       moduleIdent?.moduleVersion,
+    );
+    syncAndroidMetaData(
+      application,
+      ANDROID_KEYS.moduleSha,
+      moduleIdent?.moduleSha,
     );
     syncAndroidMetaData(
       application,
