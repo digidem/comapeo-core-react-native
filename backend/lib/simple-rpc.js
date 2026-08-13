@@ -27,6 +27,8 @@ export class SimpleRpcServer extends ServerHelper {
   #readinessPhase = "pre-listening";
   /** @type {TerminalFrame | null} */
   #terminalFrame = null;
+  /** @type {{ type: "migrating", progress?: string } | { type: "low-space", spaceNeeded: number } | null} */
+  #activeTransientState = null;
   // Replayed on every connect: on Android both FGS and main-app
   // connect, only FGS owns sentry-android, and connect order isn't
   // guaranteed — replay-once would lose frames on a bad ordering.
@@ -65,6 +67,10 @@ export class SimpleRpcServer extends ServerHelper {
       this.#readinessPhase === "ready"
     ) {
       messagePort.postMessage({ type: "started" });
+    }
+    // Replay transient states (migrating, low-space) only if we haven't reached "ready" yet.
+    if (this.#readinessPhase !== "ready" && this.#activeTransientState !== null) {
+      messagePort.postMessage(this.#activeTransientState);
     }
     if (this.#readinessPhase === "ready") {
       messagePort.postMessage({ type: "ready" });
@@ -133,6 +139,13 @@ export class SimpleRpcServer extends ServerHelper {
   broadcast(message) {
     if (message.type === "stopping" || message.type === "error") {
       this.#terminalFrame = /** @type {TerminalFrame} */ (message);
+    }
+    if (message.type === "migrating" || message.type === "low-space") {
+      this.#activeTransientState = /** @type {typeof this.#activeTransientState} */ (message);
+    }
+    if (message.type === "ready") {
+      // Clear transient state once we reach ready.
+      this.#activeTransientState = null;
     }
     if (message.type === "sentry-event" || message.type === "sentry-envelope") {
       if (
