@@ -73,15 +73,21 @@ class ComapeoCoreModule : Module() {
             val controlSocketFile =
                 File(appContext.persistentFilesDirectory, ComapeoCoreService.CONTROL_SOCKET_FILENAME)
 
-            ipc = NodeJSIPC(socketFile) { message ->
+            // reconnectOnDrop on both sockets: when the system kills and restarts
+            // the :ComapeoCore process, the control socket is read-only from this
+            // side so nothing else would ever reconnect it, and the message socket
+            // would only recover if JS happened to call postMessage.
+            ipc = NodeJSIPC(socketFile, reconnectOnDrop = true) { message ->
                 sendEvent("message", mapOf("data" to message))
             }
 
             // The control socket replays `started`/`ready` to late-connecting clients,
             // so a fresh module instance always converges on the right state even if
-            // it joined after the FGS finished bootstrapping.
+            // it joined after the FGS finished bootstrapping — and a reconnect after
+            // an FGS restart converges back to STARTED the same way.
             controlIpc = NodeJSIPC(
                 controlSocketFile,
+                reconnectOnDrop = true,
                 onMessage = { message ->
                     when (val frame = ControlFrame.parse(message)) {
                         ControlFrame.Started -> setState(JsState.STARTING)
