@@ -577,27 +577,48 @@ module recovers in layers:
    `started`/`ready` replay then converges the JS-visible state back
    to `STARTED` on its own. `NodeJSService`'s FGS-side IPC keeps the
    default (no reconnect): in-process Node death ends that process.
-2. **In-flight calls fail fast.** The message socket reports
-   `transportStateChange` to JS; on `disconnected`/`error` the module
-   calls `@comapeo/ipc`'s transport-reset helpers, which reject every
-   in-flight call with `TransportClosedError`
+2. **In-flight calls fail fast (drop time).** The message socket
+   reports `transportStateChange` to JS; on `disconnected`/`error` the
+   module calls `@comapeo/ipc`'s transport-reset helpers, which reject
+   every in-flight call with `TransportClosedError`
    (`code: "RPC_TRANSPORT_CLOSED"`, re-exported by this package)
-   instead of letting them run into the 30 s RPC timeout. A read is
-   safe to retry after recovery; replaying mutations is the caller's
-   judgement — the module never re-sends requests.
-3. **Event subscriptions are replayed.** The restarted backend has
-   none of the client's event registrations, so the same reset
-   re-sends them for the long-lived channels (manager, project
-   routing, services). Per-project channels can't be replayed — their
-   instance ids died with the old server — so the reset hard-closes
-   stale project clients; the next `getProject` mints a working one.
+   instead of letting them run into the 30 s RPC timeout, and
+   hard-close stale project clients (each fires its `close` event
+   locally so app teardown listeners run; their server-side instance
+   ids died with the old server, and ids are a counter a restarted
+   server can remint, so revalidation can't be trusted). A rejected
+   call's response will never arrive — the call itself may or may not
+   have executed before the backend died — so reads are safe to
+   retry; replaying mutations is the caller's judgement, and the
+   module never re-sends requests.
+3. **Event subscriptions are replayed (recovery time).** The restarted
+   backend has none of the client's event registrations, so once the
+   backend reports `STARTED` again *and* the message socket has
+   reconnected, the module re-sends them for the long-lived channels
+   (manager, project routing, services; idempotent — the server
+   dedupes). Resubscribing waits for recovery deliberately: doing it
+   at drop time would nudge the socket out of its terminal `Error`
+   state in a tight retry loop for as long as the backend stays down.
+   A fresh `getProject` mints a working client for each project.
 4. **The app layer re-fetches.** `subscribeToBackendRestart(listener)`
-   fires once the backend is `STARTED` again after a transport drop.
-   Pass it to `@comapeo/core-react`'s `ComapeoCoreProvider`
-   (`subscribeToBackendRestart` prop) to invalidate its query caches —
+   fires when both recovery conditions above hold, in whichever order
+   they arrive — including a drop of the message socket alone, where
+   the lifecycle state never leaves `STARTED`. Pass it to
+   `@comapeo/core-react`'s `ComapeoCoreProvider`
+   (`subscribeToBackendRestart` prop) to reset its query caches —
    that re-runs `getProject` for mounted hooks and cascades fresh
    client identity through its effects. Never fires on iOS (§2.1:
    in-process Node — a backend death ends the app).
+
+During the recovery window the JS-visible state may flap (e.g.
+`STARTED → ERROR → STARTING → STARTED`, or briefly `STOPPING` from a
+conflated `Disconnecting` observation) before converging; treat
+`STARTED` plus the restart signal, not the intermediate states, as the
+signal to act on. Events the backend would have emitted while the
+transport was down are lost — for query-backed state the restart
+re-fetch compensates; state held outside react-query (e.g. the
+map-share stores in `@comapeo/core-react`, and their SSE download
+monitors) is not covered and must handle the restart signal itself.
 
 **What the host app must still handle.** Recovery only reaches state
 the module and `@comapeo/core-react` own. App code that captures

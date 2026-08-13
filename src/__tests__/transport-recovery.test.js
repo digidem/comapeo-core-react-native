@@ -1,16 +1,20 @@
 /**
- * Transport-drop recovery wiring: a native `transportStateChange` drop must
- * reject in-flight RPC calls via the @comapeo/ipc transport-reset helpers,
- * and `subscribeToBackendRestart` must fire once the backend reaches STARTED
- * again after a drop (and only then).
+ * Two-phase transport-drop recovery: at drop time the @comapeo/ipc reset
+ * helpers reject in-flight calls (no resubscription — that would nudge the
+ * native connect out of its terminal Error state in a loop); once BOTH the
+ * transport is reconnected AND the lifecycle state is STARTED, subscriptions
+ * are replayed and `subscribeToBackendRestart` listeners fire.
  */
 
-function setup() {
+function setup({ initialState = "STOPPED" } = {}) {
   const nativeListeners = {};
   const notifyCoreClientTransportReset = jest.fn();
   const notifyServicesClientTransportReset = jest.fn();
+  const resubscribeCoreClient = jest.fn();
+  const resubscribeServicesClient = jest.fn();
   const coreClient = { tag: "core" };
   const servicesClient = { tag: "services" };
+  let currentState = initialState;
 
   jest.resetModules();
 
@@ -32,6 +36,7 @@ function setup() {
           debug: false,
         },
         postMessage: jest.fn(),
+        getState: () => currentState,
         addListener: (name, fn) => {
           (nativeListeners[name] ??= []).push(fn);
         },
@@ -45,6 +50,8 @@ function setup() {
     createComapeoServicesClient: () => servicesClient,
     notifyCoreClientTransportReset,
     notifyServicesClientTransportReset,
+    resubscribeCoreClient,
+    resubscribeServicesClient,
   }));
 
   jest.doMock("@comapeo/ipc/errors.js", () => ({
@@ -72,79 +79,134 @@ function setup() {
   const emitNative = (name, payload) => {
     for (const fn of nativeListeners[name] ?? []) fn(payload);
   };
+  // The native stateChange event and getState() move together in reality.
+  const setBackendState = (state) => {
+    currentState = state;
+    emitNative("stateChange", { state });
+  };
   return {
     module,
     emitNative,
+    setBackendState,
+    setStateSilently: (state) => {
+      currentState = state;
+    },
     notifyCoreClientTransportReset,
     notifyServicesClientTransportReset,
+    resubscribeCoreClient,
+    resubscribeServicesClient,
     coreClient,
     servicesClient,
   };
 }
 
 describe("transport-drop recovery", () => {
-  test("a transport drop resets both RPC clients", () => {
-    const {
-      emitNative,
-      notifyCoreClientTransportReset,
-      notifyServicesClientTransportReset,
-      coreClient,
-      servicesClient,
-    } = setup();
+  test("a drop rejects via both reset helpers and does NOT resubscribe", () => {
+    const s = setup({ initialState: "STARTED" });
 
-    emitNative("transportStateChange", { state: "disconnected" });
+    s.emitNative("transportStateChange", { state: "disconnected" });
 
-    expect(notifyCoreClientTransportReset).toHaveBeenCalledTimes(1);
-    expect(notifyCoreClientTransportReset).toHaveBeenCalledWith(coreClient);
-    expect(notifyServicesClientTransportReset).toHaveBeenCalledTimes(1);
-    expect(notifyServicesClientTransportReset).toHaveBeenCalledWith(
-      servicesClient,
+    expect(s.notifyCoreClientTransportReset).toHaveBeenCalledTimes(1);
+    expect(s.notifyCoreClientTransportReset).toHaveBeenCalledWith(s.coreClient);
+    expect(s.notifyServicesClientTransportReset).toHaveBeenCalledWith(
+      s.servicesClient,
     );
+    expect(s.resubscribeCoreClient).not.toHaveBeenCalled();
+    expect(s.resubscribeServicesClient).not.toHaveBeenCalled();
   });
 
-  test("a transport error also resets; a reconnect does not", () => {
-    const { emitNative, notifyCoreClientTransportReset } = setup();
+  test("a transport error also resets; double reset is tolerated", () => {
+    const s = setup({ initialState: "STARTED" });
 
-    emitNative("transportStateChange", { state: "connected" });
-    expect(notifyCoreClientTransportReset).not.toHaveBeenCalled();
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.emitNative("transportStateChange", { state: "error" });
 
-    emitNative("transportStateChange", { state: "error" });
-    expect(notifyCoreClientTransportReset).toHaveBeenCalledTimes(1);
+    expect(s.notifyCoreClientTransportReset).toHaveBeenCalledTimes(2);
+    expect(s.resubscribeCoreClient).not.toHaveBeenCalled();
   });
 
-  test("restart fires on STARTED after a drop, once per drop", () => {
-    const { module, emitNative } = setup();
+  test("recovery needs BOTH transport connected and state STARTED (state last)", () => {
+    const s = setup({ initialState: "STARTED" });
     const listener = jest.fn();
-    module.subscribeToBackendRestart(listener);
+    s.module.subscribeToBackendRestart(listener);
 
-    // STARTED without a preceding drop (normal boot) is not a restart.
-    emitNative("stateChange", { state: "STARTED" });
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.setStateSilently("ERROR");
+    s.emitNative("transportStateChange", { state: "connected" });
+    // Transport back but backend still booting: nothing yet.
+    expect(s.resubscribeCoreClient).not.toHaveBeenCalled();
     expect(listener).not.toHaveBeenCalled();
 
-    emitNative("transportStateChange", { state: "disconnected" });
+    s.setBackendState("STARTING");
+    s.setBackendState("STARTED");
+    expect(s.resubscribeCoreClient).toHaveBeenCalledTimes(1);
+    expect(s.resubscribeCoreClient).toHaveBeenCalledWith(s.coreClient);
+    expect(s.resubscribeServicesClient).toHaveBeenCalledWith(s.servicesClient);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  test("recovery when transport reconnects last (message-socket-only drop)", () => {
+    // Control socket never left STARTED, so no stateChange event ever fires.
+    const s = setup({ initialState: "STARTED" });
+    const listener = jest.fn();
+    s.module.subscribeToBackendRestart(listener);
+
+    s.emitNative("transportStateChange", { state: "disconnected" });
     expect(listener).not.toHaveBeenCalled();
 
-    emitNative("stateChange", { state: "STARTING" });
-    emitNative("stateChange", { state: "STARTED" });
+    s.emitNative("transportStateChange", { state: "connected" });
+    expect(s.resubscribeCoreClient).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  test("restart fires once per drop; STARTED without a drop fires nothing", () => {
+    const s = setup({ initialState: "STOPPED" });
+    const listener = jest.fn();
+    s.module.subscribeToBackendRestart(listener);
+
+    // Normal boot: connected + STARTED with no preceding drop.
+    s.emitNative("transportStateChange", { state: "connected" });
+    s.setBackendState("STARTING");
+    s.setBackendState("STARTED");
+    expect(listener).not.toHaveBeenCalled();
+
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.emitNative("transportStateChange", { state: "connected" });
     expect(listener).toHaveBeenCalledTimes(1);
 
-    // No second firing until another drop happens.
-    emitNative("stateChange", { state: "STARTED" });
+    // Repeat STARTED events without a new drop don't re-fire.
+    s.setBackendState("STARTED");
     expect(listener).toHaveBeenCalledTimes(1);
 
-    emitNative("transportStateChange", { state: "disconnected" });
-    emitNative("stateChange", { state: "STARTED" });
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.emitNative("transportStateChange", { state: "connected" });
     expect(listener).toHaveBeenCalledTimes(2);
   });
 
+  test("a throwing restart listener does not block the others", () => {
+    const s = setup({ initialState: "STARTED" });
+    const bad = jest.fn(() => {
+      throw new Error("listener boom");
+    });
+    const good = jest.fn();
+    s.module.subscribeToBackendRestart(bad);
+    s.module.subscribeToBackendRestart(good);
+
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.emitNative("transportStateChange", { state: "connected" });
+
+    expect(bad).toHaveBeenCalledTimes(1);
+    expect(good).toHaveBeenCalledTimes(1);
+  });
+
   test("unsubscribe stops restart notifications", () => {
-    const { module, emitNative } = setup();
+    const s = setup({ initialState: "STARTED" });
     const listener = jest.fn();
-    const unsubscribe = module.subscribeToBackendRestart(listener);
+    const unsubscribe = s.module.subscribeToBackendRestart(listener);
     unsubscribe();
 
-    emitNative("transportStateChange", { state: "disconnected" });
-    emitNative("stateChange", { state: "STARTED" });
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.emitNative("transportStateChange", { state: "connected" });
     expect(listener).not.toHaveBeenCalled();
   });
 });
