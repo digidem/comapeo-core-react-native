@@ -61,16 +61,21 @@ class NodeJSIPCTest {
      * To match, we bind a [LocalSocket] to the filesystem address and pass
      * its file descriptor to [LocalServerSocket].
      */
-    private fun startMockServer(onConnection: (DataInputStream, DataOutputStream) -> Unit) {
+    private fun bindServer(): LocalServerSocket {
         val bindSocket = LocalSocket(LocalSocket.SOCKET_STREAM)
         val address = LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM)
         bindSocket.bind(address)
         boundSocket = bindSocket
         serverSocket = LocalServerSocket(bindSocket.fileDescriptor)
+        return serverSocket!!
+    }
+
+    private fun startMockServer(onConnection: (DataInputStream, DataOutputStream) -> Unit) {
+        val server = bindServer()
 
         Thread {
             try {
-                val client = serverSocket!!.accept()
+                val client = server.accept()
                 val input = DataInputStream(client.inputStream)
                 val output = DataOutputStream(client.outputStream)
                 onConnection(input, output)
@@ -350,5 +355,128 @@ class NodeJSIPCTest {
 
         // The IPC should handle the server disconnect without crashing
         ipc.disconnect()
+    }
+
+    /**
+     * With reconnectOnDrop enabled, an unexpected server-side close followed by
+     * the server accepting again must converge back to a working connection
+     * without any sendMessage()/connect() nudge — the low-memory-kill recovery
+     * path where the FGS process restarts a few seconds later.
+     */
+    @Test
+    fun reconnectsAfterUnexpectedServerDrop() {
+        val server = bindServer()
+        val firstAccepted = CountDownLatch(1)
+        val received = CountDownLatch(1)
+
+        Thread {
+            try {
+                val first = server.accept()
+                firstAccepted.countDown()
+                Thread.sleep(300)
+                first.close() // unexpected drop
+                val second = server.accept()
+                Thread.sleep(300) // let the reconnected client's receive loop attach
+                writeFramedMessage(
+                    DataOutputStream(second.outputStream),
+                    """{"type":"after-reconnect"}""",
+                )
+                Thread.sleep(5000)
+            } catch (e: IOException) {
+                // Server closed, expected during teardown
+            }
+        }.start()
+
+        val ipc = NodeJSIPC(socketFile, reconnectOnDrop = true) { msg ->
+            receivedMessages.add(msg)
+            received.countDown()
+        }
+        try {
+            assertTrue("Should connect within 10s", firstAccepted.await(10, TimeUnit.SECONDS))
+            assertTrue(
+                "Should auto-reconnect and receive within 15s",
+                received.await(15, TimeUnit.SECONDS)
+            )
+            assertEquals("""{"type":"after-reconnect"}""", receivedMessages[0])
+        } finally {
+            ipc.close()
+        }
+    }
+
+    @Test
+    fun closeSuppressesReconnect() {
+        val server = bindServer()
+        val acceptCount = java.util.concurrent.atomic.AtomicInteger(0)
+        // Retain every accepted socket: an unreferenced LocalSocket can be
+        // GC-finalized (closed) mid-test, dropping the connection and causing
+        // a spurious reconnect before close() is even called.
+        val acceptedSockets = CopyOnWriteArrayList<LocalSocket>()
+
+        Thread {
+            try {
+                while (true) {
+                    acceptedSockets.add(server.accept())
+                    acceptCount.incrementAndGet()
+                }
+            } catch (e: IOException) {
+                // Server closed, expected during teardown
+            }
+        }.start()
+
+        val ipc = NodeJSIPC(socketFile, reconnectOnDrop = true) { msg ->
+            receivedMessages.add(msg)
+        }
+        val deadline = System.currentTimeMillis() + 10_000
+        while (acceptCount.get() == 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50)
+        }
+        assertEquals("Should connect once", 1, acceptCount.get())
+        Thread.sleep(200)
+
+        ipc.close()
+
+        // Longer than several backoff steps (immediate + 250 + 500 + 1000ms); a
+        // post-close reconnect would show up as a second accept.
+        Thread.sleep(3000)
+        assertEquals("close() must not trigger reconnect attempts", 1, acceptCount.get())
+        acceptedSockets.forEach { try { it.close() } catch (_: IOException) {} }
+    }
+
+    @Test
+    fun doesNotReconnectByDefaultAfterUnexpectedDrop() {
+        val server = bindServer()
+        val acceptCount = java.util.concurrent.atomic.AtomicInteger(0)
+
+        Thread {
+            try {
+                while (true) {
+                    val client = server.accept()
+                    acceptCount.incrementAndGet()
+                    Thread.sleep(300)
+                    client.close() // unexpected drop
+                }
+            } catch (e: IOException) {
+                // Server closed, expected during teardown
+            }
+        }.start()
+
+        val ipc = NodeJSIPC(socketFile) { msg -> receivedMessages.add(msg) }
+        try {
+            val deadline = System.currentTimeMillis() + 10_000
+            while (acceptCount.get() == 0 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(50)
+            }
+            assertEquals("Should connect once", 1, acceptCount.get())
+
+            // Ample time for an (unwanted) reconnect after the drop at +300ms.
+            Thread.sleep(3000)
+            assertEquals(
+                "Default (reconnectOnDrop=false) must not reconnect",
+                1,
+                acceptCount.get()
+            )
+        } finally {
+            ipc.close()
+        }
     }
 }

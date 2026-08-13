@@ -30,6 +30,10 @@ import java.nio.ByteOrder
 @OptIn(ExperimentalCoroutinesApi::class)
 class NodeJSIPC(
     private val socketFile: File,
+    // Auto-reconnect with backoff after an unexpected socket drop (e.g. the
+    // backend process was killed and restarted). Off by default:
+    // NodeJSService's usage must not chase a socket it owns the lifecycle of.
+    private val reconnectOnDrop: Boolean = false,
     // Optional first so the trailing-lambda call form
     // `NodeJSIPC(file) { msg -> ... }` keeps binding to `onMessage` (the
     // last function-type parameter). Reordering after `onMessage` would
@@ -37,6 +41,8 @@ class NodeJSIPC(
     // state observer, which the kotlinc reports as
     // "Argument type mismatch: actual type is 'NodeJSIPC.State', but
     //  'String!' was expected." in CI.
+    // Contract: terminal transitions (Disconnected/Error) may be delivered
+    // twice (collector + imperative path); observers must be idempotent.
     private val onConnectionStateChange: ((State) -> Unit)? = null,
     private val onMessage: (String) -> Unit,
 ) {
@@ -48,6 +54,15 @@ class NodeJSIPC(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var connectJob: Job? = null
     private var sendChannel = Channel<String>(Channel.UNLIMITED)
+
+    // Terminal-close flag: close() sets it before cancelling the scope, so an
+    // IO-loop failure racing close() can neither schedule a reconnect (flag)
+    // nor run one (reconnects launch in the now-cancelled scope).
+    @Volatile
+    private var closed = false
+
+    // Incremented on every successful (re)connect; see disconnect(epoch).
+    private val connectionEpoch = java.util.concurrent.atomic.AtomicLong(0)
 
     // Reusable buffers to reduce GC pressure; larger messages use temporary buffers.
     private val receiveLengthBuffer = ByteArray(4)
@@ -64,6 +79,17 @@ class NodeJSIPC(
 
     private val state = MutableStateFlow<State>(State.Disconnected)
     val connectionState: State get() = state.value
+
+    // Imperative delivery for the load-bearing terminal transitions: the state
+    // collector rides a conflating StateFlow, so a Disconnected that is CASed
+    // to Connecting by the auto-reconnect microseconds later can be dropped
+    // before the collector runs — and consumers hang recovery off exactly that
+    // emission. Duplicate delivery (collector + this) is fine per the observer
+    // contract above. Suppressed after close().
+    private fun notifyObserver(newState: State) {
+        if (closed) return
+        onConnectionStateChange?.invoke(newState)
+    }
 
     init {
         log("NodeJSIPC initialized with socket file: ${socketFile.absolutePath}")
@@ -82,7 +108,16 @@ class NodeJSIPC(
         connect()
     }
 
-    fun connect() {
+    fun connect() = connect(
+        deadlineMs = CONNECT_DEADLINE_MS,
+        initialIntervalMs = CONNECT_INTERVAL_MS,
+        maxIntervalMs = CONNECT_INTERVAL_MS,
+    )
+
+    private fun connect(deadlineMs: Long, initialIntervalMs: Long, maxIntervalMs: Long) {
+        if (closed) {
+            return
+        }
         if (state.value is State.Connected || state.value is State.Connecting) {
             return
         }
@@ -108,23 +143,41 @@ class NodeJSIPC(
                 try { socket.close() } catch (_: Exception) {}
             }
             try {
-                socket = connectWithRetry(socketAddress).apply {
+                socket = connectWithRetry(
+                    socketAddress,
+                    deadlineMs,
+                    initialIntervalMs,
+                    maxIntervalMs,
+                ).apply {
                     dataOutputStream = DataOutputStream(outputStream)
                     dataInputStream = DataInputStream(inputStream)
                 }
             } catch (e: Exception) {
                     log("Failed to connect to socket: ${e.message}")
-                    state.value = State.Error(e)
+                    val error = State.Error(e)
+                    state.value = error
+                    notifyObserver(error)
                     return@launch
             }
+            // close() may have won while connectWithRetry was between suspension
+            // points; don't overwrite its terminal Disconnected with Connected.
+            if (closed) {
+                closeStreamsAndSocket()
+                return@launch
+            }
 
+            val epoch = connectionEpoch.incrementAndGet()
             state.value = State.Connected
             val receiveJob = launch {
                 while (isActive) {
                     try {
                         receiveMessage()
                     } catch (e: IOException) {
-                        disconnect()
+                        // break, don't retry: a second disconnect() from this
+                        // loop can outlive the teardown+reconnect it triggers
+                        // and would tear down the replacement connection.
+                        disconnect(epoch)
+                        break
                     }
                 }
             }
@@ -137,7 +190,7 @@ class NodeJSIPC(
                         sendMessageInternal(message)
                     } catch (e: IOException) {
                         log("Send failed, disconnecting: ${e.message}")
-                        disconnect()
+                        disconnect(epoch)
                         break
                     }
                 }
@@ -166,20 +219,66 @@ class NodeJSIPC(
         onMessage(buffer.decodeToString(0, messageLength))
     }
 
-    fun disconnect() {
-        if (state.value is State.Disconnecting || state.value is State.Disconnected) {
+    fun disconnect() = disconnect(ANY_EPOCH)
+
+    // `epoch` scopes the teardown to one connection: the IO loops pass the epoch
+    // of the connection that failed, so a disconnect that runs late — after a
+    // reconnect has already replaced that connection — returns instead of tearing
+    // down the replacement (State.Connected is a singleton, so the state CAS
+    // alone cannot tell two connections apart). Public disconnect() passes
+    // ANY_EPOCH: a deliberate teardown targets whatever connection is current.
+    private fun disconnect(epoch: Long) {
+        val observed = state.value
+        if (observed is State.Disconnected) {
             return
         }
-        sendChannel.close()
+        // A Disconnecting held by a STALE-epoch disconnect is transient — it
+        // rolls back to Connected (see the post-CAS re-read below). A drop of
+        // the CURRENT connection must not be swallowed by that window, or state
+        // wedges at Connected with dead IO loops; only bail here when this
+        // teardown cannot be the one the rollback would restore.
+        if (observed is State.Disconnecting &&
+            (epoch == ANY_EPOCH || connectionEpoch.get() != epoch)
+        ) {
+            return
+        }
+        // Teardown is single-flight: concurrent disconnect calls (send + receive
+        // loops failing together) all launch jobs, but only the one that wins the
+        // Connected -> Disconnecting CAS tears down and runs the completion side
+        // effects; losers return without touching state or scheduling a reconnect.
+        val wonTeardown = java.util.concurrent.atomic.AtomicBoolean(false)
         val disconnectJob = scope.launch {
             while (isActive) {
                 when (state.value) {
-                    is State.Disconnecting, is State.Disconnected -> return@launch
+                    is State.Disconnected -> return@launch
+                    is State.Disconnecting -> {
+                        // Same stale-rollback hazard as the entry guard: wait
+                        // out a Disconnecting that may roll back to Connected
+                        // and re-evaluate, so a current-epoch drop is never
+                        // swallowed. Any other teardown resolves to
+                        // Disconnected and we return on the next pass.
+                        if (epoch != ANY_EPOCH && connectionEpoch.get() == epoch) {
+                            state.first { it !is State.Disconnecting }
+                        } else {
+                            return@launch
+                        }
+                    }
                     is State.Connecting -> {
                         state.first { it is State.Connected || it is State.Error }
                     }
                     is State.Connected -> {
+                        if (epoch != ANY_EPOCH && connectionEpoch.get() != epoch) return@launch
                         if (state.compareAndSet(State.Connected, State.Disconnecting)) {
+                            // Epoch can advance between the check above and the
+                            // CAS (full teardown + reconnect in the gap). Once
+                            // Disconnecting is ours the epoch is frozen, so this
+                            // re-read is authoritative: on mismatch we captured
+                            // the replacement connection — hand it back untouched.
+                            if (epoch != ANY_EPOCH && connectionEpoch.get() != epoch) {
+                                state.value = State.Connected
+                                return@launch
+                            }
+                            wonTeardown.set(true)
                             break
                         }
                     }
@@ -189,6 +288,10 @@ class NodeJSIPC(
                     }
                 }
             }
+            // Close the channel only after winning the CAS: a losing (stale)
+            // disconnect must not close the replacement connection's channel —
+            // trySend on a closed channel drops messages silently.
+            sendChannel.close()
             // `shutdown` before `cancelAndJoin`: the receive loop is parked in a
             // blocking `readFully` that `cancelAndJoin` cannot interrupt, so without
             // first waking it the join blocks until the node backend sends a message
@@ -200,9 +303,24 @@ class NodeJSIPC(
             closeStreamsAndSocket()
         }
         disconnectJob.invokeOnCompletion { cause ->
-            state.value = when (cause) {
+            if (!wonTeardown.get()) return@invokeOnCompletion
+            val terminal = when (cause) {
                 null, is EOFException, is IOException, is CancellationException -> State.Disconnected
                 else -> State.Error(cause)
+            }
+            state.value = terminal
+            notifyObserver(terminal)
+            // Terminal teardown goes through close(), so a disconnect() that
+            // completes with `closed` unset is an unexpected drop (the IO loops'
+            // IOException handlers) — the auto-reconnect trigger. Backoff, not
+            // the 50ms cold-start cadence: a backend restart takes seconds.
+            if (reconnectOnDrop && !closed) {
+                log("Unexpected disconnect; auto-reconnecting with backoff")
+                connect(
+                    deadlineMs = RECONNECT_DEADLINE_MS,
+                    initialIntervalMs = RECONNECT_INITIAL_INTERVAL_MS,
+                    maxIntervalMs = RECONNECT_MAX_INTERVAL_MS,
+                )
             }
         }
     }
@@ -232,6 +350,7 @@ class NodeJSIPC(
      * Not reusable after close; construct a new instance.
      */
     fun close() {
+        closed = true
         scope.cancel()
         // Mark terminal before shutdownSocket() wakes the receive loop's blocking
         // readFully: its IOException handler calls disconnect(), which then
@@ -263,27 +382,46 @@ class NodeJSIPC(
     }
 }
 
+// Explicit connect(): 50 ms cadence is invisible to TTI; the 30 s deadline
+// matches the prior `waitForFile` timeout so the startup wait budget is unchanged.
+private const val CONNECT_DEADLINE_MS = 30_000L
+private const val CONNECT_INTERVAL_MS = 50L
+
+// disconnect(epoch) wildcard: tear down the current connection, whichever it is.
+private const val ANY_EPOCH = -1L
+
+// Auto-reconnect after an unexpected drop: a killed backend process takes a few
+// seconds to be restarted by the system — and a debug build or slow device can
+// take over a minute to boot Node — so back off instead of burning battery on a
+// tight loop, and give up (State.Error) only after a window that comfortably
+// exceeds a slow restart (the FGS-kill test budgets 90 s for a debug boot).
+private const val RECONNECT_DEADLINE_MS = 120_000L
+private const val RECONNECT_INITIAL_INTERVAL_MS = 250L
+private const val RECONNECT_MAX_INTERVAL_MS = 4_000L
+
 /**
- * Connect with a fixed-cadence retry loop bounded by an overall deadline.
+ * Connect with a retry loop bounded by an overall deadline.
  *
  * Retries fire on every `IOException` from `LocalSocket.connect`, which covers
  * both "socket file does not exist yet" (`ENOENT`) and "file exists but the
  * server is not yet `accept`ing" (`ECONNREFUSED`) — the same primitive handles
- * both phases of backend startup. The 50 ms cadence is fast enough to be
- * invisible to TTI; the 30 s deadline matches the prior `waitForFile` timeout
- * so the cumulative startup wait budget is unchanged.
+ * both phases of backend startup, and a stale socket file left behind by a
+ * killed backend process.
  *
- * No exponential backoff: this is a one-shot startup wait, not a network call,
- * and the failure mode we're tolerating is "backend not finished booting yet"
- * — it doesn't get worse from retrying tightly.
+ * The interval between attempts starts at [initialIntervalMs] and doubles up to
+ * [maxIntervalMs]. Cold-start callers pass equal values (fixed cadence — a
+ * startup wait doesn't get worse from retrying tightly); the auto-reconnect
+ * path passes a widening backoff because the peer needs seconds to come back.
  */
 private suspend fun connectWithRetry(
     socketAddress: LocalSocketAddress,
-    deadlineMs: Long = 30_000,
-    intervalMs: Long = 50,
+    deadlineMs: Long,
+    initialIntervalMs: Long,
+    maxIntervalMs: Long,
 ): LocalSocket {
     var lastFailure: IOException? = null
     var attempts = 0
+    var intervalMs = initialIntervalMs
     val connected = try {
         withTimeout(deadlineMs) {
             // `LocalSocket.connect` opens a real fd before it can throw
@@ -303,6 +441,7 @@ private suspend fun connectWithRetry(
                     try { candidate.close() } catch (_: Exception) {}
                     lastFailure = e
                     delay(intervalMs)
+                    intervalMs = (intervalMs * 2).coerceAtMost(maxIntervalMs)
                 }
             }
             s

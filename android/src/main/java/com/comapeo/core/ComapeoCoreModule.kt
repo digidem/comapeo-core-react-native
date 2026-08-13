@@ -73,15 +73,21 @@ class ComapeoCoreModule : Module() {
             val controlSocketFile =
                 File(appContext.persistentFilesDirectory, ComapeoCoreService.CONTROL_SOCKET_FILENAME)
 
-            ipc = NodeJSIPC(socketFile) { message ->
+            // reconnectOnDrop on both sockets: when the system kills and restarts
+            // the :ComapeoCore process, the control socket is read-only from this
+            // side so nothing else would ever reconnect it, and the message socket
+            // would only recover if JS happened to call postMessage.
+            ipc = NodeJSIPC(socketFile, reconnectOnDrop = true) { message ->
                 sendEvent("message", mapOf("data" to message))
             }
 
             // The control socket replays `started`/`ready` to late-connecting clients,
             // so a fresh module instance always converges on the right state even if
-            // it joined after the FGS finished bootstrapping.
+            // it joined after the FGS finished bootstrapping — and a reconnect after
+            // an FGS restart converges back to STARTED the same way.
             controlIpc = NodeJSIPC(
                 controlSocketFile,
+                reconnectOnDrop = true,
                 onMessage = { message ->
                     when (val frame = ControlFrame.parse(message)) {
                         ControlFrame.Started -> setState(JsState.STARTING)
@@ -123,14 +129,23 @@ class ComapeoCoreModule : Module() {
                                 )
                             }
                         }
-                        is NodeJSIPC.State.Error -> setState(
-                            JsState.ERROR,
-                            mapOf(
-                                "errorPhase" to "ipc",
-                                "errorMessage" to (connState.exception.message
-                                    ?: connState.exception.javaClass.simpleName),
-                            ),
-                        )
+                        is NodeJSIPC.State.Error -> {
+                            // Mirror the Disconnected guard: after a graceful stop the
+                            // auto-reconnect exhausts its window into State.Error, which
+                            // must not reclassify a clean STOPPED as ERROR — only a
+                            // backend we believed live is an error.
+                            when (synchronized(stateLock) { jsState }) {
+                                JsState.STARTING, JsState.STARTED -> setState(
+                                    JsState.ERROR,
+                                    mapOf(
+                                        "errorPhase" to "ipc",
+                                        "errorMessage" to (connState.exception.message
+                                            ?: connState.exception.javaClass.simpleName),
+                                    ),
+                                )
+                                JsState.ERROR, JsState.STOPPING, JsState.STOPPED -> {}
+                            }
+                        }
                         // .Connected: just "we have a socket"; wait for `started`/`ready`.
                         else -> {}
                     }
