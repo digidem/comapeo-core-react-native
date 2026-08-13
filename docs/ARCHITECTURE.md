@@ -572,7 +572,7 @@ module recovers in layers:
    instances are constructed with `reconnectOnDrop = true`: an
    unexpected drop schedules reconnection with backoff (~250 ms
    doubling to a few seconds, giving up into `State.Error` after
-   ~60 s; any manual `connect()` — foreground transition or a
+   ~120 s; any manual `connect()` — foreground transition or a
    `postMessage` — starts a fresh cycle). The control socket's
    `started`/`ready` replay then converges the JS-visible state back
    to `STARTED` on its own. `NodeJSService`'s FGS-side IPC keeps the
