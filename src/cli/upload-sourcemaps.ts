@@ -1,27 +1,25 @@
 #!/usr/bin/env node
 // Uploads the Node-backend bundle's sourcemaps to the consumer's Sentry
-// project. Run from the consumer's CI step (after `eas build` or as part
-// of the release pipeline). Re-uploading is idempotent — Sentry de-dupes
-// by debug ID.
+// project. Re-uploading is idempotent — Sentry de-dupes by debug ID, and
+// sentry-cli skips chunks the server already holds.
 //
-// Only the *release* bundles are uploaded — debug builds ship their map
-// alongside the bundle and symbolicate in-process via Node's
-// `--enable-source-maps` (see `backend/rolldown.config.ts` and the native
-// NodeJSService), so there's nothing to upload for them.
+// This is a per-package-version step, NOT a per-build one. Each platform
+// ships a single bundle used by every build variant, and its debug ID is
+// `stringToUUID(chunk.code)` — a content hash. One upload per installed
+// version of this package therefore symbolicates every build made from it,
+// debug and release alike, however often and by whoever it is built.
 //
 // Two targets ship with the package:
 //
 //   android-main  → android/src/main/assets/nodejs-project/index.mjs
 //                   android/src/main/nodejs-sourcemaps/index.mjs.map
 //   ios           → ios/nodejs-project/index.mjs
-//                   ios/nodejs-sourcemaps/nodejs-project/index.mjs.map
+//                   ios/nodejs-sourcemaps/index.mjs.map
 //
-// Each (bundle, map) pair is keyed by a deterministic debug ID embedded
-// at build time (`stringToUUID(chunk.code)`); see
-// `backend/rolldown.config.ts` and `relocateSourcemapsPlugin`. sentry-cli
-// 2.x+ does debug-ID-based upload by default — symbolication keys off
-// the embedded ID, so the consumer's app `release` does not have to
-// match.
+// See `backend/rolldown.config.ts` and `relocateSourcemapsPlugin` for how
+// the IDs are embedded. sentry-cli 2.x+ does debug-ID-based upload by
+// default — symbolication keys off the embedded ID, so the consumer's app
+// `release` does not have to match.
 //
 // Auth token is read from `SENTRY_AUTH_TOKEN`. Org and project come from
 // `--org`/`--project` (or `SENTRY_ORG`/`SENTRY_PROJECT`).
@@ -55,7 +53,7 @@ const TARGETS: Record<string, Target> = {
   ios: {
     name: "ios",
     bundleDir: join(PKG_ROOT, "ios/nodejs-project"),
-    sourcemapDir: join(PKG_ROOT, "ios/nodejs-sourcemaps/nodejs-project"),
+    sourcemapDir: join(PKG_ROOT, "ios/nodejs-sourcemaps"),
   },
 };
 

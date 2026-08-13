@@ -35,9 +35,11 @@ runtime/process side (how native talks to the backend over sockets) see
 1. **Bundle the backend JS.** Runs the `backend/` build (rolldown, a
    rollup-compatible bundler), emitting a single `index.mjs` + `loader.mjs` and a
    `chunks/` tree, staged into the per-platform locations:
-   - Android: `android/src/main/assets/nodejs-project/` (and a `src/debug/`
-     variant)
+   - Android: `android/src/main/assets/nodejs-project/`
    - iOS: `ios/nodejs-project/`
+   One bundle per platform, shared by every build variant; the sourcemaps are
+   moved out to sibling `nodejs-sourcemaps/` dirs so they ship in the npm
+   tarball but stay out of the APK/IPA.
    Alongside the bundle it copies the runtime assets the bundle can't inline —
    most importantly the drizzle migration `.sql` files, which `@comapeo/core`
    reads from disk at migration time (see
