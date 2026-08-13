@@ -51,9 +51,9 @@ export function omit(obj, keys) {
 }
 
 /**
- * @template {import('@comapeo/schema').MapeoDoc & { forks?: string[], createdBy?: string, updatedBy?: strin>
+ * @template {import('@comapeo/schema').MapeoDoc & { forks?: string[], createdBy?: string, updatedBy?: string}} T
  * @param {T} doc
- * @returns {Omit<T, 'docId' | 'versionId' | 'originalVersionId' | 'links' | 'forks' | 'createdAt' | 'update>
+ * @returns {Omit<T, 'docId' | 'versionId' | 'originalVersionId' | 'links' | 'forks' | 'deleted' | 'createdAt' | 'updatedAt' | 'createdBy' | 'updatedBy'>}
  */
 export function valueOf(doc) {
   return omit(doc, [
