@@ -89,9 +89,10 @@ object SentryFgsBridge {
                 options.logs.isEnabled = config.enableLogs == true
                 options.setTag(SentryTags.PROC, SentryTags.PROC_FGS)
                 options.setTag(SentryTags.LAYER, SentryTags.LAYER_NATIVE)
-                // Mirrors the RN-side `comapeo.rn` global tag. event.modules is
-                // skipped (sentry-java's setter is package-private).
+                // Mirrors the RN-side `comapeo.rn` / `comapeo.rn.sha` global tags.
+                // event.modules is skipped (sentry-java's setter is package-private).
                 config.moduleVersion?.let { options.setTag("comapeo.rn", it) }
+                config.moduleSha?.let { options.setTag("comapeo.rn.sha", it) }
                 // Normalise `device.family` to "Android". sentry-android's
                 // ContextUtils.getFamily() returns `Build.MODEL.split(" ")[0]`
                 // (so "Google" on a Pixel/emulator); the main-process events

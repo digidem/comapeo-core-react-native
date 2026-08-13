@@ -1,7 +1,7 @@
 # Sentry release smoke test
 
 Run before every release ([issue #69](https://github.com/digidem/comapeo-core-react-native/issues/69)).
-Unit tests cover the Sentry *logic* (what a processor does when it runs);
+Unit tests cover the Sentry _logic_ (what a processor does when it runs);
 this checklist covers the wiring they can't: whether spans actually reach
 Sentry, with the right structure, from all three layers (React Native JS,
 native Kotlin/Swift, and the embedded Node backend). Budget ~10 minutes of
@@ -28,9 +28,9 @@ plugin block should look like:
       "tracesSampleRate": 1.0,
       "diagnosticsEnabledDefault": true, // default, but be explicit
       "applicationUsageDataDefault": true,
-      "debugDefault": true // per-RPC traces are debug-gated
-    }
-  }
+      "debugDefault": true, // per-RPC traces are debug-gated
+    },
+  },
 ]
 ```
 
@@ -55,7 +55,7 @@ plugin block should look like:
       cold-starts the `:ComapeoCore` foreground service, the separate OS
       process that hosts Node).
 - [ ] **One RPC call** — tap "Reload projects (warm listProjects)" in the
-      integration app's *Sentry smoke* group (any `comapeo.*` call works).
+      integration app's _Sentry smoke_ group (any `comapeo.*` call works).
 - [ ] **Forced error** — tap "Capture RN-side exception" in the same group.
 
 ## Verify in Sentry (within ~10 minutes)
@@ -87,7 +87,10 @@ Filter everything by the run's `environment` value.
 - [ ] **Scope tags** on events from each layer: `proc` (`main` on iOS and
       the Android UI process, `fgs` in the Android service process),
       `layer` (`rn` / `native` / `node`), and `comapeo.rn` (module version
-      label) everywhere.
+      label) everywhere. On a build made from a published npm release
+      `comapeo.rn` is a bare `<version>`; a `+git<sha>` / `-dirty<hash>`
+      suffix means the build did not come from a release. The source
+      commit rides alongside as `comapeo.rn.sha`.
 - [ ] **No PII** in event JSON: no rootkey (base64) values, project IDs, or
       lat/lng coordinates — `[redacted]` placeholders are the scrubbers
       working as intended.
