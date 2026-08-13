@@ -3,7 +3,12 @@ import { cp } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sentryRollupPlugin } from "@sentry/rollup-plugin";
-import type { InputOptions, OutputOptions, Plugin, RolldownOptions } from "rolldown";
+import type {
+  InputOptions,
+  OutputOptions,
+  Plugin,
+  RolldownOptions,
+} from "rolldown";
 
 import addonLoaderPlugin, {
   androidAddonLoaderBanner,
@@ -20,15 +25,11 @@ const __dirname = path.dirname(__filename);
 /**
  * Per-platform output dirs. `scripts/build-backend.ts` sets these env
  * vars to write directly into the final native-asset trees
- * (`android/src/debug/assets/nodejs-project/`, `android/src/main/assets/nodejs-project/`, and
- * `ios/nodejs-project/`), skipping the intermediate staging tree the script used to maintain.
+ * (`android/src/main/assets/nodejs-project/` and `ios/nodejs-project/`),
+ * skipping the intermediate staging tree the script used to maintain.
  * Falls back to `backend/dist/<platform>/` so `cd backend && npm run build`
  * still produces inspectable output for standalone debugging.
  */
-const ANDROID_OUT_DEBUG =
-  process.env.OUTPUT_DIR_ANDROID_DEBUG ??
-  path.join(__dirname, "dist/android/debug");
-
 const ANDROID_OUT_MAIN =
   process.env.OUTPUT_DIR_ANDROID_MAIN ??
   path.join(__dirname, "dist/android/main");
@@ -47,10 +48,6 @@ const IOS_OUT = process.env.OUTPUT_DIR_IOS ?? path.join(__dirname, "dist/ios");
  * For the production build these are passed by `scripts/build-backend.ts`;
  * the fallbacks keep the standalone `cd backend && npm run build` case
  * working — maps land in `<outDir>-sourcemaps/` next to the bundle dir.
- *
- * Note: the Android *debug* output is deliberately absent — its map stays
- * colocated with the bundle (shipped in debug-only `src/debug/` for
- * in-process symbolication), so there's nothing to relocate.
  */
 const ANDROID_SOURCEMAPS_MAIN =
   process.env.SOURCEMAPS_DIR_ANDROID_MAIN ?? `${ANDROID_OUT_MAIN}-sourcemaps`;
@@ -203,9 +200,7 @@ function buildPlugins({
     // polywasm-installing entry so the polyfill is in place before
     // undici's module-init `WebAssembly.compile`. See
     // redirectLoaderIndexToPolywasmEntryPlugin above.
-    ...(platform === "ios"
-      ? [redirectLoaderIndexToPolywasmEntryPlugin()]
-      : []),
+    ...(platform === "ios" ? [redirectLoaderIndexToPolywasmEntryPlugin()] : []),
     // Native addon loader rewrite is identical for both platforms:
     // every loader pattern (`bindings`, `node-gyp-build`, `require.addon`)
     // becomes `__loadAddon(name, version)`. The helper itself differs
@@ -277,7 +272,7 @@ const sharedOutput: OutputOptions = {
 };
 
 /**
- * Three outputs from the same source tree: Android debug, Android release, and iOS.
+ * Two outputs from the same source tree: Android and iOS.
  * Android gets the full bundle — its nodejs-mobile build permits JIT, so undici
  * (and therefore the maps fastify plugin) loads cleanly. iOS uses a wrapper
  * entry (`index-ios.js`) that installs polywasm as `globalThis.WebAssembly`
@@ -295,37 +290,10 @@ const sharedOutput: OutputOptions = {
 // Per-config (rather than one shared Map) so a stale entry from a
 // previous output can't bleed across — rolldown runs the configs
 // sequentially.
-const androidDebugDebugIds = new Map<string, string>();
 const androidMainDebugIds = new Map<string, string>();
 const iosDebugIds = new Map<string, string>();
 
 const config: RolldownOptions[] = [
-  {
-    input: ANDROID_INPUT,
-    ...sharedInput,
-    output: {
-      ...sharedOutput,
-      dir: ANDROID_OUT_DEBUG,
-      banner: androidAddonLoaderBanner,
-      // Android debug does not minify the bundle.
-      minify: false,
-    },
-    plugins: [
-      cleanOutputDirPlugin(ANDROID_OUT_DEBUG),
-      ...buildPlugins({
-        platform: "android",
-        outDir: ANDROID_OUT_DEBUG,
-        debugIdMap: androidDebugDebugIds,
-      }),
-      // Debug output keeps its `.map` colocated with the bundle (no
-      // relocate). `src/debug/` is merged only into debug variants, so the
-      // map ships in debug APKs but never in release. With native passing
-      // `--enable-source-maps` under `BuildConfig.DEBUG`, Node remaps
-      // backend stacks in-process — symbolicated errors reach Sentry with
-      // no upload or auth token. Release uses `src/main` (relocated +
-      // consumer-uploaded).
-    ],
-  },
   {
     input: ANDROID_INPUT,
     ...sharedInput,
