@@ -129,14 +129,23 @@ class ComapeoCoreModule : Module() {
                                 )
                             }
                         }
-                        is NodeJSIPC.State.Error -> setState(
-                            JsState.ERROR,
-                            mapOf(
-                                "errorPhase" to "ipc",
-                                "errorMessage" to (connState.exception.message
-                                    ?: connState.exception.javaClass.simpleName),
-                            ),
-                        )
+                        is NodeJSIPC.State.Error -> {
+                            // Mirror the Disconnected guard: after a graceful stop the
+                            // auto-reconnect exhausts its window into State.Error, which
+                            // must not reclassify a clean STOPPED as ERROR — only a
+                            // backend we believed live is an error.
+                            when (synchronized(stateLock) { jsState }) {
+                                JsState.STARTING, JsState.STARTED -> setState(
+                                    JsState.ERROR,
+                                    mapOf(
+                                        "errorPhase" to "ipc",
+                                        "errorMessage" to (connState.exception.message
+                                            ?: connState.exception.javaClass.simpleName),
+                                    ),
+                                )
+                                JsState.ERROR, JsState.STOPPING, JsState.STOPPED -> {}
+                            }
+                        }
                         // .Connected: just "we have a socket"; wait for `started`/`ready`.
                         else -> {}
                     }

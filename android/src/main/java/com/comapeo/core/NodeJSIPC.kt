@@ -41,6 +41,8 @@ class NodeJSIPC(
     // state observer, which the kotlinc reports as
     // "Argument type mismatch: actual type is 'NodeJSIPC.State', but
     //  'String!' was expected." in CI.
+    // Contract: terminal transitions (Disconnected/Error) may be delivered
+    // twice (collector + imperative path); observers must be idempotent.
     private val onConnectionStateChange: ((State) -> Unit)? = null,
     private val onMessage: (String) -> Unit,
 ) {
@@ -77,6 +79,17 @@ class NodeJSIPC(
 
     private val state = MutableStateFlow<State>(State.Disconnected)
     val connectionState: State get() = state.value
+
+    // Imperative delivery for the load-bearing terminal transitions: the state
+    // collector rides a conflating StateFlow, so a Disconnected that is CASed
+    // to Connecting by the auto-reconnect microseconds later can be dropped
+    // before the collector runs — and consumers hang recovery off exactly that
+    // emission. Duplicate delivery (collector + this) is fine per the observer
+    // contract above. Suppressed after close().
+    private fun notifyObserver(newState: State) {
+        if (closed) return
+        onConnectionStateChange?.invoke(newState)
+    }
 
     init {
         log("NodeJSIPC initialized with socket file: ${socketFile.absolutePath}")
@@ -141,7 +154,9 @@ class NodeJSIPC(
                 }
             } catch (e: Exception) {
                     log("Failed to connect to socket: ${e.message}")
-                    state.value = State.Error(e)
+                    val error = State.Error(e)
+                    state.value = error
+                    notifyObserver(error)
                     return@launch
             }
             // close() may have won while connectWithRetry was between suspension
@@ -213,7 +228,18 @@ class NodeJSIPC(
     // alone cannot tell two connections apart). Public disconnect() passes
     // ANY_EPOCH: a deliberate teardown targets whatever connection is current.
     private fun disconnect(epoch: Long) {
-        if (state.value is State.Disconnecting || state.value is State.Disconnected) {
+        val observed = state.value
+        if (observed is State.Disconnected) {
+            return
+        }
+        // A Disconnecting held by a STALE-epoch disconnect is transient — it
+        // rolls back to Connected (see the post-CAS re-read below). A drop of
+        // the CURRENT connection must not be swallowed by that window, or state
+        // wedges at Connected with dead IO loops; only bail here when this
+        // teardown cannot be the one the rollback would restore.
+        if (observed is State.Disconnecting &&
+            (epoch == ANY_EPOCH || connectionEpoch.get() != epoch)
+        ) {
             return
         }
         // Teardown is single-flight: concurrent disconnect calls (send + receive
@@ -224,7 +250,19 @@ class NodeJSIPC(
         val disconnectJob = scope.launch {
             while (isActive) {
                 when (state.value) {
-                    is State.Disconnecting, is State.Disconnected -> return@launch
+                    is State.Disconnected -> return@launch
+                    is State.Disconnecting -> {
+                        // Same stale-rollback hazard as the entry guard: wait
+                        // out a Disconnecting that may roll back to Connected
+                        // and re-evaluate, so a current-epoch drop is never
+                        // swallowed. Any other teardown resolves to
+                        // Disconnected and we return on the next pass.
+                        if (epoch != ANY_EPOCH && connectionEpoch.get() == epoch) {
+                            state.first { it !is State.Disconnecting }
+                        } else {
+                            return@launch
+                        }
+                    }
                     is State.Connecting -> {
                         state.first { it is State.Connected || it is State.Error }
                     }
@@ -266,10 +304,12 @@ class NodeJSIPC(
         }
         disconnectJob.invokeOnCompletion { cause ->
             if (!wonTeardown.get()) return@invokeOnCompletion
-            state.value = when (cause) {
+            val terminal = when (cause) {
                 null, is EOFException, is IOException, is CancellationException -> State.Disconnected
                 else -> State.Error(cause)
             }
+            state.value = terminal
+            notifyObserver(terminal)
             // Terminal teardown goes through close(), so a disconnect() that
             // completes with `closed` unset is an unexpected drop (the IO loops'
             // IOException handlers) — the auto-reconnect trigger. Backoff, not
@@ -351,9 +391,11 @@ private const val CONNECT_INTERVAL_MS = 50L
 private const val ANY_EPOCH = -1L
 
 // Auto-reconnect after an unexpected drop: a killed backend process takes a few
-// seconds to be restarted by the system, so back off instead of burning battery
-// on a tight loop, and give up (State.Error) after a bounded window.
-private const val RECONNECT_DEADLINE_MS = 60_000L
+// seconds to be restarted by the system — and a debug build or slow device can
+// take over a minute to boot Node — so back off instead of burning battery on a
+// tight loop, and give up (State.Error) only after a window that comfortably
+// exceeds a slow restart (the FGS-kill test budgets 90 s for a debug boot).
+private const val RECONNECT_DEADLINE_MS = 120_000L
 private const val RECONNECT_INITIAL_INTERVAL_MS = 250L
 private const val RECONNECT_MAX_INTERVAL_MS = 4_000L
 

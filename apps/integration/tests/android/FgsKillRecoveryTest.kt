@@ -12,7 +12,6 @@ import com.comapeo.core.ComapeoCoreService
 import com.comapeo.core.NodeJSIPC
 import org.json.JSONObject
 import org.junit.After
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -46,7 +45,9 @@ class FgsKillRecoveryTest {
         private const val SERVICE_PROCESS = ":ComapeoCore"
         private const val STARTUP_TIMEOUT_MS = 15_000L
         // First boot after install extracts the backend assets; debug builds
-        // boot Node slowly, so give the ready frame a generous window.
+        // boot Node slowly, so give the ready frame a generous window. Stays
+        // below NodeJSIPC's 120s reconnect window, so the client cannot give
+        // up into State.Error before this assertion deadline expires.
         private const val READY_TIMEOUT_S = 90L
         private const val RPC_TIMEOUT_MS = 20_000L
         private const val POLL_INTERVAL_MS = 500L
@@ -217,7 +218,13 @@ class FgsKillRecoveryTest {
             "Control socket should reconnect and see ready again within ${READY_TIMEOUT_S}s",
             secondReady.await(READY_TIMEOUT_S, TimeUnit.SECONDS)
         )
-        assertEquals(2, readyCount.get())
+        // >= not ==: each control connection gets a `ready` replay, so a
+        // transient drop/reconnect during restart churn can legitimately
+        // deliver more than two.
+        assertTrue(
+            "Should see at least two ready frames, saw ${readyCount.get()}",
+            readyCount.get() >= 2
+        )
         val restartedPid = getServiceProcessPid()
         assertTrue(
             "Service should be running in a fresh process (was $initialPid, now $restartedPid)",
