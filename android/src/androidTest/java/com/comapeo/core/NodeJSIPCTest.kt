@@ -407,11 +407,15 @@ class NodeJSIPCTest {
     fun closeSuppressesReconnect() {
         val server = bindServer()
         val acceptCount = java.util.concurrent.atomic.AtomicInteger(0)
+        // Retain every accepted socket: an unreferenced LocalSocket can be
+        // GC-finalized (closed) mid-test, dropping the connection and causing
+        // a spurious reconnect before close() is even called.
+        val acceptedSockets = CopyOnWriteArrayList<LocalSocket>()
 
         Thread {
             try {
                 while (true) {
-                    server.accept()
+                    acceptedSockets.add(server.accept())
                     acceptCount.incrementAndGet()
                 }
             } catch (e: IOException) {
@@ -435,6 +439,7 @@ class NodeJSIPCTest {
         // post-close reconnect would show up as a second accept.
         Thread.sleep(3000)
         assertEquals("close() must not trigger reconnect attempts", 1, acceptCount.get())
+        acceptedSockets.forEach { try { it.close() } catch (_: IOException) {} }
     }
 
     @Test
