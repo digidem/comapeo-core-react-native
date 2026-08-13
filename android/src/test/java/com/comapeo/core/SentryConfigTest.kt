@@ -54,6 +54,30 @@ class SentryConfigTest {
         assertNull(config.applicationUsageDataDefault)
         assertNull(config.debugDefault)
         assertNull(config.enableLogs)
+        assertNull(config.moduleVersion)
+        assertNull(config.moduleSha)
+    }
+
+    @Test
+    fun loadsModuleIdentification() {
+        // Feeds the `comapeo.rn` / `comapeo.rn.sha` scope tags on FGS and
+        // Node-forwarded events. A bare `<version>` label means the build came
+        // from a published npm release; the SHA is carried separately so the
+        // label can stay plain semver. Values that silently fail to arrive here
+        // produce events that look fine but can't be traced to a build.
+        val config = SentryConfig.load(
+            mapGetter(
+                mapOf(
+                    SentryConfig.META_DSN to "https://abc@sentry.example/1",
+                    SentryConfig.META_ENVIRONMENT to "production",
+                    SentryConfig.META_MODULE_VERSION to "1.0.0-pre.10",
+                    SentryConfig.META_MODULE_SHA to "0e3b6e65",
+                ),
+            ),
+            DEFAULT_RELEASE,
+        )!!
+        assertEquals("1.0.0-pre.10", config.moduleVersion)
+        assertEquals("0e3b6e65", config.moduleSha)
     }
 
     @Test

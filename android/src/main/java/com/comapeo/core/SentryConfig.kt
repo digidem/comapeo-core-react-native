@@ -30,11 +30,18 @@ data class SentryConfig(
     /** Opt in to Sentry structured logs (`Sentry.logger.*`). `null` → off. */
     val enableLogs: Boolean? = null,
     /**
-     * Module build label `<version>[+git<sha>[-dirty<hash>]]` from `build/version.js`
-     * (falls back to package.json when unbuilt). Applied as the `comapeo.rn` scope
-     * tag so FGS / Node / RN events all carry matching module identification.
+     * Module build label from `build/version.js` (falls back to package.json when
+     * unbuilt). A bare `<version>` means a published npm release; any suffix
+     * (`+git<sha>`, `-dirty<hash>`) means it is not. Applied as the `comapeo.rn`
+     * scope tag so FGS / Node / RN events all carry matching module identification.
      */
     val moduleVersion: String? = null,
+    /**
+     * Source commit the module was built from, or null outside a git checkout.
+     * Applied as the `comapeo.rn.sha` scope tag — carried separately so
+     * [moduleVersion] can stay a plain semver on releases.
+     */
+    val moduleSha: String? = null,
     /**
      * JSON map of bundled-backend dependency versions, filtered to comapeo-owned deps.
      * Applied as the `comapeoBackend` scope context.
@@ -85,6 +92,7 @@ data class SentryConfig(
         const val META_DEBUG_DEFAULT = "com.comapeo.core.sentry.debugDefault"
         const val META_ENABLE_LOGS = "com.comapeo.core.sentry.enableLogs"
         const val META_MODULE_VERSION = "com.comapeo.core.module.version"
+        const val META_MODULE_SHA = "com.comapeo.core.module.sha"
         const val META_BACKEND_MODULES = "com.comapeo.core.backend.modules"
 
         /** Returns null when no DSN is present (Sentry off). */
@@ -138,6 +146,7 @@ data class SentryConfig(
                 debugDefault = metaString(META_DEBUG_DEFAULT)?.toBooleanStrictOrNull(),
                 enableLogs = metaString(META_ENABLE_LOGS)?.toBooleanStrictOrNull(),
                 moduleVersion = metaString(META_MODULE_VERSION),
+                moduleSha = metaString(META_MODULE_SHA),
                 backendModulesJson = metaString(META_BACKEND_MODULES),
             )
         }

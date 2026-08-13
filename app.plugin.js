@@ -62,6 +62,7 @@ const ANDROID_KEYS = {
   // module / backend-dep identification as RN-side events do via
   // `initSentry`.
   moduleVersion: "com.comapeo.core.module.version",
+  moduleSha: "com.comapeo.core.module.sha",
   backendModulesJson: "com.comapeo.core.backend.modules",
 };
 
@@ -463,8 +464,13 @@ function withDebugSourcemapsIos(config) {
  */
 function readModuleIdentification() {
   let moduleVersion;
+  // `""` outside a git checkout at build time; stays undefined when we fell
+  // back to package.json, so the manifest entry is dropped rather than blank.
+  let moduleSha;
   try {
-    moduleVersion = require("./build/version.js").COMAPEO_MODULE_VERSION_LABEL;
+    const version = require("./build/version.js");
+    moduleVersion = version.COMAPEO_MODULE_VERSION_LABEL;
+    moduleSha = version.COMAPEO_MODULE_GIT_SHA || undefined;
   } catch {
     try {
       moduleVersion = require("./package.json").version;
@@ -487,6 +493,7 @@ function readModuleIdentification() {
   }
   return {
     moduleVersion,
+    moduleSha,
     backendModulesJson: JSON.stringify(backendModules),
   };
 }
@@ -611,6 +618,11 @@ function withSentryAndroid(config, sentry, moduleIdent) {
       application,
       ANDROID_KEYS.moduleVersion,
       moduleIdent?.moduleVersion,
+    );
+    syncAndroidMetaData(
+      application,
+      ANDROID_KEYS.moduleSha,
+      moduleIdent?.moduleSha,
     );
     syncAndroidMetaData(
       application,

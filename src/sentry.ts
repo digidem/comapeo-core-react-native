@@ -29,7 +29,11 @@ import {
 import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types.js";
 import { SentryTags, SENTRY_OWNED_GLOBAL_KEY } from "./sentry-tags.js";
 import { scrubEvent, scrubBreadcrumb, scrubLog } from "./sentry-scrub.js";
-import { BACKEND_MODULES, COMAPEO_MODULE_VERSION_LABEL } from "./version.js";
+import {
+  BACKEND_MODULES,
+  COMAPEO_MODULE_GIT_SHA,
+  COMAPEO_MODULE_VERSION_LABEL,
+} from "./version.js";
 
 /**
  * Subset of `Sentry.init` options that map cleanly from values the
@@ -409,6 +413,12 @@ export function initSentry(options: InitSentryOptions = {}): void {
   globalScope.setTag(SentryTags.proc, SentryTags.procMain);
   globalScope.setTag(SentryTags.layer, SentryTags.layerRn);
   globalScope.setTag("comapeo.rn", COMAPEO_MODULE_VERSION_LABEL);
+  // Source commit as its own dimension, so `comapeo.rn` can stay a plain
+  // semver on releases without losing which commit produced the build.
+  // Empty only outside a git checkout at build time.
+  if (COMAPEO_MODULE_GIT_SHA) {
+    globalScope.setTag("comapeo.rn.sha", COMAPEO_MODULE_GIT_SHA);
+  }
   globalScope.setContext("comapeoBackend", BACKEND_MODULES);
   globalScope.addEventProcessor((event) => {
     event.modules = {

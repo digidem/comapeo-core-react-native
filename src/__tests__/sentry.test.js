@@ -363,6 +363,12 @@ describe("initSentry", () => {
     expect(tagKeys).toEqual(
       expect.arrayContaining(["proc", "layer", "comapeo.rn"]),
     );
+    // `comapeo.rn.sha` rides along only when built from a git checkout —
+    // a tarball build has no SHA and must not emit an empty tag.
+    const { COMAPEO_MODULE_GIT_SHA } = require("../version");
+    expect(tagKeys.includes("comapeo.rn.sha")).toBe(
+      Boolean(COMAPEO_MODULE_GIT_SHA),
+    );
     expect(setContextSpy).toHaveBeenCalledWith(
       "comapeoBackend",
       expect.any(Object),
