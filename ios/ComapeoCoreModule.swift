@@ -22,7 +22,10 @@ public class ComapeoCoreModule: Module {
     public func definition() -> ModuleDefinition {
         Name("ComapeoCore")
 
-        Events("message", "messageerror", "stateChange")
+        // "transportStateChange" is declared for API parity but never fires on
+        // iOS: the backend runs in-process, so a backend death takes the whole
+        // app with it and there is no mid-session transport drop to report.
+        Events("message", "messageerror", "stateChange", "transportStateChange")
 
         OnCreate {
             let socketPath = ComapeoCoreModule.resolveSocketPath()

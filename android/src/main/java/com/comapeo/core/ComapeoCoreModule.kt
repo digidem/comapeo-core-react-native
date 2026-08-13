@@ -77,7 +77,25 @@ class ComapeoCoreModule : Module() {
             // the :ComapeoCore process, the control socket is read-only from this
             // side so nothing else would ever reconnect it, and the message socket
             // would only recover if JS happened to call postMessage.
-            ipc = NodeJSIPC(socketFile, reconnectOnDrop = true) { message ->
+            ipc = NodeJSIPC(
+                socketFile,
+                reconnectOnDrop = true,
+                onConnectionStateChange = { connState ->
+                    // JS uses "disconnected"/"error" to reject in-flight RPC calls
+                    // immediately instead of letting them run into the 30s timeout.
+                    val transportState = when (connState) {
+                        is NodeJSIPC.State.Connected -> "connected"
+                        is NodeJSIPC.State.Disconnected -> "disconnected"
+                        is NodeJSIPC.State.Error -> "error"
+                        // Connecting/Disconnecting are transient; JS only cares
+                        // whether the transport is usable.
+                        else -> null
+                    }
+                    transportState?.let {
+                        sendEvent("transportStateChange", mapOf("state" to it))
+                    }
+                },
+            ) { message ->
                 sendEvent("message", mapOf("data" to message))
             }
 
@@ -172,7 +190,7 @@ class ComapeoCoreModule : Module() {
 
         Name("ComapeoCore")
 
-        Events("message", "messageerror", "stateChange")
+        Events("message", "messageerror", "stateChange", "transportStateChange")
 
         Function("postMessage") { message: String ->
             ipc.sendMessage(message)
