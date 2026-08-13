@@ -426,32 +426,27 @@ function withSentryLibraryEvolution(config) {
  * prebuilds.
  */
 function readModuleIdentification() {
+  // Both values come from the generated `build/version.js`, never from
+  // `backend/package.json` — `backend/` is not in `files`, so it is absent
+  // from the published tarball and reading it there silently yields `{}`,
+  // leaving every FGS/backend event with an empty `comapeoBackend` context.
+  // `write-version.mjs` bakes the same dep map in at prepack time.
   let moduleVersion;
   // `""` outside a git checkout at build time; stays undefined when we fell
   // back to package.json, so the manifest entry is dropped rather than blank.
   let moduleSha;
+  let backendModules = {};
   try {
     const version = require("./build/version.js");
     moduleVersion = version.COMAPEO_MODULE_VERSION_LABEL;
     moduleSha = version.COMAPEO_MODULE_GIT_SHA || undefined;
+    backendModules = version.BACKEND_MODULES ?? {};
   } catch {
     try {
       moduleVersion = require("./package.json").version;
     } catch {
       return null;
     }
-  }
-  let backendModules = {};
-  try {
-    const backendPkg = require("./backend/package.json");
-    backendModules = Object.fromEntries(
-      Object.entries(backendPkg.dependencies ?? {}).filter(
-        ([name]) => name.startsWith("@comapeo/") || name === "@mapeo/crypto",
-      ),
-    );
-  } catch {
-    // Backend package.json missing — ship the version label without
-    // the dep map. Better than failing prebuild.
   }
   return {
     moduleVersion,
