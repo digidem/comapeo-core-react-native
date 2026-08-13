@@ -30,7 +30,7 @@
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { rmSync } from "node:fs";
 import path from "node:path";
-import { isJsFile, stringToUUID } from "@sentry/bundler-plugin-core";
+import { isJsFile, stringToUUID } from "@sentry/bundler-plugins/core";
 
 /**
  * @param {Map<string, string>} idMap
