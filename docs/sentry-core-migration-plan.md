@@ -1,8 +1,18 @@
 # Plan: replace `@sentry/node-core` with `@sentry/core` in the backend
 
-**Status: proposal** — validated with a working prototype (all 97 backend unit
-tests pass against it unmodified); measurements below are from real builds of
-this repo.
+**Status: implemented.** Landed on branch
+`claude/sentry-node-core-bundle-size-nzic8m`. The measurements below are from
+real builds of this repo and were reproduced by the landed change: the Android
+`sentry-init` chunk went 441,707 → 84,672 bytes (−81%), the OTel side-chunks
+(`esm-*`, `getMachineId-*`, `execAsync-*`, `src-*`) are no longer emitted, and
+total Android JS went 3,728,019 → 3,350,293 bytes (−10.1%). Backend unit tests
+are green (100/100 — the original 97 plus three for the new async-context
+strategy).
+
+Still outstanding from the validation plan below: the tripwire run
+(`scripts/sentry-tripwire.mjs`, step 2) and the on-device before/after boot
+benchmark (step 3). Both need a device/test-Sentry-project and have not been
+run.
 
 ## Motivation
 
@@ -177,7 +187,7 @@ rollout — expect the loader-import-sentry-node span to shrink by roughly 80%.
 |---|---|---|
 | `inboundFilters`, `functionToString`, `linkedErrors` | **Kept** | These are core integrations; re-registered explicitly. |
 | `onUncaughtException`, `onUnhandledRejection` | No loss | `index.js` `handleFatal` already owns this path and calls `captureFatal`. |
-| `nodeContext` (os/device/culture/app contexts) | Mostly no loss | We already delete `os`/`device`/`culture` (native fills them). `runtime` context is preserved via `ServerRuntimeClient`'s `runtime` option. Lost: `app.app_start_time`/`app_memory` — re-addable as a ~10-line event processor if wanted. |
+| `nodeContext` (os/device/culture/app contexts) | **No loss** | We already delete `os`/`device`/`culture` (native fills them). `runtime` context is preserved via `ServerRuntimeClient`'s `runtime` option. `app.app_start_time`/`app_memory` are restored by the small `appContextIntegration` in `sentry-init.js`. |
 | `httpIntegration` / `nativeNodeFetchIntegration` | **Accepted loss** | Outbound-HTTP breadcrumbs (e.g. remote map downloads) disappear from Node-side events. No spans are lost — we never registered instrumentations, and RPC/boot/sync spans are all manual. If breadcrumbs prove missed, a small undici `diagnostics_channel` subscriber can restore them later. |
 | `contextLines` | Accepted loss | It would inline *minified bundle* lines; real source context comes from the uploaded sourcemaps, so value was near zero. |
 | `localVariables` | Accepted loss | Inspector-based; of doubtful function under nodejs-mobile anyway. |
@@ -185,7 +195,7 @@ rollout — expect the loader-import-sentry-node span to shrink by roughly 80%.
 | `childProcess`, `processSession`, `systemError`, `requestData`, `conversationId` | Accepted loss | No child processes in the FGS; release-health sessions are owned by the native SDKs; the rest are marginal. |
 | `consoleIntegration` (debug-only, opt-in) | **Kept** | node-core's is a wrapper over `@sentry/core`'s `consoleIntegration`; use core's directly. |
 | Logs (`enableLogs`, `beforeSendLog`) | Kept, one nuance | Both are handled by the core client. `NodeClient` also flushed logs on `beforeExit`; our shutdown path already calls `sentry.flush()` explicitly. Optionally add a one-line `beforeExit` listener for crash-adjacent parity. |
-| SDK metadata (`event.sdk.name = sentry.javascript.node-core`) | Cosmetic | Optionally call `applySdkMetadata(options, "node-core")` — or let events carry a custom name. |
+| SDK metadata (`event.sdk.name = sentry.javascript.node-core`) | **Kept** | `sentry-init.js` calls `applySdkMetadata(clientOptions, "node-core", ["core"])`, so `sdk.name` is unchanged (existing dashboards/alerts keep matching) while the reported package list names `@sentry/core`. |
 
 Tracing semantics: core's `SentrySpan` tree replaces OTel spans. All options
 we use (`parentSpan`, `startTime`, `forceTransaction`, `onlyIfParent`-free
@@ -252,9 +262,16 @@ Rollback is a one-commit revert: no native code, no IPC contract, no
 - **Do nothing**: keeps ~370 KB of parse/eval and ~5 MB heap (likely more
   RSS) on every production FGS boot for machinery we configure into a no-op.
 
-## Appendix: validated prototype
+## Appendix: the prototype these measurements came from
 
-The exact code measured above. `als-async-context.js`:
+Kept as the historical record of what was measured. The landed
+`backend/lib/als-async-context.js` and `backend/lib/sentry-init.js` are this
+code productionised — real JSDoc types instead of `any`, proper file headers,
+plus the two parity items the deltas table lists as optional
+(`applySdkMetadata` and a small `contexts.app` integration). Read the source
+files, not this appendix, for current behaviour.
+
+`als-async-context.js`:
 
 ```js
 // AsyncLocalStorage-based async context strategy for @sentry/core.
