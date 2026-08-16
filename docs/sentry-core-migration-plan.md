@@ -69,6 +69,35 @@ The surviving 84 KB is `@sentry/core` itself (client, scope, tracing,
 envelope, logs, metrics) plus our adapter code — the part that does the work
 we actually rely on.
 
+### What is in the removed bytes
+
+Per-package attribution of the baseline chunk's 441,707 bytes, computed from
+the build's own sourcemap (segment-by-segment byte counting, 99.99%
+attributed):
+
+| Source | Bytes | Share | What it is |
+|---|---:|---:|---|
+| OpenTelemetry stack (`api`, `core`, `sdk-trace-*`, `semantic-conventions`, `instrumentation`, `resources`, `context-async-hooks`, `api-logs`, + `import/require-in-the-middle`, `module-details-from-path`) | ~148,000 | 33% | A second, complete tracing implementation: tracer/span SDK and processor pipeline; **44 KB of semantic-convention constant tables**; the module-hooking machinery (`import-in-the-middle`/`require-in-the-middle`) that exists to patch libraries we never instrument; host/OS/process resource detectors incl. the machine-id probes that also emitted the `getMachineId-*`/`execAsync` side-chunks (they shell out to `ioreg`/registry readers — pure dead weight in an FGS). |
+| `@sentry/node-core` | 112,229 | 25% | The node SDK surface: the **ANR watchdog integration alone is 47 KB** (it embeds its worker script as an inline string); `localVariables` (inspector-protocol debugger client, ~10 KB); `contextLines`; `nodeContext`; HTTP-server span + undici/fetch instrumentation; cron monitor helpers; a **vendored HTTP(S) proxy agent** for its HTTP transport; `pino` and `spotlight` integrations; the node transport itself. |
+| `@sentry/opentelemetry` | 24,398 | 6% | The Sentry↔OTel bridge (`SentrySampler`, `SentrySpanProcessor`, `SentryPropagator`, context manager) — needed only because node-core's tracing *is* OTel. |
+| `@sentry/core` retained by node-core's import graph | ~66,000 | 15% | Core code only node-core's exports reference, treeshaken away in the prototype: the **Supabase integration (4.7 KB)**, **MCP-server session extraction (4.4 KB)**, HTTP server-subscription handling, `requestData`, IP-address extraction, etc. |
+| `@sentry/core` we keep | ~82,000 | 19% | Client, scope, tracing, envelope serialization, logs, metrics — what the prototype chunk consists of (97% `@sentry/core`, 3% our adapters). |
+
+Why so much dead code survives the bundler: `sentry-init.js` does
+`import * as Sentry from "@sentry/node-core"` and injects the namespace into
+`sentry.js`, which forces rolldown to retain node-core's **entire public
+export surface** — every integration and helper it exports, whether or not
+anything calls it — plus everything those exports pull from `@sentry/core`
+and OTel. The prototype's explicitly-constructed namespace is what lets
+treeshaking actually work.
+
+The practical upshot: of the ~357 KB removed, the overwhelming majority is
+code that **cannot execute under our configuration** (ANR/cron/proxy/pino/
+spotlight/localVariables are never enabled; the HTTP transport is replaced by
+the IPC forwarding transport; no instrumentations are registered so the
+hooking machinery has nothing to hook). The genuinely-live code we give up is
+only the short list in the behavior-deltas table below.
+
 ### Load time and memory (desktop proxy for on-device cost)
 
 | Metric (import + `Sentry.init`, fresh process) | node-core stack | core-only | Delta |
