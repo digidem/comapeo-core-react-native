@@ -1,7 +1,7 @@
 // nodejs-mobile spawn target. The Sentry SDK init must run before
-// `index.js`'s static imports so the OpenTelemetry SDK is registered
-// as the global tracer provider before any code starts producing
-// spans through `sentry.js`'s wrappers.
+// `index.js`'s static imports so the client and the async-context
+// strategy are installed before any code starts producing spans
+// through `sentry.js`'s wrappers.
 
 import { parseArgs } from "node:util";
 import * as sentry from "./lib/sentry.js";
@@ -22,15 +22,15 @@ const { values, positionals } = parseArgs({
 
 if (values.sentryDsn) {
   // `sentry-init.js` is the staging file that aggregates every heavy
-  // dependency we hold out of the always-on chunk: `@sentry/node-core`,
-  // `@sentry/opentelemetry`, the OpenTelemetry SDK, and `sentry-frame.js`.
+  // dependency we hold out of the always-on chunk — `@sentry/core`
+  // (from which it assembles the SDK itself) and `sentry-frame.js`.
   // Dynamic import keeps the rollup chunk unloaded when no DSN is
   // configured; the span around it measures the full SDK load+init.
   //
-  // We do NOT register `import-in-the-middle` here. The slim
-  // `@sentry/node-core` SDK bundles no auto-instrumentations (that
-  // was the ~2s cost of `@sentry/node`), so the iitm loader thread
-  // would have nothing to hook and is pure dead weight.
+  // We do NOT register `import-in-the-middle` here. Nothing is
+  // auto-instrumented — RPC and boot spans are all created by hand in
+  // `sentry.js` — so the iitm loader thread would have nothing to hook
+  // and is pure dead weight.
   importSentryNodeStartDate = new Date();
   const { initSentry } = await import("./lib/sentry-init.js");
   // 3rd positional is privateStorageDir (see index.js) — used for

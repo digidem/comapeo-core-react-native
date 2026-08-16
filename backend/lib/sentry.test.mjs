@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import * as Sentry from "@sentry/node-core";
+import * as Sentry from "@sentry/core";
 
 import { initSentry } from "./sentry-init.js";
 import { rpcHook, setSink, flush, withSpan } from "./sentry.js";

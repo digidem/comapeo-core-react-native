@@ -14,12 +14,14 @@
 //     emission carrying a forbidden attribute.
 //
 // Populated by `sentry.js`'s `init()`, which has the live SDK + the
-// resolved device tags from argv. No static dep on `@sentry/node-core`
-// so the chunk stays unloaded when Sentry is off.
+// resolved device tags from argv. No static dep on `@sentry/core` so
+// the chunk stays unloaded when Sentry is off.
 
 import { isForbiddenMetric } from "../before-send.js";
 
-/** @type {typeof import("@sentry/node-core") | null} */
+/** @typedef {import("./sentry-init.js").SentrySdk} SentrySdk */
+
+/** @type {SentrySdk | null} */
 let Sentry = null;
 /**
  * @type {{
@@ -33,7 +35,7 @@ let config = null;
 
 /**
  * @param {{
- *   Sentry: typeof import("@sentry/node-core"),
+ *   Sentry: SentrySdk,
  *   platform: string,
  *   deviceClass: string,
  *   osMajor: string,

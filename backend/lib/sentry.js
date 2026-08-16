@@ -1,10 +1,17 @@
 // SDK adapter. Singletons are populated by `init()` (called from
 // `sentry-init.js`, itself dynamic-imported from `loader.mjs` only
-// when `--sentryDsn` is set). No static dep on `@sentry/node-core-core` —
-// the SDK is injected so the rollup chunk stays unloaded otherwise.
+// when `--sentryDsn` is set). No static dep on `@sentry/core` — the SDK
+// is injected so the rollup chunk stays unloaded otherwise.
 // Every export here no-ops if `init` never runs.
 
 /** @typedef {import("./sentry-frame.js").SentryFrame} SentryFrame */
+/**
+ * The injected SDK surface, assembled in `sentry-init.js`. Type-only
+ * import: no runtime edge from this always-on module into the lazy
+ * Sentry chunk.
+ *
+ * @typedef {import("./sentry-init.js").SentrySdk} SentrySdk
+ */
 
 import { scrubEvent, scrubLog } from "../before-send.js";
 import * as metrics from "./metrics.js";
@@ -55,7 +62,7 @@ export const argSpec = {
  * }} Argv
  */
 
-/** @type {typeof import("@sentry/node-core") | null} */
+/** @type {SentrySdk | null} */
 let Sentry = null;
 /** @type {{ rpcArgsBytes: number, applicationUsageData: boolean, debug: boolean, deviceClass: string, osMajor: string, platformTag: string } | null} */
 let config = null;
@@ -126,7 +133,7 @@ function numericArg(raw) {
  * reads at the usage tier.
  *
  * @param {{
- *   Sentry: typeof import("@sentry/node-core"),
+ *   Sentry: SentrySdk,
  *   argv: Argv,
  *   envelopeToFrame: (envelope: any) => SentryFrame,
  *   storageDir?: string,
@@ -171,15 +178,15 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame, storageDir }
     enableLogs: argv.sentryEnableLogs,
     // Structured logs bypass the scrubEvent processor, so scrub them here.
     beforeSendLog: scrubLog,
-    // We register no OTel auto-instrumentations, so the iitm loader
-    // thread that `@sentry/node-core`'s `initializeEsmLoader` would
-    // spin up has nothing to hook. Disabling it lets us drop iitm
-    // from the bundle entirely (rollup `importHook` entry +
-    // `lib/register.js` static copy + the rewrite plugin).
+    // A no-op under the `@sentry/core`-only SDK: there is no ESM loader
+    // to register and nothing to auto-instrument, so `sentry-init.js`
+    // ignores it. Left in place only to keep the core migration from
+    // touching this file's runtime config; safe to drop.
     registerEsmLoaderHooks: false,
     transport: forwardingTransport,
-    // Function form preserves SDK defaults (inboundFilters, linkedErrors,
-    // nodeContext, etc.) — the array form would replace them.
+    // Function form preserves the SDK defaults `sentry-init.js` picks
+    // (eventFilters, functionToString, linkedErrors, app context) — the
+    // array form would replace them.
     // `consoleIntegration` is debug-only: console-log capture is
     // privacy-expensive and only useful during an investigation window.
     integrations: (defaults) =>
@@ -254,8 +261,10 @@ export async function withBootTrace(args, loadIndex) {
       // at node-spawn during the `await loadIndex()`, so index.js's
       // IIFE captures node-spawn (not loader-init) for `boot.manager-init`.
       // loader-init must stay LIVE while children attach — passing an
-      // already-ended span as `parentSpan` doesn't reliably parent
-      // under @sentry/node-core's OTel backend.
+      // already-ended span as `parentSpan` did not reliably parent
+      // under the old OTel tracing backend. `@sentry/core`'s own span
+      // tree may not need this; kept until the trace-shape tripwire
+      // confirms otherwise, since it costs nothing.
       const loaderInitSpan = sentryRef.startInactiveSpan({
         name: "boot.loader-init",
         op: "boot.loader-init",
