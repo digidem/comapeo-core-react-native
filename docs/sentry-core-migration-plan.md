@@ -3,11 +3,11 @@
 **Status: implemented.** Landed on branch
 `claude/sentry-node-core-bundle-size-nzic8m`. The measurements below are from
 real builds of this repo and were reproduced by the landed change: the Android
-`sentry-init` chunk went 441,707 → 84,672 bytes (−81%), the OTel side-chunks
-(`esm-*`, `getMachineId-*`, `execAsync-*`, `src-*`) are no longer emitted, and
-total Android JS went 3,728,019 → 3,350,293 bytes (−10.1%). Backend unit tests
-are green (100/100 — the original 97 plus three for the new async-context
-strategy).
+`sentry-init` chunk went 441,707 → 84,800 bytes (−81%), the OTel side-chunks
+(`esm-*`, `getMachineId-*`, `execAsync-*`) are no longer emitted, and total
+Android JS went 3,728,019 → 3,350,395 bytes (−10.1%). Backend unit tests are
+green (104/104 — the original 97 plus seven covering the new async-context
+strategy, trace shape, and client reports).
 
 Still outstanding from the validation plan below: the tripwire run
 (`scripts/sentry-tripwire.mjs`, step 2) and the on-device before/after boot
@@ -53,8 +53,10 @@ lockfile), including `metrics.count/distribution/gauge`, `consoleIntegration`
 ## Measured savings
 
 Methodology: two full `rolldown` production builds of this repo's backend —
-baseline (current `main`) vs. a prototype where `lib/sentry-init.js` is
-rewritten on `@sentry/core` only (appendix). Load metrics are medians of 5
+baseline (pre-migration `main`) vs. the `@sentry/core`-only backend. Bundle
+sizes below are from the landed build; the load/memory metrics were measured
+against the prototype and have not been re-run since (the code paths they
+exercise are unchanged). Load metrics are medians of 5
 fresh-process runs on desktop Linux x64, Node v22.22.2, importing the built
 Android `sentry-init` chunk with `--expose-gc` and measuring around
 `import()` + `initSentry()`. `--jitless` runs (iOS-like V8 config) gave the
@@ -62,20 +64,37 @@ same deltas within noise.
 
 ### Bundle size (minified bytes, real build output)
 
-| Artifact | Baseline | Core-only | Delta |
+These are the **landed** figures, re-measured after the change merged; they
+supersede the prototype-era numbers this section originally carried (which
+differed by a few hundred bytes). Every row is exact and the columns sum to
+the totals.
+
+| Artifact | Baseline | Core-only (landed) | Delta |
 |---|---:|---:|---:|
-| `chunks/sentry-init-*.mjs` (Android) | 441,707 | 84,204 | **−357,503 (−81%)** |
-| OTel side-chunks (`esm`, `getMachineId-*`, `execAsync`, `src`) | ~22,000 | 0 | −22,000 |
+| `chunks/sentry-init-*.mjs` (Android, lazy) | 441,707 | 84,800 | **−356,907 (−80.8%)** |
+| OTel side-chunks (`esm-*`, `getMachineId-*` ×5, `execAsync-*`) | 20,025 | 0 | −20,025 |
+| shared `src-*.mjs` chunk | 9,934 | 0 | inlined into `index.mjs` ¹ |
+| `chunks/sentry-*.mjs` (always-on adapter) | 9,926 | 9,900 | −26 |
+| `rolldown-runtime-*` + `file-*` chunks | 2,245 | 2,060 | −185 |
 | `index.mjs` (Android) | 3,243,335 | 3,252,788 | +9,453 ¹ |
-| **Total Android JS** | **3,728,019** | **3,349,825** | **−378,194 (−10.1%)** |
-| **Total iOS JS** | **3,696,613** | **3,318,179** | **−378,434 (−10.2%)** |
-| `sentry-init` chunk gzipped (Android) | 143,919 | 27,533 | −81% |
+| `loader.mjs` (Android) | 847 | 847 | 0 |
+| **Total Android JS** | **3,728,019** | **3,350,395** | **−377,624 (−10.1%)** |
+| **Total iOS JS** | **3,696,613** | **3,318,749** | **−377,864 (−10.2%)** |
+| `sentry-init` chunk gzipped (Android) | 143,919 | 27,792 | −80.7% |
 
-¹ The main bundle grows slightly because rolldown re-hoists the small shared
-`@sentry/core` bits (envelope serializer used by `sentry-frame.js`) that
-previously lived in a shared `src-*.mjs` chunk.
+iOS `sentry-init-*.mjs` landed at 84,827 bytes; the per-artifact story is
+otherwise identical across platforms.
 
-The surviving 84 KB is `@sentry/core` itself (client, scope, tracing,
+¹ `index.mjs` grows by almost exactly the size of the `src-*.mjs` chunk that
+disappears, because that is what happened: `src-*.mjs` was a shared chunk
+that both `index.mjs` and the Sentry chunk imported, and once the Sentry
+chunk stopped importing it, rolldown inlined it into its single remaining
+consumer. No code was added — it moved. `index.mjs` contains **no**
+`@sentry/*` code before or after (verified by grep on the built output); the
+envelope serializer used by `sentry-frame.js` lives in the lazy
+`sentry-init` chunk, not the main bundle.
+
+The surviving ~85 KB is `@sentry/core` itself (client, scope, tracing,
 envelope, logs, metrics) plus our adapter code — the part that does the work
 we actually rely on.
 
