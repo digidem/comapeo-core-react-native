@@ -178,9 +178,11 @@ export function evaluateBootTrace(payloads, opts = {}) {
         `(release=${boot.release ?? "?"}, environment=${boot.environment ?? "?"})`,
     );
 
-    if (boot.contexts?.trace?.op !== "comapeo.boot") {
+    // SentryFgsBridge starts the transaction as TransactionContext("comapeo.boot", "boot")
+    // — name comapeo.boot, op "boot". All production events carry op "boot".
+    if (boot.contexts?.trace?.op !== "boot") {
       failures.push(
-        `Boot transaction op is ${JSON.stringify(boot.contexts?.trace?.op)}, expected "comapeo.boot"`,
+        `Boot transaction op is ${JSON.stringify(boot.contexts?.trace?.op)}, expected "boot"`,
       );
     }
 
@@ -216,13 +218,19 @@ export function evaluateBootTrace(payloads, opts = {}) {
     }
 
     if (platform === "android") {
+      // In production sentry-java reports family as the device model
+      // (SM-S911B, Pixel, sdk_gphone64_arm64, …). Only "Google" (the
+      // manufacturer fallback) marks the SentryFgsBridge device.family
+      // processor as not running; absence marks a missing device context.
       const family = boot.contexts?.device?.family;
-      if (family !== "Android") {
+      if (family === "Google") {
         failures.push(
-          family === "Google"
-            ? 'contexts.device.family is "Google" on the FGS boot transaction — ' +
-                "the SentryFgsBridge device.family processor is not running"
-            : `contexts.device.family is ${JSON.stringify(family)} on the FGS boot transaction, expected "Android"`,
+          'contexts.device.family is "Google" on the FGS boot transaction — ' +
+            "the SentryFgsBridge device.family processor is not running",
+        );
+      } else if (typeof family !== "string" || family.length === 0) {
+        failures.push(
+          "contexts.device is missing a family on the FGS boot transaction",
         );
       }
     }
