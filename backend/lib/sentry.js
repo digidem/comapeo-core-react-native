@@ -178,11 +178,6 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame, storageDir }
     enableLogs: argv.sentryEnableLogs,
     // Structured logs bypass the scrubEvent processor, so scrub them here.
     beforeSendLog: scrubLog,
-    // A no-op under the `@sentry/core`-only SDK: there is no ESM loader
-    // to register and nothing to auto-instrument, so `sentry-init.js`
-    // ignores it. Left in place only to keep the core migration from
-    // touching this file's runtime config; safe to drop.
-    registerEsmLoaderHooks: false,
     transport: forwardingTransport,
     // Function form preserves the SDK defaults `sentry-init.js` picks
     // (eventFilters, functionToString, linkedErrors, app context) — the
@@ -260,11 +255,10 @@ export async function withBootTrace(args, loadIndex) {
       // Inactive + explicit `parentSpan` for both children: keeps ALS
       // at node-spawn during the `await loadIndex()`, so index.js's
       // IIFE captures node-spawn (not loader-init) for `boot.manager-init`.
-      // loader-init must stay LIVE while children attach — passing an
-      // already-ended span as `parentSpan` did not reliably parent
-      // under the old OTel tracing backend. `@sentry/core`'s own span
-      // tree may not need this; kept until the trace-shape tripwire
-      // confirms otherwise, since it costs nothing.
+      // loader-init must stay LIVE while children attach: a child
+      // reads its parent's context when it starts, so the parent has
+      // to be unended at that moment. Hence the `finally` below ends
+      // the children before the parent.
       const loaderInitSpan = sentryRef.startInactiveSpan({
         name: "boot.loader-init",
         op: "boot.loader-init",

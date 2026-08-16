@@ -5,8 +5,10 @@
 // therefore install a strategy of their own; `@sentry/node-core` used the
 // OpenTelemetry context manager for this, which is the single reason the
 // whole OTel stack had to be bundled. This is the same strategy without
-// OTel, adapted from `@sentry/vercel-edge`'s `async.ts` (MIT) — an
-// OTel-free server runtime that solves exactly this problem.
+// OTel. It originated as an adaptation of `@sentry/vercel-edge`'s
+// `async.ts` (MIT); note that vercel-edge has since replaced that file
+// with a vendored OTel context manager, so upstream is no longer a
+// reference for this code.
 //
 // Registered from `sentry-init.js`'s `init()` before the client is bound,
 // so every `startSpan` / `withScope` / `continueTrace` in `sentry.js`
@@ -42,6 +44,14 @@ export function setAlsAsyncContextStrategy() {
     );
   }
 
+  // Deliberate divergence from the OTel strategy node-core installed:
+  // the two isolation-scope methods carry the *current* scope through
+  // by reference rather than cloning it, so a mutation inside
+  // `withIsolationScope` would escape to the caller. That is the
+  // classic ALS shape (and what vercel-edge shipped); it stays dormant
+  // here because nothing in `backend/` mutates the current scope inside
+  // `withIsolationScope` — every scope mutation we make goes through
+  // `withScope`, `setTag`-on-a-span, or the initial scope.
   /** @type {import("@sentry/core").AsyncContextStrategy} */
   const strategy = {
     withScope(callback) {

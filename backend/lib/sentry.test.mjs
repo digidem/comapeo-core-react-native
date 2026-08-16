@@ -4,7 +4,14 @@ import assert from "node:assert/strict";
 import * as Sentry from "@sentry/core";
 
 import { initSentry } from "./sentry-init.js";
-import { rpcHook, setSink, flush, withSpan } from "./sentry.js";
+import {
+  rpcHook,
+  setSink,
+  flush,
+  withSpan,
+  withBootTrace,
+  startSyncSessionTransaction,
+} from "./sentry.js";
 import * as metrics from "./metrics.js";
 
 /**
@@ -33,6 +40,7 @@ const baseArgv = {
   sentryEnableLogs: false,
   sentryBaggage: "",
   applicationUsageData: true,
+  debug: false,
   deviceClass: "mid",
   osMajor: "android.14",
   platformTag: "android",
@@ -90,6 +98,7 @@ test("debug ON: rpcHook produces an envelope AND records the rpc metric", async 
     applicationUsageData: true,
   });
 
+  /** @type {any[]} */
   const captured = [];
   setSink((frame) => captured.push(frame));
 
@@ -125,6 +134,7 @@ test("debug OFF: rpcHook records the metric but creates no span/envelope", async
     applicationUsageData: true,
   });
 
+  /** @type {any[]} */
   const captured = [];
   setSink((frame) => captured.push(frame));
 
@@ -164,6 +174,7 @@ test("debug OFF: a rejecting RPC records the duration metric but captures no iss
     applicationUsageData: true,
   });
 
+  /** @type {any[]} */
   const captured = [];
   setSink((frame) => captured.push(frame));
 
@@ -260,6 +271,7 @@ test("a throwing envelope sink records the telemetry forwarding-failure metric",
 test("initialScope carries the native-derived user.id on outgoing events", async () => {
   initSentry({ ...baseArgv, debug: false, sentryUserId: "e15e7255ae360358" });
 
+  /** @type {any[]} */
   const captured = [];
   setSink((frame) => captured.push(frame));
 
@@ -280,6 +292,7 @@ test("initialScope carries the native-derived user.id on outgoing events", async
 test("usage tier ON: events carry a fresh node_resources context", async () => {
   initSentry({ ...baseArgv, applicationUsageData: true }, process.cwd());
 
+  /** @type {any[]} */
   const captured = [];
   setSink((frame) => captured.push(frame));
 
@@ -299,6 +312,7 @@ test("usage tier ON: events carry a fresh node_resources context", async () => {
 test("usage tier OFF: events carry no node_resources context", async () => {
   initSentry({ ...baseArgv, applicationUsageData: false }, process.cwd());
 
+  /** @type {any[]} */
   const captured = [];
   setSink((frame) => captured.push(frame));
 
@@ -312,6 +326,189 @@ test("usage tier OFF: events carry no node_resources context", async () => {
     undefined,
     "diagnostic tier must not attach node_resources",
   );
+
+  await Sentry.close();
+});
+
+/**
+ * Trace-shape assertions. The tests above are deliberately
+ * presence-not-shape, but the tracing backend changed (OpenTelemetry ->
+ * `@sentry/core`'s own span tree), and shape is exactly what such a swap
+ * can get wrong while still "working": trace continuation, explicit
+ * `parentSpan` parenting, and the sync-session sampling exception.
+ */
+
+const INCOMING_TRACE_ID = "12345678901234567890123456789012";
+const INCOMING_SPAN_ID = "1234567890123456";
+
+/**
+ * Envelope frames arrive base64'd; decode to `[itemHeader, payload]` pairs.
+ * @param {any} frame
+ * @returns {[any, any][]}
+ */
+function decodeEnvelopeItems(frame) {
+  const lines = Buffer.from(frame.data, "base64")
+    .toString("utf8")
+    .split("\n")
+    .filter(Boolean);
+  /** @type {[any, any][]} */
+  const items = [];
+  // Line 0 is the envelope header; items alternate header/payload.
+  for (let i = 1; i + 1 < lines.length + 1; i += 2) {
+    if (!lines[i + 1]) break;
+    items.push([JSON.parse(lines[i]), JSON.parse(lines[i + 1])]);
+  }
+  return items;
+}
+
+/**
+ * Every transaction payload across the captured frames.
+ * @param {any[]} frames
+ * @returns {any[]}
+ */
+function transactionsFrom(frames) {
+  return frames
+    .filter((f) => f.type === "sentry-envelope")
+    .flatMap(decodeEnvelopeItems)
+    .filter(([header]) => header.type === "transaction")
+    .map(([, payload]) => payload);
+}
+
+test("rpcHook continues the incoming trace and parents off its span", async () => {
+  initSentry({ ...baseArgv, debug: true });
+  /** @type {any[]} */
+  const captured = [];
+  setSink((frame) => captured.push(frame));
+
+  const hook = rpcHook();
+  assert.ok(hook, "rpcHook returned undefined — Sentry didn't initialise");
+  await driveHook(hook);
+  await flush(2000);
+
+  const txn = transactionsFrom(captured).find(
+    (t) => t.transaction === "read.doc",
+  );
+  assert.ok(txn, "no rpc.server transaction reached the sink");
+  assert.equal(
+    txn.contexts.trace.trace_id,
+    INCOMING_TRACE_ID,
+    "transaction did not adopt the incoming trace_id",
+  );
+  assert.equal(
+    txn.contexts.trace.parent_span_id,
+    INCOMING_SPAN_ID,
+    "transaction did not parent off the incoming span_id",
+  );
+
+  await Sentry.close();
+});
+
+test("withBootTrace parents both children off the live loader-init span", async () => {
+  initSentry({
+    ...baseArgv,
+    sentryTrace: `${INCOMING_TRACE_ID}-${INCOMING_SPAN_ID}-1`,
+  });
+  /** @type {any[]} */
+  const captured = [];
+  setSink((frame) => captured.push(frame));
+
+  const loaderStartDate = new Date(Date.now() - 100);
+  const sentinel = await withBootTrace(
+    {
+      argv: {
+        ...baseArgv,
+        sentryTrace: `${INCOMING_TRACE_ID}-${INCOMING_SPAN_ID}-1`,
+      },
+      loaderStartDate,
+      importSentryNodeStartDate: new Date(Date.now() - 90),
+      importSentryNodeEndDate: new Date(Date.now() - 50),
+    },
+    async () => "loaded",
+  );
+  assert.equal(sentinel, "loaded", "withBootTrace did not return loadIndex()");
+  await flush(2000);
+
+  const txn = transactionsFrom(captured).find(
+    (t) => t.transaction === "boot.loader-init",
+  );
+  assert.ok(txn, "no boot.loader-init transaction reached the sink");
+  assert.equal(
+    txn.contexts.trace.trace_id,
+    INCOMING_TRACE_ID,
+    "boot trace did not continue the FGS-side trace",
+  );
+
+  const rootSpanId = txn.contexts.trace.span_id;
+  for (const op of ["boot.loader-import-sentry-node", "boot.import-index"]) {
+    const child = (/** @type {any[]} */ (txn.spans ?? [])).find(
+      (s) => s.op === op,
+    );
+    assert.ok(child, `child span ${op} missing from the transaction`);
+    assert.equal(
+      child.parent_span_id,
+      rootSpanId,
+      `${op} did not parent off boot.loader-init`,
+    );
+  }
+
+  await Sentry.close();
+});
+
+test("tracesSampler: base rate 0 still samples the sync-session transaction", async () => {
+  initSentry({
+    ...baseArgv,
+    sentryTracesSampleRate: "0",
+    applicationUsageData: true,
+  });
+  /** @type {any[]} */
+  const captured = [];
+  setSink((frame) => captured.push(frame));
+
+  // Ordinary span at base rate 0 — must not be sampled.
+  await withSpan("boot.sampled-out", async () => {});
+
+  const session = startSyncSessionTransaction();
+  assert.ok(session, "sync session handle was null at the usage tier");
+  session.startPhase("discover");
+  session.end({ outcome: "ok", peersBucket: "1", bytesBucket: "1k" });
+  await flush(2000);
+
+  const transactions = transactionsFrom(captured);
+  assert.ok(
+    transactions.some((t) => t.transaction === "comapeo.sync.session"),
+    "sync-session transaction was dropped despite its sampler exception",
+  );
+  assert.ok(
+    !transactions.some((t) => t.transaction === "boot.sampled-out"),
+    "ordinary span was sampled despite a base rate of 0",
+  );
+
+  await Sentry.close();
+});
+
+test("discarded events are reported as a client_report on flush", async () => {
+  // `sampleRate: 0` drops every event, so the client records the outcome.
+  // Core never emits those on its own — `sentry-init.js` hooks the client's
+  // `flush` to drain them — so this asserts the whole path, not just the flag.
+  initSentry({ ...baseArgv, sentrySampleRate: "0" });
+  /** @type {any[]} */
+  const captured = [];
+  setSink((frame) => captured.push(frame));
+
+  Sentry.captureException(new Error("dropped by sample rate"));
+  Sentry.captureException(new Error("also dropped"));
+  await flush(2000);
+
+  const report = captured
+    .filter((f) => f.type === "sentry-envelope")
+    .flatMap(decodeEnvelopeItems)
+    .find(([header]) => header.type === "client_report");
+  assert.ok(report, "no client_report envelope reached the sink");
+  const discarded = (/** @type {any[]} */ (report[1].discarded_events)).find(
+    (d) => d.reason === "sample_rate" && d.category === "error",
+  );
+  assert.ok(discarded, "client_report carried no sample_rate error outcome");
+  assert.equal(discarded.quantity, 2, "wrong discarded-event count");
 
   await Sentry.close();
 });
