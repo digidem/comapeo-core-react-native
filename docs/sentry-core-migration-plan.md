@@ -9,10 +9,37 @@ Android JS went 3,728,019 → 3,350,395 bytes (−10.1%). Backend unit tests are
 green (104/104 — the original 97 plus seven covering the new async-context
 strategy, trace shape, and client reports).
 
-Still outstanding from the validation plan below: the tripwire run
-(`scripts/sentry-tripwire.mjs`, step 2) and the on-device before/after boot
-benchmark (step 3). Both need a device/test-Sentry-project and have not been
-run.
+**Device validation complete (2026-08-16, Pixel_7a_API_34 emulator,
+`apps/integration` release builds, org `awana-digital`, project
+`core-react-native-integration`).** The tripwire passes on both a
+pre-migration (`origin/main`, environment `tripwire-nodecore`) and a migrated
+(this branch, environment `tripwire-core`) build — full boot trace, native
+child spans, Node-side `boot.loader-init`/`boot.manager-init` in the same
+trace, tags, and PII scan. Two tripwire assertions were corrected first
+(op `"boot"` and device.family; both contradicted all 894 production boot
+transactions from the last 30 days, so they were pre-existing drift, not
+migration effects — the pre-migration build passing the corrected assertions
+confirms this). Node events from the migrated build still report
+`sdk.name: sentry.javascript.node-core` (10.70.0), and the
+`comapeo.boot.phase_duration_ms` metrics pipeline delivers from both builds.
+
+On-device before/after (same emulator, same day; 6 boots per variant plus
+5 measured cold starts):
+
+| Metric | node-core | core-only | Production reference (node-core, 30d fleet) |
+|---|---:|---:|---:|
+| `boot.loader-import-sentry-node` p50 | 217 ms | **23 ms (−89%)** | p50 101 ms · avg 195 ms · p95 567 ms |
+| `boot.loader-import-sentry-node` avg | 220 ms | 54 ms | |
+| FGS `:ComapeoCore` PSS median (post-ready) | 103.1 MB | 101.0 MB | |
+| proc-start → ready median | 2.20 s | 2.21 s | |
+
+The SDK-load span shrinks ~9×, consistent with the −85% desktop prediction.
+Total boot-to-ready is unchanged on an emulator because ~200 ms hides inside
+±500 ms run-to-run variance on a desktop-class host; on the low-end devices
+that dominate the fleet's p95 (567 ms spent in this span alone) the absolute
+saving is proportionally larger. The PSS delta (~2 MB median, n=5) is
+directionally consistent with the −5 MB desktop heap delta; PSS shared-page
+accounting and GC timing blur it at this sample size.
 
 ## Motivation
 
