@@ -227,6 +227,21 @@ Rollback is a one-commit revert: no native code, no IPC contract, no
 
 ## Alternatives considered
 
+- **Named imports from `@sentry/node-core` (no replacement)**: change
+  `import * as Sentry` + namespace injection to explicit named imports so
+  treeshaking can drop the unused export surface, keeping node-core and the
+  OTel wiring untouched. Measured (same build + bench methodology, 97/97
+  tests pass): chunk 441.7 KB → **346.5 KB** (−95 KB — ANR, cron, pino,
+  spotlight and ~34 KB of core they referenced disappear), but **load cost
+  is unchanged**: import 121 ms (vs 124), `init` 31 ms (vs 30), heap
+  −0.24 MB, RSS −7 MB. The dropped modules were never-executed function
+  bodies that V8 lazy-parses cheaply; what dominates startup is the code
+  that *runs* at import/init — the OTel tracer SDK, hooking machinery,
+  semconv tables, and node-core's default-integration graph — and named
+  imports cannot remove any of it, because `init()` and the OTel wiring
+  reference it statically. Worth taking only as an incidental cleanup; it
+  delivers ~5% of the win for ~40% of the diff. The startup/memory goal
+  requires removing what executes, i.e. the core-only migration.
 - **Keep node-core, drop OTel**: not possible — node-core hard-depends on
   `@sentry/opentelemetry` and the OTel API; its scope/context model *is* the
   OTel context manager.
