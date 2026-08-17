@@ -12,6 +12,7 @@ set -euo pipefail
 #   ./scripts/download-nodejs-mobile.sh --platform ios            # iOS only
 #   ./scripts/download-nodejs-mobile.sh --platform all v24.19.0-0  # explicit version
 #   NODEJS_MOBILE_VERSION=v24.19.0-0 ./scripts/...                 # via env var
+#   NODEJS_MOBILE_FLAVOR=full ./scripts/...                        # full runtime
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -34,12 +35,28 @@ FILE_VERSION="${TAG#v}"
 # revision is readable at runtime as `process.versions.mobile` while
 # `process.version` stays upstream's.
 BASE_URL="https://github.com/digidem/nodejs-mobile/releases/download/${TAG}"
-# Short fingerprint of BASE_URL so swapping the source repo
+
+# `lite` drops ICU, the inspector, `node:sqlite` and TypeScript
+# type-stripping, and on iOS also V8's compiled tiers (dead there — it runs
+# jitless). None of that is a loss for us: the v18 build we came from was
+# already `--with-intl=none`, so `full` would *add* an `Intl` we have never
+# had; we use `better-sqlite3` rather than `node:sqlite`; and we ship plain
+# JS. It saves ~16 MB per Android ABI and ~27 MB on the iOS device slice.
+# Addon prebuilds are flavor-neutral — both flavors ship identical headers
+# and export the same V8 symbol set.
+FLAVOR="${NODEJS_MOBILE_FLAVOR:-lite}"
+case "$FLAVOR" in
+  lite) ASSET_FLAVOR="-lite" ;;
+  full) ASSET_FLAVOR="" ;;
+  *)    echo "Error: NODEJS_MOBILE_FLAVOR must be 'lite' or 'full', got '$FLAVOR'" >&2; exit 1 ;;
+esac
+
+# Short fingerprint of the source URL + flavor so swapping either
 # invalidates both the `/tmp` zip cache and the per-target marker.
 # Same TAG from a different repo would otherwise silently reuse a
 # cached zip from the wrong source (this exact bug bit CI when we
 # pointed BASE_URL at the digidem fork without bumping the tag).
-SOURCE_HASH="$(printf '%s' "$BASE_URL" | shasum | cut -c1-8)"
+SOURCE_HASH="$(printf '%s' "${BASE_URL}${ASSET_FLAVOR}" | shasum | cut -c1-8)"
 
 # Downloads and extracts a release zip into the project tree.
 #
@@ -77,7 +94,7 @@ download() {
     echo "==> $name: downloading $TAG from $BASE_URL"
     curl -fSL --retry 3 --retry-delay 5 \
       -o "$zip" \
-      "${BASE_URL}/nodejs-mobile-${name}-${FILE_VERSION}.zip"
+      "${BASE_URL}/nodejs-mobile-${name}${ASSET_FLAVOR}-${FILE_VERSION}.zip"
   fi
 
   rm -rf "$target"

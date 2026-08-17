@@ -22,7 +22,11 @@ npm run setup      # fetch nodejs-mobile, build the backend, install the test ap
 `npm run setup` runs, in order:
 
 - `download:nodejs-mobile` — pulls `NodeMobile.xcframework` (iOS) and `libnode.so`
-  per ABI plus headers (Android) into place; these are not committed.
+  per ABI plus headers (Android) into place; these are not committed. It fetches
+  the `lite` runtime flavour, which drops ICU, the inspector, `node:sqlite` and
+  TypeScript type-stripping — none of which we use. `NODEJS_MOBILE_FLAVOR=full`
+  fetches the full one; the two ship identical headers, so addon prebuilds work
+  against either.
 - `backend:build` — bundles the Node.js backend (`backend/`) that gets embedded in
   the app. `npm install` alone does **not** build it.
 - installs dependencies for the two test apps (`apps/integration`, `apps/e2e`).
