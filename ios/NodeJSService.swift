@@ -618,12 +618,6 @@ class NodeJSService {
         let completionSem = nodeCompletionSemaphore
         lock.unlock()
 
-        // argv mirrors Android. `--no-experimental-fetch` disables Node's
-        // built-in fetch + lazy undici: nodejs-mobile iOS runs V8 with
-        // `--jitless` (App Store), which kills WebAssembly; undici's HTTP/1
-        // client calls `WebAssembly.compile` at module init and crashes
-        // the process. Android keeps the flag for argv parity.
-        //
         // Open boot.node-spawn BEFORE buildSentryArgs so the trace flag
         // forwards node-spawn's span ID — Node-side spans then nest
         // under it rather than the transaction. Closed by
@@ -638,7 +632,7 @@ class NodeJSService {
         let defaultConfigPath = resolveDefaultConfigPath() ?? ""
         // 5th positional: consumer's online map style URL, or "" when unset.
         let defaultOnlineStyleUrl = resolveDefaultOnlineStyleUrl() ?? ""
-        var args: [String] = ["node", "--no-experimental-fetch"]
+        var args: [String] = ["node"]
         args.append(contentsOf: [
             jsPath,
             comapeoSocketPath,

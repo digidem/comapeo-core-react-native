@@ -212,6 +212,9 @@ class NodeJSService(
         external fun initialize(dataDir: String)
 
         @JvmStatic
+        external fun setEnv(name: String, value: String)
+
+        @JvmStatic
         external fun startNodeWithArguments(args: Array<String>): Int
 
         /** Companion delegate over the top-level [deriveLifecycleState]. Tests use
@@ -351,6 +354,30 @@ class NodeJSService(
     /** `getAndSet` ensures only one thread owns the pre-swap ref — no double-cancel. */
     private fun cancelStartupWatchdog() {
         startupWatchdogJob.getAndSet(null)?.cancel()
+    }
+
+    /**
+     * Environment node inherits from this process. Must run before
+     * [startNodeWithArguments] — node reads all of these while creating the
+     * Environment, so assigning `process.env` from JS would be too late.
+     *
+     * An Android app process has no `TMPDIR` and there is no `/tmp`, which
+     * `os.tmpdir()` otherwise falls back to; anything writing there fails with
+     * ENOENT. `NODE_COMPILE_CACHE` is V8's on-disk code cache — the backend
+     * flushes it once boot reaches `ready` rather than leaving it to node's
+     * exit hook, which the low-memory killer routinely denies us.
+     *
+     * Both live under `cacheDir`, so the OS may reclaim them under storage
+     * pressure — the right semantics for scratch and regenerable data.
+     */
+    private fun applyNodeEnvironment() {
+        val tmpDir = File(cacheDir, "tmp")
+        val compileCacheDir = File(cacheDir, "node-compile-cache")
+        tmpDir.mkdirs()
+        compileCacheDir.mkdirs()
+        setEnv("TMPDIR", tmpDir.absolutePath)
+        setEnv("NODE_COMPILE_CACHE", compileCacheDir.absolutePath)
+        setEnv("NODE_COMPILE_CACHE_PORTABLE", "1")
     }
 
     /** Positionals are read by backend/index.js; `--sentry*` flags by backend/loader.mjs. */
@@ -507,6 +534,8 @@ class NodeJSService(
                 SentryFgsBridge.startBootSpan(bootTx.get(), "node-spawn")?.let {
                     bootSpans["node-spawn"] = it
                 }
+
+                withContext(Dispatchers.IO) { applyNodeEnvironment() }
 
                 val exitCode = startNodeWithArguments(
                     buildBackendArgs(jsFile.absolutePath)

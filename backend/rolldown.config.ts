@@ -56,61 +56,9 @@ const IOS_SOURCEMAPS =
   process.env.SOURCEMAPS_DIR_IOS ?? `${IOS_OUT}-sourcemaps`;
 
 /**
- * iOS-only: redirects undici's `require('../llhttp/llhttp_simd-wasm.js')`
- * call to the non-SIMD wasm module beside it. polywasm 0.2 doesn't
- * implement WASM SIMD (opcode 0xfd) — it compiles the SIMD bytes
- * successfully but throws `Unsupported instruction: 0xFD` lazily on
- * the first export call, which undici's try/catch around `compile`
- * doesn't intercept. Aliasing at bundle time forces the non-SIMD
- * path so the SIMD bytes never reach polywasm.
- */
-function aliasUndiciSimdWasmPlugin(): Plugin {
-  return {
-    name: "alias-undici-simd-wasm",
-    resolveId(source, importer) {
-      if (
-        source === "../llhttp/llhttp_simd-wasm.js" &&
-        importer &&
-        importer.includes("/undici/lib/dispatcher/")
-      ) {
-        return path.resolve(path.dirname(importer), "../llhttp/llhttp-wasm.js");
-      }
-      return null;
-    },
-  };
-}
-
-/**
- * iOS only: redirect `loader.mjs`'s dynamic `import("./index.js")` to
- * `index.ios.js` (the polywasm-installing wrapper that re-imports
- * `index.js`). Without this, rolldown resolves the literal `./index.js`
- * specifier from loader.mjs to the source `index.js` and emits a
- * second chunk that bypasses the polywasm install — undici then
- * throws `ReferenceError: WebAssembly is not defined` at module-init
- * inside the loaded backend. Android resolves `./index.js` to the
- * `index.js` entry naturally; the redirect is iOS-specific.
- */
-function redirectLoaderIndexToPolywasmEntryPlugin(): Plugin {
-  return {
-    name: "redirect-loader-index-to-polywasm-entry",
-    resolveId(source, importer) {
-      if (
-        source === "./index.js" &&
-        importer &&
-        importer.endsWith("/loader.mjs")
-      ) {
-        return path.join(__dirname, "index.ios.js");
-      }
-      return null;
-    },
-  };
-}
-
-/**
  * Runtime data files copied alongside the rolldown output into the per-
- * platform output dir. Identical for Android and iOS: only the bundled
- * JS differs (iOS prefixes a polywasm bootstrap and aliases undici's
- * SIMD wasm — see `aliasUndiciSimdWasmPlugin` above).
+ * platform output dir. Identical for Android and iOS; only the bundled JS
+ * differs, and then only in the `__loadAddon` banner.
  *
  *   - `package.json`: required by Node's module resolver to set the
  *     unpacked nodejs-project tree's module type.
@@ -183,24 +131,13 @@ const sharedInput: Pick<InputOptions, "platform" | "resolve"> = {
 };
 
 function buildPlugins({
-  platform,
   outDir,
   debugIdMap,
 }: {
-  platform: "android" | "ios";
   outDir: string;
   debugIdMap: Map<string, string>;
 }): Plugin[] {
   return [
-    // iOS-only: redirect undici's SIMD llhttp wasm to the non-SIMD
-    // module so polywasm doesn't trip on opcode 0xfd at runtime. See
-    // aliasUndiciSimdWasmPlugin above.
-    ...(platform === "ios" ? [aliasUndiciSimdWasmPlugin()] : []),
-    // iOS-only: redirect loader.mjs's `import("./index.js")` to the
-    // polywasm-installing entry so the polyfill is in place before
-    // undici's module-init `WebAssembly.compile`. See
-    // redirectLoaderIndexToPolywasmEntryPlugin above.
-    ...(platform === "ios" ? [redirectLoaderIndexToPolywasmEntryPlugin()] : []),
     // Native addon loader rewrite is identical for both platforms:
     // every loader pattern (`bindings`, `node-gyp-build`, `require.addon`)
     // becomes `__loadAddon(name, version)`. The helper itself differs
@@ -246,19 +183,10 @@ function cleanOutputDirPlugin(dir: string): Plugin {
 // argv, conditionally dynamic-imports `./lib/sentry-init.js` (which
 // brings in `@sentry/node-core` + `@sentry/opentelemetry` + the
 // OpenTelemetry SDK) and initialises Sentry, then dynamic-imports
-// `./index.mjs` (the platform-appropriate bundle of either
-// `index.js` or `index.ios.js`).
-const ANDROID_INPUT = {
+// `./index.mjs`.
+const INPUT = {
   loader: path.join(__dirname, "loader.mjs"),
   index: path.join(__dirname, "index.js"),
-};
-
-// iOS uses a thin entry that imports `lib/install-polywasm.js` first
-// so polywasm replaces the absent `globalThis.WebAssembly` before the
-// shared `index.js` (and undici through the maps plugin) is evaluated.
-const IOS_INPUT = {
-  loader: path.join(__dirname, "loader.mjs"),
-  index: path.join(__dirname, "index.ios.js"),
 };
 
 const sharedOutput: OutputOptions = {
@@ -272,12 +200,8 @@ const sharedOutput: OutputOptions = {
 };
 
 /**
- * Two outputs from the same source tree: Android and iOS.
- * Android gets the full bundle — its nodejs-mobile build permits JIT, so undici
- * (and therefore the maps fastify plugin) loads cleanly. iOS uses a wrapper
- * entry (`index-ios.js`) that installs polywasm as `globalThis.WebAssembly`
- * before the shared `index.js` runs, so undici can compile its non-SIMD
- * llhttp wasm under nodejs-mobile's jitless V8.
+ * Two outputs from the same source tree and the same entries: Android and
+ * iOS. They differ only in the `__loadAddon` banner.
  *
  * Each output's `banner` defines `__loadAddon(name, version)` with the
  * platform-appropriate `process.dlopen` target — Android does
@@ -295,7 +219,7 @@ const iosDebugIds = new Map<string, string>();
 
 const config: RolldownOptions[] = [
   {
-    input: ANDROID_INPUT,
+    input: INPUT,
     ...sharedInput,
     output: {
       ...sharedOutput,
@@ -306,7 +230,6 @@ const config: RolldownOptions[] = [
     plugins: [
       cleanOutputDirPlugin(ANDROID_OUT_MAIN),
       ...buildPlugins({
-        platform: "android",
         outDir: ANDROID_OUT_MAIN,
         debugIdMap: androidMainDebugIds,
       }),
@@ -318,7 +241,7 @@ const config: RolldownOptions[] = [
     ],
   },
   {
-    input: IOS_INPUT,
+    input: INPUT,
     ...sharedInput,
     output: {
       ...sharedOutput,
@@ -329,7 +252,6 @@ const config: RolldownOptions[] = [
     plugins: [
       cleanOutputDirPlugin(IOS_OUT),
       ...buildPlugins({
-        platform: "ios",
         outDir: IOS_OUT,
         debugIdMap: iosDebugIds,
       }),

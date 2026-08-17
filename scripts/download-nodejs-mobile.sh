@@ -10,8 +10,8 @@ set -euo pipefail
 #   ./scripts/download-nodejs-mobile.sh                          # both platforms
 #   ./scripts/download-nodejs-mobile.sh --platform android       # Android only
 #   ./scripts/download-nodejs-mobile.sh --platform ios            # iOS only
-#   ./scripts/download-nodejs-mobile.sh --platform all v18.20.4  # explicit version
-#   NODEJS_MOBILE_VERSION=v18.20.4 ./scripts/...                 # via env var
+#   ./scripts/download-nodejs-mobile.sh --platform all v24.19.0-0  # explicit version
+#   NODEJS_MOBILE_VERSION=v24.19.0-0 ./scripts/...                 # via env var
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -25,15 +25,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-VERSION="${VERSION:-${NODEJS_MOBILE_VERSION:-v18.20.4}}"
+VERSION="${VERSION:-${NODEJS_MOBILE_VERSION:-v24.19.0-0}}"
 TAG="$VERSION"
 [[ "$TAG" != v* ]] && TAG="v$TAG"
 FILE_VERSION="${TAG#v}"
-# Fork that ships 16 KB-aligned libnode for Android 15+ 16 KB-page
-# devices. Tracks upstream nodejs-mobile/nodejs-mobile and adds the
-# `-Wl,-z,max-page-size=16384` flag (upstream PR
-# nodejs-mobile/nodejs-mobile#155). Switch back to upstream once
-# that PR is merged + released.
+# Fork carrying the mobile patch series on top of an upstream Node
+# release. Releases are tagged `v<node-version>-<mobile-rev>`; the
+# revision is readable at runtime as `process.versions.mobile` while
+# `process.version` stays upstream's.
 BASE_URL="https://github.com/digidem/nodejs-mobile/releases/download/${TAG}"
 # Short fingerprint of BASE_URL so swapping the source repo
 # invalidates both the `/tmp` zip cache and the per-target marker.
@@ -78,7 +77,7 @@ download() {
     echo "==> $name: downloading $TAG from $BASE_URL"
     curl -fSL --retry 3 --retry-delay 5 \
       -o "$zip" \
-      "${BASE_URL}/nodejs-mobile-v${FILE_VERSION}-${name}.zip"
+      "${BASE_URL}/nodejs-mobile-${name}-${FILE_VERSION}.zip"
   fi
 
   rm -rf "$target"

@@ -56,7 +56,7 @@ runtime/process side (how native talks to the backend over sockets) see
    `0x4000` — required for Android 15's 16 KB page sizes.
 
 The iOS xcframework-wrapping step (`xcodebuild -create-xcframework`,
-`install_name_tool`, `lipo`) is **darwin-gated**: on Linux CI the script builds
+`install_name_tool`) is **darwin-gated**: on Linux CI the script builds
 the Android artifacts and skips iOS. This is why the npm publish runs on macOS
 (see [`release.yml`](../.github/workflows/release.yml)) — publishing from Linux
 would ship an empty `ios/Frameworks/`.
@@ -72,10 +72,11 @@ so multiple versions coexist without collision:
 
 ```
 android/src/main/jniLibs/arm64-v8a/
-  libbetter-sqlite3__11.10.0.so
-  libbetter-sqlite3__12.9.0.so      # two majors, side by side
+  libbetter-sqlite3__12.10.0.so
   libsodium-native__5.1.0.so
-  …
+  …                                 # npm can leave two versions of the
+                                    # same addon in the tree; the `__<version>`
+                                    # suffix is what lets both ship
 ```
 
 `android/build.gradle` adds `src/main/jniLibs/` to `jniLibs.srcDirs` (next to
@@ -88,8 +89,7 @@ mmap'd at load time rather than extracted.
 
 ```
 ios/Frameworks/
-  better-sqlite3__11.10.0.xcframework
-  better-sqlite3__12.9.0.xcframework
+  better-sqlite3__12.10.0.xcframework
   sodium-native__5.1.0.xcframework
   …
 ```
@@ -162,11 +162,18 @@ The native modules, declared in
 | `simdle-native` | yes | `digidem/simdle-native-nodejs-mobile` |
 | `sodium-native` | yes | `digidem/sodium-native-nodejs-mobile` |
 
+`better-sqlite3` is the one non-NAPI entry: it links V8's C++ symbols directly,
+so a prebuild only loads on the Node ABI it was built against, and its asset
+name carries that ABI (`-node-137-` for nodejs-mobile 24). The NAPI six are
+ABI-stable and the same artifact serves every Node version. This is also why the
+tree pins one `better-sqlite3` through `overrides` — every distinct version is a
+separate prebuild to publish, and 11.x doesn't compile against V8 13.6 at all.
+
 `NATIVE_MODULES` records only *which* deps are native (and whether they use the
 NAPI ABI). **Versions are not listed here** — they're resolved from the installed
 tree (`npm ls`) at build time, so the source of truth stays
-`backend/package.json` + lockfile (via `@comapeo/core` and an `overrides` pin on
-`sodium-native`). Bumping a backend dep that pulls a new addon version
+`backend/package.json` + lockfile (via `@comapeo/core` and the `overrides` pins).
+Bumping a backend dep that pulls a new addon version
 automatically fetches the matching prebuild on the next `backend:build`; there's
 no manifest line to forget. The plan's proposed `node-native/modules.json` was
 not adopted — the in-code constant plus lockfile resolution covers it.

@@ -40,11 +40,13 @@ debug ID in the bundle, the consuming app uploads the maps with
 `comapeo-rn-upload-sourcemaps`, and Sentry matches them by that ID.
 
 The backend deliberately does **not** run with `--enable-source-maps` in any
-variant. nodejs-mobile pins Node 18, whose `findSourceMap()` re-parses the whole
-map on every `Error.stack` format — roughly 320 ms and 250–470 MB of garbage per
-error for our 19 MB map, enough to wedge the event loop for tens of seconds on a
-low-end device. For a stack you have in a terminal rather than in Sentry,
-`comapeo-rn-symbolicate` remaps it offline from the shipped maps.
+variant. Measured on the Node 18 nodejs-mobile used to pin, `findSourceMap()`
+re-parsed the whole map on every `Error.stack` format — roughly 320 ms and
+250–470 MB of garbage per error for our 19 MB map, enough to wedge the event
+loop for tens of seconds on a low-end device. Node has since reworked its
+source-map cache; the flag stays off until that's re-measured on device. For a
+stack you have in a terminal rather than in Sentry, `comapeo-rn-symbolicate`
+remaps it offline from the shipped maps.
 
 ## Repository layout
 
