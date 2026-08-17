@@ -47,7 +47,7 @@
     "typescript": "5.9.3"
   },
   "overrides": {
-    "better-sqlite3": "12.10.0",
+    "better-sqlite3": "13.0.3",
     "require-addon": "1.1.0",
     "sodium-native": "5.1.0",
     "sodium-universal": "5.0.1"
