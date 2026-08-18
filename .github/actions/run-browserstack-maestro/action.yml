@@ -35,6 +35,15 @@ inputs:
       connection resetting during launchApp), never on a real test failure.
     required: false
     default: "3"
+  artifact_name:
+    description: >-
+      Name of the workflow artifact that receives failure diagnostics
+      (device logs, screenshots, session JSON). Defaults to
+      browserstack-diagnostics-<platform>. Artifact names must be unique
+      per workflow run, so override this if one workflow calls this action
+      more than once per platform.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -73,6 +82,7 @@ runs:
         PLATFORM: ${{ inputs.platform }}
         TIMEOUT: ${{ fromJson(inputs.timeout) }}
         MAX_ATTEMPTS: ${{ fromJson(inputs.max_attempts) }}
+        DIAG_DIR: ${{ runner.temp }}/browserstack-diagnostics
       shell: bash
       run: | #shell
         set -o pipefail
@@ -184,6 +194,61 @@ runs:
           done
         }
 
+        # Saves what BrowserStack already recorded (deviceLogs: true above)
+        # for each failed session into DIAG_DIR — device logs, screenshots,
+        # session JSON — for the upload step, and prints the app-relevant
+        # device-log lines so the stalled/failed spec is named in the job log.
+        # Best-effort by design: always returns 0 so a fetch error here can
+        # never mask the real failure.
+        collect_diagnostics() {
+          local build_id=$1 attempt=$2
+          mkdir -p "$DIAG_DIR" || return 0
+          printf '%s\n' "$BUILD_RESPONSE" > "$DIAG_DIR/attempt${attempt}-build.json" || true
+          while IFS=$'\t' read -r device session_id; do
+            [ -n "$session_id" ] || continue
+            local slug prefix detail
+            slug=$(printf '%s' "$device" | tr -cs 'A-Za-z0-9._-' '-')
+            prefix="$DIAG_DIR/attempt${attempt}-${slug}"
+            detail=$(curl --show-error -s -u "$AUTH" "$API/builds/$build_id/sessions/$session_id") || continue
+            printf '%s\n' "$detail" > "${prefix}-session.json" || true
+            while IFS=$'\t' read -r tc_name tc_status device_log screenshots video; do
+              [ -n "$tc_name" ] || continue
+              local tc_slug base
+              tc_slug=$(printf '%s' "$tc_name" | tr -cs 'A-Za-z0-9._-' '-')
+              base="${prefix}-${tc_slug}"
+              if [ -n "$device_log" ]; then
+                curl --show-error -s -u "$AUTH" -o "${base}-device.log" "$device_log" || true
+                if [ -s "${base}-device.log" ]; then
+                  echo "::group::Device log (app lines) — $device / $tc_name ($tc_status)"
+                  matches=$({ grep -E 'ReactNativeJS|\[e2e\]|ComapeoCore|Comapeo:NodeJS' "${base}-device.log" || true; } | tail -n 200)
+                  if [ -n "$matches" ]; then
+                    printf '%s\n' "$matches"
+                  else
+                    echo "(no app-tagged lines — expected on iOS, where console output is not persisted to the device log; use the screenshots)"
+                  fi
+                  echo "::endgroup::"
+                fi
+              fi
+              if [ -n "$screenshots" ]; then
+                curl --show-error -sL -u "$AUTH" -o "${base}-screenshots.zip" "$screenshots" || true
+                if [ -s "${base}-screenshots.zip" ] \
+                  && unzip -o -q -d "${base}-screenshots" "${base}-screenshots.zip"; then
+                  rm -f "${base}-screenshots.zip"
+                fi
+              fi
+              if [ -n "$video" ]; then
+                echo "Video for $device / $tc_name: $video"
+              fi
+            done < <(printf '%s\n' "$detail" \
+              | jq -r '.testcases.data[]?.testcases[]? | select(.status != "passed")
+                  | [.name, .status, .device_log // "", .screenshots // "", .video // ""] | @tsv')
+          done < <(printf '%s\n' "$BUILD_RESPONSE" \
+            | jq -r '.devices[]? as $d | $d.sessions[]? | select(.status != "passed")
+                | [(($d.device // $d.os // "device") + "-" + ($d.os_version // "")), .id] | @tsv')
+          echo "Diagnostics saved for upload as a workflow artifact."
+          return 0
+        }
+
         # Returns 0 only if there is at least one failed session and every
         # failed session is infra-class: either its structured session
         # `error.message` matches SESSION_ERR_RE (the session never started)
@@ -243,11 +308,22 @@ runs:
             continue
           fi
 
+          collect_diagnostics "$BUILD_ID" "$attempt" || true
           echo "Tests failed (status: $STATUS)"
           exit 1
         done
 
         exit 1
+
+    # Runs only after the run step has already failed, so uploading (or a
+    # failure to upload) cannot change the action's outcome or exit code.
+    - name: Upload BrowserStack diagnostics
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact_name != '' && inputs.artifact_name || format('browserstack-diagnostics-{0}', inputs.platform) }}
+        path: ${{ runner.temp }}/browserstack-diagnostics
+        if-no-files-found: ignore
 
     - name: Stop BrowserStack build on cancel
       if: cancelled() && steps.run.outputs.build_id != ''
