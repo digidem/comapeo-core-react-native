@@ -557,6 +557,29 @@ class NodeJSService {
         log("Sent error-native frame to backend (phase=\(phase))")
     }
 
+    /// Sends a `retry` frame on the control socket so the backend re-runs
+    /// init + `startComapeo`. Must only be called after a low-space warning.
+    ///
+    /// `availableDiskSpace` is a placeholder (0) until the native layer can
+    /// report real free space.
+    func sendRetryFrame(forceSkipMigrate: Bool) {
+        guard let ipc = controlIPC else { return }
+        let payload: [String: Any] = [
+            "type": "retry",
+            "forceSkipMigrate": forceSkipMigrate,
+            "availableDiskSpace": 0, // TODO: report real free space
+        ]
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: payload),
+            let json = String(data: data, encoding: .utf8)
+        else {
+            log("Failed to serialize retry frame")
+            return
+        }
+        ipc.sendMessage(json)
+        logCrumb(category: SentryCategories.control, message: "retry frame sent")
+    }
+
     /// Gracefully stops Node.js. `timeout` bounds the wait for the
     /// thread to exit; on timeout the service lands in `.error`.
     func stop(timeout: TimeInterval = 10) {

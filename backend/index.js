@@ -149,6 +149,22 @@ const controlIpcServer = new SimpleRpcServer({
     }
   },
   /**
+   * @param {{
+   *   forceSkipMigrate: boolean;
+   *   availableDiskSpace: number;
+   * }} message
+   */
+  retry: async (message) => {
+    try {
+      const rootKey = await withPhase("init", () => initPromise);
+      await startComapeo(rootKey, message.forceSkipMigrate);
+    } catch (error) {
+      const phase = getStringProp(error, "phase") || "retry";
+      metrics.bootOutcome("error", phase);
+      handleFatal(phase, error);
+    }
+  },
+  /**
    * Android-only attribution channel: FGS-local failures (rootkey load,
    * startup watchdog) send this so the main-app process gets a real
    * `error` frame instead of inferring "unexpected disconnect" from a

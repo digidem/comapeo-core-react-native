@@ -53,6 +53,10 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   postMessage(value: string): void;
   getState(): ComapeoState;
   getLastError(): ComapeoErrorInfo | null;
+  /* Retry initializing the backend.
+   * Must be called only after a low space warning.
+   */
+  retryInit(forceSkipMigrate?:boolean) : void;
   /**
    * Sentry options the Expo plugin baked into the native config.
    * Empty object when the plugin isn't registered (or DSN absent).
@@ -198,6 +202,11 @@ export function setDebugEnabledNative(value: boolean): Promise<void> {
  */
 export function readRootUserIdNative(): string {
   return nativeModule.getSentryRootUserId?.() ?? "";
+}
+
+/** Retry init after a low storage warning */
+export function retryInit(forceSkipMigrate: boolean = false): void {
+  return nativeModule.retryInit(forceSkipMigrate)
 }
 
 const GRANTED_PERMISSION: NotificationPermissionResponse = {

@@ -83,6 +83,13 @@ public class ComapeoCoreModule: Module {
             return ["errorPhase": info.phase, "errorMessage": info.message]
         }
 
+        // Retry backend init. Must only be called after a low-space warning.
+        Function("retryInit") { (forceSkipMigrate: Bool?) in
+            AppLifecycleDelegate.nodeService.sendRetryFrame(
+                forceSkipMigrate: forceSkipMigrate ?? false
+            )
+        }
+
         // Plist-baked Sentry options, re-exported by the JS `/sentry`
         // sub-export. Empty map when DSN absent so spreading is safe.
         // `userId` is derived with the same launch snapshot the native init

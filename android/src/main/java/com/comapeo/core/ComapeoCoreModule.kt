@@ -12,9 +12,10 @@ private typealias JsState = NodeJSService.State
 class ComapeoCoreModule : Module() {
     private lateinit var ipc: NodeJSIPC
     /**
-     * Read-only observer of `control.sock`. The FGS owns the writeable side
-     * (init / shutdown frames); we only consume `started`/`ready`/`stopping`/`error`
-     * broadcasts to derive the JS-visible lifecycle state.
+     * Observer of `control.sock`. The FGS owns the init / shutdown frames; we
+     * consume `started`/`ready`/`stopping`/`error` broadcasts to derive the
+     * JS-visible lifecycle state, and send `retry` frames to re-run init after a
+     * low-space warning.
      */
     private lateinit var controlIpc: NodeJSIPC
 
@@ -301,6 +302,19 @@ class ComapeoCoreModule : Module() {
                 promise,
                 Manifest.permission.POST_NOTIFICATIONS,
             )
+        }
+
+        Function("retryInit") { forceSkipMigrate: Boolean ->
+            val availableDiskSpace : Int = 0
+            val message = """
+            {
+              "type":"retry",
+              "availableDiskSpace": $availableDiskSpace,
+              "forceSkipMigrate": $forceSkipMigrate
+            }
+            """
+
+            controlIpc.sendMessage(message)
         }
     }
 }
