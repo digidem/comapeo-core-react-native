@@ -14,6 +14,12 @@ export const ZBASE32_52 =
 // 16-byte rootkey in the wire format `backend/index.js` enforces:
 // 22 base64 chars + `==` (base64 of the ASCII bytes "0123456789abcdef").
 export const ROOTKEY_PADDED = "MDEyMzQ1Njc4OWFiY2RlZg==";
+// 32-byte master key in the wire format `backend/index.js` enforces:
+// 43 base64 chars + `=`.
+export const MASTERKEY_PADDED = "vtQ1DElgJHJNUFkuss1PYbMzPqhxxJX2Ok9oeu1n+Cw=";
+// The same key hex-encoded — the shape the native stores and logs use.
+export const MASTERKEY_HEX =
+  "bed4350c496024724d50592eb2cd4f61b3333ea871c495f63a4f687aed67f82c";
 
 /** `scrubString(input)` must equal `expect`. */
 export const scrubStringCases = [
@@ -35,12 +41,28 @@ export const scrubStringCases = [
   { name: "JSON-quoted rootKey value redacted (logged init frame)", input: `{"type":"init","rootKey":"${ROOTKEY_PADDED}"}`, expect: '{"type":"init","[redacted]"}' },
   { name: "util.inspect-quoted rootKey value redacted (logged message object)", input: `{ type: 'init', rootKey: '${ROOTKEY_PADDED}' }`, expect: "{ type: 'init', [redacted]' }" },
   { name: "root_key variant with quoted value redacted", input: `root_key: "${ROOTKEY_PADDED}"`, expect: "[redacted]\"" },
+  // The cached master key rides on the same init frame, so it gets the same
+  // marker rules — in both the base64 wire form and the hex form native logs.
+  { name: "JSON-quoted masterKey value redacted (logged init frame)", input: `{"type":"init","masterKey":"${MASTERKEY_PADDED}"}`, expect: '{"type":"init","[redacted]"}' },
+  { name: "init frame with both keys redacted", input: `{"type":"init","rootKey":"${ROOTKEY_PADDED}","masterKey":"${MASTERKEY_PADDED}"}`, expect: '{"type":"init","[redacted]","[redacted]"}' },
+  { name: "util.inspect-quoted masterKey value redacted (logged message object)", input: `{ type: 'init', masterKey: '${MASTERKEY_PADDED}' }`, expect: "{ type: 'init', [redacted]' }" },
+  { name: "master_key variant with quoted value redacted", input: `master_key: "${MASTERKEY_PADDED}"`, expect: "[redacted]\"" },
+  { name: "hex-encoded masterKey value redacted", input: `masterKey=${MASTERKEY_HEX}`, expect: "[redacted]" },
+  // Identifiers that only END in the marker: `cachedMasterKey` is a real
+  // local in backend/index.js, so a util.inspect'd scope or an error message
+  // naming it is a plausible leak shape.
+  { name: "prefixed identifier redacted (cachedMasterKey)", input: `cachedMasterKey='${MASTERKEY_PADDED}'`, expect: "[redacted]'" },
+  { name: "prefixed identifier redacted (deviceRootKey)", input: `deviceRootKey: "${ROOTKEY_PADDED}"`, expect: "[redacted]\"" },
+  // ...but the prefix must not turn every word ending in "key" into a marker.
+  { name: "masterkeyboard is not a key marker", input: "masterkeyboard: qwerty", expect: "masterkeyboard: qwerty" },
   // There is deliberately NO value-shape rule for bare (unmarked) tokens —
   // the key only ever exists next to its field name (covered above), and a
   // shape rule would be coupled to one encoding of the value. See the
   // SCRUB_PATTERNS note in src/sentry-scrub.ts.
   { name: "bare base64 token passes through", input: "token bm90LWEtcmVhbC1rZXktMQ done", expect: "token bm90LWEtcmVhbC1rZXktMQ done" },
   { name: `bare padded token passes through (no value-shape rule)`, input: `token ${ROOTKEY_PADDED} done`, expect: `token ${ROOTKEY_PADDED} done` },
+  { name: "bare master-key base64 passes through (no value-shape rule)", input: `token ${MASTERKEY_PADDED} done`, expect: `token ${MASTERKEY_PADDED} done` },
+  { name: "bare master-key hex passes through (no value-shape rule)", input: `token ${MASTERKEY_HEX} done`, expect: `token ${MASTERKEY_HEX} done` },
   { name: "43-char public key passes through", input: BASE64_43, expect: BASE64_43 },
   { name: "52-char project id passes through", input: ZBASE32_52, expect: ZBASE32_52 },
 ];
@@ -67,5 +89,6 @@ export const forbiddenMetricCases = [
   { name: "43-char token value allowed (no value-shape rule)", metricName: "comapeo.x", attributes: { bucket: BASE64_43 }, expect: false },
   { name: "52-char token value allowed (no value-shape rule)", metricName: "comapeo.x", attributes: { bucket: ZBASE32_52 }, expect: false },
   { name: "rootkey tag NAME drops the metric", metricName: "comapeo.x", attributes: { rootkey: "x" }, expect: true },
+  { name: "masterkey tag NAME drops the metric", metricName: "comapeo.x", attributes: { masterkey: "x" }, expect: true },
   { name: "ordinary rpc tags allowed", metricName: "comapeo.rpc.client.duration_ms", attributes: { method: "read.doc", status: "ok", platform: "ios" }, expect: false },
 ];

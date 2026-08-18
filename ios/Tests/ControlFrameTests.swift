@@ -106,6 +106,27 @@ final class ControlFrameTests: XCTestCase {
         XCTAssertTrue(detail.contains("data"))
     }
 
+    func testParsesMasterKey() {
+        let frame = ControlFrame.parse(#"{"type":"master-key","masterKey":"aGVsbG8="}"#)
+        guard case let .masterKey(base64) = frame else {
+            XCTFail("expected .masterKey, got \(frame)"); return
+        }
+        XCTAssertEqual(base64, "aGVsbG8=")
+    }
+
+    func testMasterKeyMissingFieldReturnsMalformed() {
+        for raw in [
+            #"{"type":"master-key"}"#,
+            #"{"type":"master-key","masterKey":42}"#,
+            #"{"type":"master-key","masterKey":""}"#,
+        ] {
+            guard case let .malformed(detail) = ControlFrame.parse(raw) else {
+                XCTFail("expected .malformed for \(raw)"); continue
+            }
+            XCTAssertTrue(detail.contains("masterKey"))
+        }
+    }
+
     func testNonJSONReturnsMalformed() {
         let frame = ControlFrame.parse("not json at all")
         guard case let .malformed(detail) = frame else {

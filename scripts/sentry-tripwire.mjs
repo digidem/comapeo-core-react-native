@@ -39,7 +39,7 @@
 //     in the same trace (cross-process trace stitching)
 //   - contexts.device.family == "Android" on the FGS transaction
 //   - proc / layer / comapeo.rn tags
-//   - no PII markers (rootkey / coordinates) in any fetched event
+//   - no PII markers (rootkey / master key / coordinates) in any fetched event
 //
 // Exit code 0 when everything holds within the polling window, 1 otherwise.
 

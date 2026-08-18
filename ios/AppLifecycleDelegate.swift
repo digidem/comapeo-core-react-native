@@ -84,6 +84,15 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         rootKeyProvider: {
             try AppLifecycleDelegate.rootKeyStore.loadOrInitialize()
         },
+        masterKeyCacheProvider: { rootKey in
+            AppLifecycleDelegate.rootKeyStore.loadMasterKey(rootKey: rootKey)
+        },
+        masterKeyStoreProvider: { masterKey, rootKeyFingerprint in
+            AppLifecycleDelegate.rootKeyStore.storeMasterKey(
+                masterKey,
+                rootKeyFingerprint: rootKeyFingerprint
+            )
+        },
         sentryConfig: AppLifecycleDelegate.resolveEffectiveSentryConfig(),
         applicationUsageData: ComapeoPrefs.open().readApplicationUsageData(),
         debug: ComapeoPrefs.open().readDebugEnabled(),

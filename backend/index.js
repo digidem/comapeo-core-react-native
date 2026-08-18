@@ -6,7 +6,10 @@ import Fastify from "fastify";
 import { ComapeoRpc } from "./lib/comapeo-rpc.js";
 import { flushCompileCacheAfterBoot } from "./lib/compile-cache.js";
 import { createComapeo } from "./lib/create-comapeo.js";
+import { createKeyManager } from "./lib/create-key-manager.js";
 import { createMapServer } from "./lib/create-map-server.js";
+import { masterKeyFrame } from "./lib/master-key-frame.js";
+import { parseInit } from "./lib/parse-init.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 import * as sentry from "./lib/sentry.js";
 import * as metrics from "./lib/metrics.js";
@@ -52,64 +55,62 @@ let comapeoManager;
 /** @type {Awaited<ReturnType<typeof createMapServer>> | undefined} */
 let mapServer;
 
-/** @type {(rootKey: Buffer) => void} */
+/** @type {(init: { rootKey: Buffer, masterKey?: Buffer }) => void} */
 let resolveInit;
 /** @type {(reason: Error) => void} */
 let rejectInit;
-/** @type {Promise<Buffer>} */
+/** @type {Promise<{ rootKey: Buffer, masterKey?: Buffer }>} */
 const initPromise = new Promise((resolve, reject) => {
   resolveInit = resolve;
   rejectInit = reject;
 });
 let initConsumed = false;
+/**
+ * The connection `init` arrived on, so the `master-key` reply reaches only
+ * the native side that owns the cache. On Android the main app process holds
+ * a second, read-only control connection; broadcasting would carry the key
+ * into it.
+ *
+ * @type {import("./lib/message-port.js").SocketMessagePort | undefined}
+ */
+let initReplyPort;
 
 const controlIpcServer = new SimpleRpcServer({
   /**
    * First valid init resolves `initPromise`; subsequent inits ignore
    * (so a misbehaving native side can't reset the manager mid-session).
-   * Malformed payload rejects once → process exits → native enters ERROR.
+   * Malformed rootKey rejects once → process exits → native enters ERROR;
+   * a malformed `masterKey` only costs us the cache (see parse-init.js) and
+   * the `master-key` reply replaces it.
    *
    * @param {Record<string, unknown>} message
+   * @param {import("./lib/message-port.js").SocketMessagePort} port
    */
-  init: (message) => {
+  init: (message, port) => {
     if (initConsumed) {
       console.warn("Received init after manager was created; ignoring");
       return;
     }
-    if (typeof message.rootKey !== "string") {
-      rejectInit(
-        new Error(
-          `init.rootKey must be a base64 string, got ${typeof message.rootKey}`,
-        ),
-      );
-      initConsumed = true;
-      return;
-    }
-    // `Buffer.from(s, "base64")` silently drops invalid chars, so a
-    // tampered string can still decode to 16 unrelated bytes. Both
-    // platforms emit standard base64; 16 bytes = 22 chars + "==".
-    if (!/^[A-Za-z0-9+/]{22}==$/.test(message.rootKey)) {
-      rejectInit(
-        new Error(
-          `init.rootKey is not strict-base64 of 16 bytes (expected ` +
-            `/^[A-Za-z0-9+/]{22}==$/, got ${message.rootKey.length} chars)`,
-        ),
-      );
-      initConsumed = true;
-      return;
-    }
-    const rootKey = Buffer.from(message.rootKey, "base64");
-    if (rootKey.byteLength !== 16) {
-      rejectInit(
-        new Error(
-          `init.rootKey must decode to 16 bytes, got ${rootKey.byteLength}`,
-        ),
-      );
-      initConsumed = true;
-      return;
-    }
     initConsumed = true;
-    resolveInit(rootKey);
+    initReplyPort = port;
+    // `postMessage` on a closed port fails asynchronously on the stream, so
+    // drop the reference here rather than writing into a dead socket.
+    port.addEventListener("close", () => {
+      initReplyPort = undefined;
+    });
+    const result = parseInit(message);
+    // `=== false`, not `!ok`: truthiness doesn't narrow a JSDoc union.
+    if (result.ok === false) {
+      rejectInit(result.error);
+      return;
+    }
+    if (result.masterKeyWarning) {
+      const { reason, message: warning } = result.masterKeyWarning;
+      console.warn(warning);
+      sentry.captureWarning("init", warning);
+      metrics.masterKeyRejected(reason);
+    }
+    resolveInit({ rootKey: result.rootKey, masterKey: result.masterKey });
   },
   shutdown: async () => {
     // Broadcast BEFORE close: this only queues the frame, and close()
@@ -228,6 +229,32 @@ async function withPhase(phase, fn) {
   }
 }
 
+/**
+ * Ships the freshly derived master key back to the native side that sent
+ * `init`, which caches it for the next boot. Never throws: a dropped frame
+ * costs one slow boot, not this one.
+ *
+ * @param {import("@comapeo/crypto").KeyManager} keyManager
+ */
+function sendMasterKeyFrame(keyManager) {
+  if (!initReplyPort) {
+    console.warn("init connection closed before the master key was sent");
+    metrics.ipcError("MasterKeyFrameDropped");
+    return;
+  }
+  // Ordinary heap, unlike the instance's locked copy — zeroed once written.
+  const masterKey = keyManager.getMasterKey();
+  try {
+    initReplyPort.postMessage(masterKeyFrame(masterKey));
+  } catch (e) {
+    // Name only: the frame this failed on carries the master key.
+    console.error("Failed to send master-key frame", ensureError(e).name);
+    metrics.ipcError(ensureError(e).name);
+  } finally {
+    masterKey.fill(0);
+  }
+}
+
 (async () => {
   try {
     await withPhase("listen-control", () =>
@@ -243,12 +270,33 @@ async function withPhase(phase, fn) {
 
     // No span: native already measures `boot.rootkey-load` on the
     // same trace; a duplicate would only add noise.
-    const rootKey = await withPhase("init", () => initPromise);
+    const { rootKey, masterKey: cachedMasterKey } = await withPhase(
+      "init",
+      () => initPromise,
+    );
+
+    // One KeyManager for the whole backend; the decision (and its
+    // derivation-count guarantee) lives in create-key-manager.js.
+    const keyManager = await withPhase("construct", () =>
+      createKeyManager({
+        rootKey,
+        masterKey: cachedMasterKey,
+        withSpan: sentry.withSpan,
+      }),
+    );
+
+    // Before `boot.manager-init`, not after: the boot memory spike is where
+    // low-end Android gets killed, and a boot that dies later still leaves
+    // native with a cache entry that skips the derivation next time.
+    if (!cachedMasterKey) sendMasterKeyFrame(keyManager);
 
     // Dashboard label (`boot.manager-init`) vs. wire phase (`construct`)
     // used by native error frames.
     await withPhase("construct", () =>
       sentry.withSpan("boot.manager-init", async () => {
+        // Ordinary heap, unlike the instance's locked copy — MapeoManager's
+        // own KeyManager copies it synchronously, so zero it right after.
+        const masterKey = keyManager.getMasterKey();
         comapeoManager = createComapeo({
           privateStorageDir,
           fastify,
@@ -256,7 +304,9 @@ async function withPhase(phase, fn) {
           defaultConfigPath,
           defaultOnlineStyleUrl,
           rootKey,
+          masterKey,
         });
+        masterKey.fill(0);
 
         observeSyncSessions(comapeoManager);
 
@@ -274,7 +324,7 @@ async function withPhase(phase, fn) {
         const mapServerListenPromise = Promise.resolve().then(() => {
           mapServer = createMapServer({
             privateStorageDir,
-            rootKey,
+            identityKeypair: keyManager.getIdentityKeypair(),
             defaultOnlineStyleUrl,
           });
           return mapServer.listen();

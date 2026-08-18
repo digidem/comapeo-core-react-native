@@ -67,6 +67,27 @@ class ControlFrameTest {
     }
 
     @Test
+    fun parsesMasterKey() {
+        val frame = ControlFrame.parse("""{"type":"master-key","masterKey":"aGVsbG8="}""")
+        assertEquals(ControlFrame.MasterKey("aGVsbG8="), frame)
+    }
+
+    @Test
+    fun masterKeyMissingFieldReturnsMalformed() {
+        val frame = ControlFrame.parse("""{"type":"master-key"}""")
+        assertTrue(frame is ControlFrame.Malformed)
+        assertTrue((frame as ControlFrame.Malformed).detail.contains("masterKey"))
+    }
+
+    @Test
+    fun masterKeyNonStringFieldReturnsMalformed() {
+        // Objects don't coerce to a string via optString, so this lands as
+        // Malformed rather than a frame the validator has to reject later.
+        val frame = ControlFrame.parse("""{"type":"master-key","masterKey":{}}""")
+        assertTrue(frame is ControlFrame.Malformed)
+    }
+
+    @Test
     fun parsesSentryEventReSerializingPayload() {
         val frame = ControlFrame.parse(
             """{"type":"sentry-event","payload":{"event_id":"abc","level":"error"}}"""

@@ -7,6 +7,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import org.json.JSONObject
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -31,8 +32,12 @@ data class RootKeyResult(val key: ByteArray, val generated: Boolean)
  * on some OEMs), throws — never silently regenerates. The consuming app must
  * surface unrecoverable rootkey loss to the user.
  *
- * Logging is restricted to state strings; rootkey, ciphertext, and wrapper key
- * are never logged.
+ * Also holds the master-key cache ([loadMasterKey] / [storeMasterKey]) — same
+ * prefs file, same wrapper key, but pure-cache semantics: derivable, disposable,
+ * never fatal (docs/master-key-cache-plan.md §5).
+ *
+ * Logging is restricted to state strings; rootkey, master key, ciphertext, and
+ * wrapper key are never logged.
  */
 class RootKeyStore(private val context: Context) {
 
@@ -53,14 +58,31 @@ class RootKeyStore(private val context: Context) {
         const val PREFS_KEY = "rootkey.v1"
         const val ENVELOPE_VERSION = 1
 
+        /** Cache slot for the master key derived from the rootkey. Same envelope,
+         *  same wrapper key, plus the `fp` rootkey fingerprint. */
+        const val MASTERKEY_PREFS_KEY = "masterkey.v1"
+        const val MASTERKEY_BYTE_LENGTH = 32
+        const val FINGERPRINT_BYTE_LENGTH = 8
+
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
         const val GCM_TAG_LENGTH_BITS = 128
         const val GCM_IV_LENGTH_BYTES = 12
 
         private val lock = Any()
 
+        private const val LABEL_ROOTKEY = "rootkey"
+        private const val LABEL_MASTERKEY = "masterkey"
+
         private const val METRIC_LOAD = "rootkey.load"
         private const val METRIC_WRAPPER_CREATED = "rootkey.wrapper_key.created"
+        private const val METRIC_MASTERKEY_LOAD = "masterkey.load"
+        const val METRIC_MASTERKEY_STORE = "masterkey.store"
+
+        /** First [FINGERPRINT_BYTE_LENGTH] bytes of SHA-256(rootKey), binding a
+         *  cache entry to the rootkey it was derived from. Not secret: a
+         *  truncated hash of a key that never leaves the device. */
+        fun fingerprintOf(rootKey: ByteArray): ByteArray =
+            MessageDigest.getInstance("SHA-256").digest(rootKey).copyOf(FINGERPRINT_BYTE_LENGTH)
     }
 
     /**
@@ -84,6 +106,110 @@ class RootKeyStore(private val context: Context) {
         val key = generateAndPersist()
         metricCount(METRIC_LOAD, mapOf("outcome" to "generated"))
         return RootKeyResult(key, generated = true)
+    }
+
+    /**
+     * Cache read for the master key derived from [rootKey]. Returns null on a miss,
+     * a decrypt failure, a wrong-length plaintext, or a fingerprint that does not
+     * bind to [rootKey] — deleting the stale entry on every failure path.
+     *
+     * Never throws, deliberately unlike [loadOrInitialize]: the master key is
+     * re-derivable, so a bad entry costs one slow boot, not the identity.
+     */
+    fun loadMasterKey(rootKey: ByteArray): ByteArray? = synchronized(lock) {
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(MASTERKEY_PREFS_KEY, null)
+        if (raw == null) {
+            metricCount(METRIC_MASTERKEY_LOAD, mapOf("outcome" to "miss"))
+            return null
+        }
+        return try {
+            val masterKey = decodeMasterKey(raw, fingerprintOf(rootKey))
+            log("RootKeyStore: masterkey cache hit")
+            metricCount(METRIC_MASTERKEY_LOAD, mapOf("outcome" to "hit"))
+            masterKey
+        } catch (e: Throwable) {
+            // Throwable, not Exception: "never throws" has to hold for an Error
+            // out of the keystore provider too — the caller has no recovery path
+            // beyond dropping the cache, which is what happens here.
+            val outcome =
+                if (e is FingerprintMismatchException) "fingerprint-mismatch" else "invalid"
+            removeMasterKey()
+            log("RootKeyStore: masterkey cache entry deleted ($outcome)")
+            metricCount(METRIC_MASTERKEY_LOAD, mapOf("outcome" to outcome))
+            null
+        }
+    }
+
+    /**
+     * Cache write: wraps [masterKey], stamps [rootKeyFingerprint], commits, then
+     * reads back and byte-compares. Any failure is logged, metered, and the
+     * entry dropped — never thrown, the next boot simply re-derives.
+     *
+     * Takes the fingerprint rather than the rootkey because the caller has
+     * already zeroed the rootkey by the time the backend's key arrives.
+     */
+    fun storeMasterKey(masterKey: ByteArray, rootKeyFingerprint: ByteArray) {
+        synchronized(lock) {
+            try {
+                if (masterKey.size != MASTERKEY_BYTE_LENGTH) {
+                    throw RootKeyException(
+                        "Refusing to persist masterkey of wrong length: ${masterKey.size} " +
+                            "(expected $MASTERKEY_BYTE_LENGTH)",
+                    )
+                }
+                if (rootKeyFingerprint.size != FINGERPRINT_BYTE_LENGTH) {
+                    throw RootKeyException(
+                        "Refusing to persist masterkey with a fingerprint of wrong length: " +
+                            "${rootKeyFingerprint.size} (expected $FINGERPRINT_BYTE_LENGTH)",
+                    )
+                }
+                val envelopeJson =
+                    wrapEnvelopeJson(masterKey, rootKeyFingerprint, LABEL_MASTERKEY)
+                @Suppress("ApplySharedPref")
+                val written = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(MASTERKEY_PREFS_KEY, envelopeJson)
+                    .commit()
+                if (!written) throw RootKeyException("Failed to persist masterkey envelope")
+
+                val readBack = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .getString(MASTERKEY_PREFS_KEY, null)
+                    ?: throw RootKeyException("Wrote masterkey envelope but read-back returned null")
+                val verified = decodeMasterKey(readBack, rootKeyFingerprint)
+                val matches = verified.contentEquals(masterKey)
+                verified.fill(0)
+                if (!matches) throw RootKeyException("Masterkey verification mismatch after write")
+                metricCount(METRIC_MASTERKEY_STORE, mapOf("outcome" to "ok"))
+            } catch (e: Throwable) {
+                removeMasterKey()
+                log("RootKeyStore: masterkey cache write failed (${e.message})", level = "warn")
+                metricCount(METRIC_MASTERKEY_STORE, mapOf("outcome" to "failed"))
+            }
+        }
+    }
+
+    private fun decodeMasterKey(raw: String, rootKeyFingerprint: ByteArray): ByteArray {
+        val envelope = parseEnvelope(raw, LABEL_MASTERKEY)
+        val fp = envelope.fp ?: throw RootKeyException("masterkey envelope missing fingerprint")
+        if (!fp.contentEquals(rootKeyFingerprint)) throw FingerprintMismatchException()
+        val plaintext = decryptEnvelope(envelope, LABEL_MASTERKEY)
+        if (plaintext.size != MASTERKEY_BYTE_LENGTH) {
+            plaintext.fill(0)
+            throw RootKeyException(
+                "Decoded masterkey has wrong length: ${plaintext.size} " +
+                    "(expected $MASTERKEY_BYTE_LENGTH)",
+            )
+        }
+        return plaintext
+    }
+
+    private fun removeMasterKey() {
+        @Suppress("ApplySharedPref")
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(MASTERKEY_PREFS_KEY)
+            .commit()
     }
 
     /**
@@ -150,7 +276,16 @@ class RootKeyStore(private val context: Context) {
     private fun loadExisting(): ByteArray? {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val raw = prefs.getString(PREFS_KEY, null) ?: return null
-        val envelope = parseEnvelope(raw)
+        val plaintext = decryptEnvelope(parseEnvelope(raw, LABEL_ROOTKEY), LABEL_ROOTKEY)
+        if (plaintext.size != ROOTKEY_BYTE_LENGTH) {
+            throw RootKeyException(
+                "Decoded rootkey has wrong length: ${plaintext.size} (expected $ROOTKEY_BYTE_LENGTH)",
+            )
+        }
+        return plaintext
+    }
+
+    private fun decryptEnvelope(envelope: Envelope, label: String): ByteArray {
         val wrapperKey = loadWrapperKey()
             ?: throw RootKeyException("Wrapper key alias missing — keystore was wiped")
 
@@ -176,19 +311,13 @@ class RootKeyStore(private val context: Context) {
                 )
             }
         } catch (e: Exception) {
-            throw RootKeyException("rootkey: decrypt setup failed", e)
+            throw RootKeyException("$label: decrypt setup failed", e)
         }
-        val plaintext = try {
+        return try {
             cipher.doFinal(envelope.ct)
         } catch (e: Exception) {
-            throw RootKeyException("rootkey: decrypt failed", e)
+            throw RootKeyException("$label: decrypt failed", e)
         }
-        if (plaintext.size != ROOTKEY_BYTE_LENGTH) {
-            throw RootKeyException(
-                "Decoded rootkey has wrong length: ${plaintext.size} (expected $ROOTKEY_BYTE_LENGTH)",
-            )
-        }
-        return plaintext
     }
 
     private fun generateAndPersist(): ByteArray {
@@ -213,6 +342,38 @@ class RootKeyStore(private val context: Context) {
                     "(expected $ROOTKEY_BYTE_LENGTH)",
             )
         }
+        val envelopeJson = wrapEnvelopeJson(plaintext, fingerprint = null, label = LABEL_ROOTKEY)
+
+        // commit() over apply() — apply()'s async semantics could leave us with the
+        // keystore alias but no envelope if the process is killed mid-write. Raw editor
+        // so we can observe commit()'s Boolean and surface persistence failures.
+        // The master-key cache is derived from this rootkey, so it is dropped in the
+        // same commit — §5.3's invariant lives here so no rootkey write can skip it.
+        @Suppress("ApplySharedPref")
+        val written = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREFS_KEY, envelopeJson)
+            .remove(MASTERKEY_PREFS_KEY)
+            .commit()
+        if (!written) throw RootKeyException("Failed to persist rootkey envelope")
+
+        // Read-back + byte-compare: microseconds of cost against identity loss from
+        // writing a corrupt envelope.
+        val verified = loadExisting()
+            ?: throw RootKeyException("Wrote rootkey envelope but read-back returned null")
+        if (!verified.contentEquals(plaintext)) {
+            throw RootKeyException("Rootkey verification mismatch after write")
+        }
+        return verified
+    }
+
+    /** Wraps [plaintext] under the wrapper key and renders the envelope JSON,
+     *  stamping [fingerprint] as `fp` when the slot binds to a rootkey. */
+    private fun wrapEnvelopeJson(
+        plaintext: ByteArray,
+        fingerprint: ByteArray?,
+        label: String,
+    ): String {
         val wrapperKey = createOrLoadWrapperKey()
         val (ct, iv) = try {
             // With `setRandomizedEncryptionRequired(true)`, hardware-backed AndroidKeyStore
@@ -225,7 +386,7 @@ class RootKeyStore(private val context: Context) {
             val cipherIv = cipher.iv
             ciphertext to cipherIv
         } catch (e: Exception) {
-            throw RootKeyException("rootkey: encrypt failed", e)
+            throw RootKeyException("$label: encrypt failed", e)
         }
         if (iv == null || iv.size != GCM_IV_LENGTH_BYTES) {
             // Defensive: loadExisting enforces 12-byte IVs, so a different-length IV
@@ -235,31 +396,15 @@ class RootKeyStore(private val context: Context) {
                     "(expected $GCM_IV_LENGTH_BYTES)",
             )
         }
-        val envelopeJson = JSONObject().apply {
+        return JSONObject().apply {
             put("v", ENVELOPE_VERSION)
             put("alias", WRAPPER_KEY_ALIAS)
             put("iv", Base64.encodeToString(iv, Base64.NO_WRAP))
             put("ct", Base64.encodeToString(ct, Base64.NO_WRAP))
+            if (fingerprint != null) {
+                put("fp", Base64.encodeToString(fingerprint, Base64.NO_WRAP))
+            }
         }.toString()
-
-        // commit() over apply() — apply()'s async semantics could leave us with the
-        // keystore alias but no envelope if the process is killed mid-write. Raw editor
-        // so we can observe commit()'s Boolean and surface persistence failures.
-        @Suppress("ApplySharedPref")
-        val written = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(PREFS_KEY, envelopeJson)
-            .commit()
-        if (!written) throw RootKeyException("Failed to persist rootkey envelope")
-
-        // Read-back + byte-compare: microseconds of cost against identity loss from
-        // writing a corrupt envelope.
-        val verified = loadExisting()
-            ?: throw RootKeyException("Wrote rootkey envelope but read-back returned null")
-        if (!verified.contentEquals(plaintext)) {
-            throw RootKeyException("Rootkey verification mismatch after write")
-        }
-        return verified
     }
 
     private fun loadWrapperKey(): SecretKey? {
@@ -324,23 +469,29 @@ class RootKeyStore(private val context: Context) {
     }
 
     @Suppress("ArrayInDataClass")
-    private data class Envelope(val v: Int, val alias: String, val iv: ByteArray, val ct: ByteArray)
+    private data class Envelope(
+        val v: Int,
+        val alias: String,
+        val iv: ByteArray,
+        val ct: ByteArray,
+        val fp: ByteArray?,
+    )
 
-    private fun parseEnvelope(raw: String): Envelope {
+    private fun parseEnvelope(raw: String, label: String): Envelope {
         val json = try {
             JSONObject(raw)
         } catch (e: Exception) {
-            throw RootKeyException("Failed to parse rootkey envelope JSON", e)
+            throw RootKeyException("Failed to parse $label envelope JSON", e)
         }
         val v = json.optInt("v", -1)
         if (v != ENVELOPE_VERSION) {
-            throw RootKeyException("Unsupported rootkey envelope version: $v")
+            throw RootKeyException("Unsupported $label envelope version: $v")
         }
         val alias = json.optString("alias", "")
         val ivStr = json.optString("iv", "")
         val ctStr = json.optString("ct", "")
         if (alias.isEmpty() || ivStr.isEmpty() || ctStr.isEmpty()) {
-            throw RootKeyException("Rootkey envelope missing required fields")
+            throw RootKeyException("$label envelope missing required fields")
         }
         // Pinned to the only alias v1 can describe — a v2 wrapper key would gate via
         // the version check above. Catches a tampered envelope or one pointing at a
@@ -352,14 +503,24 @@ class RootKeyStore(private val context: Context) {
         }
         // Funnel Base64 failures through RootKeyException so the all-failures-through-
         // RootKeyException contract holds; callers depend on it for identity-load UX.
-        val (iv, ct) = try {
-            Base64.decode(ivStr, Base64.NO_WRAP) to Base64.decode(ctStr, Base64.NO_WRAP)
+        val fpStr = json.optString("fp", "")
+        val (iv, ct, fp) = try {
+            Triple(
+                Base64.decode(ivStr, Base64.NO_WRAP),
+                Base64.decode(ctStr, Base64.NO_WRAP),
+                if (fpStr.isEmpty()) null else Base64.decode(fpStr, Base64.NO_WRAP),
+            )
         } catch (e: IllegalArgumentException) {
-            throw RootKeyException("Failed to Base64-decode rootkey envelope iv/ct fields", e)
+            throw RootKeyException("Failed to Base64-decode $label envelope iv/ct/fp fields", e)
         }
-        return Envelope(v, alias, iv, ct)
+        return Envelope(v, alias, iv, ct, fp)
     }
 }
 
 class RootKeyException(message: String, cause: Throwable? = null) :
     RuntimeException(message, cause)
+
+/** Cached master key that does not belong to the rootkey it was loaded against —
+ *  interesting enough to meter separately (it implies a rootkey change). */
+private class FingerprintMismatchException :
+    RuntimeException("masterkey fingerprint does not match rootkey")

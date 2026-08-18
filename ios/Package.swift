@@ -20,17 +20,20 @@ let package = Package(
                 .product(name: "Sentry", package: "sentry-cocoa"),
             ],
             path: ".",
-            // Excluded files use Keychain / Expo APIs not available in the
-            // macOS swift-test target. Tests inject rootkey via
+            // Excluded files use Expo APIs not available in the macOS
+            // swift-test target. Tests inject rootkey via
             // `NodeJSService.RootKeyProvider`. CocoaPods picks them up via
             // `s.source_files = "*.swift"`.
+            //
+            // `RootKeyStore.swift` is in: macOS honours generic-password
+            // keychain items, so the master-key cache matrix runs on the
+            // host rather than only on a simulator.
             exclude: [
                 "Tests",
                 "ComapeoCore.podspec",
                 "Package.swift",
                 "ComapeoCoreModule.swift",
                 "AppLifecycleDelegate.swift",
-                "RootKeyStore.swift",
             ],
             sources: [
                 "NodeJSIPC.swift",
@@ -42,6 +45,7 @@ let package = Package(
                 "SentryNativeBridge.swift",
                 "SentryScopeTier.swift",
                 "SentryMetricScrub.swift",
+                "RootKeyStore.swift",
                 "SentryTags.swift",
                 "SentryUserId.swift",
                 "DeviceTags.swift",

@@ -11,11 +11,12 @@
  * buggy host (and our own mistakes) before a payload leaves the device.
  *
  * What it redacts (and the false-positive trade-off):
- *   - Explicit `rootKey` markers (key=value / JSON / util.inspect / prose).
- *     The value may be quoted — a logged init frame (`{"rootKey":"…"}`) and
- *     a console.warn'd message object (`rootKey: '…'`) are the realistic
- *     leak shapes, and both quote the value.
- *   - Object fields whose KEY is rootKey/root_key/root-key are redacted
+ *   - Explicit `rootKey` / `masterKey` markers (key=value / JSON /
+ *     util.inspect / prose). The value may be quoted — a logged init frame
+ *     (`{"rootKey":"…"}`) and a console.warn'd message object
+ *     (`rootKey: '…'`) are the realistic leak shapes, and both quote the
+ *     value.
+ *   - Object fields whose KEY is rootKey/masterKey (any separator) are redacted
  *     regardless of value type or encoding. Filtering on the key name is
  *     what makes this robust: every place the key's value exists in JS it
  *     sits next to its field name (the init frame is the only wire
@@ -47,8 +48,11 @@ const SCRUB_PATTERNS: RegExp[] = [
   // quoted values in `{"rootKey":"…"}` (a logged init frame) and
   // `rootKey: '…'` (a console-formatted message object). The value stops
   // at a field delimiter (whitespace, `,;&`, quote) so co-located fields
-  // in a compact string like `rootKey=abc,method=x` survive.
-  /\broot[_-]?key\b\s*["']?\s*[:=]\s*["']?[^\s,;&"']+/gi,
+  // in a compact string like `rootKey=abc,method=x` survive. The leading
+  // `\w*` reaches identifiers that only end in the marker — `cachedMasterKey`
+  // is a real local in backend/index.js — while the trailing `\b` still
+  // keeps innocent words like `masterkeyboard` out.
+  /\b\w*(?:root|master)[_-]?key\b\s*["']?\s*[:=]\s*["']?[^\s,;&"']+/gi,
   // NOTE: there is deliberately NO value-shape rule for bare (unmarked)
   // rootkey-like tokens. A broad base64 rule over-matched trace ids and
   // type names, and an exact-shape rule is coupled to one encoding of the
@@ -64,9 +68,10 @@ const SCRUB_PATTERNS: RegExp[] = [
   /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
 
-/** Object keys whose value is a raw coordinate or the device rootkey —
+/** Object keys whose value is a raw coordinate or one of the device keys —
  *  redacted regardless of value type or encoding. */
-const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude|root[_-]?key)$/i;
+const SENSITIVE_KEY_PATTERN =
+  /^(lat|lng|lon|latitude|longitude|\w*(root|master)[_-]?key)$/i;
 
 /** Tag names/values that must never ride on a metric. The native metric
  *  paths keep hand-mirrored copies of this list in
@@ -86,6 +91,7 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
   "peer_id",
   "peer_count",
   "rootkey",
+  "masterkey",
 ]);
 
 /** Forbidden tag *values* — lat/lng shapes. (No bare-token value rule

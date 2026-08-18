@@ -25,12 +25,16 @@ const NODE_BOOT_TRANSACTIONS = ["boot.loader-init", "boot.manager-init"];
 // src/sentry-scrub.ts. A match in an event that reached Sentry means the
 // scrubbers missed it (or were never installed).
 const PII_STRING_PATTERNS = [
-  /\broot[_-]?key\b\s*["']?\s*[:=]\s*[^\s,;&"']+/gi,
+  // The optional quote AFTER the separator matches the scrubbers': without it
+  // the quoted `{"masterKey":"…"}` init-frame shape slips past. The leading
+  // `\w*` reaches identifiers that only end in the marker.
+  /\b\w*(?:root|master)[_-]?key\b\s*["']?\s*[:=]\s*["']?[^\s,;&"']+/gi,
   /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
 
 /** Object keys that must never carry an unredacted value. */
-const PII_KEY_PATTERN = /^(rootkey|root_key|lat|lng|lon|latitude|longitude)$/i;
+const PII_KEY_PATTERN =
+  /^(\w*(root|master)[_-]?key|lat|lng|lon|latitude|longitude)$/i;
 
 const REDACTED = "[redacted]";
 

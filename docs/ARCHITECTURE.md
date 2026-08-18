@@ -130,12 +130,35 @@ before it can construct `MapeoManager`. Frames in current use:
 | Direction | Frame | When |
 |---|---|---|
 | Node → native | `{type:"started"}` | Control socket bound, backend awaiting init. |
-| Native → Node | `{type:"init",rootKey:"<base64>"}` | Native ships the rootkey from `RootKeyStore` (single-shot). |
+| Native → Node | `{type:"init",rootKey:"<base64>",masterKey?:"<base64>"}` | Native ships the rootkey from `RootKeyStore` (single-shot), plus the cached master key when it has one. |
+| Node → native | `{type:"master-key",masterKey:"<base64>"}` | Backend derived the master key this boot (the init frame carried none it could use) and hands it back for native to cache. Sent only to the connection that shipped the init frame, never broadcast. |
 | Node → native | `{type:"ready"}` | `MapeoManager` constructed, comapeo socket bound. |
 | Node → native | `{type:"stopping"}` | Backend has begun graceful shutdown (sent before any close work). |
 | Node → native | `{type:"error",phase,message,stack?}` | Boot failure or uncaught throw at any phase. |
 | Native → Node | `{type:"shutdown"}` | Native requests graceful shutdown. |
 | Native → Node | `{type:"error-native",phase,message}` | FGS-side local failure (rootkey, watchdog) — backend re-broadcasts as an `error` frame and exits. |
+
+**The init frame's two keys.** `rootKey` is the device identity and is
+required: a missing or malformed one is fatal (the backend rejects, reports
+the phase, and exits). `masterKey` is the 32-byte key the rootkey derives to
+— an Argon2id derivation costing seconds on a low-end device, so native
+caches it (`docs/master-key-cache-plan.md`) and puts it on the frame when it
+has one. It is validated just as strictly (`backend/lib/parse-init.js`) but a
+malformed value is only logged, reported as a Sentry warning + metric, and
+dropped. A cache can always be rebuilt; it must never fail a boot.
+
+**Who derives, and the round trip.** Only the backend derives, inside
+`KeyManager` under a `boot.master-key-derive` span, whenever the init frame
+carried no usable `masterKey` — the first boot after install, and any boot
+after the cache was dropped. It then sends the key back on the `master-key`
+frame and native stores it against the rootkey's fingerprint, so the next
+boot's init frame carries it and no derivation runs. Every failure in that
+loop (frame lost, port closed, store write failed, cached value rejected)
+costs one derivation on the next boot and self-heals, because the reply is
+sent on exactly the boots where the cache was not usable. The reply is
+targeted at the connection that sent `init` rather than broadcast: on
+Android the main app process holds a second, read-only control connection
+that must never see the key.
 
 **Replay semantics.** `SimpleRpcServer` (`backend/lib/simple-rpc.js`)
 remembers its last readiness phase and replays `started` and `ready` to
@@ -638,7 +661,7 @@ What each emit site captures:
   bridge. `comapeo.boot` transaction with child spans
   `boot.fgs-launch` (Android only), `boot.extract-assets`
   (Android only, first boot after install/update),
-  `boot.node-spawn`, and `boot.rootkey-load`. The
+  `boot.node-spawn` and `boot.rootkey-load`. The
   "init frame sent" → "received: ready" breadcrumb pair marks the
   init-frame round-trip (no span — duration is dominated by the
   Node-side `boot.manager-init`). Plus state-transition
@@ -809,6 +832,7 @@ whole boot timeline with `op:boot.*` in Discover.
 | `boot.loader-init` | `layer:node` | Backdated to `loader.mjs` first line; closed just after `Sentry.init`. Covers the C/C++ → JS handover including V8 bootstrap and the iitm hook install. Has two child spans: `boot.loader-import-sentry-node` (brackets `import("@sentry/node")` — the dominant chunk on the reference device) and `boot.import-index` (brackets the dynamic `import("./index.js")`). The gap between loader-init's duration and the import-sentry-node child is parseArgs + iitm `register()` + smaller imports + `Sentry.init` (collectively <200ms on the reference device; no spans of their own). `boot.import-index` parents to loader-init via an explicit `parentSpan` reference (not via AsyncLocalStorage) so the IIFE inside `index.js` still captures `boot.node-spawn` as the parent for `boot.manager-init` — keeping it a top-level Node phase rather than nesting it further. Sentry renders import-index as a child whose duration extends past its parent's. |
 | `boot.manager-init` | `layer:node` | Wraps `createComapeo(...)` + `comapeoRpcServer.listen(...)` — drizzle migrations + SQLite open + hypercore init + fastify + RPC socket bind. |
 | `boot.rootkey-load` | `proc:fgs` Android / `proc:main` iOS | Wraps `RootKeyStore.loadOrInitialize()` (Android) / `RootKeyStore.loadKey()` (iOS) in `sendInitFrame()`. Span data: `generated=true` on first install, `false` on steady-state. |
+| `boot.master-key-derive` | `layer:node` | Master-key cache miss only: wraps the Argon2id derivation inside `KeyManager` (`docs/master-key-cache-plan.md` §4). Expected on the first boot after install; absent on every steady-state boot, so seeing it repeatedly on one install means the cache write or the `master-key` frame is failing. |
 
 Cross-layer trace propagation: native opens `comapeo.boot`, then
 forwards the `boot.node-spawn` span's `sentry-trace` header to the
