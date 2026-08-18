@@ -56,9 +56,43 @@ const IOS_SOURCEMAPS =
   process.env.SOURCEMAPS_DIR_IOS ?? `${IOS_OUT}-sourcemaps`;
 
 /**
+ * iOS-only: redirect undici's `require('../llhttp/llhttp_simd-wasm.js')` to the
+ * non-SIMD module beside it.
+ *
+ * nodejs-mobile 24 does serve `WebAssembly` from a bundled polywasm on iOS, and
+ * its bootstrap sets `UNDICI_NO_WASM_SIMD=1` to steer undici off the SIMD build
+ * — but that env var is an undici 7.x feature, so it only reaches Node's
+ * *built-in* undici. We bundle npm `undici@6`, which ignores it and calls
+ * `WebAssembly.compile(llhttp_simd-wasm)` unconditionally
+ * (`dispatcher/client-h1.js`). polywasm compiles function bodies lazily, so
+ * that compile *succeeds* and then throws `Unsupported instruction: 0xFD` on
+ * the first parser callback — past the try/catch undici wraps the compile in.
+ *
+ * `@comapeo/core`'s maps plugin and `secret-stream-http` (via
+ * `@comapeo/map-server`) both import `fetch` from that bundled copy, so this
+ * covers online map styles and peer blob/SMP fetches. Aliasing at bundle time
+ * keeps the SIMD bytes out of the iOS bundle entirely.
+ */
+function aliasUndiciSimdWasmPlugin(): Plugin {
+  return {
+    name: "alias-undici-simd-wasm",
+    resolveId(source, importer) {
+      if (
+        source === "../llhttp/llhttp_simd-wasm.js" &&
+        importer &&
+        importer.includes("/undici/lib/dispatcher/")
+      ) {
+        return path.resolve(path.dirname(importer), "../llhttp/llhttp-wasm.js");
+      }
+      return null;
+    },
+  };
+}
+
+/**
  * Runtime data files copied alongside the rolldown output into the per-
  * platform output dir. Identical for Android and iOS; only the bundled JS
- * differs, and then only in the `__loadAddon` banner.
+ * differs, in the `__loadAddon` banner and the undici SIMD alias above.
  *
  *   - `package.json`: required by Node's module resolver to set the
  *     unpacked nodejs-project tree's module type.
@@ -131,13 +165,19 @@ const sharedInput: Pick<InputOptions, "platform" | "resolve"> = {
 };
 
 function buildPlugins({
+  platform,
   outDir,
   debugIdMap,
 }: {
+  platform: "android" | "ios";
   outDir: string;
   debugIdMap: Map<string, string>;
 }): Plugin[] {
   return [
+    // iOS-only: keep the SIMD llhttp bytes out of the bundle — the runtime's
+    // UNDICI_NO_WASM_SIMD only steers Node's built-in undici, not the npm copy
+    // we bundle. See aliasUndiciSimdWasmPlugin above.
+    ...(platform === "ios" ? [aliasUndiciSimdWasmPlugin()] : []),
     // Native addon loader rewrite is identical for both platforms:
     // every loader pattern (`bindings`, `node-gyp-build`, `require.addon`)
     // becomes `__loadAddon(name, version)`. The helper itself differs
@@ -230,6 +270,7 @@ const config: RolldownOptions[] = [
     plugins: [
       cleanOutputDirPlugin(ANDROID_OUT_MAIN),
       ...buildPlugins({
+        platform: "android",
         outDir: ANDROID_OUT_MAIN,
         debugIdMap: androidMainDebugIds,
       }),
@@ -252,6 +293,7 @@ const config: RolldownOptions[] = [
     plugins: [
       cleanOutputDirPlugin(IOS_OUT),
       ...buildPlugins({
+        platform: "ios",
         outDir: IOS_OUT,
         debugIdMap: iosDebugIds,
       }),

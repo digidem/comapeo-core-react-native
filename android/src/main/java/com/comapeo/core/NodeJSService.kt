@@ -358,8 +358,11 @@ class NodeJSService(
 
     /**
      * Environment node inherits from this process. Must run before
-     * [startNodeWithArguments] — node reads all of these while creating the
-     * Environment, so assigning `process.env` from JS would be too late.
+     * [startNodeWithArguments]: `NODE_COMPILE_CACHE` is read while the
+     * Environment is created, so setting it from JS would be too late. (`TMPDIR`
+     * would in fact survive a later `process.env` assignment — that routes
+     * through `uv_os_setenv`, so even native `getenv` callers see it — but it is
+     * set here so it holds for anything reading it before our JS runs.)
      *
      * An Android app process has no `TMPDIR` and there is no `/tmp`, which
      * `os.tmpdir()` otherwise falls back to; anything writing there fails with
@@ -367,17 +370,29 @@ class NodeJSService(
      * flushes it once boot reaches `ready` rather than leaving it to node's
      * exit hook, which the low-memory killer routinely denies us.
      *
-     * Both live under `cacheDir`, so the OS may reclaim them under storage
-     * pressure — the right semantics for scratch and regenerable data.
+     * Both live under `cacheDir`: regenerable, and reclaimable under storage
+     * pressure. A variable is left unset rather than pointed at a directory we
+     * failed to create — node falling back to its own default beats handing it
+     * a path that will ENOENT on first use.
      */
     private fun applyNodeEnvironment() {
+        // `mkdirs()` returns false when the directory already exists, so the
+        // result to trust is `isDirectory`, not the return value.
+        fun ensureDir(dir: File): Boolean {
+            dir.mkdirs()
+            if (dir.isDirectory) return true
+            Log.w(TAG, "could not create ${dir.absolutePath}; leaving its env var unset")
+            return false
+        }
+
         val tmpDir = File(cacheDir, "tmp")
+        if (ensureDir(tmpDir)) setEnv("TMPDIR", tmpDir.absolutePath)
+
         val compileCacheDir = File(cacheDir, "node-compile-cache")
-        tmpDir.mkdirs()
-        compileCacheDir.mkdirs()
-        setEnv("TMPDIR", tmpDir.absolutePath)
-        setEnv("NODE_COMPILE_CACHE", compileCacheDir.absolutePath)
-        setEnv("NODE_COMPILE_CACHE_PORTABLE", "1")
+        if (ensureDir(compileCacheDir)) {
+            setEnv("NODE_COMPILE_CACHE", compileCacheDir.absolutePath)
+            setEnv("NODE_COMPILE_CACHE_PORTABLE", "1")
+        }
     }
 
     /** Positionals are read by backend/index.js; `--sentry*` flags by backend/loader.mjs. */

@@ -78,7 +78,7 @@ export async function packageIosFrameworks({
 /**
  * Build one `<instanceKey>.framework/` directory for the given arch.
  * Returns the absolute path to the framework directory so it can be
- * fed into `lipo`/`xcodebuild` downstream.
+ * fed into `xcodebuild` downstream.
  *
  * `install_name_tool -id` rewrites the Mach-O's `LC_ID_DYLIB` from the
  * upstream prebuild's `<name>.node` (a name dyld cannot resolve inside
