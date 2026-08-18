@@ -15,9 +15,10 @@ import * as metrics from "./metrics.js";
  * `init` from native) → `ready` (manager built, RPC socket bound).
  *
  * Method handlers receive the full message so they can read fields
- * beyond `type` (e.g. `init.rootKey`).
+ * beyond `type` (e.g. `init.rootKey`), plus the connection it arrived on
+ * so a reply can target that one client instead of every connection.
  *
- * @template {Record<string, (message: any) => any>} TMethods
+ * @template {Record<string, (message: any, port: SocketMessagePort) => any>} TMethods
  */
 export class SimpleRpcServer extends ServerHelper {
   #methods;
@@ -46,7 +47,9 @@ export class SimpleRpcServer extends ServerHelper {
   /** @param {import('node:net').Socket} socket */
   #onConnection(socket) {
     const messagePort = new SocketMessagePort(socket);
-    messagePort.addEventListener("message", this.#handleMessageEvent);
+    messagePort.addEventListener("message", (event) => {
+      this.#handleMessageEvent(event, messagePort);
+    });
     messagePort.addEventListener("messageerror", (event) => {
       // Log the error NAME only, never the message: V8's JSON.parse
       // SyntaxError embeds a snippet of the raw input, and a mangled init
@@ -79,8 +82,9 @@ export class SimpleRpcServer extends ServerHelper {
 
   /**
    * @param {MessageEvent} event
+   * @param {SocketMessagePort} messagePort
    */
-  #handleMessageEvent = ({ data: message }) => {
+  #handleMessageEvent = ({ data: message }, messagePort) => {
     if (
       !message ||
       typeof message !== "object" ||
@@ -103,7 +107,7 @@ export class SimpleRpcServer extends ServerHelper {
       console.warn("Handler for message type is not a function", message.type);
       return;
     }
-    method(message);
+    method(message, messagePort);
   };
 
   /**

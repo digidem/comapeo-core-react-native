@@ -165,6 +165,17 @@ export function bootOutcome(outcome, errorPhase) {
 }
 
 /**
+ * Native sent a `masterKey` the backend could not use; it re-derives instead
+ * and sends the result back, so a corrupt cache self-heals. Any occurrence
+ * means a native-side bug.
+ *
+ * @param {string} reason `type` / `encoding` / `trailing-bits`
+ */
+export function masterKeyRejected(reason) {
+  count("comapeo.boot.master_key_rejected", { reason });
+}
+
+/**
  * @param {string} phase
  * @param {number} ms
  */

@@ -33,6 +33,13 @@ sealed class ControlFrame {
      */
     data class SentryEnvelope(val data: String) : ControlFrame()
 
+    /**
+     * The master key the backend derived this boot, base64, for the native
+     * cache. Sent only to the connection that shipped the init frame, so it
+     * never reaches the main-app process on Android.
+     */
+    data class MasterKey(val base64: String) : ControlFrame()
+
     /** Frame could not be processed; `detail` is suitable for logs / `messageerror`. */
     data class Malformed(val detail: String) : ControlFrame()
 
@@ -52,6 +59,16 @@ sealed class ControlFrame {
                     phase = json.optString("phase", "unknown"),
                     message = json.optString("message", "(no message)"),
                 )
+                "master-key" -> {
+                    // `opt` + cast, not `optString`: org.json's JVM build coerces
+                    // any non-null value to a string, Android's does not.
+                    val key = json.opt("masterKey") as? String
+                    if (key.isNullOrEmpty()) {
+                        Malformed("master-key frame missing string `masterKey`")
+                    } else {
+                        MasterKey(key)
+                    }
+                }
                 "sentry-event" -> {
                     val payload = json.optJSONObject("payload")
                     // Re-serialize so SentryEvent.Deserializer can re-parse against the bytes it expects.

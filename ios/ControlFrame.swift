@@ -20,6 +20,9 @@ enum ControlFrame {
     /// check-ins, profiles). Base64 bytes handed to
     /// `PrivateSentrySDKOnly`. No native scope merging.
     case sentryEnvelope(data: String)
+    /// The master key the backend derived this boot, base64, for the native
+    /// cache. Sent only to the connection that shipped the init frame.
+    case masterKey(base64: String)
     /// Not JSON, missing `type`, or `type` not in the well-known set.
     /// `detail` is developer-facing — surfaces in the JS `messageerror`.
     case malformed(detail: String)
@@ -43,6 +46,11 @@ enum ControlFrame {
             let phase = (obj["phase"] as? String) ?? "unknown"
             let message = (obj["message"] as? String) ?? "(no message)"
             return .error(phase: phase, message: message)
+        case "master-key":
+            guard let base64 = obj["masterKey"] as? String, !base64.isEmpty else {
+                return .malformed(detail: "master-key frame missing string `masterKey`")
+            }
+            return .masterKey(base64: base64)
         case "sentry-event":
             guard let payload = obj["payload"] as? [String: Any] else {
                 return .malformed(detail: "sentry-event frame missing object `payload`")

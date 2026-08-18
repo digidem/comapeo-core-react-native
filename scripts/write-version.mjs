@@ -70,7 +70,7 @@ const backendModules = Object.fromEntries(
       // upstream peers (fastify, tiny-typed-emitter, etc.) bloat the
       // event without being interesting axes for us. Adjust this
       // filter if a non-comapeo dep becomes a pivot point.
-      name.startsWith("@comapeo/") || name === "@mapeo/crypto",
+      name.startsWith("@comapeo/"),
   ),
 );
 

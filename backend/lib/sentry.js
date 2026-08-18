@@ -410,6 +410,22 @@ export function captureFatal(phase, err, source) {
 }
 
 /**
+ * Capture a non-fatal problem as a `warning`-level message, phase-tagged
+ * like `captureFatal`. Callers must keep secrets out of `message`.
+ *
+ * @param {string} phase
+ * @param {string} message
+ */
+export function captureWarning(phase, message) {
+  if (!Sentry) return;
+  try {
+    Sentry.captureMessage(message, { level: "warning", tags: { phase } });
+  } catch (captureErr) {
+    console.error("Failed to capture Sentry event", captureErr);
+  }
+}
+
+/**
  * Resolves to `true` when off so callers can `await` unconditionally.
  *
  * @param {number} maxMs
