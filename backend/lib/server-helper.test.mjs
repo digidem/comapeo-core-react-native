@@ -36,6 +36,25 @@ test("close() destroys open connections and resolves", async (t) => {
   await clientClosed; // the client end observes the server-side teardown
 });
 
+test("close() resolves when a connection errors during teardown", async (t) => {
+  /** @type {Array<import('node:net').Socket>} */
+  const accepted = [];
+  const server = new ServerHelper((socket) => accepted.push(socket));
+  const path = socketPath();
+  await server.listen(path);
+
+  await connectSocket(t, path);
+  await waitFor(() => accepted.length === 1, { message: "connection accepted" });
+  const serverSocket = /** @type {import('node:net').Socket} */ (accepted[0]);
+  serverSocket.on("error", () => {});
+
+  const closed = server.close();
+  serverSocket.destroy(new Error("teardown failure"));
+
+  await closed;
+  assert.equal(server.state, "closed");
+});
+
 test("close() is a no-op when already closed", async () => {
   const server = new ServerHelper(() => {});
   const path = socketPath();

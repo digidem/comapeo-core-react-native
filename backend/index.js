@@ -112,8 +112,8 @@ const controlIpcServer = new SimpleRpcServer({
     resolveInit(rootKey);
   },
   shutdown: async () => {
-    // Broadcast BEFORE close: AF_UNIX guarantees this frame reaches
-    // peers before EOF, so they can tell graceful shutdown from a crash.
+    // Broadcast BEFORE close: this only queues the frame, and close()
+    // flushes each client's stream before destroying its socket.
     controlIpcServer.broadcast({ type: "stopping" });
     // Each close is isolated so one failure can't leak the others.
     /**
