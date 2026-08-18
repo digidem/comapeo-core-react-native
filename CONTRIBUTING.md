@@ -22,7 +22,11 @@ npm run setup      # fetch nodejs-mobile, build the backend, install the test ap
 `npm run setup` runs, in order:
 
 - `download:nodejs-mobile` — pulls `NodeMobile.xcframework` (iOS) and `libnode.so`
-  per ABI plus headers (Android) into place; these are not committed.
+  per ABI plus headers (Android) into place; these are not committed. It fetches
+  the `lite` runtime flavour, which drops ICU, the inspector, `node:sqlite` and
+  TypeScript type-stripping — none of which we use. `NODEJS_MOBILE_FLAVOR=full`
+  fetches the full one; the two ship identical headers, so addon prebuilds work
+  against either.
 - `backend:build` — bundles the Node.js backend (`backend/`) that gets embedded in
   the app. `npm install` alone does **not** build it.
 - installs dependencies for the two test apps (`apps/integration`, `apps/e2e`).
@@ -40,11 +44,13 @@ debug ID in the bundle, the consuming app uploads the maps with
 `comapeo-rn-upload-sourcemaps`, and Sentry matches them by that ID.
 
 The backend deliberately does **not** run with `--enable-source-maps` in any
-variant. nodejs-mobile pins Node 18, whose `findSourceMap()` re-parses the whole
-map on every `Error.stack` format — roughly 320 ms and 250–470 MB of garbage per
-error for our 19 MB map, enough to wedge the event loop for tens of seconds on a
-low-end device. For a stack you have in a terminal rather than in Sentry,
-`comapeo-rn-symbolicate` remaps it offline from the shipped maps.
+variant. Measured on the Node 18 nodejs-mobile used to pin, `findSourceMap()`
+re-parsed the whole map on every `Error.stack` format — roughly 320 ms and
+250–470 MB of garbage per error for our 19 MB map, enough to wedge the event
+loop for tens of seconds on a low-end device. Node has since reworked its
+source-map cache; the flag stays off until that's re-measured on device. For a
+stack you have in a terminal rather than in Sentry, `comapeo-rn-symbolicate`
+remaps it offline from the shipped maps.
 
 ## Repository layout
 

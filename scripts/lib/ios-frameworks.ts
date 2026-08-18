@@ -19,13 +19,11 @@ const $$ = $({ stdio: "inherit" });
  *      Mach-O exec inside <work>/<arch>/<key>.framework/<key>, rewrite
  *      its install name with `install_name_tool -id @rpath/...`, and
  *      write a minimal Info.plist next to it.
- *   2. lipo the two simulator binaries into one fat Mach-O so a single
- *      simulator slice covers both Apple Silicon and Intel hosts.
- *   3. xcodebuild -create-xcframework with the device framework and
- *      the lipo'd simulator framework → <frameworksDir>/<key>.xcframework.
+ *   2. xcodebuild -create-xcframework with the device and simulator
+ *      frameworks → <frameworksDir>/<key>.xcframework.
  *
- * `xcodebuild`, `lipo`, and `install_name_tool` are macOS-only Xcode
- * command-line tools, so callers must gate on `process.platform`.
+ * `xcodebuild` and `install_name_tool` are macOS-only Xcode command-line
+ * tools, so callers must gate on `process.platform`.
  */
 export async function packageIosFrameworks({
   pairs,
@@ -58,36 +56,19 @@ export async function packageIosFrameworks({
       const buildPerArchFramework = async (arch: string, srcNode: string) =>
         buildFramework({ instanceKey, moduleWorkDir, arch, srcNode });
 
-      const [deviceNode, armSimNode, x64SimNode] = await Promise.all([
+      const [deviceNode, simNode] = await Promise.all([
         findNodeForArch(prebuildsDir, name, version, "ios-arm64"),
         findNodeForArch(prebuildsDir, name, version, "ios-arm64-simulator"),
-        findNodeForArch(prebuildsDir, name, version, "ios-x64-simulator"),
       ]);
 
       const deviceFramework = await buildPerArchFramework("arm64", deviceNode);
-      const armSimFramework = await buildPerArchFramework(
+      const simFramework = await buildPerArchFramework(
         "arm64-simulator",
-        armSimNode,
+        simNode,
       );
-      const x64SimFramework = await buildPerArchFramework(
-        "x64-simulator",
-        x64SimNode,
-      );
-
-      // lipo the two simulator slices into one fat Mach-O.
-      const simFatDir = join(moduleWorkDir, "simulator");
-      const simFatFramework = join(simFatDir, `${instanceKey}.framework`);
-      mkdirSync(simFatFramework, { recursive: true });
-      writeFileSync(
-        join(simFatFramework, "Info.plist"),
-        buildFrameworkPlist(instanceKey),
-      );
-      await $({
-        stdio: "inherit",
-      })`lipo -create ${join(armSimFramework, instanceKey)} ${join(x64SimFramework, instanceKey)} -output ${join(simFatFramework, instanceKey)}`;
 
       const xcframeworkPath = join(frameworksDir, `${instanceKey}.xcframework`);
-      await $$`xcodebuild -create-xcframework -framework ${deviceFramework} -framework ${simFatFramework} -output ${xcframeworkPath}`;
+      await $$`xcodebuild -create-xcframework -framework ${deviceFramework} -framework ${simFramework} -output ${xcframeworkPath}`;
     }),
   );
 
@@ -97,7 +78,7 @@ export async function packageIosFrameworks({
 /**
  * Build one `<instanceKey>.framework/` directory for the given arch.
  * Returns the absolute path to the framework directory so it can be
- * fed into `lipo`/`xcodebuild` downstream.
+ * fed into `xcodebuild` downstream.
  *
  * `install_name_tool -id` rewrites the Mach-O's `LC_ID_DYLIB` from the
  * upstream prebuild's `<name>.node` (a name dyld cannot resolve inside

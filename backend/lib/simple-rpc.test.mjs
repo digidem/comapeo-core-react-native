@@ -78,6 +78,28 @@ test("broadcast delivers a frame to a connected client", async (t) => {
   });
 });
 
+// Regression test for the dropped `stopping` frame: shutdown broadcasts and
+// closes in the same tick, and the queued frame used to hit an already-ended
+// socket on the next tick.
+test("broadcast followed by close in the same tick still delivers", async (t) => {
+  const { server, path } = await startServer(t, {});
+
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  /** @type {Array<{ type?: string }>} */
+  const frames = [];
+  client.addEventListener("message", (event) => frames.push(event.data));
+  client.start();
+
+  server.broadcast({ type: "stopping" });
+  await server.close();
+
+  assert.equal(server.state, "closed");
+  await waitFor(() => frames.some((f) => f && f.type === "stopping"), {
+    message: "stopping delivered despite same-tick close",
+  });
+});
+
 test("an unknown message type is ignored without throwing", async (t) => {
   let called = false;
   const { path } = await startServer(t, {

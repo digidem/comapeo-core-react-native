@@ -97,6 +97,16 @@ public:
         log("initialize: %s", nativeDataDir.c_str());
     }
 
+    /// node reads TMPDIR and NODE_COMPILE_CACHE while the Environment is
+    /// created, so assigning `process.env` from JS is too late — callers must
+    /// set them here, before `startNodeWithArguments`.
+    static void setEnv(alias_ref<JClass>, alias_ref<jstring> name, alias_ref<jstring> value) {
+        const auto nativeName = name->toStdString();
+        const auto nativeValue = value->toStdString();
+        setenv(nativeName.c_str(), nativeValue.c_str(), 1);
+        log("setEnv: %s=%s", nativeName.c_str(), nativeValue.c_str());
+    }
+
     static jint startNodeWithArguments(alias_ref<JClass>,
                                        alias_ref<JArrayClass<jstring>> arguments) {
         log("Starting NodeJS with arguments.");
@@ -141,6 +151,8 @@ public:
         javaClassStatic()->registerNatives({
                                                    makeNativeMethod("initialize",
                                                                     NodeJSService::initialize),
+                                                   makeNativeMethod("setEnv",
+                                                                    NodeJSService::setEnv),
                                                    makeNativeMethod("startNodeWithArguments",
                                                                     NodeJSService::startNodeWithArguments),
                                            });

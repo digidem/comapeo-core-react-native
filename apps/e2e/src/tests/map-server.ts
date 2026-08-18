@@ -6,9 +6,10 @@ import type { TestContext } from './utils'
 // device: in-process inside nodejs-mobile, reached over loopback HTTP by
 // the app's `fetch`. The module's own suite covers route/logic behaviour
 // in Node — these only check that the real request → response pipeline
-// (which differs on nodejs-mobile, e.g. the polyfilled fetch/Response
-// globals) delivers each response shape. They use the built-in `fallback`
-// map only: no project, no uploaded SMP, no network.
+// delivers each response shape once it's running on nodejs-mobile, where
+// the server side builds its responses from the `Response`/`Request`
+// globals under a jitless V8. They use the built-in `fallback` map only:
+// no project, no uploaded SMP, no network.
 export function test({ describe, expect, it }: TestContext) {
 	describe('map server', () => {
 		it('getBaseUrl() returns a valid URL', async () => {

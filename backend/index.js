@@ -4,6 +4,7 @@ import ensureError from "ensure-error";
 import Fastify from "fastify";
 
 import { ComapeoRpc } from "./lib/comapeo-rpc.js";
+import { flushCompileCacheAfterBoot } from "./lib/compile-cache.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { createMapServer } from "./lib/create-map-server.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
@@ -14,10 +15,6 @@ import { observeSyncSessions } from "./lib/sync-observer.js";
 // 60s sampler cadence for backend memory + uptime gauges. No-op
 // when Sentry is off (the metrics layer never got its SDK).
 const MEMORY_SAMPLE_INTERVAL_MS = 60_000;
-
-// Shared/Android entry. Android's nodejs-mobile build ships the
-// undici-backed `fetch`/`Response`/`Request` globals the map server needs;
-// iOS lacks them and installs them first via `index.ios.js` → `install-fetch.js`.
 
 // `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` mirrors this
 // directory into the on-device bundle.
@@ -115,8 +112,8 @@ const controlIpcServer = new SimpleRpcServer({
     resolveInit(rootKey);
   },
   shutdown: async () => {
-    // Broadcast BEFORE close: AF_UNIX guarantees this frame reaches
-    // peers before EOF, so they can tell graceful shutdown from a crash.
+    // Broadcast BEFORE close: this only queues the frame, and close()
+    // flushes each client's stream before destroying its socket.
     controlIpcServer.broadcast({ type: "stopping" });
     // Each close is isolated so one failure can't leak the others.
     /**
@@ -311,6 +308,7 @@ async function withPhase(phase, fn) {
 
     controlIpcServer.setReadinessPhase("ready");
     metrics.bootOutcome("started");
+    flushCompileCacheAfterBoot();
     startMemorySampler();
     sampleStorageSize(privateStorageDir);
   } catch (error) {

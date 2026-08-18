@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import FramedStream from "framed-stream";
+import { Writable } from "streamx";
 import ensureError from "ensure-error";
 
 /**
@@ -73,6 +74,18 @@ export class SocketMessagePort extends EventTarget {
    */
   postMessage(message) {
     this.#framedStream.write(Buffer.from(JSON.stringify(message)));
+  }
+
+  /**
+   * Resolves once queued frames have reached the socket. `postMessage()` only
+   * queues — streamx does the real write on a later tick — so anything that
+   * tears the socket down must wait on this first.
+   *
+   * @returns {Promise<boolean>} `false` if there was nothing left to flush
+   */
+  async drained() {
+    if (this.#state === "closed") return false;
+    return Writable.drained(this.#framedStream);
   }
 
   start() {
