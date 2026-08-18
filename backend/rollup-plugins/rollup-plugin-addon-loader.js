@@ -24,15 +24,9 @@ import path from "node:path";
  * from the package.json that owns the file being transformed — not a
  * hand-maintained map.
  *
- * Better-sqlite3 specifically: up to 12.x it resolved through
- * `require('bindings')('better_sqlite3.node')`, lazily on the first
- * `new Database(...)`. From 13.x it uses its own `lib/binding.js`,
- * which knows only linux/darwin/win32 prebuild paths before falling
- * back to node-gyp build dirs. Both shapes are rewritten to
- * `__loadAddon('better-sqlite3', '<ver>')`, which also makes the
- * underscore-vs-hyphen mismatch (`better_sqlite3.node` filename vs.
- * `better-sqlite3` package name) moot. A miss on the 13.x resolver is
- * a build error rather than a device-only failure — see `transform`.
+ * The rewrite also makes better-sqlite3's underscore-vs-hyphen mismatch
+ * (`better_sqlite3.node` filename vs. `better-sqlite3` package name)
+ * moot, since the call is replaced wholesale.
  *
  * @returns {import('rolldown').Plugin}
  */
@@ -54,11 +48,10 @@ export default function addonLoaderPlugin() {
       replacement: (n, v) => `__loadAddon('${n}', '${v}')`,
     },
     {
-      // better-sqlite3 >= 13 dropped `bindings` for its own resolver in
-      // `lib/binding.js`, which knows only linux/darwin/win32 prebuild paths
-      // and then falls back to node-gyp build dirs — none of which exist on
-      // device. Short-circuit it at the head of that fallback; the
-      // caller-supplied `nativeBinding` branches above it still work.
+      // better-sqlite3's own resolver: it knows only linux/darwin/win32
+      // prebuild paths and then falls back to node-gyp build dirs, none of
+      // which exist on device. Short-circuit at the head of that fallback so
+      // the caller-supplied `nativeBinding` branches above it still work.
       pattern: /let filename = getPrebuildPath\(\);/g,
       replacement: (n, v) => `return DEFAULT_ADDON = __loadAddon('${n}', '${v}');`,
     },

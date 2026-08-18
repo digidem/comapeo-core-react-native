@@ -359,39 +359,38 @@ class NodeJSService(
     /**
      * Environment node inherits from this process. Must run before
      * [startNodeWithArguments]: `NODE_COMPILE_CACHE` is read while the
-     * Environment is created, so setting it from JS would be too late. (`TMPDIR`
-     * would in fact survive a later `process.env` assignment — that routes
-     * through `uv_os_setenv`, so even native `getenv` callers see it — but it is
-     * set here so it holds for anything reading it before our JS runs.)
+     * Environment is created, so setting it from JS would be too late.
      *
-     * An Android app process has no `TMPDIR` and there is no `/tmp`, which
-     * `os.tmpdir()` otherwise falls back to; anything writing there fails with
-     * ENOENT. `NODE_COMPILE_CACHE` is V8's on-disk code cache — the backend
-     * flushes it once boot reaches `ready` rather than leaving it to node's
-     * exit hook, which the low-memory killer routinely denies us.
+     * An Android app process has no `TMPDIR`, and there is no `/tmp` for
+     * `os.tmpdir()` to fall back to, so anything writing there fails with
+     * ENOENT. `NODE_COMPILE_CACHE` is V8's on-disk code cache; the backend
+     * flushes it at `ready` rather than leaving it to node's exit hook, which
+     * the low-memory killer routinely denies us.
      *
      * Both live under `cacheDir`: regenerable, and reclaimable under storage
      * pressure. A variable is left unset rather than pointed at a directory we
      * failed to create — node falling back to its own default beats handing it
-     * a path that will ENOENT on first use.
+     * a path that ENOENTs on first use.
      */
     private fun applyNodeEnvironment() {
         // `mkdirs()` returns false when the directory already exists, so the
         // result to trust is `isDirectory`, not the return value.
-        fun ensureDir(dir: File): Boolean {
+        fun ensureDir(name: String): File? {
+            val dir = File(cacheDir, name)
             dir.mkdirs()
-            if (dir.isDirectory) return true
-            Log.w(TAG, "could not create ${dir.absolutePath}; leaving its env var unset")
-            return false
+            if (dir.isDirectory) return dir
+            logCapture(
+                SentryCategories.BOOT,
+                "could not create node $name dir; leaving its env var unset",
+                level = "warning",
+                tags = mapOf("dir" to name),
+            )
+            return null
         }
 
-        val tmpDir = File(cacheDir, "tmp")
-        if (ensureDir(tmpDir)) setEnv("TMPDIR", tmpDir.absolutePath)
-
-        val compileCacheDir = File(cacheDir, "node-compile-cache")
-        if (ensureDir(compileCacheDir)) {
-            setEnv("NODE_COMPILE_CACHE", compileCacheDir.absolutePath)
-            setEnv("NODE_COMPILE_CACHE_PORTABLE", "1")
+        ensureDir("tmp")?.let { setEnv("TMPDIR", it.absolutePath) }
+        ensureDir("node-compile-cache")?.let {
+            setEnv("NODE_COMPILE_CACHE", it.absolutePath)
         }
     }
 

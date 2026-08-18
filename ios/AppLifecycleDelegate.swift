@@ -61,7 +61,6 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
             // regenerable data wants. TMPDIR and HOME are already set by iOS.
             if let compileCacheDir = AppLifecycleDelegate.resolveCompileCacheDir() {
                 setenv("NODE_COMPILE_CACHE", compileCacheDir, 1)
-                setenv("NODE_COMPILE_CACHE_PORTABLE", "1", 1)
             }
 
             let cStrings = arguments.map { strdup($0)! }
@@ -115,20 +114,31 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
 
     /// `Library/Caches/comapeo/node-compile-cache`, created on demand. nil if
     /// the directory can't be created — node then runs without a code cache,
-    /// which costs startup time but nothing else.
+    /// which costs startup time but nothing else. Reported so the rate is
+    /// visible; a device that can never write here pays the cold-compile cost
+    /// on every launch.
     private static func resolveCompileCacheDir() -> String? {
         let fm = FileManager.default
-        guard let caches = try? fm.url(
-            for: .cachesDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ) else { return nil }
-        let dir = caches
+        let dir: URL
+        do {
+            dir = try fm.url(
+                for: .cachesDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
             .appendingPathComponent("comapeo", isDirectory: true)
             .appendingPathComponent("node-compile-cache", isDirectory: true)
-        guard (try? fm.createDirectory(at: dir, withIntermediateDirectories: true)) != nil
-        else { return nil }
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            logCapture(
+                category: SentryCategories.boot,
+                message: "could not create node compile-cache dir; running without one",
+                level: .warning,
+                tags: ["error": "\(error)"]
+            )
+            return nil
+        }
         return dir.path
     }
 
