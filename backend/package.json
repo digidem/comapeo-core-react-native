@@ -31,13 +31,12 @@
     "ensure-error": "^5.0.0",
     "fastify": "4.29.1",
     "framed-stream": "1.0.1",
-    "polywasm": "0.2.0",
     "tiny-typed-emitter": "2.1.0"
   },
   "devDependencies": {
     "@sentry/bundler-plugins": "10.70.0",
     "@sentry/rollup-plugin": "5.4.0",
-    "@types/node": "18.19.130",
+    "@types/node": "24.12.2",
     "@types/streamx": "2.9.5",
     "@types/tar-stream": "3.1.4",
     "magic-string": "0.30.21",
@@ -48,6 +47,7 @@
     "typescript": "5.9.3"
   },
   "overrides": {
+    "better-sqlite3": "13.0.3",
     "require-addon": "1.1.0",
     "sodium-native": "5.1.0",
     "sodium-universal": "5.0.1"

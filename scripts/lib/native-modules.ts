@@ -11,7 +11,9 @@ export type NativeModule = { name: string; usesNapi: boolean };
  *   `<name>-<version>-<platform>-<arch>.tar.gz`             (NAPI)
  */
 export const NATIVE_MODULES: readonly NativeModule[] = [
-  { name: "better-sqlite3", usesNapi: false },
+  // N-API since 13.0.0; earlier majors were raw V8 and needed a prebuild per
+  // Node ABI.
+  { name: "better-sqlite3", usesNapi: true },
   // Native module seems may cause issues on some devices. If so, exclude from list to use JS version.
   // https://github.com/digidem/comapeo-mobile/issues/1096
   { name: "crc-native", usesNapi: true },

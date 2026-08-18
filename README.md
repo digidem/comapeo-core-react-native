@@ -364,10 +364,10 @@ place of the flags.
 
 The maps live in sibling `nodejs-sourcemaps/` directories (not under the bundled
 `nodejs-project/` assets), so they are **not** shipped inside your APK/IPA. The
-backend runs without Node's `--enable-source-maps` in every variant — on the
-Node 18 that nodejs-mobile pins, that flag re-parses the entire map on every
-error stack and can wedge the event loop for tens of seconds on a low-end
-device. To remap a stack you have in a terminal rather than in Sentry:
+backend runs without Node's `--enable-source-maps` in every variant — measured
+on Node 18, that flag re-parsed the entire map on every error stack and could
+wedge the event loop for tens of seconds on a low-end device. To remap a stack
+you have in a terminal rather than in Sentry:
 
 ```sh
 adb logcat -d | npx comapeo-rn-symbolicate
