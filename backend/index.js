@@ -22,6 +22,10 @@ const MIGRATIONS_FOLDER_PATH = fileURLToPath(
   new URL("./node_modules/@comapeo/core/drizzle", import.meta.url),
 );
 
+const OLD_MIGRATIONS_FOLDER_PATH = fileURLToPath(
+  new URL("./node_modules/comapeo-core-old/drizzle", import.meta.url),
+);
+
 console.log("Starting Comapeo Node server...");
 
 // 4th positional is an optional path to the default project config
@@ -253,6 +257,7 @@ async function withPhase(phase, fn) {
           privateStorageDir,
           fastify,
           migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
+          oldMigrationsFolderPath: OLD_MIGRATIONS_FOLDER_PATH,
           defaultConfigPath,
           defaultOnlineStyleUrl,
           rootKey,
