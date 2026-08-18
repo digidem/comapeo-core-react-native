@@ -117,6 +117,33 @@ class DeriveStateTest {
         assertEquals(State.STARTED, derive(NodeRuntimeState.Running, BackendState.Ready))
     }
 
+    // MARK: - Terminal/parking states
+
+    @Test
+    fun lowSpaceDerivesLowSpace() {
+        // LOW_SPACE is terminal — overrides runtime state and stop intent.
+        val lowSpace = BackendState.LowSpace(spaceNeeded = 123_456)
+        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.Running, lowSpace))
+        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.NotRunning, lowSpace))
+        assertEquals(State.LOW_SPACE, derive(NodeRuntimeState.Running, lowSpace, stop = true))
+    }
+
+    @Test
+    fun migratingDerivesMigrating() {
+        // MIGRATING is active migration — overrides starting/ready.
+        assertEquals(State.MIGRATING, derive(NodeRuntimeState.Running, BackendState.Migrating))
+        // Migration with runtime not running shouldn't happen in practice
+        // but derivation still says MIGRATING (backend said so).
+        assertEquals(State.MIGRATING, derive(NodeRuntimeState.NotRunning, BackendState.Migrating))
+    }
+
+    @Test
+    fun stopRequestedOverridesMigrating() {
+        // stopRequested is checked before Migrating in the derivation,
+        // so a stop during migration derives STOPPING (not MIGRATING).
+        assertEquals(State.STOPPING, derive(NodeRuntimeState.Running, BackendState.Migrating, stop = true))
+    }
+
     // MARK: - Rule 6: starting
 
     @Test

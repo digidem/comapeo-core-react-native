@@ -251,3 +251,68 @@ test("a malformed frame on the control socket records comapeo.ipc.errors", async
   const err = counts.find((c) => c.name === "comapeo.ipc.errors");
   assert.equal(err?.attributes.error_class, "SyntaxError");
 });
+
+test("replays transient states (migrating, low-space) to late clients before ready", async (t) => {
+  const { server, path } = await startServer(t, {});
+  server.setReadinessPhase("started");
+
+  // Simulate migration state
+  server.broadcast({ type: "migrating", progress: "1/5" });
+
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  /** @type {Array<{ type?: string }>} */
+  const frames = [];
+  client.addEventListener("message", (event) => frames.push(event.data));
+  client.start();
+
+  await waitFor(() => frames.some((f) => f && f.type === "migrating"), {
+    message: "migrating replayed",
+  });
+
+  const types = frames.map((f) => f.type);
+  assert.ok(types.includes("started"), "should replay 'started'");
+  assert.ok(types.includes("migrating"), "should replay 'migrating'");
+  assert.ok(!types.includes("ready"), "should not replay 'ready' yet");
+
+  // Verify low-space works similarly
+  server.broadcast({ type: "low-space", spaceNeeded: 1024 });
+
+  // Connect another client
+  const socket2 = await connectSocket(t, path);
+  const client2 = new SocketMessagePort(socket2);
+  /** @type {Array<{ type?: string }>} */
+  const frames2 = [];
+  client2.addEventListener("message", (event) => frames2.push(event.data));
+  client2.start();
+
+  await waitFor(() => frames2.some((f) => f && f.type === "low-space"), {
+    message: "low-space replayed",
+  });
+
+  const types2 = frames2.map((f) => f.type);
+  assert.ok(types2.includes("low-space"), "should replay 'low-space'");
+});
+
+test("does not replay transient states after ready", async (t) => {
+  const { server, path } = await startServer(t, {});
+  server.setReadinessPhase("started");
+  server.broadcast({ type: "migrating" });
+  server.setReadinessPhase("ready");
+
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  /** @type {Array<{ type?: string }>} */
+  const frames = [];
+  client.addEventListener("message", (event) => frames.push(event.data));
+  client.start();
+
+  await waitFor(() => frames.some((f) => f && f.type === "ready"), {
+    message: "ready replayed",
+  });
+
+  const types = frames.map((f) => f.type);
+  assert.ok(types.includes("started"), "should replay 'started'");
+  assert.ok(types.includes("ready"), "should replay 'ready'");
+  assert.ok(!types.includes("migrating"), "should not replay 'migrating' after ready");
+});

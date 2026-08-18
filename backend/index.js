@@ -1,5 +1,6 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 import ensureError from "ensure-error";
 import Fastify from "fastify";
 
@@ -11,6 +12,13 @@ import { SimpleRpcServer } from "./lib/simple-rpc.js";
 import * as sentry from "./lib/sentry.js";
 import * as metrics from "./lib/metrics.js";
 import { observeSyncSessions } from "./lib/sync-observer.js";
+import {
+  checkShouldMigrate,
+  migrateStorage,
+  MIGRATION_REASON_NO_SPACE,
+} from "@comapeo/core/migration.js";
+
+/** @typedef {{availableDiskSpace: number}} RetryMessage */
 
 // 60s sampler cadence for backend memory + uptime gauges. No-op
 // when Sentry is off (the metrics layer never got its SDK).
@@ -20,6 +28,9 @@ const MEMORY_SAMPLE_INTERVAL_MS = 60_000;
 // directory into the on-device bundle.
 const MIGRATIONS_FOLDER_PATH = fileURLToPath(
   new URL("./node_modules/@comapeo/core/drizzle", import.meta.url),
+);
+const OLD_MIGRATIONS_FOLDER_PATH = fileURLToPath(
+  new URL("./node_modules/comapeo-core-old/drizzle", import.meta.url),
 );
 
 console.log("Starting Comapeo Node server...");
@@ -31,15 +42,22 @@ console.log("Starting Comapeo Node server...");
 // string when unset) so the `--sentry*` flags that follow can't land in
 // them. Empty 4th → undefined → MapeoManager applies no default config;
 // empty 5th → undefined → createComapeo falls back to its built-in URL.
+// 6th positional is available disk space (bytes) for migration decision.
+// Native always passes this slot ("0" when unknown).
 const [
   comapeoSocketPath,
   controlSocketPath,
   privateStorageDir,
   configArg,
   styleUrlArg,
+  availableDiskSpaceArg,
 ] = process.argv.slice(2);
 const defaultConfigPath = configArg || undefined;
 const defaultOnlineStyleUrl = styleUrlArg || undefined;
+let availableDiskSpace =
+  availableDiskSpaceArg !== undefined
+    ? Number(availableDiskSpaceArg)
+    : undefined;
 
 const fastify = Fastify();
 
@@ -47,7 +65,7 @@ const fastify = Fastify();
 // these so shutdown can close them if construction succeeded.
 /** @type {ComapeoRpc | undefined} */
 let comapeoRpcServer;
-/** @type {Awaited<ReturnType<typeof createComapeo>> | undefined} */
+/** @type {import("@comapeo/core").MapeoManager | undefined} */
 let comapeoManager;
 /** @type {Awaited<ReturnType<typeof createMapServer>> | undefined} */
 let mapServer;
@@ -62,6 +80,22 @@ const initPromise = new Promise((resolve, reject) => {
   rejectInit = reject;
 });
 let initConsumed = false;
+
+/**
+ * One-shot retry gate: resolves on first `retry` frame from native.
+ * Only fires once so a misbehaving native side can't loop the boot.
+ * Declared at module scope so the SimpleRpcServer `retry` handler can
+ * reference it; the boot IIFE awaits the promise.
+ */
+/** @type {((message: RetryMessage) => void) | undefined} */
+let resolveRetry;
+const retryPromise = new Promise((resolve) => {
+  resolveRetry = (message) => {
+    resolve(message);
+    resolveRetry = undefined;
+  };
+});
+let retryConsumed = false;
 
 const controlIpcServer = new SimpleRpcServer({
   /**
@@ -164,6 +198,21 @@ const controlIpcServer = new SimpleRpcServer({
     /** @type {Error & { source?: string }} */ (err).source = "native";
     handleFatal(message.phase, err);
   },
+  /**
+   * Resumes the boot after a low-space pause. Native sends this after the
+   * host app surfaces the `low-space` event and the user acts (frees space,
+   * accepts fallback). Only the first retry is honoured; subsequent retries
+   * are no-ops so a misbehaving native side can't loop the boot.
+   * @param {RetryMessage} message
+   */
+  retry: (message) => {
+    if (retryConsumed) {
+      console.warn("Received retry after boot already resumed; ignoring");
+      return;
+    }
+    retryConsumed = true;
+    resolveRetry?.(message);
+  },
 });
 
 /**
@@ -245,18 +294,112 @@ async function withPhase(phase, fn) {
     // same trace; a duplicate would only add noise.
     const rootKey = await withPhase("init", () => initPromise);
 
+    // ---- Migration (retryable on low-space) ----
+
+    const coreStorageDir = path.join(privateStorageDir, "core-storage");
+
+    /**
+     * Run migration check + execute if needed.
+     * @param {boolean} forceFallback When true and disk is full, skip migration
+     *   and use the old MapeoManager version instead of throwing.
+     * @returns {Promise<{ useFallback: boolean }>}
+     */
+    async function runMigration(forceFallback) {
+      if (forceFallback) {
+        return { useFallback: true }
+      }
+      const { shouldUpgrade, useFallback, reason, spaceNeeded } = await withPhase(
+        "migrate-check",
+        () => checkShouldMigrate(coreStorageDir, availableDiskSpace),
+      );
+
+      if (reason === MIGRATION_REASON_NO_SPACE) {
+        if (forceFallback) {
+          console.warn(
+            "No space for migration, falling back to old manager",
+          );
+          return { useFallback: true };
+        }
+        throw Object.assign(new Error("No disk space for migration"), {
+          __lowSpace: true,
+          spaceNeeded,
+        });
+      }
+
+      if (shouldUpgrade) {
+        controlIpcServer.broadcast({ type: "migrating" });
+        /** @type {Record<string, { migrated: boolean; error?: Error }> | undefined} */
+        const migrationResults = await withPhase("migrate", () =>
+          migrateStorage(coreStorageDir, (doneSoFar, totalCores) => {
+            controlIpcServer.broadcast({
+              type: "migrating",
+              progress: `${doneSoFar}/${totalCores}`,
+            });
+          }),
+        );
+
+        // migrateStorage catches per-project errors in the result map.
+        if (migrationResults) {
+          /** @type {Error | undefined} */
+          let firstError;
+          for (const [projectId, result] of Object.entries(migrationResults)) {
+            if (!result.migrated && result.error) {
+              console.error(
+                `Migration failed for project ${projectId}:`,
+                result.error,
+              );
+              firstError ??= result.error;
+            }
+          }
+          if (firstError) {
+            /** @type {Error & { source?: string }} */ (firstError).source =
+              "migrate-storage";
+            throw firstError;
+          }
+        }
+      }
+
+      return { useFallback };
+    }
+
+    // Run migration; on low-space broadcast event, wait for retry, then retry with fallback.
+    let migrationUseFallback = false;
+    try {
+      const result = await runMigration(false);
+      migrationUseFallback = result.useFallback;
+    } catch (error) {
+      if (error && typeof error === "object" && "__lowSpace" in error && error.__lowSpace) {
+        controlIpcServer.broadcast({ type: "low-space", spaceNeeded: error.spaceNeeded });
+        // Park until native sends `retry` (e.g. after user frees space or
+        // accepts fallback). Event loop stays alive — Node won't exit.
+        availableDiskSpace = (await retryPromise).availableDiskSpace;
+        const result = await runMigration(true);
+        migrationUseFallback = result.useFallback;
+      } else {
+        throw error;
+      }
+    }
+
+    // ---- Construct manager ----
+
     // Dashboard label (`boot.manager-init`) vs. wire phase (`construct`)
     // used by native error frames.
     await withPhase("construct", () =>
       sentry.withSpan("boot.manager-init", async () => {
-        comapeoManager = createComapeo({
-          privateStorageDir,
-          fastify,
-          migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
-          defaultConfigPath,
-          defaultOnlineStyleUrl,
-          rootKey,
-        });
+        // Old and new MapeoManager have incompatible #private fields; cast
+        // to the newer type. Both share the same public API surface.
+        comapeoManager = /** @type {import("@comapeo/core").MapeoManager} */ (
+          createComapeo({
+            privateStorageDir,
+            fastify,
+            migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
+            oldMigrationsFolderPath: OLD_MIGRATIONS_FOLDER_PATH,
+            defaultConfigPath,
+            defaultOnlineStyleUrl,
+            rootKey,
+            useFallback: migrationUseFallback,
+          })
+        );
 
         observeSyncSessions(comapeoManager);
 

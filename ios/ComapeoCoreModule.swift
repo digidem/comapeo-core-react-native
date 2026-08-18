@@ -83,6 +83,13 @@ public class ComapeoCoreModule: Module {
             return ["errorPhase": info.phase, "errorMessage": info.message]
         }
 
+        // Resume the backend boot after a `LOW_SPACE` park. Sends
+        // `{type:"retry"}` on the control socket; only the first retry
+        // is honoured by the backend.
+        Function("sendRetry") {
+            AppLifecycleDelegate.nodeService.sendRetry()
+        }
+
         // Plist-baked Sentry options, re-exported by the JS `/sentry`
         // sub-export. Empty map when DSN absent so spreading is safe.
         // `userId` is derived with the same launch snapshot the native init

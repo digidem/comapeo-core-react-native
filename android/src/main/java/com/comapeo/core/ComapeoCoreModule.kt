@@ -87,6 +87,11 @@ class ComapeoCoreModule : Module() {
                         ControlFrame.Started -> setState(JsState.STARTING)
                         ControlFrame.Ready -> setState(JsState.STARTED)
                         ControlFrame.Stopping -> setState(JsState.STOPPING)
+                        is ControlFrame.Migrating -> setState(JsState.MIGRATING)
+                        is ControlFrame.LowSpace -> setState(
+                            JsState.LOW_SPACE,
+                            mapOf("spaceNeeded" to frame.spaceNeeded.toString()),
+                        )
                         is ControlFrame.Error -> setState(
                             JsState.ERROR,
                             mapOf(
@@ -114,7 +119,7 @@ class ComapeoCoreModule : Module() {
                             when (synchronized(stateLock) { jsState }) {
                                 JsState.ERROR -> {}
                                 JsState.STOPPING, JsState.STOPPED -> setState(JsState.STOPPED)
-                                JsState.STARTING, JsState.STARTED -> setState(
+                                JsState.STARTING, JsState.STARTED, JsState.MIGRATING, JsState.LOW_SPACE -> setState(
                                     JsState.ERROR,
                                     mapOf(
                                         "errorPhase" to "node-runtime-unexpected",
@@ -169,6 +174,14 @@ class ComapeoCoreModule : Module() {
 
         Function("getLastError") {
             synchronized(stateLock) { lastError }
+        }
+
+        // Send `{type:"retry"}` on the control socket to resume the backend
+        // boot after a `LOW_SPACE` park.
+        Function("sendRetry") {
+          val availableDiskSpace =
+            java.nio.file.Files.getFileStore(java.nio.file.Paths.get(appContext.persistentFilesDirectory.path)).usableSpace
+            controlIpc.sendMessage("{\"type\":\"retry\", \"availableDiskSpace\": $availableDiskSpace}")
         }
 
         // `sentryConfig` — baked-in by app.plugin.js at prebuild; spread into

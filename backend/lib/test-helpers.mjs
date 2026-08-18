@@ -14,8 +14,9 @@ export const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Poll `predicate` until it returns truthy or the timeout elapses.
+ * Supports both sync and async predicates.
  *
- * @param {() => boolean} predicate
+ * @param {() => boolean | Promise<boolean>} predicate
  * @param {{ timeout?: number, interval?: number, message?: string }} [opts]
  */
 export async function waitFor(
@@ -23,7 +24,7 @@ export async function waitFor(
   { timeout = 2000, interval = 10, message = "condition" } = {},
 ) {
   const start = Date.now();
-  while (!predicate()) {
+  while (!(await Promise.resolve(predicate()))) {
     if (Date.now() - start > timeout) {
       throw new Error(`waitFor timed out: ${message}`);
     }
