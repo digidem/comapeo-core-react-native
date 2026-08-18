@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { cp } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,7 +73,7 @@ const IOS_SOURCEMAPS =
  * covers online map styles and peer blob/SMP fetches. Aliasing at bundle time
  * keeps the SIMD bytes out of the iOS bundle entirely.
  */
-function aliasUndiciSimdWasmPlugin(): Plugin {
+function aliasUndiciSimdWasmPlugin(outDir: string): Plugin {
   return {
     name: "alias-undici-simd-wasm",
     resolveId(source, importer) {
@@ -86,7 +86,69 @@ function aliasUndiciSimdWasmPlugin(): Plugin {
       }
       return null;
     },
+    // Assert the outcome, not the mechanism: the redirect above is matched on
+    // an upstream specifier, so an undici reshuffle turns it into a silent
+    // no-op and the SIMD bytes come back. Nothing downstream would notice —
+    // the failure needs a real network fetch on a jitless device, which no
+    // test in this repo makes.
+    writeBundle() {
+      const emitted = readEmittedBundle(outDir);
+      if (!emitted) return;
+      const simd = undiciWasmMarker("llhttp_simd-wasm.js");
+      if (simd && emitted.includes(simd)) {
+        throw new Error(
+          "alias-undici-simd-wasm: the SIMD llhttp payload is in the iOS " +
+            "bundle. polywasm compiles it lazily, so it will throw " +
+            "`Unsupported instruction: 0xFD` on the first request rather than " +
+            "at compile time. The redirect in this plugin no longer matches " +
+            "undici's import — update it.",
+        );
+      }
+    },
   };
+}
+
+/** Concatenated JS of every chunk written to `outDir`, or null if absent. */
+function readEmittedBundle(outDir: string): string | null {
+  if (!existsSync(outDir)) return null;
+  const files = [
+    ...readdirSync(outDir)
+      .filter((f) => f.endsWith(".mjs"))
+      .map((f) => path.join(outDir, f)),
+    ...(existsSync(path.join(outDir, "chunks"))
+      ? readdirSync(path.join(outDir, "chunks"))
+          .filter((f) => f.endsWith(".mjs"))
+          .map((f) => path.join(outDir, "chunks", f))
+      : []),
+  ];
+  return files.length ? files.map((f) => readFileSync(f, "utf8")).join("") : null;
+}
+
+/**
+ * A slice of `<module>`'s base64 payload that does not appear in its sibling,
+ * so it identifies that specific wasm build in a bundle. Returns null when
+ * undici isn't installed — the assertion then has nothing to check, which is
+ * the correct answer if the dependency ever goes away (see issue #232).
+ */
+function undiciWasmMarker(module: string): string | null {
+  const dir = path.join(__dirname, "node_modules/undici/lib/llhttp");
+  const read = (f: string) => {
+    const p = path.join(dir, f);
+    if (!existsSync(p)) return null;
+    return readFileSync(p, "utf8").match(/[A-Za-z0-9+/]{200,}={0,2}/)?.[0] ?? null;
+  };
+  const target = read(module);
+  const sibling = read(
+    module === "llhttp_simd-wasm.js" ? "llhttp-wasm.js" : "llhttp_simd-wasm.js",
+  );
+  if (!target || !sibling) return null;
+  let i = 0;
+  while (i < Math.min(target.length, sibling.length) && target[i] === sibling[i]) {
+    i++;
+  }
+  // 64 chars past the first divergence is far more than enough to be unique,
+  // and short enough to survive minification (these are string literals).
+  return target.slice(i, i + 64) || null;
 }
 
 /**
@@ -177,7 +239,7 @@ function buildPlugins({
     // iOS-only: keep the SIMD llhttp bytes out of the bundle — the runtime's
     // UNDICI_NO_WASM_SIMD only steers Node's built-in undici, not the npm copy
     // we bundle. See aliasUndiciSimdWasmPlugin above.
-    ...(platform === "ios" ? [aliasUndiciSimdWasmPlugin()] : []),
+    ...(platform === "ios" ? [aliasUndiciSimdWasmPlugin(outDir)] : []),
     // Native addon loader rewrite is identical for both platforms:
     // every loader pattern (`bindings`, `node-gyp-build`, `require.addon`)
     // becomes `__loadAddon(name, version)`. The helper itself differs
