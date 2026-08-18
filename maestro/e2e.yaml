@@ -6,6 +6,9 @@
 # dev-build workarounds are needed.
 appId: com.comapeo.core.e2e
 env:
+    # The app's own suite watchdog fires at 240s — rendering `all-tests-done`
+    # plus a "Suite timed out during: <spec>" failure — safely inside this
+    # window, so even a stalled suite reaches the screenshot below.
     TIMEOUT: 300000
 ---
 - launchApp:
