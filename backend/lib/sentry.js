@@ -185,7 +185,13 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame, storageDir }
     integrations: (defaults) =>
       config?.debug ? [...defaults, Sentry.consoleIntegration()] : defaults,
     initialScope: {
-      tags: { proc: "fgs", layer: "node" },
+      // `contexts.runtime` already carries the upstream Node version; the
+      // mobile revision of the embedded build only lives here.
+      tags: {
+        proc: "fgs",
+        layer: "node",
+        nodejs_mobile: process.versions.mobile ?? "unknown",
+      },
       // Native-derived user.id (monthly/permanent hash) — same value the
       // FGS and RN layers set, so one launch reports one user.
       ...(argv.sentryUserId ? { user: { id: argv.sentryUserId } } : {}),

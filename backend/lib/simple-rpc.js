@@ -167,4 +167,21 @@ export class SimpleRpcServer extends ServerHelper {
       }
     }
   }
+
+  /**
+   * Flush every client before the sockets go away: `broadcast()` only queues
+   * the frame, and `super.close()` destroys the socket under it.
+   *
+   * @override
+   */
+  async close() {
+    await Promise.all(
+      [...this.#clients].map((client) =>
+        client.drained().catch((e) => {
+          console.error("close: client drain failed", e);
+        }),
+      ),
+    );
+    await super.close();
+  }
 }

@@ -214,6 +214,9 @@ class NodeJSService(
         external fun initialize(dataDir: String)
 
         @JvmStatic
+        external fun setEnv(name: String, value: String)
+
+        @JvmStatic
         external fun startNodeWithArguments(args: Array<String>): Int
 
         /** Companion delegate over the top-level [deriveLifecycleState]. Tests use
@@ -354,6 +357,44 @@ class NodeJSService(
     /** `getAndSet` ensures only one thread owns the pre-swap ref — no double-cancel. */
     private fun cancelStartupWatchdog() {
         startupWatchdogJob.getAndSet(null)?.cancel()
+    }
+
+    /**
+     * Environment node inherits from this process. Must run before
+     * [startNodeWithArguments]: `NODE_COMPILE_CACHE` is read while the
+     * Environment is created, so setting it from JS would be too late.
+     *
+     * An Android app process has no `TMPDIR`, and there is no `/tmp` for
+     * `os.tmpdir()` to fall back to, so anything writing there fails with
+     * ENOENT. `NODE_COMPILE_CACHE` is V8's on-disk code cache; the backend
+     * flushes it at `ready` rather than leaving it to node's exit hook, which
+     * the low-memory killer routinely denies us.
+     *
+     * Both live under `cacheDir`: regenerable, and reclaimable under storage
+     * pressure. A variable is left unset rather than pointed at a directory we
+     * failed to create — node falling back to its own default beats handing it
+     * a path that ENOENTs on first use.
+     */
+    private fun applyNodeEnvironment() {
+        // `mkdirs()` returns false when the directory already exists, so the
+        // result to trust is `isDirectory`, not the return value.
+        fun ensureDir(name: String): File? {
+            val dir = File(cacheDir, name)
+            dir.mkdirs()
+            if (dir.isDirectory) return dir
+            logCapture(
+                SentryCategories.BOOT,
+                "could not create node $name dir; leaving its env var unset",
+                level = "warning",
+                tags = mapOf("dir" to name),
+            )
+            return null
+        }
+
+        ensureDir("tmp")?.let { setEnv("TMPDIR", it.absolutePath) }
+        ensureDir("node-compile-cache")?.let {
+            setEnv("NODE_COMPILE_CACHE", it.absolutePath)
+        }
     }
 
     /** Positionals are read by backend/index.js; `--sentry*` flags by backend/loader.mjs. */
@@ -514,6 +555,8 @@ class NodeJSService(
                 SentryFgsBridge.startBootSpan(bootTx.get(), "node-spawn")?.let {
                     bootSpans["node-spawn"] = it
                 }
+
+                withContext(Dispatchers.IO) { applyNodeEnvironment() }
 
                 val exitCode = startNodeWithArguments(
                     buildBackendArgs(jsFile.absolutePath)

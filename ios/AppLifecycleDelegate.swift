@@ -51,6 +51,18 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
                 .appendingPathComponent("Frameworks")
             setenv("NATIVE_LIB_DIR", frameworksDir, 1)
 
+            // V8's on-disk code cache. Read while the Environment is created,
+            // so it has to be an env var rather than `module.enableCompileCache()`
+            // — that way it also covers `loader.mjs` itself. The backend
+            // flushes it at `ready`; iOS usually kills the app while suspended,
+            // so node's exit-hook flush rarely runs.
+            //
+            // Caches/ is purgeable and excluded from backup, which is what
+            // regenerable data wants. TMPDIR and HOME are already set by iOS.
+            if let compileCacheDir = AppLifecycleDelegate.resolveCompileCacheDir() {
+                setenv("NODE_COMPILE_CACHE", compileCacheDir, 1)
+            }
+
             let cStrings = arguments.map { strdup($0)! }
             defer { cStrings.forEach { free($0) } }
 
@@ -98,6 +110,36 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         #else
         return (NSTemporaryDirectory() as NSString).standardizingPath
         #endif
+    }
+
+    /// `Library/Caches/comapeo/node-compile-cache`, created on demand. nil if
+    /// the directory can't be created — node then runs without a code cache,
+    /// which costs startup time but nothing else. Reported so the rate is
+    /// visible; a device that can never write here pays the cold-compile cost
+    /// on every launch.
+    private static func resolveCompileCacheDir() -> String? {
+        let fm = FileManager.default
+        let dir: URL
+        do {
+            dir = try fm.url(
+                for: .cachesDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            .appendingPathComponent("comapeo", isDirectory: true)
+            .appendingPathComponent("node-compile-cache", isDirectory: true)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            logCapture(
+                category: SentryCategories.boot,
+                message: "could not create node compile-cache dir; running without one",
+                level: .warning,
+                tags: ["error": "\(error)"]
+            )
+            return nil
+        }
+        return dir.path
     }
 
     /// App-private writable directory passed as `privateStorageDir`.

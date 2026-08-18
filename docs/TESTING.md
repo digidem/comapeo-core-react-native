@@ -418,6 +418,16 @@ can't be fetched — is treated as a real failure and never retried away. On eve
 failure it dumps the per-session report and the tail of each Maestro log so the
 actual cause is visible in the CI log.
 
+A stall (the suite never finishing) is diagnosable too: the app always shows the
+spec it is currently running (testID `current-spec`), and a watchdog inside
+`TestRunner.tsx` gives up after 240 s — inside Maestro's 300 s wait — rendering a
+"Suite timed out during: \<spec\>" failure, so the flow's screenshot names the
+culprit. On the final failed attempt the action also downloads what BrowserStack
+recorded during the run — the device log (the phone's system log, which includes
+the app's `[e2e]` console output on Android) and the flow's screenshots — prints
+the app-relevant log lines into the job log, and uploads the files as a
+`browserstack-diagnostics-<platform>` workflow artifact.
+
 ### 7.2 Running the e2e suite locally
 
 The same `apps/e2e` suite runs on a local emulator/simulator — **including iOS**

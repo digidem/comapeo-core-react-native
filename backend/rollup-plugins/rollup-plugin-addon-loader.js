@@ -24,14 +24,9 @@ import path from "node:path";
  * from the package.json that owns the file being transformed — not a
  * hand-maintained map.
  *
- * Better-sqlite3 specifically: its `database.js` does
- * `require('bindings')('better_sqlite3.node')` lazily, on first
- * `new Database(...)` call. The rewrite catches that callsite at
- * bundle time so when the lazy initialization runs at runtime, it
- * loads our prebuilt addon via `__loadAddon('better-sqlite3', '<ver>')`
- * — the underscore-vs-hyphen mismatch (`better_sqlite3.node` filename
- * vs. `better-sqlite3` package name) becomes moot because the rewrite
- * replaces the call entirely.
+ * The rewrite also makes better-sqlite3's underscore-vs-hyphen mismatch
+ * (`better_sqlite3.node` filename vs. `better-sqlite3` package name)
+ * moot, since the call is replaced wholesale.
  *
  * @returns {import('rolldown').Plugin}
  */
@@ -51,6 +46,14 @@ export default function addonLoaderPlugin() {
     {
       pattern: /require\.addon\(['"]\.['"],\s+__filename\)/g,
       replacement: (n, v) => `__loadAddon('${n}', '${v}')`,
+    },
+    {
+      // better-sqlite3's own resolver: it knows only linux/darwin/win32
+      // prebuild paths and then falls back to node-gyp build dirs, none of
+      // which exist on device. Short-circuit at the head of that fallback so
+      // the caller-supplied `nativeBinding` branches above it still work.
+      pattern: /let filename = getPrebuildPath\(\);/g,
+      replacement: (n, v) => `return DEFAULT_ADDON = __loadAddon('${n}', '${v}');`,
     },
   ];
 
@@ -80,6 +83,22 @@ export default function addonLoaderPlugin() {
       for (const { pattern, replacement } of replacements) {
         magicString.replaceAll(pattern, replacement(name, version));
       }
+
+      // Every pattern here matches upstream source text, so an upstream
+      // reshuffle turns a rewrite into a silent no-op — and the bundle then
+      // ships a resolver that only fails once it's on a device. Fail the
+      // build instead for the resolver we know we must intercept.
+      if (
+        id.replace(/\\/g, "/").endsWith("better-sqlite3/lib/binding.js") &&
+        !magicString.hasChanged()
+      ) {
+        throw new Error(
+          `${id}: no addon-loader rewrite applied. better-sqlite3's binding ` +
+            `resolver changed shape; update the patterns in ` +
+            `rollup-plugin-addon-loader.js.`,
+        );
+      }
+
       if (!magicString.hasChanged()) return null;
 
       return {

@@ -9,10 +9,12 @@ import type { NativePair } from "./native-modules.ts";
 type PrebuildTarget = { platform: "android" | "ios"; arch: string };
 
 export const ANDROID_ARCHS = ["arm", "arm64", "x64"] as const;
-// Phase 2: device + both simulator slices. xcframework packaging combines
-// them into one multi-slice artifact per addon — Xcode picks the right
-// slice at app build time based on the build destination.
-export const IOS_ARCHS = ["arm64", "arm64-simulator", "x64-simulator"] as const;
+// Device + simulator. xcframework packaging combines them into one
+// multi-slice artifact per addon — Xcode picks the right slice at app build
+// time based on the build destination. No x86_64 simulator: nodejs-mobile 24
+// ships no x86_64 slice for an addon to link against, so Intel Macs can't run
+// the simulator regardless.
+export const IOS_ARCHS = ["arm64", "arm64-simulator"] as const;
 
 const PREBUILD_TARGETS: PrebuildTarget[] = [
   ...ANDROID_ARCHS.map((arch) => ({ platform: "android" as const, arch })),

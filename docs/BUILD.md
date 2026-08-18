@@ -16,8 +16,7 @@ runtime/process side (how native talks to the backend over sockets) see
   `jniLibs/<abi>/lib<name>__<version>.so` on Android, `<name>__<version>.xcframework`
   on iOS. The `.node` files never touch the device filesystem at runtime.
 - Filenames are **versioned** (`name__version`, double-underscore separator) so
-  two majors of the same module can coexist — and they do today
-  (`better-sqlite3` 11 and 12 ship side by side).
+  two majors of the same module can coexist if npm can't dedupe them.
 - A rollup plugin rewrites every addon `require(...)` to a generated
   `__loadAddon(name, version)` helper that `process.dlopen`s the right file. No
   runtime monkey-patching; the resolution is baked at build time.
@@ -56,7 +55,7 @@ runtime/process side (how native talks to the backend over sockets) see
    `0x4000` — required for Android 15's 16 KB page sizes.
 
 The iOS xcframework-wrapping step (`xcodebuild -create-xcframework`,
-`install_name_tool`, `lipo`) is **darwin-gated**: on Linux CI the script builds
+`install_name_tool`) is **darwin-gated**: on Linux CI the script builds
 the Android artifacts and skips iOS. This is why the npm publish runs on macOS
 (see [`release.yml`](../.github/workflows/release.yml)) — publishing from Linux
 would ship an empty `ios/Frameworks/`.
@@ -72,10 +71,11 @@ so multiple versions coexist without collision:
 
 ```
 android/src/main/jniLibs/arm64-v8a/
-  libbetter-sqlite3__11.10.0.so
-  libbetter-sqlite3__12.9.0.so      # two majors, side by side
+  libbetter-sqlite3__13.0.3.so
   libsodium-native__5.1.0.so
-  …
+  …                                 # npm can leave two versions of the
+                                    # same addon in the tree; the `__<version>`
+                                    # suffix is what lets both ship
 ```
 
 `android/build.gradle` adds `src/main/jniLibs/` to `jniLibs.srcDirs` (next to
@@ -88,8 +88,7 @@ mmap'd at load time rather than extracted.
 
 ```
 ios/Frameworks/
-  better-sqlite3__11.10.0.xcframework
-  better-sqlite3__12.9.0.xcframework
+  better-sqlite3__13.0.3.xcframework
   sodium-native__5.1.0.xcframework
   …
 ```
@@ -113,12 +112,12 @@ the app bundle (iOS doesn't extract JS the way Android does).
 
 The backend's source calls addons through the usual loader shims
 (`require('node-gyp-build')(__dirname)`, `require('bindings')(...)`,
-`require.addon(...)`). At bundle time, `backend/rollup-plugins/rollup-plugin-addon-loader.js`
+`require.addon(...)`, and better-sqlite3 13's own `lib/binding.js` resolver). At bundle time, `backend/rollup-plugins/rollup-plugin-addon-loader.js`
 rewrites each of those call sites to a generated helper:
 
 ```js
 require('node-gyp-build')(__dirname)        →  __loadAddon('sodium-native', '5.1.0')
-require('bindings')({ bindings: '…' })      →  __loadAddon('better-sqlite3', '12.9.0')
+let filename = getPrebuildPath()            →  __loadAddon('better-sqlite3', '13.0.3')
 require.addon('.', __filename)              →  __loadAddon('fs-native-extensions', '1.5.0')
 ```
 
@@ -154,7 +153,7 @@ The native modules, declared in
 
 | Module | NAPI? | Prebuild source |
 |---|---|---|
-| `better-sqlite3` | no | `digidem/better-sqlite3-nodejs-mobile` |
+| `better-sqlite3` | yes | `digidem/better-sqlite3-nodejs-mobile` |
 | `crc-native` | yes | `digidem/crc-native-nodejs-mobile` |
 | `fs-native-extensions` | yes | `digidem/fs-native-extensions-nodejs-mobile` |
 | `quickbit-native` | yes | `digidem/quickbit-native-nodejs-mobile` |
@@ -162,11 +161,19 @@ The native modules, declared in
 | `simdle-native` | yes | `digidem/simdle-native-nodejs-mobile` |
 | `sodium-native` | yes | `digidem/sodium-native-nodejs-mobile` |
 
+All seven are NAPI, so one artifact per (module, platform, arch) serves every
+Node version. `better-sqlite3` only joined them at 13.0.0: up to 12.x it linked
+V8's C++ symbols directly, which meant a prebuild per Node ABI (asset names
+carried a `-node-<abi>-` infix) — and, on Node 24, an abort inside
+`node::RemoveEnvironmentCleanupHook` on real devices shortly after boot. The
+tree still pins one `better-sqlite3` through `overrides`, since `@comapeo/core`
+asks for `^11.10.0` and 11.x doesn't compile against V8 13.6 at all.
+
 `NATIVE_MODULES` records only *which* deps are native (and whether they use the
 NAPI ABI). **Versions are not listed here** — they're resolved from the installed
 tree (`npm ls`) at build time, so the source of truth stays
-`backend/package.json` + lockfile (via `@comapeo/core` and an `overrides` pin on
-`sodium-native`). Bumping a backend dep that pulls a new addon version
+`backend/package.json` + lockfile (via `@comapeo/core` and the `overrides` pins).
+Bumping a backend dep that pulls a new addon version
 automatically fetches the matching prebuild on the next `backend:build`; there's
 no manifest line to forget. The plan's proposed `node-native/modules.json` was
 not adopted — the in-code constant plus lockfile resolution covers it.
