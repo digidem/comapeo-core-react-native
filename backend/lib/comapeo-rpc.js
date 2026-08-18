@@ -6,13 +6,13 @@ import {
   createComapeoServicesServer,
 } from "@comapeo/ipc/server.js";
 
-/** @import {MapeoManager} from '@comapeo/core' */
 /** @import {ComapeoServicesApi} from '@comapeo/ipc/server.js' */
+/** @import {CommonMapeoManagerProps} from './create-comapeo.js' */
 
 export class ComapeoRpc extends ServerHelper {
   /**
    * @param {object} params
-   * @param {MapeoManager} params.comapeoManager - The ComapeoManager instance to be used by the Comapeo Core RPC server.
+   * @param {CommonMapeoManagerProps} params.comapeoManager - The ComapeoManager instance to be used by the Comapeo Core RPC server.
    * @param {ComapeoServicesApi} params.comapeoServices - The app-provided services (e.g. map server) served alongside core.
    * @param {{ onRequestHook?: NonNullable<Parameters<typeof createComapeoCoreServer>[2]>['onRequestHook'] }} [options]
    */
@@ -21,6 +21,7 @@ export class ComapeoRpc extends ServerHelper {
       const messagePort = new SocketMessagePort(socket);
 
       const coreServer = createComapeoCoreServer(
+        // @ts-expect-error RPC needs to be updated to only use public methods
         comapeoManager,
         messagePort,
         onRequestHook ? { onRequestHook } : undefined,

@@ -10,6 +10,8 @@
 import * as metrics from "./metrics.js";
 import * as sentry from "./sentry.js";
 
+/** @import {CommonMapeoManagerProps} from './create-comapeo.js' */
+
 /**
  * Public sync state shape from `@comapeo/core`'s SyncApi (`$sync`).
  *
@@ -41,7 +43,7 @@ const BYTES_BUCKET_UNKNOWN = "unknown";
  * project-opened event) and attaches a session watcher to each new
  * project instance's `$sync`. No-op when Sentry never initialised.
  *
- * @param {import("@comapeo/core").MapeoManager} manager
+ * @param {CommonMapeoManagerProps} manager
  */
 export function observeSyncSessions(manager) {
   if (!metrics.isEnabled()) return;
