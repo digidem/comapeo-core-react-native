@@ -304,13 +304,13 @@ class ComapeoCoreModule : Module() {
             )
         }
 
-        Function("retryInit") { forceSkipMigrate: Boolean ->
+        Function("retryInit") { forceSkipMigrate: Boolean? ->
             val availableDiskSpace : Int = 0
             val message = """
             {
               "type":"retry",
               "availableDiskSpace": $availableDiskSpace,
-              "forceSkipMigrate": $forceSkipMigrate
+              "forceSkipMigrate": ${forceSkipMigrate ?: false}
             }
             """
 
