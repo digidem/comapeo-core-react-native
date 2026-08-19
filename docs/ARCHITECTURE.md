@@ -645,7 +645,8 @@ What each emit site captures:
   breadcrumbs, control-frame breadcrumbs,
   FGS-lifecycle breadcrumbs (Android only), timeout events,
   rootkey-load `captureException`.
-- **`layer:node`** — `@sentry/node` via `loader.mjs`. Per-RPC
+- **`layer:node`** — a minimal `@sentry/core`-only SDK assembled in
+  `backend/lib/sentry-init.js`, installed via `loader.mjs`. Per-RPC
   method spans, `handleFatal` `captureException`, and two top-level
   boot-phase root spans that share the FGS-side trace via
   `Sentry.continueTrace`: `boot.loader-init` (with two children,

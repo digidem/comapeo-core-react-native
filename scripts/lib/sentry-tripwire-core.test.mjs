@@ -20,7 +20,7 @@ function bootPayload(overrides = {}) {
     release: "1.0.0+42",
     environment: "smoke-1",
     contexts: {
-      trace: { trace_id: TRACE_ID, op: "comapeo.boot" },
+      trace: { trace_id: TRACE_ID, op: "boot" },
       device: { family: "Android", model: "Pixel 7a" },
     },
     // sentry-java serialises tags as an object.

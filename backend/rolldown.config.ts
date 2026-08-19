@@ -184,9 +184,8 @@ function cleanOutputDirPlugin(dir: string): Plugin {
 
 // `loader` is the spawn target on both platforms: it parses `--sentry*`
 // argv, conditionally dynamic-imports `./lib/sentry-init.js` (which
-// brings in `@sentry/node-core` + `@sentry/opentelemetry` + the
-// OpenTelemetry SDK) and initialises Sentry, then dynamic-imports
-// `./index.mjs`.
+// brings in `@sentry/core` and assembles the SDK from it) and
+// initialises Sentry, then dynamic-imports `./index.mjs`.
 const INPUT = {
   loader: path.join(__dirname, "loader.mjs"),
   index: path.join(__dirname, "index.js"),
@@ -196,9 +195,8 @@ const sharedOutput: OutputOptions = {
   format: "esm",
   sourcemap: true,
   entryFileNames: "[name].mjs",
-  // `@sentry/node-core` + `@sentry/opentelemetry` + the OpenTelemetry
-  // SDK land here (via `./lib/sentry-init.js`), loaded only when the
-  // loader's argv check passes.
+  // `@sentry/core` lands here (via `./lib/sentry-init.js`), loaded only
+  // when the loader's argv check passes.
   chunkFileNames: "chunks/[name]-[hash].mjs",
 };
 

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 
-import * as Sentry from "@sentry/node-core";
+import * as Sentry from "@sentry/core";
 
 import { initSentry } from "./sentry-init.js";
 import { setSink, flush } from "./sentry.js";

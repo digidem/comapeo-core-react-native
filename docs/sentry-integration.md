@@ -45,8 +45,10 @@ Companion docs:
 2. **Trace RPC calls** end-to-end across the React Native ↔ Node boundary.
    Each RPC call appears as a span/transaction whose parent span is the
    JS-side caller.
-3. **Forward OpenTelemetry spans** emitted by `@comapeo/core` (once PR #1051
-   lands) to Sentry without bundle-time coupling to a specific exporter.
+3. ~~**Forward OpenTelemetry spans** emitted by `@comapeo/core` (once PR #1051
+   lands) to Sentry without bundle-time coupling to a specific exporter.~~
+   **Dropped** — the backend SDK is `@sentry/core`-only and no longer carries
+   an OpenTelemetry tracing backend. See §5.6.
 4. **App-specific gating**: zero Sentry traffic and zero Sentry SDK activation
    for any consumer that doesn't opt in.
 
@@ -124,8 +126,8 @@ its own process / runtime and has its own SDK init.
 │    │  index.mjs                                       │           │
 │    │   - handleFatal → captureException               │           │
 │    │   - createMapeoServer({ onRequestHook }) → spans │           │
-│    │   - OpenTelemetry processor sends @comapeo/core  │           │
-│    │     spans (PR #1051) to Sentry transport         │           │
+│    │   - boot/sync/shutdown spans, all created by     │           │
+│    │     hand — nothing is auto-instrumented          │           │
 │    └──────────────────────────────────────────────────┘           │
 │                            │                                      │
 │                            │ shared DSN/release/env               │
@@ -414,13 +416,14 @@ The benefits stack:
 
 - **FGS cold-start**: Sentry config is in native config + argv; Node boots
   with full instrumentation before RN is alive.
-- **Auto-instrumentation order**: `Sentry.init()` runs in `loader.mjs`
-  _before_ the dynamic import of `index.mjs`, so OpenTelemetry's
-  `import-in-the-middle` patches modules as they load.
+- **Init order**: `Sentry.init()` runs in `loader.mjs` _before_ the dynamic
+  import of `index.mjs`, so the client and the async-context strategy are
+  installed before any code can produce a span. (Nothing is patched at load
+  time — no auto-instrumentation is registered; see §5.6.)
 - **Lazy bundle chunk**: when the manifest has no DSN, native doesn't pass
   `--sentryDsn=...` in argv; the loader's
-  `if (sentryDsn) await import('@sentry/node')` short-circuits and the
-  rollup-split `@sentry/node` chunk never loads.
+  `if (sentryDsn) await import('./lib/sentry-init.js')` short-circuits and
+  the rollup-split Sentry chunk never loads.
 
 ### 4.3 JS adapter — auto-detected at module load
 
@@ -523,71 +526,78 @@ arrives before the loader's first import.
 
 ## 5. Backend instrumentation (`backend/`)
 
-### 5.1 Bundle strategy: multi-entry with lazy `@sentry/node` chunk
+### 5.1 Bundle strategy: multi-entry with a lazy Sentry chunk
 
-**Pinned versions**: `@sentry/node-core@^10` + `@sentry/core@^10` +
-`@sentry/opentelemetry@^10` (backend), `@sentry/react-native@^8`,
-`import-in-the-middle` (whatever the Node SDK resolves it at). These are
-the OpenTelemetry-first majors — required for §5.6 forwarding of
-`@comapeo/core` PR #1051 spans to "just work" without glue code.
+**Pinned versions**: `@sentry/core@^10` (backend — the *only* Sentry
+runtime dep), `@sentry/react-native@^8`.
+
+The backend does not use a prebuilt Node SDK. `backend/lib/sentry-init.js`
+assembles a minimal client out of `@sentry/core` primitives
+(`initAndBind(ServerRuntimeClient, …)`, `createStackParser(nodeStackLineParser())`,
+an explicit default-integration list, and an `AsyncLocalStorage` async-context
+strategy in `backend/lib/als-async-context.js`) — the same shape
+`@sentry/deno` and `@sentry/vercel-edge` use. `@sentry/node-core`,
+`@sentry/opentelemetry` and the OpenTelemetry SDK were removed because
+everything they added over core was configured into a no-op here: no
+auto-instrumentations were registered, the HTTP transport is replaced by the
+control-socket forwarder (§5.7), and fatals go through `index.js`'s own
+`handleFatal`. That removed ~357 KB (−81%) from the lazy chunk and the
+matching parse/eval + heap from every FGS boot — see
+[`sentry-core-migration-plan.md`](./sentry-core-migration-plan.md) for the
+full accounting and the behaviour-deltas table.
 
 Bundle layout:
 
+Two chunks match `chunks/sentry-*.mjs` and they have opposite load
+semantics — do not conflate them:
+
 ```
 nodejs-project/
-├── loader.mjs          # spawn target — parses argv, optionally
-│                       #   inits Sentry, then dynamically imports
-│                       #   index.mjs.
-├── index.mjs           # current entry — unchanged in shape; now
-│                       #   imported dynamically by the loader.
-├── importHook.js       # OpenTelemetry's import-in-the-middle
-│                       #   hook entry. MUST be a separate file
-│                       #   because it's loaded with module.register(),
-│                       #   not import. Empty/unused when Sentry isn't
-│                       #   active.
-├── lib/register.js     # Internal dep of import-in-the-middle that
-│                       #   it expects at this exact relative path.
-└── chunks/sentry-*.mjs # Auto-emitted rollup chunk holding
-                        #   @sentry/node + transitive deps. Loaded
-                        #   only when loader.mjs awaits the dynamic
-                        #   import.
+├── loader.mjs               # spawn target — parses argv, optionally
+│                            #   inits Sentry, then dynamically imports
+│                            #   index.mjs.
+├── index.mjs                # current entry — unchanged in shape; now
+│                            #   imported dynamically by the loader.
+├── chunks/sentry-*.mjs      # ~10 KB. ALWAYS loaded: the adapter layer
+│                            #   (lib/sentry.js, lib/metrics.js,
+│                            #   before-send.js, lib/node-resources.js),
+│                            #   statically imported by BOTH loader.mjs
+│                            #   and index.mjs. Contains no @sentry/*
+│                            #   code — every export no-ops until the
+│                            #   SDK is injected into it.
+└── chunks/sentry-init-*.mjs # ~85 KB. LAZY: @sentry/core plus the SDK
+                             #   lib/sentry-init.js assembles from it,
+                             #   reached only by the loader's gated
+                             #   `await import()` when a DSN is present.
 ```
 
 Why each piece is separate:
 
 - **`loader.mjs`** is the spawn target. Native passes `loader.mjs` to
   nodejs-mobile instead of `index.mjs`. The loader parses `--sentryDsn`/etc.
-  from `process.argv`, dynamically imports `@sentry/node` if a DSN is
-  present, calls `Sentry.init()`, then `await import('./index.mjs')`.
-  Without the init-before-other-imports order, Sentry's OpenTelemetry
-  auto-instrumentation can't patch modules.
-- **`importHook.js`** is `import-in-the-middle/hook.mjs`, which
-  OpenTelemetry registers as a Node module-loading hook via
-  `module.register('import-in-the-middle/hook.mjs', ...)`. `module.register`
-  requires a **separate file** loaded fresh in a child loader thread; it
-  can't be bundled into the same module that calls `module.register`.
-- **`lib/register.js`** is a sub-dep of `import-in-the-middle` that resolves
-  via a hard-coded relative path (`./lib/register.js`). Cannot be bundled.
-- **`chunks/sentry-*.mjs`** is what rollup auto-emits when it sees
-  `await import('@sentry/node')` in the loader and the rest of the bundle
-  never touches it statically. Consumers who don't pass `--sentryDsn` never
-  load this chunk; the cost is install-time disk only.
-
-A path-rewrite plugin (`backend/rollup-plugins/rollup-plugin-import-hook.mjs`)
-rewrites calls like `module.register('import-in-the-middle/hook.mjs', …)` to
-`module.register('./importHook.js', …)` so the runtime register call points
-at the bundled output rather than the node_modules path that no longer
-exists post-bundle.
+  from `process.argv`, dynamically imports `./lib/sentry-init.js` if a DSN
+  is present, which calls `Sentry.init()`, then `await import('./index.mjs')`.
+  Init has to precede that import so the client and the async-context
+  strategy exist before any code can open a span.
+- **`chunks/sentry-*.mjs`** exists because the adapter is imported from two
+  entries; rolldown hoists the shared graph into its own chunk. It is on the
+  always-on path, which is why it must stay free of `@sentry/core` — the
+  injected-SDK seam is what keeps that true.
+- **`chunks/sentry-init-*.mjs`** is what rolldown auto-emits for the
+  loader's dynamic `import()` when nothing else touches it statically.
+  Consumers who don't pass `--sentryDsn` never load it; the cost is
+  install-time disk only.
 
 Bundle-size cost:
 
-- Consumers **with** Sentry: ~150–250 KB extra in the per-platform output
-  dir (the sentry chunk plus `importHook` / `lib/register`). Loaded into V8
-  only when DSN is present.
-- Consumers **without** Sentry: same disk cost (the chunks ship in
-  `nodejs-project/`), but **zero runtime cost**: the `@sentry/node` chunk is
-  never required by any path the loader executes when `--sentryDsn` is
-  absent. The loader itself is tiny (~1 KB) and runs unconditionally.
+- Consumers **with** Sentry: ~95 KB extra in the per-platform output dir
+  (the ~10 KB always-on adapter chunk plus the ~85 KB `sentry-init` chunk).
+  Only the adapter chunk is loaded into V8 unconditionally; `sentry-init`
+  is parsed and evaluated only when a DSN is present.
+- Consumers **without** Sentry: same disk cost (both chunks ship in
+  `nodejs-project/`), but the `sentry-init` chunk is never required by any
+  path the loader executes when `--sentryDsn` is absent. The loader itself
+  is tiny (~1 KB) and runs unconditionally.
 
 **Sourcemaps — generate here, upload from the consumer.** Rollup emits
 `.map` files alongside each output. The module:
@@ -738,17 +748,24 @@ Notes:
   be project-scoped content (observation fields, attachments). Opt-in only
   via `rpcArgsBytes`.
 
-### 5.6 OpenTelemetry forwarding (PR #1051)
+### 5.6 OpenTelemetry forwarding (PR #1051) — not available
 
-When `comapeo-core` PR #1051 merges, `@comapeo/core` will emit
-OpenTelemetry spans through the global `@opentelemetry/api` provider.
-`@sentry/node` v8+ is built on OpenTelemetry: spans emitted via
-`@opentelemetry/api` are picked up automatically by the Sentry span
-processor.
+Originally this section planned to pick up OpenTelemetry spans emitted by
+`@comapeo/core` (PR #1051) for free, because `@sentry/node`/`node-core` v8+
+are built on OpenTelemetry and hoover up anything on the global
+`@opentelemetry/api` provider.
 
-Concretely, after `Sentry.init()`, no further wiring is needed —
-`@comapeo/core`'s spans become children of the active Sentry transaction
-(the RPC span from §5.5) and ship to the configured DSN.
+That is no longer the case: the backend SDK is `@sentry/core`-only (§5.1)
+and registers no OTel tracer provider, so `@comapeo/core`'s OTel spans go
+nowhere. Nothing regressed in practice — no OTel-emitting version of
+`@comapeo/core` ever shipped here, and every span the dashboard shows
+(boot, RPC, sync-session, shutdown) is created by hand in
+`backend/lib/sentry.js`.
+
+If upstream OTel spans become worth capturing, the cheap route is a
+`@sentry/opentelemetry`-free shim that subscribes to the spans of interest
+and re-emits them via `startInactiveSpan`, rather than re-adopting the whole
+OTel SDK for the handful of spans involved.
 
 ### 5.7 Offline transport via control-socket forwarding
 
@@ -1334,7 +1351,7 @@ scrubber catches mistakes before they ship.
 > | ---------------------- | -------------------------------------------------------------------------------------- | --------- |
 > | `diagnosticsEnabled`   | `Sentry.init`; errors, lifecycle, **metrics**, boot/sync/shutdown transactions.        | `true`    |
 > | `applicationUsageData` | Permanent `user.id` hash (no monthly rotation) + the usage-tier metric dimensions (see the §9.2 table). | `false`   |
-> | `debug`                | Per-RPC traces, `@comapeo/core` OTel spans, backend `consoleIntegration`, `rpc.args`.  | `false`   |
+> | `debug`                | Per-RPC traces, backend `consoleIntegration`, `rpc.args`.                              | `false`   |
 >
 > Day-to-day performance signal rides an always-on **metrics** layer at
 > the diagnostic tier (`comapeo.rpc.*`, `comapeo.boot.*`, etc.); per-RPC
@@ -1433,13 +1450,13 @@ The diagnostic tier carries aggregate, low-cardinality operational signal;
 | App-exit exact-ms (`alive_for_ms`, `backgrounded_for_ms`) | applicationUsageData | Millisecond session/foreground durations are fine-grained usage-shape data. |
 | `device_class` / `os_major` / `platform` tags | Diagnostics | Low-cardinality device-capability buckets; not user-identifying. |
 | `ipc.errors`, `telemetry.forwarding_failures` | Diagnostics | Internal transport health. |
-| Per-RPC traces / OTel spans / `rpc.args` | `debug` (separate) | Investigation-only; behind the 72h auto-off `debug` toggle, not `applicationUsageData`. |
+| Per-RPC traces / `rpc.args` | `debug` (separate) | Investigation-only; behind the 72h auto-off `debug` toggle, not `applicationUsageData`. |
 
 #### Why restart-to-activate
 
 1. **Snapshot-at-boot semantics.** The flag's value is read once, at
    process start, and embedded in argv to the loader. The backend wires
-   its `onRequestHook`, OTel sampler, and custom span emitters based on
+   its `onRequestHook`, trace sampler, and custom span emitters based on
    that snapshot. Hot-toggling would mean re-registering hooks on a live
    RPC server, which adds a class of bugs (in-flight requests with one
    instrumentation, new requests with another) for marginal value.
