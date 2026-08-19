@@ -1,7 +1,14 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 import ensureError from "ensure-error";
 import Fastify from "fastify";
+
+import {
+  checkShouldMigrate,
+  migrateStorage,
+  MIGRATION_REASON_NO_SPACE,
+} from "@comapeo/core/migration.js";
 
 import { ComapeoRpc } from "./lib/comapeo-rpc.js";
 import { flushCompileCacheAfterBoot } from "./lib/compile-cache.js";
@@ -35,15 +42,21 @@ console.log("Starting Comapeo Node server...");
 // string when unset) so the `--sentry*` flags that follow can't land in
 // them. Empty 4th → undefined → MapeoManager applies no default config;
 // empty 5th → undefined → createComapeo falls back to its built-in URL.
+// 6th positional is a free-disk-space (bytes) figure native
+// reports so the storage-migration check can decide whether there's
+// room; empty → undefined → the check assumes space is unknown.
 const [
   comapeoSocketPath,
   controlSocketPath,
   privateStorageDir,
   configArg,
   styleUrlArg,
+  availableDiskSpaceArg,
 ] = process.argv.slice(2);
 const defaultConfigPath = configArg || undefined;
 const defaultOnlineStyleUrl = styleUrlArg || undefined;
+const availableDiskSpace = availableDiskSpaceArg
+  ? parseInt(availableDiskSpaceArg, 10) : 0;
 
 const fastify = Fastify();
 
@@ -184,7 +197,11 @@ const controlIpcServer = new SimpleRpcServer({
       }
       startInFlight = true;
       try {
-        await startComapeo(rootKey, message.forceSkipMigrate);
+        await startComapeo(
+          rootKey,
+          message.availableDiskSpace,
+          message.forceSkipMigrate
+        );
       } finally {
         startInFlight = false;
       }
@@ -299,7 +316,7 @@ async function withPhase(phase, fn) {
     // must be rejected, not race a second startComapeo.
     startInFlight = true;
     try {
-      await startComapeo(rootKey);
+      await startComapeo(rootKey, availableDiskSpace);
     } finally {
       startInFlight = false;
     }
@@ -312,9 +329,73 @@ async function withPhase(phase, fn) {
 
 /**
  * @param {Buffer} rootKey
- * @param {boolean} [useOldVersion]
+ * @param {number} availableDiskSpace Free bytes on the device, from
+ *   native; undefined → the migration check assumes plenty of space.
+ * @param {boolean} [forceSkipMigrate] Native sets this after the user
+ *   hits Skip on a migration failure or low-space prompt.
  */
-async function startComapeo(rootKey, useOldVersion = false) {
+async function startComapeo(
+  rootKey,
+  availableDiskSpace,
+  forceSkipMigrate = false,
+) {
+  // Same layout createComapeo() builds — the migration must inspect the
+  // exact dir the manager will open.
+  const indexDir = path.join(privateStorageDir, "core-storage");
+  let useOldVersion = forceSkipMigrate;
+
+  if (!forceSkipMigrate) {
+    const {
+      shouldUpgrade,
+      useFallback,
+      reason,
+      spaceNeeded,
+    } = await withPhase("migrate", () =>
+      checkShouldMigrate(indexDir, availableDiskSpace)
+    );
+    useOldVersion = useOldVersion || useFallback;
+
+    if (shouldUpgrade) {
+      controlIpcServer.broadcast({ type: "migrating", context: "" });
+      try {
+        const migrationResults = await migrateStorage(indexDir, (
+          doneSoFar,
+          totalCores,
+        ) => {
+          controlIpcServer.broadcast({
+            type: "migrating",
+            context: `${doneSoFar}/${totalCores}`,
+          });
+        });
+        const failedMigration = Object.values(migrationResults).find(
+          ({ migrated }) => !migrated,
+        );
+        if (failedMigration) {
+          throw failedMigration.error || new Error("Storage migration failed");
+        }
+      } catch (reason) {
+        // Non-fatal on purpose: the manager was never created, so a
+        // `retry` frame can re-run us with forceSkipMigrate (or after
+        // the user frees up space).
+        const err = ensureError(reason);
+        metrics.bootOutcome("error", "migrate");
+        sentry.captureFatal("migrate", err, "migration");
+        controlIpcServer.broadcast({
+          type: "migration-error",
+          error: err.message,
+          stack: err.stack,
+        });
+        return;
+      }
+    } else if (reason === MIGRATION_REASON_NO_SPACE) {
+      controlIpcServer.broadcast({
+        type: "low-space",
+        spaceNeeded: spaceNeeded?.toString(),
+      });
+      return;
+    }
+  }
+
   // Dashboard label (`boot.manager-init`) vs. wire phase (`construct`)
   // used by native error frames.
   await withPhase("construct", () =>
