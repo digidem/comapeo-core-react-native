@@ -1,45 +1,29 @@
 # Plan: replace `@sentry/node-core` with `@sentry/core` in the backend
 
 **Status: implemented.** Landed on branch
-`claude/sentry-node-core-bundle-size-nzic8m`. The measurements below are from
-real builds of this repo and were reproduced by the landed change: the Android
-`sentry-init` chunk went 441,707 → 84,800 bytes (−81%), the OTel side-chunks
-(`esm-*`, `getMachineId-*`, `execAsync-*`) are no longer emitted, and total
-Android JS went 3,728,019 → 3,350,395 bytes (−10.1%). Backend unit tests are
-green (104/104 — the original 97 plus seven covering the new async-context
-strategy, trace shape, and client reports).
+`claude/sentry-node-core-bundle-size-nzic8m`, merged with `main` at
+`1.0.0-pre.12` (nodejs-mobile 24, V8 compile cache, undici taken from Node)
+and re-measured against that baseline on 2026-08-19. Backend unit tests are
+green (109/109). The bundle figures below are exact bytes read out of the two
+release APKs, so both columns come from the same toolchain.
 
-**Device validation complete (2026-08-16, Pixel_7a_API_34 emulator,
-`apps/integration` release builds, org `awana-digital`, project
-`core-react-native-integration`).** The tripwire passes on both a
-pre-migration (`origin/main`, environment `tripwire-nodecore`) and a migrated
-(this branch, environment `tripwire-core`) build — full boot trace, native
-child spans, Node-side `boot.loader-init`/`boot.manager-init` in the same
-trace, tags, and PII scan. Two tripwire assertions were corrected first
-(op `"boot"` and device.family; both contradicted all 894 production boot
-transactions from the last 30 days, so they were pre-existing drift, not
-migration effects — the pre-migration build passing the corrected assertions
-confirms this). Node events from the migrated build still report
-`sdk.name: sentry.javascript.node-core` (10.70.0), and the
+**Device validation (Pixel_7a_API_34 emulator, `apps/integration` release
+builds, org `awana-digital`, project `core-react-native-integration`).** The
+tripwire passed on both a pre-migration (`origin/main`) and a migrated build
+on 2026-08-16 — full boot trace, native child spans, Node-side
+`boot.loader-init`/`boot.manager-init` in the same trace, tags, and PII
+scan — and passes again on 2026-08-19 against the post-merge build. Two
+tripwire assertions were corrected first (op `"boot"` and device.family; both
+contradicted all 894 production boot transactions from the last 30 days, so
+they were pre-existing drift, not migration effects — the pre-migration build
+passing the corrected assertions confirms this). Node events from the migrated
+build still report `sdk.name: sentry.javascript.node-core` (10.70.0), and the
 `comapeo.boot.phase_duration_ms` metrics pipeline delivers from both builds.
 
-On-device before/after (same emulator, same day; 6 boots per variant plus
-5 measured cold starts):
-
-| Metric | node-core | core-only | Production reference (node-core, 30d fleet) |
-|---|---:|---:|---:|
-| `boot.loader-import-sentry-node` p50 | 217 ms | **23 ms (−89%)** | p50 101 ms · avg 195 ms · p95 567 ms |
-| `boot.loader-import-sentry-node` avg | 220 ms | 54 ms | |
-| FGS `:ComapeoCore` PSS median (post-ready) | 103.1 MB | 101.0 MB | |
-| proc-start → ready median | 2.20 s | 2.21 s | |
-
-The SDK-load span shrinks ~9×, consistent with the −85% desktop prediction.
-Total boot-to-ready is unchanged on an emulator because ~200 ms hides inside
-±500 ms run-to-run variance on a desktop-class host; on the low-end devices
-that dominate the fleet's p95 (567 ms spent in this span alone) the absolute
-saving is proportionally larger. The PSS delta (~2 MB median, n=5) is
-directionally consistent with the −5 MB desktop heap delta; PSS shared-page
-accounting and GC timing blur it at this sample size.
+The on-device numbers are in [Boot cost on device](#boot-cost-on-device);
+the short version is that the SDK load+init phase is 5× faster, the FGS
+carries ~4 MB less PSS and ~7 MB less peak RSS, and total boot-to-ready
+improves ~4%.
 
 ## Motivation
 
@@ -91,26 +75,28 @@ same deltas within noise.
 
 ### Bundle size (minified bytes, real build output)
 
-These are the **landed** figures, re-measured after the change merged; they
-supersede the prototype-era numbers this section originally carried (which
-differed by a few hundred bytes). Every row is exact and the columns sum to
-the totals.
+These are the **landed** figures, re-measured on 2026-08-19 against `main` at
+`1.0.0-pre.12`; both columns are the `assets/nodejs-project/**.mjs` entries of
+a release APK built from that commit. They are ~395 KB smaller on both sides
+than the figures this section carried before, because `main` since dropped the
+bundled `undici` in favour of Node 24's built-in one — that shrinks `index.mjs`
+for both variants and does not touch the Sentry delta.
 
 | Artifact | Baseline | Core-only (landed) | Delta |
 |---|---:|---:|---:|
 | `chunks/sentry-init-*.mjs` (Android, lazy) | 441,707 | 84,800 | **−356,907 (−80.8%)** |
 | OTel side-chunks (`esm-*`, `getMachineId-*` ×5, `execAsync-*`) | 20,025 | 0 | −20,025 |
 | shared `src-*.mjs` chunk | 9,934 | 0 | inlined into `index.mjs` ¹ |
-| `chunks/sentry-*.mjs` (always-on adapter) | 9,926 | 9,900 | −26 |
+| `chunks/sentry-*.mjs` (always-on adapter) | 9,975 | 9,949 | −26 |
 | `rolldown-runtime-*` + `file-*` chunks | 2,245 | 2,060 | −185 |
-| `index.mjs` (Android) | 3,243,335 | 3,252,788 | +9,453 ¹ |
+| `index.mjs` (Android) | 2,847,755 | 2,857,198 | +9,443 ¹ |
 | `loader.mjs` (Android) | 847 | 847 | 0 |
-| **Total Android JS** | **3,728,019** | **3,350,395** | **−377,624 (−10.1%)** |
-| **Total iOS JS** | **3,696,613** | **3,318,749** | **−377,864 (−10.2%)** |
-| `sentry-init` chunk gzipped (Android) | 143,919 | 27,792 | −80.7% |
+| **Total Android JS** | **3,332,488** | **2,954,854** | **−377,634 (−11.3%)** |
+| `sentry-init` chunk gzipped (Android) | 144,147 | 27,866 | −80.7% |
 
-iOS `sentry-init-*.mjs` landed at 84,827 bytes; the per-artifact story is
-otherwise identical across platforms.
+The iOS bundle differs only in the `__loadAddon` banner, and its
+`sentry-init-*.mjs` lands within ~30 bytes of the Android one; the
+per-artifact story is identical across platforms.
 
 ¹ `index.mjs` grows by almost exactly the size of the `src-*.mjs` chunk that
 disappears, because that is what happened: `src-*.mjs` was a shared chunk
@@ -168,10 +154,68 @@ be several times larger (slow cores; jitless V8 on iOS makes parse/eval
 relatively more expensive), but the *ratios* should hold since both variants
 are plain JS through the same pipeline. The RSS delta overstates what a
 low-end phone will reclaim (desktop V8 reserves generously); the heap delta
-(−5 MB) is the conservative floor. Production already records
-`boot.loader-import-sentry-node` spans and `comapeo.boot.phase_duration_ms`
-metrics, so the real fleet-wide improvement is directly observable after
-rollout — expect the loader-import-sentry-node span to shrink by roughly 80%.
+(−5 MB) is the conservative floor. These were the pre-merge predictions; the
+device measurements below supersede them.
+
+### Boot cost on device
+
+Measured 2026-08-19 on a Pixel_7a_API_34 emulator (Apple-silicon host),
+`apps/integration` release builds of `main` vs. this branch, installed and
+benchmarked alternately in five blocks so host-load drift cancels out. Each
+boot is `am force-stop` → `am start` → wait for the `ready` control frame,
+then `VmHWM`/`VmRSS` from `/proc/<fgs-pid>/status`, `TOTAL PSS` from
+`dumpsys meminfo`, and `utime+stime` from `/proc/<fgs-pid>/stat`.
+
+Since `main`, the FGS runs node with `NODE_COMPILE_CACHE` pointed at
+`cache/node-compile-cache`, so a boot that finds a populated cache skips most
+compilation. **Warm** below means that cache is populated — the steady state
+for a device that has booted the app before. **Cold** means the cache
+directory was wiped before the boot, which is what every first boot after an
+install or app update sees.
+
+Warm, 38 boots per variant:
+
+| Metric | node-core | core-only | Delta |
+|---|---:|---:|---:|
+| `boot.loader-import-sentry-node` (SDK load + init) | 1118 ms | 200 ms | **−82%** |
+| FGS CPU time at `ready` (n=16) | 6.12 s | 5.86 s | −0.26 s (−4%) |
+| proc-start → `ready` (wall) | 10.22 s | 9.84 s | −0.38 s (−4%) |
+| FGS peak RSS (`VmHWM`) | 245.2 MB | 237.8 MB | **−7.4 MB (−3.0%)** |
+| FGS PSS after `ready` | 107.0 MB | 103.0 MB | **−4.0 MB (−3.7%)** |
+| compile cache on disk | 3.4 MB | 2.9 MB | −0.5 MB |
+
+Cold, 12 boots per variant:
+
+| Metric | node-core | core-only | Delta |
+|---|---:|---:|---:|
+| FGS CPU time at `ready` (n=8) | 6.13 s | 5.96 s | −0.17 s |
+| proc-start → `ready` (wall) | 10.21 s | 9.79 s | −0.42 s |
+| FGS peak RSS (`VmHWM`) | 262.5 MB | 252.4 MB | −10.1 MB |
+| FGS PSS after `ready` | 107.4 MB | 101.5 MB | **−5.9 MB (−5.5%)** |
+
+All figures are medians. The memory result is the solid one: per-block PSS
+medians never overlap between the variants (node-core 106.7–109.1 MB, core-only
+101.2–104.5 MB across blocks), which is the number that matters for the
+low-memory killer. Wall-clock boot time is the weak one — the host was busy
+(load average ~13 on 12 cores) and single-boot times spread over several
+seconds, so the −4% is only worth as much as the CPU-time measure that agrees
+with it.
+
+One honest caveat about the time saving: the SDK load+init phase gets ~0.9 s
+faster, but only ~0.26 s of that reaches the total. `boot.import-index` — the
+`index.js` import that follows — is consistently ~0.6–0.9 s *longer* on the
+core-only build, both in the Sentry spans and in an independent logcat phase
+measurement. It is not a compile-cache miss: both builds cache `index.mjs`
+identically (verified by listing the cache directory). The likeliest
+explanation is heap warm-up — the node-core build has already grown V8's heap
+by the time `index.mjs` is evaluated, so the core-only build pays that growth
+during the index import instead, which is consistent with its lower peak RSS.
+Unconfirmed; the CPU-time measure is the honest bound on the total saving.
+
+The relevant fleet reference: production `boot.loader-import-sentry-node`
+runs p50 101 ms · avg 195 ms · p95 567 ms over 30 days of node-core builds,
+so the span this change collapses is a real fraction of real boots, not just
+an emulator artifact.
 
 ## What changes
 
