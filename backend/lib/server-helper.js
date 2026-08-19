@@ -90,11 +90,16 @@ export class ServerHelper extends TypedEmitter {
       await once(this.#server, "listening");
     }
     this.#state = "closing";
+    /** @type {Promise<unknown>[]} */
     const closePromises = [once(this.#server, "close")];
     // Close all open connections, otherwise the server won't close
     for (const socket of this.#connections) {
       if (socket.destroyed || socket.closed) continue;
-      closePromises.push(once(socket, "close"));
+      // Not `once()`: it rejects if the socket errors first, and a socket
+      // erroring during teardown is expected — "close" still follows.
+      closePromises.push(
+        new Promise((resolve) => socket.once("close", resolve)),
+      );
       // Destroy the socket gracefully once all data is sent
       socket.destroySoon();
     }

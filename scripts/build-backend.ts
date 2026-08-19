@@ -59,8 +59,9 @@ const IOS_FRAMEWORKS_WORK_DIR = join(SCRATCH_DIR, "frameworks");
 rmSync(SCRATCH_DIR, { force: true, recursive: true });
 
 // 1. Native module ABI is read from the libnode header laid down by
-//    `npm run download:nodejs-mobile`. Used to pin non-NAPI prebuild
-//    URLs (better-sqlite3 today).
+//    `npm run download:nodejs-mobile`. Every module is NAPI as of
+//    better-sqlite3 13, so nothing consumes this today — `downloadPrebuilds`
+//    discards it per-pair when `usesNapi`. Kept for the next raw-V8 addon.
 const { abi: NODE_ABI } = readNodeJsMobileVersions();
 
 // 2. Enumerate every concrete (name, version) pair of native modules
@@ -116,17 +117,17 @@ await audit16kAlignment({
 });
 
 // 7. iOS: wrap each (name, version) as `<name>__<version>.xcframework`
-//    (device + lipo'd simulator slices). Embed & Sign at app build
+//    (device + simulator slices). Embed & Sign at app build
 //    time; bundled JS loads it via `process.dlopen` against
 //    `<App>.app/Frameworks/<key>.framework/<key>`.
 //
-//    `xcodebuild`, `lipo`, and `install_name_tool` are macOS-only Xcode
+//    `xcodebuild` and `install_name_tool` are macOS-only Xcode
 //    command-line tools, so this whole pass is gated on
 //    `process.platform`. Linux CI runners (Android workflow) skip it
 //    cleanly — they don't consume `ios/Frameworks/`.
 if (process.platform !== "darwin") {
   console.log(
-    "Skipping iOS xcframework wrapping — requires macOS Xcode toolchain (xcodebuild/lipo/install_name_tool). " +
+    "Skipping iOS xcframework wrapping — requires macOS Xcode toolchain (xcodebuild/install_name_tool). " +
       `Current platform: ${process.platform}.`,
   );
 } else {

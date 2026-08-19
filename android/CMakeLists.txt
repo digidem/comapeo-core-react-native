@@ -33,6 +33,11 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
 include_directories(libnode/include/node/)
 include_directories(src/main/cpp)
 
+# Node 24's v8config.h #errors below C++20; the NDK's clang defaults to gnu++17.
+set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON)
+
 add_library( libnode
              SHARED
              IMPORTED )
