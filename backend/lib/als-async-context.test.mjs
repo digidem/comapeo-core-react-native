@@ -62,6 +62,17 @@ test("withIsolationScope forks independently across awaits", async () => {
   assert.equal(getIsolationScope().getScopeData().tags.iso, undefined);
 });
 
+test("withIsolationScope forks the current scope too", async () => {
+  setAlsAsyncContextStrategy();
+
+  await withIsolationScope(async () => {
+    getCurrentScope().setTag("inner", "yes");
+    await tick();
+  });
+
+  assert.equal(getCurrentScope().getScopeData().tags.inner, undefined);
+});
+
 test("a nested withScope inherits the enclosing scope's data", async () => {
   setAlsAsyncContextStrategy();
 

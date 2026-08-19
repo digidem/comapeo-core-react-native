@@ -4,8 +4,8 @@
 `claude/sentry-node-core-bundle-size-nzic8m`, merged with `main` at
 `1.0.0-pre.12` (nodejs-mobile 24, V8 compile cache, undici taken from Node)
 and re-measured against that baseline on 2026-08-19. Backend unit tests are
-green (109/109). The bundle figures below are exact bytes read out of the two
-release APKs, so both columns come from the same toolchain.
+green (110/110). The bundle figures below are exact bytes from a production
+`backend:build` of each side, so both columns come from the same toolchain.
 
 **Device validation (Pixel_7a_API_34 emulator, `apps/integration` release
 builds, org `awana-digital`, project `core-react-native-integration`).** The
@@ -76,23 +76,23 @@ same deltas within noise.
 ### Bundle size (minified bytes, real build output)
 
 These are the **landed** figures, re-measured on 2026-08-19 against `main` at
-`1.0.0-pre.12`; both columns are the `assets/nodejs-project/**.mjs` entries of
-a release APK built from that commit. They are ~395 KB smaller on both sides
+`1.0.0-pre.12`; both columns are the `assets/nodejs-project/**.mjs` output of
+a production backend build of that commit. They are ~395 KB smaller on both sides
 than the figures this section carried before, because `main` since dropped the
 bundled `undici` in favour of Node 24's built-in one — that shrinks `index.mjs`
 for both variants and does not touch the Sentry delta.
 
 | Artifact | Baseline | Core-only (landed) | Delta |
 |---|---:|---:|---:|
-| `chunks/sentry-init-*.mjs` (Android, lazy) | 441,707 | 84,800 | **−356,907 (−80.8%)** |
+| `chunks/sentry-init-*.mjs` (Android, lazy) | 441,707 | 84,819 | **−356,888 (−80.8%)** |
 | OTel side-chunks (`esm-*`, `getMachineId-*` ×5, `execAsync-*`) | 20,025 | 0 | −20,025 |
 | shared `src-*.mjs` chunk | 9,934 | 0 | inlined into `index.mjs` ¹ |
 | `chunks/sentry-*.mjs` (always-on adapter) | 9,975 | 9,949 | −26 |
 | `rolldown-runtime-*` + `file-*` chunks | 2,245 | 2,060 | −185 |
 | `index.mjs` (Android) | 2,847,755 | 2,857,198 | +9,443 ¹ |
 | `loader.mjs` (Android) | 847 | 847 | 0 |
-| **Total Android JS** | **3,332,488** | **2,954,854** | **−377,634 (−11.3%)** |
-| `sentry-init` chunk gzipped (Android) | 144,147 | 27,866 | −80.7% |
+| **Total Android JS** | **3,332,488** | **2,954,873** | **−377,615 (−11.3%)** |
+| `sentry-init` chunk gzipped (Android) | 144,147 | 27,870 | −80.7% |
 
 The iOS bundle differs only in the `__loadAddon` banner, and its
 `sentry-init-*.mjs` lands within ~30 bytes of the Android one; the
@@ -223,10 +223,14 @@ an emulator artifact.
 
 1. **`backend/lib/als-async-context.js` (~60 lines)** — an
    `AsyncLocalStorage`-based async context strategy for `@sentry/core`,
-   replacing the OTel context manager. Adapted from `@sentry/vercel-edge`'s
-   `async.ts` (MIT), which exists for exactly this purpose (server runtime,
-   no OTel). Uses only public-ish core APIs: `setAsyncContextStrategy`,
-   `getDefaultCurrentScope`, `getDefaultIsolationScope`.
+   replacing the OTel context manager. Uses only public-ish core APIs:
+   `setAsyncContextStrategy`, `getDefaultCurrentScope`,
+   `getDefaultIsolationScope`. SDK v11 turned this into
+   `setAsyncLocalStorageAsyncContextStrategy` in `@sentry/server-utils` and
+   made it what `@sentry/node` installs unless `enableOpenTelemetrySetup` is
+   set; our file matches it method for method, so the v11 upgrade can delete
+   it in favour of that import. (`@sentry/server-utils` is not usable before
+   then: it pins core v11 and still depends on `@opentelemetry/api`.)
 
 2. **`backend/lib/sentry-init.js` (rewrite, ~100 lines)** — drop all OTel
    wiring; build a minimal `init()` on `initAndBind(ServerRuntimeClient, …)`

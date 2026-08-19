@@ -5,10 +5,10 @@
 // therefore install a strategy of their own; `@sentry/node-core` used the
 // OpenTelemetry context manager for this, which is the single reason the
 // whole OTel stack had to be bundled. This is the same strategy without
-// OTel. It originated as an adaptation of `@sentry/vercel-edge`'s
-// `async.ts` (MIT); note that vercel-edge has since replaced that file
-// with a vendored OTel context manager, so upstream is no longer a
-// reference for this code.
+// OTel. It mirrors `setAsyncLocalStorageAsyncContextStrategy` in
+// `@sentry/server-utils` (MIT), which v11's `@sentry/node` installs unless
+// `enableOpenTelemetrySetup` is set — replace this file with that import
+// when the backend moves to SDK v11.
 //
 // Registered from `sentry-init.js`'s `init()` before the client is bound,
 // so every `startSpan` / `withScope` / `continueTrace` in `sentry.js`
@@ -44,14 +44,6 @@ export function setAlsAsyncContextStrategy() {
     );
   }
 
-  // Deliberate divergence from the OTel strategy node-core installed:
-  // the two isolation-scope methods carry the *current* scope through
-  // by reference rather than cloning it, so a mutation inside
-  // `withIsolationScope` would escape to the caller. That is the
-  // classic ALS shape (and what vercel-edge shipped); it stays dormant
-  // here because nothing in `backend/` mutates the current scope inside
-  // `withIsolationScope` — every scope mutation we make goes through
-  // `withScope`, `setTag`-on-a-span, or the initial scope.
   /** @type {import("@sentry/core").AsyncContextStrategy} */
   const strategy = {
     withScope(callback) {
@@ -65,16 +57,21 @@ export function setAlsAsyncContextStrategy() {
       const { isolationScope } = getScopes();
       return asyncStorage.run({ scope, isolationScope }, () => callback(scope));
     },
+    // Both isolation-scope methods fork the *current* scope alongside the
+    // isolation scope, so a current-scope mutation inside the callback
+    // cannot escape to the caller.
     withIsolationScope(callback) {
       const { scope, isolationScope } = getScopes();
+      const newScope = scope.clone();
       const newIsolationScope = isolationScope.clone();
-      return asyncStorage.run({ scope, isolationScope: newIsolationScope }, () =>
-        callback(newIsolationScope),
+      return asyncStorage.run(
+        { scope: newScope, isolationScope: newIsolationScope },
+        () => callback(newIsolationScope),
       );
     },
     withSetIsolationScope(isolationScope, callback) {
-      const { scope } = getScopes();
-      return asyncStorage.run({ scope, isolationScope }, () =>
+      const newScope = getScopes().scope.clone();
+      return asyncStorage.run({ scope: newScope, isolationScope }, () =>
         callback(isolationScope),
       );
     },
