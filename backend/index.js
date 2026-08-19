@@ -66,6 +66,8 @@ const initPromise = new Promise((resolve, reject) => {
   rejectInit = reject;
 });
 let initConsumed = false;
+/** True while a `startComapeo` run (boot IIFE or retry) is executing. */
+let startInFlight = false;
 
 const controlIpcServer = new SimpleRpcServer({
   /**
@@ -149,6 +151,15 @@ const controlIpcServer = new SimpleRpcServer({
     }
   },
   /**
+   * Re-runs `startComapeo` with the resolved root key.
+   *
+   * Rejections are FATAL on purpose: an `error` frame is a terminal frame
+   * (replayed to late-connecting clients, native transitions to ERROR), so
+   * the only honest way to send one is to actually die. A non-fatal
+   * rejection would leave native in ERROR while a healthy backend keeps
+   * running. Rejects if a start (boot or an earlier retry) is already in
+   * flight, or if the manager was already created.
+   *
    * @param {{
    *   forceSkipMigrate: boolean;
    *   availableDiskSpace: number;
@@ -156,8 +167,27 @@ const controlIpcServer = new SimpleRpcServer({
    */
   retry: async (message) => {
     try {
+      // Reject loudly rather than race a running start or rebuild a
+      // live manager: there is no RPC error response, so the rejection
+      // takes the backend down (phase "retry") and native enters ERROR.
+      if (startInFlight) {
+        throw new Error("retry rejected: start already in flight");
+      }
+      if (comapeoManager) {
+        throw new Error("retry rejected: manager already created");
+      }
       const rootKey = await withPhase("init", () => initPromise);
-      await startComapeo(rootKey, message.forceSkipMigrate);
+      // Re-check after the await: boot may have begun its start while
+      // we waited on init.
+      if (startInFlight || comapeoManager) {
+        throw new Error("retry rejected: start already underway");
+      }
+      startInFlight = true;
+      try {
+        await startComapeo(rootKey, message.forceSkipMigrate);
+      } finally {
+        startInFlight = false;
+      }
     } catch (error) {
       const phase = getStringProp(error, "phase") || "retry";
       metrics.bootOutcome("error", phase);
@@ -265,7 +295,14 @@ async function withPhase(phase, fn) {
     // same trace; a duplicate would only add noise.
     const rootKey = await withPhase("init", () => initPromise);
 
-    await startComapeo(rootKey);
+    // Shared with the retry handler: a retry frame arriving mid-start
+    // must be rejected, not race a second startComapeo.
+    startInFlight = true;
+    try {
+      await startComapeo(rootKey);
+    } finally {
+      startInFlight = false;
+    }
   } catch (error) {
     const phase = getStringProp(error, "phase") || "boot";
     metrics.bootOutcome("error", phase);
