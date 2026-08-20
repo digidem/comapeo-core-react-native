@@ -7,6 +7,6 @@ export {
   getNotificationPermissionsAsync,
   requestNotificationPermissionsAsync,
   subscribeToBackendRestart,
-  TransportClosedError,
+  RpcChannelClosedError,
 } from "./ComapeoCoreModule.js";
 export * from "./ComapeoCore.types.js";

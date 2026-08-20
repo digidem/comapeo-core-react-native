@@ -14,10 +14,8 @@ import type { MessagePortLike } from "rpc-reflector";
 import {
   createComapeoCoreClient,
   createComapeoServicesClient,
-  notifyCoreClientTransportReset,
-  notifyServicesClientTransportReset,
-  resubscribeCoreClient,
-  resubscribeServicesClient,
+  notifyTransportReset,
+  resubscribe,
   type ComapeoCoreClientApi,
   type ComapeoServicesClientApi,
 } from "@comapeo/ipc/client.js";
@@ -544,25 +542,27 @@ export const comapeoServicesClient: ComapeoServicesClientApi =
 
 /**
  * A call that was in flight when the RPC transport dropped rejects with this
- * error (`code: "RPC_TRANSPORT_CLOSED"`) instead of hanging until the RPC
- * timeout. The call's response will never arrive — the call itself may or may
- * not have executed on the backend before it went away — so a read is safe to
- * retry once the backend is back (`stateChange` → `STARTED`, or
- * [subscribeToBackendRestart]); whether a mutation is safe to replay is the
- * caller's judgement.
+ * error (rpc-reflector's `ChannelClosedError`, `code: "RPC_CHANNEL_CLOSED"`)
+ * instead of hanging until the RPC timeout. The call's response will never
+ * arrive — the call itself may or may not have executed on the backend before
+ * it went away — so a read is safe to retry once the backend is back
+ * (`stateChange` → `STARTED`, or [subscribeToBackendRestart]); whether a
+ * mutation is safe to replay is the caller's judgement.
  */
-export { TransportClosedError } from "@comapeo/ipc/errors.js";
+export { RpcChannelClosedError } from "@comapeo/ipc/errors.js";
 
 // Android only: transport-drop recovery in two phases. At drop time, fail
-// every in-flight call now rather than at the 30s timeout and hard-close
-// stale project clients. Resubscription waits for recovery — the backend
-// STARTED again AND the message socket reconnected — because resubscribing
-// at drop time would nudge the native connect out of its terminal Error
-// state in a tight loop while the backend stays down, and there is nothing
-// to resubscribe to until a new server exists. Both recovery conditions are
-// tracked separately: the lifecycle state comes from the control socket,
-// which reconnects independently of the message socket the RPC traffic
-// actually rides on.
+// every in-flight call now rather than at the 30s timeout. Project
+// references stay valid across the drop — their channels are keyed by
+// project public id, which a restarted server serves identically.
+// Resubscription waits for recovery — the backend STARTED again AND the
+// message socket reconnected — because resubscribing at drop time would
+// nudge the native connect out of its terminal Error state in a tight loop
+// while the backend stays down, and there is nothing to resubscribe to
+// until a new server exists. Both recovery conditions are tracked
+// separately: the lifecycle state comes from the control socket, which
+// reconnects independently of the message socket the RPC traffic actually
+// rides on.
 let transportDropped = false;
 let transportConnected = false;
 
@@ -572,8 +572,8 @@ function maybeCompleteRecovery() {
   if (!transportDropped || !transportConnected) return;
   if (nativeModule.getState() !== "STARTED") return;
   transportDropped = false;
-  resubscribeCoreClient(comapeo);
-  resubscribeServicesClient(comapeoServicesClient);
+  resubscribe(comapeo);
+  resubscribe(comapeoServicesClient);
   for (const listener of [...restartListeners]) {
     try {
       listener();
@@ -596,8 +596,8 @@ nativeModule.addListener?.(
     }
     transportConnected = false;
     transportDropped = true;
-    notifyCoreClientTransportReset(comapeo);
-    notifyServicesClientTransportReset(comapeoServicesClient);
+    notifyTransportReset(comapeo);
+    notifyTransportReset(comapeoServicesClient);
   },
 );
 
@@ -615,10 +615,11 @@ nativeModule.addListener?.("stateChange", (event: StateChangeEventPayload) => {
  * later cold-started also fires this — the caches are equally stale there.
  *
  * By the time a listener fires, in-flight calls have been rejected with
- * [TransportClosedError] and event subscriptions have been replayed to the
- * new backend — but data fetched before the restart may be stale, and any
- * project client obtained via `getProject` before the restart is defunct and
- * must be re-fetched. `@comapeo/core-react` handles both when wired up:
+ * [RpcChannelClosedError] and event subscriptions have been replayed to the
+ * new backend. Project clients obtained via `getProject` before the restart
+ * remain valid — their channels are keyed by project public id, which the
+ * restarted server serves identically — but data fetched before the restart
+ * may be stale. `@comapeo/core-react` re-fetches when wired up:
  *
  * ```tsx
  * <ComapeoCoreProvider

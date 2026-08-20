@@ -8,10 +8,8 @@
 
 function setup({ initialState = "STOPPED" } = {}) {
   const nativeListeners = {};
-  const notifyCoreClientTransportReset = jest.fn();
-  const notifyServicesClientTransportReset = jest.fn();
-  const resubscribeCoreClient = jest.fn();
-  const resubscribeServicesClient = jest.fn();
+  const notifyTransportReset = jest.fn();
+  const resubscribe = jest.fn();
   const coreClient = { tag: "core" };
   const servicesClient = { tag: "services" };
   let currentState = initialState;
@@ -48,14 +46,12 @@ function setup({ initialState = "STOPPED" } = {}) {
   jest.doMock("@comapeo/ipc/client.js", () => ({
     createComapeoCoreClient: () => coreClient,
     createComapeoServicesClient: () => servicesClient,
-    notifyCoreClientTransportReset,
-    notifyServicesClientTransportReset,
-    resubscribeCoreClient,
-    resubscribeServicesClient,
+    notifyTransportReset,
+    resubscribe,
   }));
 
   jest.doMock("@comapeo/ipc/errors.js", () => ({
-    TransportClosedError: class TransportClosedError extends Error {},
+    RpcChannelClosedError: class RpcChannelClosedError extends Error {},
   }));
 
   jest.doMock("@sentry/react-native", () => ({
@@ -91,28 +87,23 @@ function setup({ initialState = "STOPPED" } = {}) {
     setStateSilently: (state) => {
       currentState = state;
     },
-    notifyCoreClientTransportReset,
-    notifyServicesClientTransportReset,
-    resubscribeCoreClient,
-    resubscribeServicesClient,
+    notifyTransportReset,
+    resubscribe,
     coreClient,
     servicesClient,
   };
 }
 
 describe("transport-drop recovery", () => {
-  test("a drop rejects via both reset helpers and does NOT resubscribe", () => {
+  test("a drop resets both clients and does NOT resubscribe", () => {
     const s = setup({ initialState: "STARTED" });
 
     s.emitNative("transportStateChange", { state: "disconnected" });
 
-    expect(s.notifyCoreClientTransportReset).toHaveBeenCalledTimes(1);
-    expect(s.notifyCoreClientTransportReset).toHaveBeenCalledWith(s.coreClient);
-    expect(s.notifyServicesClientTransportReset).toHaveBeenCalledWith(
-      s.servicesClient,
-    );
-    expect(s.resubscribeCoreClient).not.toHaveBeenCalled();
-    expect(s.resubscribeServicesClient).not.toHaveBeenCalled();
+    expect(s.notifyTransportReset).toHaveBeenCalledTimes(2);
+    expect(s.notifyTransportReset).toHaveBeenCalledWith(s.coreClient);
+    expect(s.notifyTransportReset).toHaveBeenCalledWith(s.servicesClient);
+    expect(s.resubscribe).not.toHaveBeenCalled();
   });
 
   test("a transport error also resets; double reset is tolerated", () => {
@@ -121,8 +112,8 @@ describe("transport-drop recovery", () => {
     s.emitNative("transportStateChange", { state: "disconnected" });
     s.emitNative("transportStateChange", { state: "error" });
 
-    expect(s.notifyCoreClientTransportReset).toHaveBeenCalledTimes(2);
-    expect(s.resubscribeCoreClient).not.toHaveBeenCalled();
+    expect(s.notifyTransportReset).toHaveBeenCalledTimes(4);
+    expect(s.resubscribe).not.toHaveBeenCalled();
   });
 
   test("recovery needs BOTH transport connected and state STARTED (state last)", () => {
@@ -134,14 +125,14 @@ describe("transport-drop recovery", () => {
     s.setStateSilently("ERROR");
     s.emitNative("transportStateChange", { state: "connected" });
     // Transport back but backend still booting: nothing yet.
-    expect(s.resubscribeCoreClient).not.toHaveBeenCalled();
+    expect(s.resubscribe).not.toHaveBeenCalled();
     expect(listener).not.toHaveBeenCalled();
 
     s.setBackendState("STARTING");
     s.setBackendState("STARTED");
-    expect(s.resubscribeCoreClient).toHaveBeenCalledTimes(1);
-    expect(s.resubscribeCoreClient).toHaveBeenCalledWith(s.coreClient);
-    expect(s.resubscribeServicesClient).toHaveBeenCalledWith(s.servicesClient);
+    expect(s.resubscribe).toHaveBeenCalledTimes(2);
+    expect(s.resubscribe).toHaveBeenCalledWith(s.coreClient);
+    expect(s.resubscribe).toHaveBeenCalledWith(s.servicesClient);
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
@@ -155,7 +146,7 @@ describe("transport-drop recovery", () => {
     expect(listener).not.toHaveBeenCalled();
 
     s.emitNative("transportStateChange", { state: "connected" });
-    expect(s.resubscribeCoreClient).toHaveBeenCalledTimes(1);
+    expect(s.resubscribe).toHaveBeenCalledTimes(2);
     expect(listener).toHaveBeenCalledTimes(1);
   });
 

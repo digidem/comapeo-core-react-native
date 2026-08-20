@@ -34,11 +34,11 @@ describe("notification permission wrappers", () => {
     jest.doMock("@comapeo/ipc/client.js", () => ({
       createComapeoCoreClient: () => ({}),
       createComapeoServicesClient: () => ({}),
-      notifyCoreClientTransportReset: jest.fn(),
-      notifyServicesClientTransportReset: jest.fn(),
+      notifyTransportReset: jest.fn(),
+      resubscribe: jest.fn(),
     }));
     jest.doMock("@comapeo/ipc/errors.js", () => ({
-      TransportClosedError: class TransportClosedError extends Error {},
+      RpcChannelClosedError: class RpcChannelClosedError extends Error {},
     }));
     jest.doMock("@sentry/react-native", () => ({
       getActiveSpan: jest.fn(),

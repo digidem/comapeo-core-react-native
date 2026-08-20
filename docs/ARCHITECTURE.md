@@ -579,36 +579,38 @@ module recovers in layers:
    default (no reconnect): in-process Node death ends that process.
 2. **In-flight calls fail fast (drop time).** The message socket
    reports `transportStateChange` to JS; on `disconnected`/`error` the
-   module calls `@comapeo/ipc`'s transport-reset helpers, which reject
-   every in-flight call with `TransportClosedError`
-   (`code: "RPC_TRANSPORT_CLOSED"`, re-exported by this package)
-   instead of letting them run into the 30 s RPC timeout, and
-   hard-close stale project clients (each fires its `close` event
-   locally so app teardown listeners run; their server-side instance
-   ids died with the old server, and ids are a counter a restarted
-   server can remint, so revalidation can't be trusted). A rejected
-   call's response will never arrive — the call itself may or may not
-   have executed before the backend died — so reads are safe to
-   retry; replaying mutations is the caller's judgement, and the
+   module calls `@comapeo/ipc`'s `notifyTransportReset` on both the
+   core and services clients, which rejects every in-flight call with
+   rpc-reflector's `ChannelClosedError` (`code: "RPC_CHANNEL_CLOSED"`,
+   re-exported by this package as `RpcChannelClosedError`) instead of
+   letting them run into the 30 s RPC timeout. Project clients stay
+   valid across the drop: since `@comapeo/ipc` v10 each is bound to a
+   channel keyed by the project's public id, which a restarted server
+   serves identically — there is nothing to close or re-fetch. A
+   rejected call's response will never arrive — the call itself may or
+   may not have executed before the backend died — so reads are safe
+   to retry; replaying mutations is the caller's judgement, and the
    module never re-sends requests.
 3. **Event subscriptions are replayed (recovery time).** The restarted
    backend has none of the client's event registrations, so once the
    backend reports `STARTED` again *and* the message socket has
-   reconnected, the module re-sends them for the long-lived channels
-   (manager, project routing, services; idempotent — the server
-   dedupes). Resubscribing waits for recovery deliberately: doing it
-   at drop time would nudge the socket out of its terminal `Error`
-   state in a tight retry loop for as long as the backend stays down.
-   A fresh `getProject` mints a working client for each project.
+   reconnected, the module calls `@comapeo/ipc`'s `resubscribe` on
+   both clients, which replays every subscription — the manager's and
+   each project reference's (idempotent — the server dedupes; a
+   replayed project subscription also transparently re-opens that
+   project server-side). Resubscribing waits for recovery
+   deliberately: doing it at drop time would nudge the socket out of
+   its terminal `Error` state in a tight retry loop for as long as
+   the backend stays down.
 4. **The app layer re-fetches.** `subscribeToBackendRestart(listener)`
    fires when both recovery conditions above hold, in whichever order
    they arrive — including a drop of the message socket alone, where
    the lifecycle state never leaves `STARTED`. Pass it to
    `@comapeo/core-react`'s `ComapeoCoreProvider`
    (`subscribeToBackendRestart` prop) to reset its query caches —
-   that re-runs `getProject` for mounted hooks and cascades fresh
-   client identity through its effects. Never fires on iOS (§2.1:
-   in-process Node — a backend death ends the app).
+   that re-runs every mounted query against the restarted backend
+   (through the same, still-valid client references). Never fires on
+   iOS (§2.1: in-process Node — a backend death ends the app).
 
 During the recovery window the JS-visible state may flap (e.g.
 `STARTED → ERROR → STARTING → STARTED`, or briefly `STOPPING` from a
@@ -621,13 +623,13 @@ map-share stores in `@comapeo/core-react`, and their SSE download
 monitors) is not covered and must handle the restart signal itself.
 
 **What the host app must still handle.** Recovery only reaches state
-the module and `@comapeo/core-react` own. App code that captures
-clients or results at module scope survives the restart holding dead
-references — in comapeo-mobile today that includes the `useLocalPeers`
-first-client singleton, the local-discovery controller's captured
-client, and the cached map-server `listen()` port promise. Such state
-must be re-derived on the restart signal when mobile adopts this
-module.
+the module and `@comapeo/core-react` own. Client references survive a
+restart (project channels are keyed by public id), but app code that
+captures *results* at module scope survives the restart holding stale
+data — in comapeo-mobile today that includes the cached map-server
+`listen()` port promise and any derived peer/discovery state. Such
+state must be re-derived on the restart signal when mobile adopts
+this module.
 
 ---
 
