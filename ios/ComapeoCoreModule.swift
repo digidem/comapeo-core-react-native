@@ -22,7 +22,7 @@ public class ComapeoCoreModule: Module {
     public func definition() -> ModuleDefinition {
         Name("ComapeoCore")
 
-        Events("message", "messageerror", "stateChange")
+        Events("message", "messageerror", "stateChange", "migrationProgress")
 
         OnCreate {
             let socketPath = ComapeoCoreModule.resolveSocketPath()
@@ -38,8 +38,23 @@ public class ComapeoCoreModule: Module {
                    let info = AppLifecycleDelegate.nodeService.getLastError() {
                     payload["errorPhase"] = info.phase
                     payload["errorMessage"] = info.message
+                } else if state == .migrationError || state == .lowSpace,
+                          let detail = AppLifecycleDelegate.nodeService.getMigrationDetail() {
+                    payload["errorPhase"] = detail.phase
+                    payload["errorMessage"] = detail.message
+                    if let space = detail.spaceNeeded {
+                        payload["spaceNeeded"] = space
+                    }
                 }
                 self?.sendEvent("stateChange", payload)
+            }
+
+            // Per-tick migration progress (`"2/5"` etc.). Rides a separate
+            // channel from `stateChange` because the state stays
+            // `MIGRATING` across ticks and `onStateChange` fires only on
+            // the coarse transition.
+            AppLifecycleDelegate.nodeService.onMigrationProgress = { [weak self] context in
+                self?.sendEvent("migrationProgress", ["context": context])
             }
 
             // Mirrors DOM MessagePort `messageerror`: malformed frames

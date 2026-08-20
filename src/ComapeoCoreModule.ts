@@ -6,6 +6,7 @@ import {
   type ComapeoState,
   type MessageErrorEventPayload,
   type MessageEventPayload,
+  type MigrationProgressEventPayload,
   type NotificationPermissionResponse,
   type StateChangeEventPayload,
 } from "./ComapeoCore.types.js";
@@ -465,6 +466,15 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(
 type StateEvents = {
   stateChange: (state: ComapeoState, error: ComapeoErrorInfo | null) => void;
   /**
+   * Fires on each backend storage-migration progress tick with the raw
+   * progress string (e.g. `"2/5"`, `""` before the first core finishes).
+   * The lifecycle state stays `"MIGRATING"` across ticks, so this is a
+   * separate channel from `stateChange` (which fires once on the
+   * `STARTING` → `MIGRATING` transition). Drives a progress UI while the
+   * state is `"MIGRATING"`.
+   */
+  migrationProgress: (context: string) => void;
+  /**
    * Fires when the native control-socket parser receives a frame it
    * can't process (non-JSON, missing `type`, or unknown `type`).
    * Mirrors DOM MessagePort's `messageerror`: a malformed frame is
@@ -508,6 +518,11 @@ class State extends EventEmitter<StateEvents> {
   ): void {
     if (eventName === "stateChange") {
       nativeModule.addListener("stateChange", this.#handleStateChangeEvent);
+    } else if (eventName === "migrationProgress") {
+      nativeModule.addListener(
+        "migrationProgress",
+        this.#handleMigrationProgressEvent,
+      );
     } else if (eventName === "messageerror") {
       nativeModule.addListener("messageerror", this.#handleMessageErrorEvent);
     }
@@ -518,6 +533,11 @@ class State extends EventEmitter<StateEvents> {
   ): void {
     if (eventName === "stateChange") {
       nativeModule.removeListener("stateChange", this.#handleStateChangeEvent);
+    } else if (eventName === "migrationProgress") {
+      nativeModule.removeListener(
+        "migrationProgress",
+        this.#handleMigrationProgressEvent,
+      );
     } else if (eventName === "messageerror") {
       nativeModule.removeListener(
         "messageerror",
@@ -527,11 +547,23 @@ class State extends EventEmitter<StateEvents> {
   }
 
   #handleStateChangeEvent = (event: StateChangeEventPayload) => {
+    // The detail second-arg is populated for `ERROR` and the two
+    // recoverable migration states (`MIGRATION_ERROR`/`LOW_SPACE`), which
+    // the native layer reports through the same `errorPhase`/`errorMessage`
+    // fields.
+    const isDetailState =
+      event.state === "ERROR" ||
+      event.state === "MIGRATION_ERROR" ||
+      event.state === "LOW_SPACE";
     const error: ComapeoErrorInfo | null =
-      event.state === "ERROR" && event.errorPhase && event.errorMessage
+      isDetailState && event.errorPhase && event.errorMessage
         ? { errorPhase: event.errorPhase, errorMessage: event.errorMessage }
         : null;
     this.emit("stateChange", event.state, error);
+  };
+
+  #handleMigrationProgressEvent = (event: MigrationProgressEventPayload) => {
+    this.emit("migrationProgress", event.context);
   };
 
   #handleMessageErrorEvent = (event: MessageErrorEventPayload) => {
