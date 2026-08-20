@@ -92,7 +92,21 @@ class NodeJSService(
      * The node thread may still be alive on ERROR — `destroy()` releases it.
      */
     enum class State {
-        STOPPED, STARTING, STARTED, STOPPING, ERROR
+        STOPPED, STARTING, STARTED, STOPPING, ERROR,
+        /**
+         * Storage migration in flight; the backend is streaming progress
+         * via `onMigrationProgress`. Non-terminal: resolves to `.started`
+         * on success or `.migrationError`/`.lowSpace` on failure.
+         */
+        MIGRATING,
+        /**
+         * Storage migration failed. **Recoverable** (unlike `.error`):
+         * the backend stays alive awaiting a `retry` frame, so the app
+         * can call `sendRetryFrame` and walk back to `.migrating`.
+         */
+        MIGRATION_ERROR,
+        /** Not enough free space to migrate. Also recoverable via `retry`. */
+        LOW_SPACE,
     }
 
     /**
@@ -103,6 +117,21 @@ class NodeJSService(
      * `starting-timeout`, `node-runtime`, `node-runtime-unexpected`).
      */
     data class ErrorInfo(val phase: String, val message: String)
+
+    /**
+     * Detail for the recoverable `.migrationError` / `.lowSpace` states.
+     * Kept separate from `lastError` because those states are NOT terminal
+     * `.error` — `getLastError()` stays reserved for true ERROR transitions.
+     * Read via [getMigrationDetail]; only meaningful while
+     * [state] is `.migrationError` or `.lowSpace`.
+     */
+    data class MigrationDetail(
+        /** `"migration-error"` or `"low-space"`. */
+        val phase: String,
+        val message: String,
+        /** Free-bytes figure the backend reported, `.lowSpace` only. */
+        val spaceNeeded: Long,
+    )
 
     /**
      * Node runtime-thread lifecycle. `Exited` carries an [ExitReason] so an
@@ -133,6 +162,9 @@ class NodeJSService(
         object Ready : BackendState()
         object Stopping : BackendState()
         data class Error(val phase: String, val message: String) : BackendState()
+        data class Migrating(val context: String) : BackendState()
+        data class MigrationError(val message: String, val stack: String?) : BackendState()
+        data class LowSpace(val spaceNeeded: Long) : BackendState()
     }
 
     /**
@@ -146,6 +178,7 @@ class NodeJSService(
         val stopRequested: Boolean = false,
         val state: State = State.STOPPED,
         val lastError: ErrorInfo? = null,
+        val migrationDetail: MigrationDetail? = null,
     )
 
     interface Callback {
@@ -194,6 +227,16 @@ class NodeJSService(
     @Volatile
     var onStateChange: ((State) -> Unit)? = null
 
+    /**
+     * Fires on each `migrating` control frame with the progress string
+     * (e.g. `"2/5"`, `""` before the first core finishes). Informational
+     * only — does not change lifecycle state (the service is already in
+     * `.migrating`); the coarse transition is delivered via `onStateChange`.
+     * Single-slot, last-writer-wins, like `onStateChange`.
+     */
+    @Volatile
+    var onMigrationProgress: ((String) -> Unit)? = null
+
     /** Atomic state container — `getAndUpdate` is a CAS loop, so the
      *  `(nodeRuntime, backendState, stopRequested, state, lastError)` tuple is always coherent. */
     private val stateFlow = MutableStateFlow(ComponentSnapshot())
@@ -201,6 +244,8 @@ class NodeJSService(
     fun getState(): State = stateFlow.value.state
 
     fun getLastError(): ErrorInfo? = stateFlow.value.lastError
+
+    fun getMigrationDetail(): MigrationDetail? = stateFlow.value.migrationDetail
 
     companion object {
 
@@ -690,6 +735,50 @@ class NodeJSService(
             is ControlFrame.SentryEnvelope -> {
                 SentryFgsBridge.captureEnvelopeBase64(frame.data)
             }
+            is ControlFrame.Migrating -> {
+                logCrumb(
+                    SentryCategories.CONTROL,
+                    "received: migrating",
+                    data = mapOf("context" to frame.context),
+                )
+                applyAndEmit { it.copy(backendState = BackendState.Migrating(frame.context)) }
+                onMigrationProgress?.invoke(frame.context)
+            }
+            is ControlFrame.MigrationError -> {
+                logCapture(
+                    SentryCategories.CONTROL,
+                    "storage migration failed: ${frame.message}",
+                    level = "error",
+                    tags = mapOf(SentryTags.PHASE to "migrate"),
+                )
+                applyAndEmit {
+                    it.copy(
+                        backendState = BackendState.MigrationError(frame.message, frame.stack),
+                        migrationDetail = MigrationDetail(
+                            phase = "migration-error",
+                            message = frame.message,
+                            spaceNeeded = 0,
+                        ),
+                    )
+                }
+            }
+            is ControlFrame.LowSpace -> {
+                logCrumb(
+                    SentryCategories.CONTROL,
+                    "received: low-space",
+                    data = mapOf("spaceNeeded" to frame.spaceNeeded.toString()),
+                )
+                applyAndEmit {
+                    it.copy(
+                        backendState = BackendState.LowSpace(frame.spaceNeeded),
+                        migrationDetail = MigrationDetail(
+                            phase = "low-space",
+                            message = "Insufficient free space for storage migration",
+                            spaceNeeded = frame.spaceNeeded,
+                        ),
+                    )
+                }
+            }
             is ControlFrame.Malformed -> {
                 // Logged but not raised to ERROR — a single bad frame shouldn't take
                 // down the lifecycle. The main-app Module surfaces `messageerror` separately.
@@ -802,9 +891,13 @@ class NodeJSService(
         // ERROR per-instance terminal for the public API (callers use destroy() to
         // release resources). The FGS teardown path uses [stopForTeardown] instead,
         // which drains gracefully even from ERROR.
+        // Migration states are stoppable too: `.migrating` is an active
+        // phase, and `.migrationError`/`.lowSpace` park the backend awaiting
+        // a `retry` — a user dismissing the prompt should be able to quit.
         val current = getState()
-        if (current != State.STARTING && current != State.STARTED) {
-            log("Cannot stop NodeJS service from state $current (not STARTING/STARTED)")
+        if (current != State.STARTING && current != State.STARTED &&
+            current != State.MIGRATING && current != State.MIGRATION_ERROR && current != State.LOW_SPACE) {
+            log("Cannot stop NodeJS service from state $current")
             return
         }
         drainNode()

@@ -30,9 +30,9 @@ enum ControlFrame {
     /// skips), so this must NOT transition the service to `.error`.
     /// `message` is the error's message; `stack` may be nil.
     case migrationError(message: String, stack: String?)
-    /// Not enough free space to migrate. `spaceNeeded` is bytes (as a
-    /// string) or nil. Also non-terminal — the backend awaits a `retry`.
-    case lowSpace(spaceNeeded: String?)
+    /// Not enough free space to migrate. `spaceNeeded` is the byte deficit
+    /// the backend reported. Also non-terminal — the backend awaits a `retry`.
+    case lowSpace(spaceNeeded: Int)
     /// Not JSON, missing `type`, or `type` not in the well-known set.
     /// `detail` is developer-facing — surfaces in the JS `messageerror`.
     case malformed(detail: String)
@@ -80,7 +80,7 @@ enum ControlFrame {
             let stack = obj["stack"] as? String
             return .migrationError(message: message, stack: stack)
         case "low-space":
-            let spaceNeeded = obj["spaceNeeded"] as? String
+            let spaceNeeded = (obj["spaceNeeded"] as? Int) ?? 0
             return .lowSpace(spaceNeeded: spaceNeeded)
         default:
             return .malformed(detail: "Unknown control frame type=\"\(type)\"")

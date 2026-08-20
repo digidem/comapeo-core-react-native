@@ -33,6 +33,28 @@ sealed class ControlFrame {
      */
     data class SentryEnvelope(val data: String) : ControlFrame()
 
+    /**
+     * Storage migration is underway. `context` is a progress string
+     * (e.g. `"2/5"`) or `""` before the first core finishes. Non-terminal:
+     * drives the service into `.migrating` until `ready` (→ `.started`) or
+     * a `migration-error`/`low-space` frame.
+     */
+    data class Migrating(val context: String) : ControlFrame()
+
+    /**
+     * Storage migration failed. Non-terminal on purpose — the backend
+     * parks awaiting a `retry` frame (after the user frees space or
+     * skips), so this must NOT transition the service to `.error`.
+     * `message` is the error's message; `stack` may be null.
+     */
+    data class MigrationError(val message: String, val stack: String?) : ControlFrame()
+
+    /**
+     * Not enough free space to migrate. `spaceNeeded` is the byte deficit
+     * the backend reported. Also non-terminal — the backend awaits a `retry`.
+     */
+    data class LowSpace(val spaceNeeded: Long) : ControlFrame()
+
     /** Frame could not be processed; `detail` is suitable for logs / `messageerror`. */
     data class Malformed(val detail: String) : ControlFrame()
 
@@ -57,6 +79,19 @@ sealed class ControlFrame {
                     // Re-serialize so SentryEvent.Deserializer can re-parse against the bytes it expects.
                     payload?.let { SentryEvent(it.toString()) }
                         ?: Malformed("sentry-event frame missing object `payload`")
+                }
+                "migrating" -> {
+                    val context = json.optString("context", "")
+                    Migrating(context = context)
+                }
+                "migration-error" -> {
+                    val message = json.optString("error", "(no message)")
+                    val stack = json.optString("stack", "").ifEmpty { null }
+                    MigrationError(message = message, stack = stack)
+                }
+                "low-space" -> {
+                    val spaceNeeded = json.optLong("spaceNeeded", 0)
+                    LowSpace(spaceNeeded = spaceNeeded)
                 }
                 "sentry-envelope" -> {
                     val data = json.optString("data", "")

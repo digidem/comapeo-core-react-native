@@ -29,9 +29,16 @@ class ComapeoCoreModule : Module() {
     private var jsState: JsState = JsState.STOPPED
 
     /** Cleared on any non-ERROR transition so a fresh cycle can't surface stale details. */
-    private var lastError: Map<String, String>? = null
+    private var lastError: Map<String, Any>? = null
 
-    private fun setState(next: JsState, errorPayload: Map<String, String>? = null) {
+    /**
+     * Detail for the recoverable `MIGRATION_ERROR` / `LOW_SPACE` states.
+     * Cleared on any non-migration transition so a fresh cycle can't surface
+     * stale details. Only meaningful while [jsState] is one of the two.
+     */
+    private var migrationDetail: Map<String, Any>? = null
+
+    private fun setState(next: JsState, errorPayload: Map<String, Any>? = null) {
         val eventToEmit: Map<String, Any>? = synchronized(stateLock) {
             when {
                 jsState == next && next == JsState.ERROR && errorPayload != null -> {
@@ -43,6 +50,10 @@ class ComapeoCoreModule : Module() {
                 else -> {
                     jsState = next
                     lastError = errorPayload
+                    migrationDetail = when (next) {
+                        JsState.MIGRATION_ERROR, JsState.LOW_SPACE -> errorPayload
+                        else -> null
+                    }
                     buildEventPayload(next, errorPayload)
                 }
             }
@@ -99,6 +110,33 @@ class ComapeoCoreModule : Module() {
                         // Capturing here would double-send.
                         is ControlFrame.SentryEvent -> {}
                         is ControlFrame.SentryEnvelope -> {}
+                        is ControlFrame.Migrating -> {
+                            // Coarse state change (`.starting` → `.migrating`) fires via
+                            // setState; each tick's `context` goes out the separate
+                            // `migrationProgress` event (state doesn't change, so
+                            // `stateChange` would not re-fire per tick).
+                            setState(JsState.MIGRATING)
+                            sendEvent("migrationProgress", mapOf("context" to frame.context))
+                        }
+                        is ControlFrame.MigrationError -> {
+                            // Recoverable: the backend stays alive awaiting a `retry`, so
+                            // this deliberately does NOT transition to ERROR.
+                            setState(
+                                JsState.MIGRATION_ERROR,
+                                mapOf(
+                                    "errorPhase" to "migration-error",
+                                    "errorMessage" to frame.message,
+                                ),
+                            )
+                        }
+                        is ControlFrame.LowSpace -> {
+                            val payload = buildMap {
+                                put("errorPhase", "low-space")
+                                put("errorMessage", "Insufficient free space for storage migration")
+                                put("spaceNeeded", frame.spaceNeeded)
+                            }
+                            setState(JsState.LOW_SPACE, payload)
+                        }
                         is ControlFrame.Malformed -> emitMessageError(frame.detail)
                     }
                 },
@@ -158,7 +196,7 @@ class ComapeoCoreModule : Module() {
 
         Name("ComapeoCore")
 
-        Events("message", "messageerror", "stateChange")
+        Events("message", "messageerror", "stateChange", "migrationProgress")
 
         Function("postMessage") { message: String ->
             ipc.sendMessage(message)
@@ -170,6 +208,10 @@ class ComapeoCoreModule : Module() {
 
         Function("getLastError") {
             synchronized(stateLock) { lastError }
+        }
+
+        Function("getMigrationDetail") {
+            synchronized(stateLock) { migrationDetail }
         }
 
         // `sentryConfig` — baked-in by app.plugin.js at prebuild; spread into

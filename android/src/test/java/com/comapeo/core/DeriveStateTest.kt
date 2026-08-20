@@ -72,6 +72,61 @@ class DeriveStateTest {
         assertEquals(State.ERROR, derive(exitedUnexpected, BackendState.Ready, stop = true))
     }
 
+    // MARK: - Rule 2b: migration states (below error, above stop intent)
+
+    @Test
+    fun migratingDerivesMigrating() {
+        assertEquals(State.MIGRATING, derive(NodeRuntimeState.Running, BackendState.Migrating("2/5")))
+        assertEquals(State.MIGRATING, derive(NodeRuntimeState.Running, BackendState.Migrating("")))
+    }
+
+    @Test
+    fun migrationErrorDerivesMigrationError() {
+        assertEquals(
+            State.MIGRATION_ERROR,
+            derive(
+                NodeRuntimeState.Running,
+                BackendState.MigrationError(message = "boom", stack = null),
+            ),
+        )
+    }
+
+    @Test
+    fun lowSpaceDerivesLowSpace() {
+        assertEquals(
+            State.LOW_SPACE,
+            derive(NodeRuntimeState.Running, BackendState.LowSpace(spaceNeeded = 10485760L)),
+        )
+    }
+
+    @Test
+    fun stopDuringMigrationDerivesStopping() {
+        // stopRequested outranks migration states.
+        assertEquals(
+            State.STOPPING,
+            derive(NodeRuntimeState.Running, BackendState.Migrating("1/5"), stop = true),
+        )
+        assertEquals(
+            State.STOPPING,
+            derive(
+                NodeRuntimeState.Running,
+                BackendState.MigrationError(message = "boom", stack = null),
+                stop = true,
+            ),
+        )
+        assertEquals(
+            State.STOPPING,
+            derive(NodeRuntimeState.Running, BackendState.LowSpace(spaceNeeded = 0L), stop = true),
+        )
+    }
+
+    @Test
+    fun backendErrorOutranksMigrating() {
+        // A real backend error frame is still louder than a stale migrating state.
+        val backendErr = BackendState.Error(phase = "runtime", message = "boom")
+        assertEquals(State.ERROR, derive(NodeRuntimeState.Running, backendErr))
+    }
+
     // MARK: - Rule 3: stop intent
 
     @Test

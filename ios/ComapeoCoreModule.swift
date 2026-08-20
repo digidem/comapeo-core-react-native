@@ -42,9 +42,7 @@ public class ComapeoCoreModule: Module {
                           let detail = AppLifecycleDelegate.nodeService.getMigrationDetail() {
                     payload["errorPhase"] = detail.phase
                     payload["errorMessage"] = detail.message
-                    if let space = detail.spaceNeeded {
-                        payload["spaceNeeded"] = space
-                    }
+                    payload["spaceNeeded"] = detail.spaceNeeded
                 }
                 self?.sendEvent("stateChange", payload)
             }

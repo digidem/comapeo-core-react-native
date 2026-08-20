@@ -108,6 +108,57 @@ class ControlFrameTest {
     }
 
     @Test
+    fun parsesMigratingWithContext() {
+        val frame = ControlFrame.parse(
+            """{"type":"migrating","context":"2/5"}""",
+        )
+        assertEquals(ControlFrame.Migrating(context = "2/5"), frame)
+    }
+
+    @Test
+    fun parsesMigratingWithEmptyContext() {
+        // Missing context — protocol-permissive; defaults to empty string.
+        val frame = ControlFrame.parse("""{"type":"migrating"}""")
+        assertEquals(ControlFrame.Migrating(context = ""), frame)
+    }
+
+    @Test
+    fun parsesMigrationError() {
+        val frame = ControlFrame.parse(
+            """{"type":"migration-error","error":"disk full","stack":"trace"}""",
+        )
+        assertEquals(
+            ControlFrame.MigrationError(message = "disk full", stack = "trace"),
+            frame,
+        )
+    }
+
+    @Test
+    fun parsesMigrationErrorWithoutStack() {
+        val frame = ControlFrame.parse(
+            """{"type":"migration-error","error":"boom"}""",
+        )
+        assertEquals(
+            ControlFrame.MigrationError(message = "boom", stack = null),
+            frame,
+        )
+    }
+
+    @Test
+    fun parsesLowSpaceWithSpaceNeeded() {
+        val frame = ControlFrame.parse(
+            """{"type":"low-space","spaceNeeded":10485760}""",
+        )
+        assertEquals(ControlFrame.LowSpace(spaceNeeded = 10485760L), frame)
+    }
+
+    @Test
+    fun parsesLowSpaceWithoutSpaceNeeded() {
+        val frame = ControlFrame.parse("""{"type":"low-space"}""")
+        assertEquals(ControlFrame.LowSpace(spaceNeeded = 0L), frame)
+    }
+
+    @Test
     fun nonJsonReturnsMalformed() {
         val frame = ControlFrame.parse("not json at all")
         assertTrue("expected Malformed, got $frame", frame is ControlFrame.Malformed)

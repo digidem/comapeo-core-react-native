@@ -65,7 +65,7 @@ class NodeJSService {
         let phase: String
         let message: String
         /// Free-bytes figure the backend reported, `.lowSpace` only.
-        let spaceNeeded: String?
+        let spaceNeeded: Int
     }
 
     // MARK: - Component state (derivation inputs)
@@ -96,7 +96,7 @@ class NodeJSService {
         case error(phase: String, message: String)
         case migrating(context: String)
         case migrationError(message: String, stack: String?)
-        case lowSpace(spaceNeeded: String?)
+        case lowSpace(spaceNeeded: Int)
     }
 
     /// Blocking function that runs Node.js. Returns the exit code.
@@ -526,14 +526,14 @@ class NodeJSService {
                 self._migrationDetail = NodeJSService.MigrationDetail(
                     phase: "migration-error",
                     message: message,
-                    spaceNeeded: nil
+                    spaceNeeded: 0
                 )
             }
         case .lowSpace(let spaceNeeded):
             logCrumb(
                 category: SentryCategories.control,
                 message: "received: low-space",
-                data: ["spaceNeeded": spaceNeeded ?? ""]
+                data: ["spaceNeeded": spaceNeeded]
             )
             applyAndEmit {
                 self.backendState = .lowSpace(spaceNeeded: spaceNeeded)

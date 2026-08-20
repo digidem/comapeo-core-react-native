@@ -80,9 +80,9 @@ export type StateChangeEventPayload = {
   errorMessage?: string;
   /**
    * Set only when `state` is `"LOW_SPACE"` — the free-bytes figure the
-   * backend reported as the shortfall (as a string).
+   * backend reported as the shortfall.
    */
-  spaceNeeded?: string;
+  spaceNeeded: number;
 };
 
 /**

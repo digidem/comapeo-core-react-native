@@ -19,6 +19,13 @@ internal fun deriveLifecycleState(
         return NodeJSService.State.ERROR
     }
 
+    // Migration states are reachable from `.starting` and take
+    // precedence over it; they sit below `stopRequested`/`stopping`
+    // so a stop during migration still derives to `.stopping`.
+    if (backendState is NodeJSService.BackendState.Migrating) return NodeJSService.State.MIGRATING
+    if (backendState is NodeJSService.BackendState.MigrationError) return NodeJSService.State.MIGRATION_ERROR
+    if (backendState is NodeJSService.BackendState.LowSpace) return NodeJSService.State.LOW_SPACE
+
     if (stopRequested) {
         return when (nodeRuntime) {
             NodeJSService.NodeRuntimeState.NotRunning,
