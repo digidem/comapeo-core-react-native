@@ -19,6 +19,7 @@ const DEBUG_LIFECYCLE_CHANNEL_ID = '@@comapeo-debug/lifecycle'
 const DEBUG_RPC_TIMEOUT_MS = 10_000
 
 type DebugLifecycleApi = {
+	ping(): Promise<string>
 	closeProject(projectPublicId: string): Promise<void>
 }
 
@@ -121,21 +122,42 @@ function getDebugClient(): DebugLifecycleApi {
 }
 
 /**
+ * One probe per app session decides whether the channel is served at all,
+ * shared by every caller: the first `closeProjectOnBackend` pays at most one
+ * `ping()` timeout (channel unserved — backend started without the flag) and
+ * every later call skips straight to "unavailable" instead of stalling
+ * another 10s. It also disambiguates timeouts: once the probe has succeeded,
+ * an `RPC_TIMEOUT` from `closeProject` is a real backend hang and FAILS the
+ * spec rather than quietly marking it pending.
+ */
+let channelServedPromise: Promise<boolean> | null = null
+
+function isChannelServed(): Promise<boolean> {
+	channelServedPromise ??= getDebugClient()
+		.ping()
+		.then(
+			() => true,
+			(error) => {
+				if ((error as { code?: string })?.code === 'RPC_TIMEOUT') return false
+				throw error
+			},
+		)
+	return channelServedPromise
+}
+
+/**
  * Ask the backend to close a project server-side, as core would for its own
  * reasons. Resolves `true` when the backend confirmed the close; `false` when
  * the debug channel is not being served (backend started without
- * `COMAPEO_DEBUG_LIFECYCLE=1` — the call times out unanswered), so specs can
- * mark themselves pending instead of failing. Any other rejection is a real
+ * `COMAPEO_DEBUG_LIFECYCLE=1` — determined once via `ping()`, see above), so
+ * specs can mark themselves pending instead of failing. With the channel
+ * served, ANY `closeProject` rejection — timeouts included — is a real
  * failure and propagates.
  */
 export async function closeProjectOnBackend(
 	projectPublicId: string,
 ): Promise<boolean> {
-	try {
-		await getDebugClient().closeProject(projectPublicId)
-		return true
-	} catch (error) {
-		if ((error as { code?: string })?.code === 'RPC_TIMEOUT') return false
-		throw error
-	}
+	if (!(await isChannelServed())) return false
+	await getDebugClient().closeProject(projectPublicId)
+	return true
 }

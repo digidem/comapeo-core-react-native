@@ -78,6 +78,8 @@ test("closeProject closes the manager's project instance when the flag is on", a
   });
 
   const client = await connectDebugClient(t, path);
+  // The e2e client's served-channel probe.
+  assert.equal(await client.ping(), "pong");
   await client.closeProject("abc123");
 
   await waitFor(() => closed.length === 1, { message: "project closed" });
@@ -89,6 +91,9 @@ test("the debug channel is NOT served by default: calls time out unanswered", as
   const { path, closed } = await startRpc(t);
 
   const client = await connectDebugClient(t, path, { timeout: 200 });
+  // The probe the e2e client uses to detect an unserved channel...
+  await assert.rejects(() => client.ping(), /timed? ?out/i);
+  // ...and the call it would consequently never issue.
   await assert.rejects(() => client.closeProject("abc123"), /timed? ?out/i);
   assert.equal(closed.length, 0);
 });

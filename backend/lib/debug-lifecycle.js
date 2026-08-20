@@ -94,6 +94,15 @@ export function serveDebugLifecycle(comapeoManager, messagePort) {
   const server = createServer(
     {
       /**
+       * Liveness probe: the e2e client calls this once to determine whether
+       * the channel is served at all (a timeout here means "flag unset"),
+       * so that a later `closeProject` timeout can be treated as a real
+       * failure rather than mistaken for an unserved channel.
+       */
+      async ping() {
+        return "pong";
+      },
+      /**
        * Close the server-side project instance, as core would for its own
        * reasons (resource policy, re-invite cleanup). The next client call
        * on the project's channel re-opens it transparently.
