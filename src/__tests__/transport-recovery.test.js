@@ -1,9 +1,12 @@
 /**
- * Two-phase transport-drop recovery: at drop time the @comapeo/ipc reset
- * helpers reject in-flight calls (no resubscription — that would nudge the
- * native connect out of its terminal Error state in a loop); once BOTH the
- * transport is reconnected AND the lifecycle state is STARTED, subscriptions
- * are replayed and `subscribeToBackendRestart` listeners fire.
+ * Two-phase transport-drop recovery: at drop time @comapeo/ipc's
+ * `notifyTransportReset` rejects in-flight calls (no resubscription — that
+ * would nudge the native connect out of its terminal Error state in a loop);
+ * once BOTH the transport is reconnected AND the lifecycle state is STARTED,
+ * subscriptions are replayed via `resubscribe`. `subscribeToBackendRestart`
+ * listeners fire only on a genuine backend restart, detected by the boot
+ * nonce on the control channel's `ready` frame changing; without a nonce
+ * (older backend/native) every recovery fires conservatively.
  */
 
 function setup({ initialState = "STOPPED" } = {}) {
@@ -13,6 +16,7 @@ function setup({ initialState = "STOPPED" } = {}) {
   const coreClient = { tag: "core" };
   const servicesClient = { tag: "services" };
   let currentState = initialState;
+  let currentNonce = null;
 
   jest.resetModules();
 
@@ -35,6 +39,7 @@ function setup({ initialState = "STOPPED" } = {}) {
         },
         postMessage: jest.fn(),
         getState: () => currentState,
+        getBootNonce: () => currentNonce,
         addListener: (name, fn) => {
           (nativeListeners[name] ??= []).push(fn);
         },
@@ -75,10 +80,15 @@ function setup({ initialState = "STOPPED" } = {}) {
   const emitNative = (name, payload) => {
     for (const fn of nativeListeners[name] ?? []) fn(payload);
   };
-  // The native stateChange event and getState() move together in reality.
-  const setBackendState = (state) => {
+  // The native stateChange event and getState()/getBootNonce() move
+  // together in reality: Kotlin stores both before emitting.
+  const setBackendState = (state, { bootNonce } = {}) => {
     currentState = state;
-    emitNative("stateChange", { state });
+    if (bootNonce !== undefined) currentNonce = bootNonce;
+    emitNative("stateChange", {
+      state,
+      ...(bootNonce !== undefined ? { bootNonce } : {}),
+    });
   };
   return {
     module,
@@ -136,8 +146,9 @@ describe("transport-drop recovery", () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
-  test("recovery when transport reconnects last (message-socket-only drop)", () => {
+  test("recovery when transport reconnects last (message-socket-only drop; no nonce → conservative restart)", () => {
     // Control socket never left STARTED, so no stateChange event ever fires.
+    // No boot nonce available, so the restart signal fires conservatively.
     const s = setup({ initialState: "STARTED" });
     const listener = jest.fn();
     s.module.subscribeToBackendRestart(listener);
@@ -150,7 +161,7 @@ describe("transport-drop recovery", () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
-  test("restart fires once per drop; STARTED without a drop fires nothing", () => {
+  test("restart fires once per drop; STARTED without a drop fires nothing (no nonce)", () => {
     const s = setup({ initialState: "STOPPED" });
     const listener = jest.fn();
     s.module.subscribeToBackendRestart(listener);
@@ -172,6 +183,84 @@ describe("transport-drop recovery", () => {
     s.emitNative("transportStateChange", { state: "disconnected" });
     s.emitNative("transportStateChange", { state: "connected" });
     expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  test("reconnect with the same boot nonce resubscribes but does NOT signal a restart", () => {
+    const s = setup();
+    const listener = jest.fn();
+    s.module.subscribeToBackendRestart(listener);
+
+    // Initial boot: connected, STARTED with nonce n1.
+    s.emitNative("transportStateChange", { state: "connected" });
+    s.setBackendState("STARTING");
+    s.setBackendState("STARTED", { bootNonce: "n1" });
+    expect(listener).not.toHaveBeenCalled();
+
+    // App-side drop; the backend kept running, so the replayed `ready`
+    // carries the same nonce.
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.emitNative("transportStateChange", { state: "connected" });
+
+    expect(s.resubscribe).toHaveBeenCalledWith(s.coreClient);
+    expect(s.resubscribe).toHaveBeenCalledWith(s.servicesClient);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  test("reconnect with a NEW boot nonce resubscribes and then signals a restart", () => {
+    const s = setup();
+    const listener = jest.fn();
+    s.module.subscribeToBackendRestart(listener);
+
+    s.emitNative("transportStateChange", { state: "connected" });
+    s.setBackendState("STARTING");
+    s.setBackendState("STARTED", { bootNonce: "n1" });
+
+    // Backend killed and restarted: transport drops, lifecycle flaps, and
+    // the fresh process announces itself with a new nonce.
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.setStateSilently("ERROR");
+    s.emitNative("transportStateChange", { state: "connected" });
+    expect(listener).not.toHaveBeenCalled();
+
+    s.setBackendState("STARTING");
+    s.setBackendState("STARTED", { bootNonce: "n2" });
+
+    expect(s.resubscribe).toHaveBeenCalledWith(s.coreClient);
+    expect(s.resubscribe).toHaveBeenCalledWith(s.servicesClient);
+    expect(listener).toHaveBeenCalledTimes(1);
+    // Subscriptions are replayed before the restart signal fires, so a
+    // listener's re-fetch runs against a fully re-wired client.
+    const firstResubscribe = Math.min(...s.resubscribe.mock.invocationCallOrder);
+    expect(firstResubscribe).toBeLessThan(listener.mock.invocationCallOrder[0]);
+
+    // A later app-side reconnect to the SAME restarted backend stays silent.
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.emitNative("transportStateChange", { state: "connected" });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  test("a drop before the first-ever nonce does not signal a restart", () => {
+    // Transport dropped mid-boot: recovery completes at the FIRST `ready`
+    // this client has ever seen — initial-boot completion, not a restart.
+    const s = setup();
+    const listener = jest.fn();
+    s.module.subscribeToBackendRestart(listener);
+
+    s.emitNative("transportStateChange", { state: "connected" });
+    s.setBackendState("STARTING");
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.emitNative("transportStateChange", { state: "connected" });
+    s.setBackendState("STARTED", { bootNonce: "n1" });
+
+    expect(s.resubscribe).toHaveBeenCalledWith(s.coreClient);
+    expect(listener).not.toHaveBeenCalled();
+
+    // But the nonce WAS recorded: a real restart afterwards fires.
+    s.emitNative("transportStateChange", { state: "disconnected" });
+    s.setStateSilently("STARTING");
+    s.emitNative("transportStateChange", { state: "connected" });
+    s.setBackendState("STARTED", { bootNonce: "n2" });
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 
   test("a throwing restart listener does not block the others", () => {

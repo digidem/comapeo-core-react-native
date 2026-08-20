@@ -22,8 +22,22 @@ class ControlFrameTest {
     }
 
     @Test
-    fun parsesReady() {
-        assertEquals(ControlFrame.Ready, ControlFrame.parse("""{"type":"ready"}"""))
+    fun parsesReadyWithBootNonce() {
+        assertEquals(
+            ControlFrame.Ready(bootNonce = "5a1e4a1c-0000-4000-8000-000000000000"),
+            ControlFrame.parse(
+                """{"type":"ready","bootNonce":"5a1e4a1c-0000-4000-8000-000000000000"}"""
+            ),
+        )
+    }
+
+    @Test
+    fun parsesReadyWithoutBootNonce() {
+        // Back-compat: a backend that predates the nonce sends a bare frame.
+        assertEquals(
+            ControlFrame.Ready(bootNonce = null),
+            ControlFrame.parse("""{"type":"ready"}"""),
+        )
     }
 
     @Test

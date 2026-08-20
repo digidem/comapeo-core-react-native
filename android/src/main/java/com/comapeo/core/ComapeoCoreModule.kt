@@ -30,6 +30,38 @@ class ComapeoCoreModule : Module() {
     /** Cleared on any non-ERROR transition so a fresh cycle can't surface stale details. */
     private var lastError: Map<String, String>? = null
 
+    /**
+     * Boot nonce from the latest `ready` frame — identifies the backend
+     * process currently serving. Null until the first `ready` (or from a
+     * backend that predates the field). JS compares it across recoveries to
+     * tell an app-side reconnect from a genuine backend restart.
+     */
+    private var bootNonce: String? = null
+
+    /**
+     * STARTED transition from a `ready` frame. Unlike the generic [setState]
+     * dedupe, a repeat `ready` carrying a NEW nonce must still emit — it means
+     * the backend restarted without this side ever observing a non-STARTED
+     * state in between.
+     */
+    private fun setStarted(nonce: String?) {
+        val eventToEmit: Map<String, Any>? = synchronized(stateLock) {
+            val nonceChanged = nonce != null && nonce != bootNonce
+            if (nonce != null) bootNonce = nonce
+            if (jsState == JsState.STARTED && !nonceChanged) {
+                null
+            } else {
+                jsState = JsState.STARTED
+                lastError = null
+                buildMap {
+                    put("state", JsState.STARTED.name)
+                    bootNonce?.let { put("bootNonce", it) }
+                }
+            }
+        }
+        eventToEmit?.let { sendEvent("stateChange", it) }
+    }
+
     private fun setState(next: JsState, errorPayload: Map<String, String>? = null) {
         val eventToEmit: Map<String, Any>? = synchronized(stateLock) {
             when {
@@ -109,7 +141,7 @@ class ComapeoCoreModule : Module() {
                 onMessage = { message ->
                     when (val frame = ControlFrame.parse(message)) {
                         ControlFrame.Started -> setState(JsState.STARTING)
-                        ControlFrame.Ready -> setState(JsState.STARTED)
+                        is ControlFrame.Ready -> setStarted(frame.bootNonce)
                         ControlFrame.Stopping -> setState(JsState.STOPPING)
                         is ControlFrame.Error -> setState(
                             JsState.ERROR,
@@ -202,6 +234,14 @@ class ComapeoCoreModule : Module() {
 
         Function("getLastError") {
             synchronized(stateLock) { lastError }
+        }
+
+        // Boot nonce of the backend currently serving (from its latest `ready`
+        // frame); null before the first `ready`. Lets JS read the nonce outside
+        // a stateChange event — needed when recovery completes on the
+        // transport-connected edge, where no stateChange fires.
+        Function("getBootNonce") {
+            synchronized(stateLock) { bootNonce }
         }
 
         // `sentryConfig` — baked-in by app.plugin.js at prebuild; spread into

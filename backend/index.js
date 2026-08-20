@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import ensureError from "ensure-error";
@@ -15,6 +16,14 @@ import { observeSyncSessions } from "./lib/sync-observer.js";
 // 60s sampler cadence for backend memory + uptime gauges. No-op
 // when Sentry is off (the metrics layer never got its SDK).
 const MEMORY_SAMPLE_INTERVAL_MS = 60_000;
+
+// Identifies this backend process on the control channel. The control
+// socket replays `started`/`ready` to late-connecting clients, so a
+// reconnecting client can't tell from the frames alone whether it is
+// rejoining the same backend (app-side reconnect) or a restarted one;
+// it compares this nonce on the `ready` frame against its last-seen
+// value instead.
+const BOOT_NONCE = randomUUID();
 
 // `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` mirrors this
 // directory into the on-device bundle.
@@ -306,7 +315,7 @@ async function withPhase(phase, fn) {
     );
     console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
 
-    controlIpcServer.setReadinessPhase("ready");
+    controlIpcServer.setReadinessPhase("ready", { bootNonce: BOOT_NONCE });
     metrics.bootOutcome("started");
     flushCompileCacheAfterBoot();
     startMemorySampler();

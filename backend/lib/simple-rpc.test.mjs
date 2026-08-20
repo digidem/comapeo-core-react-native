@@ -61,6 +61,40 @@ test("replays readiness phases to a late-connecting client", async (t) => {
   assert.ok(types.includes("ready"), "should replay 'ready'");
 });
 
+test("ready extra fields (boot nonce) ride the broadcast and the replay", async (t) => {
+  const { server, path } = await startServer(t, {});
+  server.setReadinessPhase("started");
+
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  /** @type {Array<{ type?: string, bootNonce?: string }>} */
+  const frames = [];
+  client.addEventListener("message", (event) => frames.push(event.data));
+  client.start();
+
+  server.setReadinessPhase("ready", { bootNonce: "nonce-1" });
+  await waitFor(() => frames.some((f) => f && f.type === "ready"), {
+    message: "ready broadcast",
+  });
+  const broadcastReady = frames.find((f) => f.type === "ready");
+  assert.equal(broadcastReady?.bootNonce, "nonce-1");
+
+  // A late-connecting client (e.g. after an app-side reconnect) must see
+  // the same nonce on the replayed frame.
+  const lateSocket = await connectSocket(t, path);
+  const lateClient = new SocketMessagePort(lateSocket);
+  /** @type {Array<{ type?: string, bootNonce?: string }>} */
+  const lateFrames = [];
+  lateClient.addEventListener("message", (event) => lateFrames.push(event.data));
+  lateClient.start();
+
+  await waitFor(() => lateFrames.some((f) => f && f.type === "ready"), {
+    message: "ready replayed to late client",
+  });
+  const replayedReady = lateFrames.find((f) => f.type === "ready");
+  assert.equal(replayedReady?.bootNonce, "nonce-1");
+});
+
 test("broadcast delivers a frame to a connected client", async (t) => {
   const { server, path } = await startServer(t, {});
 

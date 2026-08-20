@@ -25,6 +25,9 @@ export class SimpleRpcServer extends ServerHelper {
   #clients = new Set();
   /** @type {"pre-listening" | "started" | "ready"} */
   #readinessPhase = "pre-listening";
+  /** Extra fields carried on the `ready` frame (e.g. `bootNonce`), kept for replay. */
+  /** @type {import("type-fest").JsonObject} */
+  #readyExtra = {};
   /** @type {TerminalFrame | null} */
   #terminalFrame = null;
   // Replayed on every connect: on Android both FGS and main-app
@@ -67,7 +70,7 @@ export class SimpleRpcServer extends ServerHelper {
       messagePort.postMessage({ type: "started" });
     }
     if (this.#readinessPhase === "ready") {
-      messagePort.postMessage({ type: "ready" });
+      messagePort.postMessage({ ...this.#readyExtra, type: "ready" });
     }
     if (this.#terminalFrame !== null) {
       messagePort.postMessage(this.#terminalFrame);
@@ -108,11 +111,14 @@ export class SimpleRpcServer extends ServerHelper {
 
   /**
    * Idempotent. Throws on out-of-order `ready` so late clients don't
-   * see `ready` without a prior `started`.
+   * see `ready` without a prior `started`. `extra` fields (e.g. the
+   * boot nonce) ride the `ready` frame and are replayed identically to
+   * late-connecting clients.
    *
    * @param {"started" | "ready"} phase
+   * @param {import("type-fest").JsonObject} [extra]
    */
-  setReadinessPhase(phase) {
+  setReadinessPhase(phase, extra = {}) {
     if (this.#readinessPhase === phase) return;
     if (phase === "ready" && this.#readinessPhase !== "started") {
       throw new Error(
@@ -120,8 +126,9 @@ export class SimpleRpcServer extends ServerHelper {
       );
     }
     this.#readinessPhase = phase;
+    if (phase === "ready") this.#readyExtra = extra;
     for (const client of this.#clients) {
-      client.postMessage({ type: phase });
+      client.postMessage({ ...extra, type: phase });
     }
   }
 

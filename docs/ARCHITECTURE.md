@@ -602,11 +602,23 @@ module recovers in layers:
    deliberately: doing it at drop time would nudge the socket out of
    its terminal `Error` state in a tight retry loop for as long as
    the backend stays down.
-4. **The app layer re-fetches.** `subscribeToBackendRestart(listener)`
-   fires when both recovery conditions above hold, in whichever order
-   they arrive — including a drop of the message socket alone, where
-   the lifecycle state never leaves `STARTED`. Pass it to
-   `@comapeo/core-react`'s `ComapeoCoreProvider`
+4. **The app layer re-fetches — on a genuine restart only.**
+   `subscribeToBackendRestart(listener)` fires when both recovery
+   conditions above hold, in whichever order they arrive — including a
+   drop of the message socket alone, where the lifecycle state never
+   leaves `STARTED` — **and** the backend's *boot nonce* changed.
+   The backend generates one random UUID per process
+   (`backend/index.js`) and stamps it on the control channel's `ready`
+   frame; because the control server replays `started`/`ready` to
+   late-connecting clients, state transitions alone cannot distinguish
+   an app-side reconnect (backend kept running — nothing lost beyond
+   per-connection subscriptions, which resubscription already covers)
+   from a real backend restart (all server state gone). Comparing the
+   post-recovery nonce against the last-seen one makes that call: same
+   nonce → resubscribe silently; new nonce → also fire the restart
+   listeners; first-ever nonce → initial boot, no signal (a missing
+   nonce — older backend — fires conservatively). Pass the subscription
+   to `@comapeo/core-react`'s `ComapeoCoreProvider`
    (`subscribeToBackendRestart` prop) to reset its query caches —
    that re-runs every mounted query against the restarted backend
    (through the same, still-valid client references). Never fires on

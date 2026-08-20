@@ -69,6 +69,16 @@ export type TransportStateChangeEventPayload = {
 export type StateChangeEventPayload = {
   state: ComapeoState;
   /**
+   * Set on `"STARTED"` transitions (Android): the backend process's boot
+   * nonce, carried on the control channel's `ready` frame — one random UUID
+   * per backend process. The control socket replays `started`/`ready` to
+   * late-connecting clients, so a reconnect delivers the SAME nonce when the
+   * backend kept running and a NEW one when it restarted; the recovery logic
+   * fires `subscribeToBackendRestart` listeners only on a nonce change.
+   * Absent on iOS and from backends that predate the field.
+   */
+  bootNonce?: string;
+  /**
    * Set when `state` is `"ERROR"`. `errorPhase` is one of the backend's
    * boot phases (`listen-control`, `init`, `construct`, `runtime`) or a
    * native-derived tag (`rootkey`, `node-runtime`, `shutdown-timeout`,

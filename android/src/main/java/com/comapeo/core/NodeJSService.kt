@@ -662,7 +662,7 @@ class NodeJSService(
                 applyAndEmit { it.copy(backendState = BackendState.ControlBound) }
                 sendInitFrame()
             }
-            ControlFrame.Ready -> {
+            is ControlFrame.Ready -> {
                 logCrumb(SentryCategories.CONTROL, "received: ready")
                 applyAndEmit { it.copy(backendState = BackendState.Ready) }
             }

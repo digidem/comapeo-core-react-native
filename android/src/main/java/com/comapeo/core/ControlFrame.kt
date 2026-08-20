@@ -11,7 +11,15 @@ import org.json.JSONObject
  */
 sealed class ControlFrame {
     object Started : ControlFrame()
-    object Ready : ControlFrame()
+
+    /**
+     * `bootNonce` identifies the backend process that emitted the frame (one
+     * random UUID per process). Null from backends that predate the field.
+     * Consumers compare it against the last-seen value to tell an app-side
+     * reconnect (same nonce — the replayed `ready` came from the same
+     * process) from a backend restart (new nonce).
+     */
+    data class Ready(val bootNonce: String?) : ControlFrame()
 
     /** Graceful shutdown — sent before close so peers can tell expected from crash. */
     object Stopping : ControlFrame()
@@ -46,7 +54,7 @@ sealed class ControlFrame {
             }
             return when (val type = json.optString("type", "")) {
                 "started" -> Started
-                "ready" -> Ready
+                "ready" -> Ready(json.optString("bootNonce", "").takeIf { it.isNotEmpty() })
                 "stopping" -> Stopping
                 "error" -> Error(
                     phase = json.optString("phase", "unknown"),

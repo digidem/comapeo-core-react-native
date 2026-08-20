@@ -57,6 +57,12 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   getState(): ComapeoState;
   getLastError(): ComapeoErrorInfo | null;
   /**
+   * Boot nonce of the backend currently serving (from its latest control
+   * `ready` frame); `null` before the first `ready`. Android only —
+   * optional so iOS and older natives fall back to `null`.
+   */
+  getBootNonce?(): string | null;
+  /**
    * Sentry options the Expo plugin baked into the native config.
    * Empty object when the plugin isn't registered (or DSN absent).
    */
@@ -497,6 +503,17 @@ class State extends EventEmitter<StateEvents> {
     return nativeModule.getLastError();
   }
 
+  /**
+   * The boot nonce of the backend process currently serving — one random
+   * UUID per backend process, carried on the control channel's `ready`
+   * frame. `null` before the backend first reaches `STARTED`, on iOS, and
+   * with backends that predate the field. A changed nonce across a
+   * reconnect means the backend restarted (see [subscribeToBackendRestart]).
+   */
+  getBootNonce(): string | null {
+    return nativeModule.getBootNonce?.() ?? null;
+  }
+
   startObserving<EventName extends keyof StateEvents>(
     eventName: EventName,
   ): void {
@@ -566,6 +583,17 @@ export { RpcChannelClosedError } from "@comapeo/ipc/errors.js";
 let transportDropped = false;
 let transportConnected = false;
 
+/**
+ * Boot nonce of the backend that was serving before the current drop (or is
+ * serving now) — the last one observed OUTSIDE a recovery window. Compared
+ * against the post-recovery nonce to tell an app-side reconnect (same
+ * backend, same nonce — resubscribe only) from a genuine backend restart
+ * (new process, new nonce — also fire restart listeners). Necessary because
+ * the control server replays `started`/`ready` to late-connecting clients,
+ * so state transitions alone can't make that distinction.
+ */
+let lastSeenBootNonce: string | null = null;
+
 const restartListeners = new Set<() => void>();
 
 function maybeCompleteRecovery() {
@@ -574,6 +602,17 @@ function maybeCompleteRecovery() {
   transportDropped = false;
   resubscribe(comapeo);
   resubscribe(comapeoServicesClient);
+
+  const nonce = nativeModule.getBootNonce?.() ?? null;
+  // No nonce (older backend/native) leaves restart vs. reconnect
+  // undecidable; fire anyway — a spurious re-fetch is recoverable, caches
+  // kept stale across a real restart are not. With a nonce, a first-ever
+  // value is initial-boot completion, not a restart.
+  const genuineRestart =
+    nonce === null ? true : lastSeenBootNonce !== null && nonce !== lastSeenBootNonce;
+  if (nonce !== null) lastSeenBootNonce = nonce;
+  if (!genuineRestart) return;
+
   for (const listener of [...restartListeners]) {
     try {
       listener();
@@ -604,6 +643,12 @@ nativeModule.addListener?.(
 nativeModule.addListener?.("stateChange", (event: StateChangeEventPayload) => {
   if (event.state !== "STARTED") return;
   maybeCompleteRecovery();
+  // Normal-operation tracking. Skipped while a drop is still unrecovered
+  // (`transportDropped` after the call above) so the pre-drop nonce stays
+  // available for the restart comparison once the transport reconnects.
+  if (event.bootNonce && !transportDropped) {
+    lastSeenBootNonce = event.bootNonce;
+  }
 });
 
 /**
@@ -613,6 +658,12 @@ nativeModule.addListener?.("stateChange", (event: StateChangeEventPayload) => {
  * `:ComapeoCore` service while the app kept running. Never fires on iOS (the
  * backend is in-process there). A backend that was stopped deliberately and
  * later cold-started also fires this — the caches are equally stale there.
+ *
+ * Restart detection is nonce-based: the backend stamps its `ready` frame with
+ * a per-process boot nonce, and listeners fire only when the post-recovery
+ * nonce differs from the last-seen one. An app-side reconnect to a backend
+ * that kept running (same nonce) resubscribes silently — no restart signal,
+ * because nothing was lost server-side beyond per-connection subscriptions.
  *
  * By the time a listener fires, in-flight calls have been rejected with
  * [RpcChannelClosedError] and event subscriptions have been replayed to the
