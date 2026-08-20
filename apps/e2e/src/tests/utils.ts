@@ -10,6 +10,7 @@ export type TestContext = Pick<
 	| 'jasmine'
 	| 'beforeEach'
 	| 'afterEach'
+	| 'pending'
 >
 
 export function sortBy<T>(arr: Array<T>, key: keyof T) {

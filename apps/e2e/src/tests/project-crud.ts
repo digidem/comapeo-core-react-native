@@ -14,6 +14,7 @@ import { generate } from '@mapeo/mock-data'
 import { getRandomBytes } from 'expo-crypto'
 import { uint8ArrayToHex } from 'uint8array-extras'
 
+import { closeProjectOnBackend } from './debug-lifecycle'
 import {
 	delay,
 	randomBool,
@@ -32,33 +33,16 @@ function createDocumentRef(versionIdNumber = 0) {
 	}
 }
 
-export function test({
-	describe,
-	expect,
-	expectAsync,
-	it,
-	jasmine,
-	afterEach,
-}: TestContext) {
+export function test({ describe, expect, it, jasmine, pending }: TestContext) {
 	const CREATE_COUNT = 100
 
-	const openProjects = new Set<ComapeoProjectClientApi>()
-
-	async function openProject(projectId: string): Promise<ComapeoProjectClientApi> {
-		const project = await comapeo.getProject(projectId)
-		openProjects.add(project)
-		return project
+	// Since @comapeo/ipc v10 project references are permanent — lifecycle is
+	// server-owned, there is no client-side `close()`, and a reference stays
+	// valid across backend-side close/re-open cycles — so there is nothing to
+	// tear down between tests.
+	function openProject(projectId: string): Promise<ComapeoProjectClientApi> {
+		return comapeo.getProject(projectId)
 	}
-
-	afterEach(async () => {
-		const projects = [...openProjects]
-		openProjects.clear()
-		// Close in afterEach to avoid leaking listeners across tests (otherwise
-		// EventEmitter MaxListenersExceeded fires and later tests slow down).
-		await Promise.all(
-			projects.map((p) => p.close().catch(() => undefined)),
-		)
-	})
 
 	const FIXTURES: Array<
 		| FieldValue
@@ -215,48 +199,38 @@ export function test({
 				expect(sortById(manyWithDeleted)).toEqual(sortById(expectedWithDeleted))
 			})
 
-			it(`create, close and then create, update (${schemaName})`, async () => {
+			it(`calls transparently survive a backend-side close (${schemaName})`, async () => {
 				const projectId = await comapeo.createProject()
 				const project = await openProject(projectId)
-				const values = new Array(5).fill(null).map(() => {
-					return getUpdateFixture(value)
-				})
-				for (const value of values) {
-					await create(project, value)
-				}
 				const written = await create(project, value)
 
-				await project.close()
+				// Close the project server-side, as core would for its own
+				// reasons (resource policy, re-invite cleanup). Since v10,
+				// lifecycle is server-owned: the client reference must keep
+				// working across it, with no close notification to consume.
+				if (!(await closeProjectOnBackend(projectId))) {
+					pending(
+						'debug lifecycle channel not served (backend started without COMAPEO_DEBUG_LIFECYCLE=1)',
+					)
+					return
+				}
 
-				// 'should fail updating since the project is already closed'
-				await expectAsync(
-					(async () => {
-						const updateValue = getUpdateFixture(value)
-						await update(project, written.versionId, updateValue)
-					})(),
-				).toBeRejectedWithError(/closed/i)
+				// The very next read transparently re-opens the project.
+				const read = await project[schemaName].getByDocId(written.docId)
+				expect(read).toEqual(written)
 
-				// 'should fail creating since the project is already closed'
-				await expectAsync(
-					(async () => {
-						for (const value of values) {
-							await create(project, value)
-						}
-					})(),
-				).toBeRejectedWithError(/closed/i)
-
-				// 'should fail getting since the project is already closed'
-				await expectAsync(
-					(async () => {
-						await project[schemaName].getMany()
-					})(),
-				).toBeRejectedWithError(/closed/i)
+				// Writes work too.
+				const updateValue = getUpdateFixture(value)
+				const updated = await update(project, written.versionId, updateValue)
+				expect(removeUndefinedFields(updated)).toEqual(
+					jasmine.objectContaining(updateValue),
+				)
 			})
 
-			it(`create, read, close, re-open, read (${schemaName})`, async () => {
+			it(`getProject returns the same working reference after close/re-open (${schemaName})`, async () => {
 				const projectId = await comapeo.createProject()
 
-				let project = await openProject(projectId)
+				const project = await openProject(projectId)
 
 				const values = new Array(5).fill(null).map(() => {
 					return getUpdateFixture(value)
@@ -269,16 +243,24 @@ export function test({
 				const many1 = await project[schemaName].getMany()
 				const manyValues1 = many1.map((doc) => valueOf(doc))
 
-				// close it
-				await project.close()
+				// Backend-side close ...
+				if (!(await closeProjectOnBackend(projectId))) {
+					pending(
+						'debug lifecycle channel not served (backend started without COMAPEO_DEBUG_LIFECYCLE=1)',
+					)
+					return
+				}
 
-				// re-open project
-				project = await openProject(projectId)
+				// ... after which getProject hands back the SAME permanent
+				// reference (channels are keyed by project public id) ...
+				const reopened = await openProject(projectId)
+				expect(reopened).toBe(project)
 
-				const many2 = await project[schemaName].getMany()
+				// ... and reading through it re-opens the project server-side.
+				const many2 = await reopened[schemaName].getMany()
 				const manyValues2 = many2.map((doc) => valueOf(doc))
 
-				// 'expected values returned before closing and after re-opening'
+				// 'expected values returned before the close and after re-opening'
 				expect(removeUndefinedFields(manyValues1)).toEqual(
 					removeUndefinedFields(manyValues2),
 				)

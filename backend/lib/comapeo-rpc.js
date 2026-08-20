@@ -1,5 +1,6 @@
 import { SocketMessagePort } from "./message-port.js";
 import { ServerHelper } from "./server-helper.js";
+import { serveDebugLifecycle } from "./debug-lifecycle.js";
 import * as metrics from "./metrics.js";
 import {
   createComapeoCoreServer,
@@ -14,9 +15,18 @@ export class ComapeoRpc extends ServerHelper {
    * @param {object} params
    * @param {MapeoManager} params.comapeoManager - The ComapeoManager instance to be used by the Comapeo Core RPC server.
    * @param {ComapeoServicesApi} params.comapeoServices - The app-provided services (e.g. map server) served alongside core.
-   * @param {{ onRequestHook?: NonNullable<Parameters<typeof createComapeoCoreServer>[2]>['onRequestHook'] }} [options]
+   * @param {{
+   *   onRequestHook?: NonNullable<Parameters<typeof createComapeoCoreServer>[2]>['onRequestHook'],
+   *   debugLifecycle?: boolean,
+   * }} [options] `debugLifecycle` additionally serves the e2e-only
+   * `@@comapeo-debug/lifecycle` channel (backend-side project close trigger);
+   * never enable it in production — with it off the id is ignored like any
+   * foreign channel.
    */
-  constructor({ comapeoManager, comapeoServices }, { onRequestHook } = {}) {
+  constructor(
+    { comapeoManager, comapeoServices },
+    { onRequestHook, debugLifecycle = false } = {},
+  ) {
     super((socket) => {
       const messagePort = new SocketMessagePort(socket);
 
@@ -32,6 +42,10 @@ export class ComapeoRpc extends ServerHelper {
         onRequestHook ? { onRequestHook } : undefined,
       );
 
+      const debugServer = debugLifecycle
+        ? serveDebugLifecycle(comapeoManager, messagePort)
+        : null;
+
       messagePort.addEventListener("messageerror", (event) => {
         // Log the error NAME only, never the message: V8's JSON.parse
         // SyntaxError embeds a snippet of the raw input, and RPC frames
@@ -43,6 +57,7 @@ export class ComapeoRpc extends ServerHelper {
       messagePort.addEventListener("close", () => {
         coreServer.close();
         servicesServer.close();
+        debugServer?.close();
       });
 
       messagePort.start();

@@ -450,6 +450,16 @@ only edge is fast JS reload, and nearly all of this module is native +
 nodejs-mobile code that needs a full rebuild on change anyway.
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) §"End-to-end locally" has the same how-to.
 
+**Backend-side lifecycle specs.** The project-CRUD specs that verify the
+`@comapeo/ipc` v10 contract (calls transparently survive a backend-side
+project close; `getProject` returns the same reference after close/re-open)
+need to trigger a close *inside* the backend. They use the e2e-only
+`@@comapeo-debug/lifecycle` RPC channel (`backend/lib/debug-lifecycle.js`),
+which the backend serves only when started with `COMAPEO_DEBUG_LIFECYCLE=1`
+in its environment. Until that flag is plumbed through the native start
+path for e2e builds, those specs detect the unserved channel (the call
+times out) and report themselves as *pending* rather than failing.
+
 CI also uploads two lifecycle flows that don't use the in-app suite:
 [`fgs-restart.yaml`](../maestro/fgs-restart.yaml) (the `:ComapeoCore` foreground
 service recovers after its process is force-stopped) and

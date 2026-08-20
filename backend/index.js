@@ -307,7 +307,13 @@ async function withPhase(phase, fn) {
 
         comapeoRpcServer = new ComapeoRpc(
           { comapeoManager, comapeoServices },
-          { onRequestHook: sentry.rpcHook() },
+          {
+            onRequestHook: sentry.rpcHook(),
+            // e2e-only backend-side lifecycle triggers. Off unless the env
+            // flag is set — never set in production, where the channel id is
+            // then ignored like any foreign sender on the socket.
+            debugLifecycle: process.env.COMAPEO_DEBUG_LIFECYCLE === "1",
+          },
         );
 
         await comapeoRpcServer.listen(comapeoSocketPath);

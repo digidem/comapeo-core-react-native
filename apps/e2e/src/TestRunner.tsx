@@ -226,6 +226,7 @@ export function TestRunner() {
       jasmine,
       beforeEach,
       afterEach,
+      pending,
     } = jasmineRequire.interface(jasmineCore, jasmineEnv);
 
     jasmine.DEFAULT_TIMEOUT_INTERVAL = DEFAULT_TIMEOUT_INTERVAL_MS;
@@ -238,6 +239,7 @@ export function TestRunner() {
       jasmine,
       beforeEach,
       afterEach,
+      pending,
     };
 
     // 👇 Register tests here!
