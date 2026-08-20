@@ -263,6 +263,33 @@ describe("transport-drop recovery", () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
+  test("a nonce change with NO tracked drop still resubscribes and signals a restart", () => {
+    // Pathological ordering: the message socket reconnects to a restarted
+    // backend before its drop event is processed, so no recovery window ever
+    // opens — the new nonce arrives via stateChange while transportDropped
+    // is false and must still trigger the full restart sequence.
+    const s = setup();
+    const listener = jest.fn();
+    s.module.subscribeToBackendRestart(listener);
+
+    s.emitNative("transportStateChange", { state: "connected" });
+    s.setBackendState("STARTING");
+    s.setBackendState("STARTED", { bootNonce: "n1" });
+    expect(listener).not.toHaveBeenCalled();
+
+    s.setBackendState("STARTED", { bootNonce: "n2" });
+
+    expect(s.resubscribe).toHaveBeenCalledWith(s.coreClient);
+    expect(s.resubscribe).toHaveBeenCalledWith(s.servicesClient);
+    expect(listener).toHaveBeenCalledTimes(1);
+    const firstResubscribe = Math.min(...s.resubscribe.mock.invocationCallOrder);
+    expect(firstResubscribe).toBeLessThan(listener.mock.invocationCallOrder[0]);
+
+    // Same nonce again: no re-fire.
+    s.setBackendState("STARTED", { bootNonce: "n2" });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   test("a throwing restart listener does not block the others", () => {
     const s = setup({ initialState: "STARTED" });
     const bad = jest.fn(() => {

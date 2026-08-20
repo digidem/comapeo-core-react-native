@@ -634,6 +634,20 @@ re-fetch compensates; state held outside react-query (e.g. the
 map-share stores in `@comapeo/core-react`, and their SSE download
 monitors) is not covered and must handle the restart signal itself.
 
+**Known limitation — the post-deadline wedge.** The auto-reconnect
+gives up into a terminal `State.Error` after its ~120 s window (item 1
+above). Past that deadline nothing chases the backend on its own: a
+later RPC (`postMessage` → `NodeJSIPC.sendMessage`'s `connect()`)
+revives only the *message* socket, while the read-only *control*
+socket reconnects only on the next `OnActivityEntersForeground`
+(`ComapeoCoreModule.kt` reconnects both there). Until the app next
+comes to the foreground, `getState()` stays `ERROR` and recovery —
+which waits for `STARTED` — is deferred, so RPC calls can quietly
+succeed again while event subscriptions remain unreplayed and no
+restart signal fires. Foregrounding the app recovers both sockets and
+completes recovery; a backend that comes back within the 120 s window
+never hits this.
+
 **What the host app must still handle.** Recovery only reaches state
 the module and `@comapeo/core-react` own. Client references survive a
 restart (project channels are keyed by public id), but app code that

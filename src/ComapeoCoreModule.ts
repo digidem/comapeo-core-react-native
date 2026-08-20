@@ -596,6 +596,16 @@ let lastSeenBootNonce: string | null = null;
 
 const restartListeners = new Set<() => void>();
 
+function notifyRestartListeners() {
+  for (const listener of [...restartListeners]) {
+    try {
+      listener();
+    } catch (err) {
+      console.error("backend-restart listener threw", err);
+    }
+  }
+}
+
 function maybeCompleteRecovery() {
   if (!transportDropped || !transportConnected) return;
   if (nativeModule.getState() !== "STARTED") return;
@@ -613,13 +623,7 @@ function maybeCompleteRecovery() {
   if (nonce !== null) lastSeenBootNonce = nonce;
   if (!genuineRestart) return;
 
-  for (const listener of [...restartListeners]) {
-    try {
-      listener();
-    } catch (err) {
-      console.error("backend-restart listener threw", err);
-    }
-  }
+  notifyRestartListeners();
 }
 
 // Optional calls, matching the other absent-native fallbacks (test contexts).
@@ -646,8 +650,19 @@ nativeModule.addListener?.("stateChange", (event: StateChangeEventPayload) => {
   // Normal-operation tracking. Skipped while a drop is still unrecovered
   // (`transportDropped` after the call above) so the pre-drop nonce stays
   // available for the restart comparison once the transport reconnects.
-  if (event.bootNonce && !transportDropped) {
-    lastSeenBootNonce = event.bootNonce;
+  if (!event.bootNonce || transportDropped) return;
+  const nonceChanged =
+    lastSeenBootNonce !== null && event.bootNonce !== lastSeenBootNonce;
+  lastSeenBootNonce = event.bootNonce;
+  // Defense-in-depth: a nonce change with no tracked drop still means the
+  // backend restarted — reachable when the message socket reconnects to the
+  // restarted backend before its drop event is processed, so recovery never
+  // opened. The transport is connected here (no unrecovered drop), so run
+  // the same resubscribe-then-fire sequence recovery would have.
+  if (nonceChanged) {
+    resubscribe(comapeo);
+    resubscribe(comapeoServicesClient);
+    notifyRestartListeners();
   }
 });
 
