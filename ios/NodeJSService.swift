@@ -28,22 +28,36 @@ class NodeJSService {
     /// `NodeJSService`. The node thread may still be alive when
     /// `.error` is set — this layer doesn't tear it down; `cleanup()`
     /// does.
-    enum State: String {
-        case stopped = "STOPPED"
-        case starting = "STARTING"
-        case started = "STARTED"
-        case stopping = "STOPPING"
-        case error = "ERROR"
+    enum State {
+        case stopped
+        case starting
+        case started
+        case stopping
+        case error
         /// Storage migration in flight; the backend is streaming progress
         /// via `onMigrationProgress`. Non-terminal: resolves to `.started`
         /// on success or `.migrationError`/`.lowSpace` on failure.
-        case migrating = "MIGRATING"
+        case migrating
         /// Storage migration failed. **Recoverable** (unlike `.error`):
         /// the backend stays alive awaiting a `retry` frame, so the app
         /// can call `sendRetryFrame` and walk back to `.migrating`.
-        case migrationError = "MIGRATION_ERROR"
-        /// Not enough free space to migrate. Also recoverable via `retry`.
-        case lowSpace = "LOW_SPACE"
+        case migrationError
+        /// Not enough free space to migrate. `spaceNeeded` is the byte
+        /// deficit the backend reported. Also recoverable via `retry`.
+        case lowSpace(spaceNeeded: Int)
+
+        var rawValue: String {
+            switch self {
+            case .stopped: return "STOPPED"
+            case .starting: return "STARTING"
+            case .started: return "STARTED"
+            case .stopping: return "STOPPING"
+            case .error: return "ERROR"
+            case .migrating: return "MIGRATING"
+            case .migrationError: return "MIGRATION_ERROR"
+            case .lowSpace: return "LOW_SPACE"
+            }
+        }
     }
 
     /// Detail attached to `.error` transitions. `phase` mirrors backend
@@ -53,19 +67,6 @@ class NodeJSService {
     struct ErrorInfo: Equatable {
         let phase: String
         let message: String
-    }
-
-    /// Detail for the recoverable `.migrationError` / `.lowSpace` states.
-    /// Kept separate from `_lastError` because those states are NOT terminal
-    /// `.error` — `getLastError()` stays reserved for true ERROR transitions.
-    /// Read via `getMigrationDetail()` (lock-guarded); only meaningful while
-    /// `state` is `.migrationError` or `.lowSpace`.
-    struct MigrationDetail: Equatable {
-        /// `"migration-error"` or `"low-space"`.
-        let phase: String
-        let message: String
-        /// Free-bytes figure the backend reported, `.lowSpace` only.
-        let spaceNeeded: Int
     }
 
     // MARK: - Component state (derivation inputs)
@@ -176,23 +177,14 @@ class NodeJSService {
     private var stopRequested: Bool = false
 
     /// Last `.error` detail. Set by `applyAndEmit`; read via
-    /// `getLastError()` (lock-guarded).
+    /// `getLastError()` (lock-guarded). Also set on `.migrationError`
+    /// transitions so the module can read the message via the same getter.
     private var _lastError: ErrorInfo?
-
-    /// Last `.migrationError` / `.lowSpace` detail. Mutated only under
-    /// `lock`; read via `getMigrationDetail()`.
-    private var _migrationDetail: MigrationDetail?
 
     func getLastError() -> ErrorInfo? {
         lock.lock()
         defer { lock.unlock() }
         return _lastError
-    }
-
-    func getMigrationDetail() -> MigrationDetail? {
-        lock.lock()
-        defer { lock.unlock() }
-        return _migrationDetail
     }
 
     /// Forwarded as `--sentry*` argv to `backend/loader.mjs`.
@@ -287,7 +279,7 @@ class NodeJSService {
         // so a stop during migration still derives to `.stopping`.
         if case .migrating = backendState { return .migrating }
         if case .migrationError = backendState { return .migrationError }
-        if case .lowSpace = backendState { return .lowSpace }
+        if case .lowSpace(let spaceNeeded) = backendState { return .lowSpace(spaceNeeded: spaceNeeded) }
 
         if case .running = nodeRuntime { return .starting }
         if case .controlBound = backendState { return .starting }
@@ -353,6 +345,7 @@ class NodeJSService {
             case .error: return .internalError
             case .stopping, .stopped: return .cancelled
             case .starting: return nil
+            case .migrating, .migrationError, .lowSpace: return nil
             }
         }() : nil
         var drainTx: Any?
@@ -521,13 +514,8 @@ class NodeJSService {
                 level: .error,
                 tags: [SentryTags.phase: "migrate"]
             )
-            applyAndEmit {
+            applyAndEmit(error: ErrorInfo(phase: "migration-error", message: message)) {
                 self.backendState = .migrationError(message: message, stack: stack)
-                self._migrationDetail = NodeJSService.MigrationDetail(
-                    phase: "migration-error",
-                    message: message,
-                    spaceNeeded: 0
-                )
             }
         case .lowSpace(let spaceNeeded):
             logCrumb(
@@ -537,11 +525,6 @@ class NodeJSService {
             )
             applyAndEmit {
                 self.backendState = .lowSpace(spaceNeeded: spaceNeeded)
-                self._migrationDetail = NodeJSService.MigrationDetail(
-                    phase: "low-space",
-                    message: "Insufficient free space for storage migration",
-                    spaceNeeded: spaceNeeded
-                )
             }
         case .malformed(let detail):
             // Forwarded via `onMessageError`. Not raised to `.error` —
@@ -680,13 +663,14 @@ class NodeJSService {
         // Migration states are stoppable too: `.migrating` is an active
         // phase, and `.migrationError`/`.lowSpace` park the backend awaiting
         // a `retry` — a user dismissing the prompt should be able to quit.
-        guard
-            state == .started
-            || state == .starting
-            || state == .migrating
-            || state == .migrationError
-            || state == .lowSpace
-        else {
+        let isStoppable: Bool
+        switch state {
+        case .started, .starting, .migrating, .migrationError, .lowSpace:
+            isStoppable = true
+        default:
+            isStoppable = false
+        }
+        guard isStoppable else {
             lock.unlock()
             log("Cannot stop: state is \(state.rawValue)")
             return

@@ -34,15 +34,13 @@ public class ComapeoCoreModule: Module {
             // practice; only one module instance is alive at a time.
             AppLifecycleDelegate.nodeService.onStateChange = { [weak self] state in
                 var payload: [String: Any] = ["state": state.rawValue]
-                if state == .error,
+                if state == .error || state == .migrationError,
                    let info = AppLifecycleDelegate.nodeService.getLastError() {
                     payload["errorPhase"] = info.phase
                     payload["errorMessage"] = info.message
-                } else if state == .migrationError || state == .lowSpace,
-                          let detail = AppLifecycleDelegate.nodeService.getMigrationDetail() {
-                    payload["errorPhase"] = detail.phase
-                    payload["errorMessage"] = detail.message
-                    payload["spaceNeeded"] = detail.spaceNeeded
+                }
+                if case .lowSpace(let spaceNeeded) = state {
+                    payload["spaceNeeded"] = spaceNeeded
                 }
                 self?.sendEvent("stateChange", payload)
             }

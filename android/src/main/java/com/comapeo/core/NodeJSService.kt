@@ -119,21 +119,6 @@ class NodeJSService(
     data class ErrorInfo(val phase: String, val message: String)
 
     /**
-     * Detail for the recoverable `.migrationError` / `.lowSpace` states.
-     * Kept separate from `lastError` because those states are NOT terminal
-     * `.error` — `getLastError()` stays reserved for true ERROR transitions.
-     * Read via [getMigrationDetail]; only meaningful while
-     * [state] is `.migrationError` or `.lowSpace`.
-     */
-    data class MigrationDetail(
-        /** `"migration-error"` or `"low-space"`. */
-        val phase: String,
-        val message: String,
-        /** Free-bytes figure the backend reported, `.lowSpace` only. */
-        val spaceNeeded: Long,
-    )
-
-    /**
      * Node runtime-thread lifecycle. `Exited` carries an [ExitReason] so an
      * unexpected exit (native-addon crash, `process.abort()`) derives to ERROR
      * rather than STOPPED.
@@ -178,7 +163,6 @@ class NodeJSService(
         val stopRequested: Boolean = false,
         val state: State = State.STOPPED,
         val lastError: ErrorInfo? = null,
-        val migrationDetail: MigrationDetail? = null,
     )
 
     interface Callback {
@@ -244,8 +228,6 @@ class NodeJSService(
     fun getState(): State = stateFlow.value.state
 
     fun getLastError(): ErrorInfo? = stateFlow.value.lastError
-
-    fun getMigrationDetail(): MigrationDetail? = stateFlow.value.migrationDetail
 
     companion object {
 
@@ -751,15 +733,8 @@ class NodeJSService(
                     level = "error",
                     tags = mapOf(SentryTags.PHASE to "migrate"),
                 )
-                applyAndEmit {
-                    it.copy(
-                        backendState = BackendState.MigrationError(frame.message, frame.stack),
-                        migrationDetail = MigrationDetail(
-                            phase = "migration-error",
-                            message = frame.message,
-                            spaceNeeded = 0,
-                        ),
-                    )
+                applyAndEmit(error = ErrorInfo(phase = "migration-error", message = frame.message)) {
+                    it.copy(backendState = BackendState.MigrationError(frame.message, frame.stack))
                 }
             }
             is ControlFrame.LowSpace -> {
@@ -769,14 +744,7 @@ class NodeJSService(
                     data = mapOf("spaceNeeded" to frame.spaceNeeded.toString()),
                 )
                 applyAndEmit {
-                    it.copy(
-                        backendState = BackendState.LowSpace(frame.spaceNeeded),
-                        migrationDetail = MigrationDetail(
-                            phase = "low-space",
-                            message = "Insufficient free space for storage migration",
-                            spaceNeeded = frame.spaceNeeded,
-                        ),
-                    )
+                    it.copy(backendState = BackendState.LowSpace(frame.spaceNeeded))
                 }
             }
             is ControlFrame.Malformed -> {

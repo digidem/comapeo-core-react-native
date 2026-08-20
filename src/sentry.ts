@@ -26,7 +26,7 @@ import {
   setDebugEnabledNative,
   type SentryPreferences,
 } from "./ComapeoCoreModule.js";
-import type { ComapeoErrorInfo, ComapeoState } from "./ComapeoCore.types.js";
+import type { ComapeoState, StateChangeDetails } from "./ComapeoCore.types.js";
 import { SentryTags, SENTRY_OWNED_GLOBAL_KEY } from "./sentry-tags.js";
 import { scrubEvent, scrubBreadcrumb, scrubLog } from "./sentry-scrub.js";
 import {
@@ -457,16 +457,10 @@ function chainHook<T extends AnyEvent>(
 state.addListener("stateChange", handleStateChange);
 state.addListener("messageerror", handleMessageError);
 
-function handleStateChange(s: ComapeoState, info: ComapeoErrorInfo | null) {
+function handleStateChange(s: ComapeoState, details: StateChangeDetails | null) {
   if (!sentryReady) return;
 
-  const data = info
-    ? {
-        state: s,
-        errorPhase: info.errorPhase,
-        errorMessage: info.errorMessage,
-      }
-    : { state: s };
+  const data = details ? { state: s, ...details } : { state: s };
   Sentry.addBreadcrumb({
     category: "comapeo.state",
     type: "state",

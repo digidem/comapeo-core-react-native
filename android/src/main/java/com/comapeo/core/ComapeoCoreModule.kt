@@ -31,13 +31,6 @@ class ComapeoCoreModule : Module() {
     /** Cleared on any non-ERROR transition so a fresh cycle can't surface stale details. */
     private var lastError: Map<String, Any>? = null
 
-    /**
-     * Detail for the recoverable `MIGRATION_ERROR` / `LOW_SPACE` states.
-     * Cleared on any non-migration transition so a fresh cycle can't surface
-     * stale details. Only meaningful while [jsState] is one of the two.
-     */
-    private var migrationDetail: Map<String, Any>? = null
-
     private fun setState(next: JsState, errorPayload: Map<String, Any>? = null) {
         val eventToEmit: Map<String, Any>? = synchronized(stateLock) {
             when {
@@ -50,10 +43,6 @@ class ComapeoCoreModule : Module() {
                 else -> {
                     jsState = next
                     lastError = errorPayload
-                    migrationDetail = when (next) {
-                        JsState.MIGRATION_ERROR, JsState.LOW_SPACE -> errorPayload
-                        else -> null
-                    }
                     buildEventPayload(next, errorPayload)
                 }
             }
@@ -130,12 +119,10 @@ class ComapeoCoreModule : Module() {
                             )
                         }
                         is ControlFrame.LowSpace -> {
-                            val payload = buildMap {
-                                put("errorPhase", "low-space")
-                                put("errorMessage", "Insufficient free space for storage migration")
-                                put("spaceNeeded", frame.spaceNeeded)
-                            }
-                            setState(JsState.LOW_SPACE, payload)
+                            setState(
+                                JsState.LOW_SPACE,
+                                mapOf("spaceNeeded" to frame.spaceNeeded),
+                            )
                         }
                         is ControlFrame.Malformed -> emitMessageError(frame.detail)
                     }
@@ -208,10 +195,6 @@ class ComapeoCoreModule : Module() {
 
         Function("getLastError") {
             synchronized(stateLock) { lastError }
-        }
-
-        Function("getMigrationDetail") {
-            synchronized(stateLock) { migrationDetail }
         }
 
         // `sentryConfig` — baked-in by app.plugin.js at prebuild; spread into

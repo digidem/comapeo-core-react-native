@@ -68,11 +68,11 @@ export type MessageErrorEventPayload = {
 export type StateChangeEventPayload = {
   state: ComapeoState;
   /**
-   * Set when `state` is `"ERROR"`, `"MIGRATION_ERROR"`, or `"LOW_SPACE"`.
+   * Set when `state` is `"ERROR"` or `"MIGRATION_ERROR"`.
    * For `"ERROR"`, `errorPhase` is one of the backend's boot phases
    * (`listen-control`, `init`, `construct`, `runtime`) or a native-derived
-   * tag (`rootkey`, `node-runtime`, `shutdown-timeout`, `ipc`). For the
-   * migration states it is `"migration-error"` or `"low-space"`.
+   * tag (`rootkey`, `node-runtime`, `shutdown-timeout`, `ipc`). For
+   * `"MIGRATION_ERROR"` it is `"migration-error"`.
    * `errorMessage` is the human-readable message suitable for developer
    * logs; do not display it directly to end users without translation.
    */
@@ -82,7 +82,7 @@ export type StateChangeEventPayload = {
    * Set only when `state` is `"LOW_SPACE"` — the free-bytes figure the
    * backend reported as the shortfall.
    */
-  spaceNeeded: number;
+  spaceNeeded?: number;
 };
 
 /**
@@ -104,6 +104,16 @@ export type ComapeoErrorInfo = {
   errorPhase: string;
   errorMessage: string;
 };
+
+export type LowSpaceDetails = {
+  spaceNeeded: number;
+};
+
+/**
+ * Detail payload for the `stateChange` event. Mutually exclusive shapes:
+ * error fields for `ERROR`/`MIGRATION_ERROR`, byte count for `LOW_SPACE`.
+ */
+export type StateChangeDetails = ComapeoErrorInfo | LowSpaceDetails;
 
 /**
  * Status of the notification permission. Mirrors expo-modules-core's

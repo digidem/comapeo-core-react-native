@@ -9,6 +9,7 @@ import {
   type MigrationProgressEventPayload,
   type NotificationPermissionResponse,
   type StateChangeEventPayload,
+  type StateChangeDetails,
 } from "./ComapeoCore.types.js";
 import type { MessagePortLike } from "rpc-reflector";
 import {
@@ -464,7 +465,7 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(
 );
 
 type StateEvents = {
-  stateChange: (state: ComapeoState, error: ComapeoErrorInfo | null) => void;
+  stateChange: (state: ComapeoState, details: StateChangeDetails | null) => void;
   /**
    * Fires on each backend storage-migration progress tick with the raw
    * progress string (e.g. `"2/5"`, `""` before the first core finishes).
@@ -547,19 +548,15 @@ class State extends EventEmitter<StateEvents> {
   }
 
   #handleStateChangeEvent = (event: StateChangeEventPayload) => {
-    // The detail second-arg is populated for `ERROR` and the two
-    // recoverable migration states (`MIGRATION_ERROR`/`LOW_SPACE`), which
-    // the native layer reports through the same `errorPhase`/`errorMessage`
-    // fields.
-    const isDetailState =
-      event.state === "ERROR" ||
-      event.state === "MIGRATION_ERROR" ||
-      event.state === "LOW_SPACE";
-    const error: ComapeoErrorInfo | null =
-      isDetailState && event.errorPhase && event.errorMessage
-        ? { errorPhase: event.errorPhase, errorMessage: event.errorMessage }
-        : null;
-    this.emit("stateChange", event.state, error);
+    let details: StateChangeDetails | null = null;
+    if (event.state === "ERROR" || event.state === "MIGRATION_ERROR") {
+      if (event.errorPhase && event.errorMessage) {
+        details = { errorPhase: event.errorPhase, errorMessage: event.errorMessage };
+      }
+    } else if (event.state === "LOW_SPACE" && event.spaceNeeded != null) {
+      details = { spaceNeeded: event.spaceNeeded };
+    }
+    this.emit("stateChange", event.state, details);
   };
 
   #handleMigrationProgressEvent = (event: MigrationProgressEventPayload) => {
