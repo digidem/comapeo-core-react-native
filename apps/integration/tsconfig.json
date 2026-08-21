@@ -1,10 +1,12 @@
 {
+  // Do NOT add a `paths` alias for "@comapeo/core-react-native" → "../../src/*".
+  // Expo's Metro honours tsconfig `paths`, and `src/` uses ESM ".js" specifiers
+  // that Metro will not resolve to their ".ts" files, so the alias breaks the
+  // release bundle outright. metro.config.js already resolves the package via a
+  // node_modules symlink (→ build/); run `npm run build` to pick up module src
+  // changes here. Same reasoning as apps/e2e/tsconfig.json.
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true,
-    "paths": {
-      "@comapeo/core-react-native": ["../../src/index"],
-      "@comapeo/core-react-native/*": ["../../src/*"]
-    }
+    "strict": true
   }
 }
