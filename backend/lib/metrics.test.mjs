@@ -27,6 +27,28 @@ function fakeSentry() {
   };
 }
 
+/** A `memorySnapshot()` shaped fixture; Android values by default. */
+function snapshot(overrides = {}) {
+  return {
+    runtime: "24.19.0-0",
+    heap: {
+      usedBytes: 16_598_748,
+      physicalBytes: 27_484_160,
+      totalBytes: 35_233_792,
+      limitBytes: 569_114_624,
+      externalBytes: 10_081_653,
+    },
+    process: {
+      rssBytes: 192_600 * 1024,
+      peakRssBytes: 261_000 * 1024,
+      anonBytes: 92_500 * 1024,
+      fileBytes: 99_100 * 1024,
+      swapBytes: 26_500 * 1024,
+    },
+    ...overrides,
+  };
+}
+
 function initWith(sdk, overrides = {}) {
   metrics.init({
     Sentry: sdk,
@@ -43,7 +65,7 @@ beforeEach(() => metrics.resetForTests());
 test("no-ops entirely when Sentry is off (init never ran)", () => {
   // No init → no SDK. Calls must not throw and record nothing.
   metrics.rpcServer("read.doc", "ok", 12);
-  metrics.backendMemorySample();
+  metrics.backendMemorySample(snapshot());
   metrics.storageSizeBucket("<10MB");
   // Nothing to assert beyond "did not throw"; the absence of an SDK is
   // the whole point.
@@ -102,16 +124,47 @@ test("syncSession emits one duration metric; peers/bytes buckets are usage-gated
   );
 });
 
-test("backendMemorySample emits the heap-used gauge in bytes", () => {
+test("backendMemorySample emits the heap gauges in bytes, tagged by runtime", () => {
   const { sdk, calls } = fakeSentry();
   initWith(sdk);
-  metrics.backendMemorySample();
-  const names = calls.gauge.map((g) => g.name);
-  // rss is intentionally omitted (it measures the whole process, misleading
-  // on iOS where node runs in-process); uptime was dropped (a sampled
-  // monotonic gauge has no actionable aggregate).
-  assert.deepEqual(names, ["comapeo.backend.heap_used_bytes"]);
-  assert.equal(calls.gauge[0].unit, "byte");
+  // No `process` block — this is the iOS shape, where node shares the app
+  // process so an rss would describe the UI too. Uptime was dropped (a
+  // sampled monotonic gauge has no actionable aggregate).
+  metrics.backendMemorySample(snapshot({ process: null }));
+  assert.deepEqual(
+    calls.gauge.map((g) => g.name),
+    ["comapeo.backend.heap_used_bytes", "comapeo.backend.heap_physical_bytes"],
+  );
+  assert.ok(calls.gauge.every((g) => g.unit === "byte"));
+  assert.ok(calls.gauge.every((g) => g.attributes.runtime === "24.19.0-0"));
+});
+
+test("backendMemorySample carries device tags — the slice memory is about", () => {
+  const { sdk, calls } = fakeSentry();
+  initWith(sdk);
+  metrics.backendMemorySample(snapshot());
+  assert.ok(
+    calls.gauge.every(
+      (g) => g.attributes.device_class === "mid" && g.attributes.os_major === "android.14",
+    ),
+  );
+});
+
+test("backendMemorySample adds the rss pair where node owns the process", () => {
+  const { sdk, calls } = fakeSentry();
+  initWith(sdk);
+  metrics.backendMemorySample(snapshot());
+  assert.deepEqual(
+    calls.gauge.map((g) => g.name),
+    [
+      "comapeo.backend.heap_used_bytes",
+      "comapeo.backend.heap_physical_bytes",
+      "comapeo.backend.rss_bytes",
+      "comapeo.backend.rss_peak_bytes",
+    ],
+  );
+  const peak = calls.gauge.find((g) => g.name === "comapeo.backend.rss_peak_bytes");
+  assert.equal(peak.value, 261_000 * 1024);
 });
 
 test("before_metric_send filter drops a forbidden tag name routed through count()", () => {

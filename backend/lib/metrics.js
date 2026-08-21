@@ -197,19 +197,65 @@ export function syncSession(outcome, ms, peersBucket, bytesBucket) {
   }
 }
 
-// ── Backend health (60s sampler) ────────────────────────────────
+// ── Backend health (boot sample, then 60s sampler) ──────────────
 
 /**
- * Heap-used gauge. `rss` is intentionally omitted: node's `rss` is the whole
- * OS process, which on iOS is the entire app (node runs in-process), so it
- * wouldn't measure "the backend". `heapUsed` is the V8 JS heap and is
- * meaningful on both platforms.
+ * Backend footprint gauges.
+ *
+ * The heap pair is emitted everywhere: `heap_used_bytes` is the live object
+ * graph, `heap_physical_bytes` the heap memory actually committed and
+ * touched. The second is what tracks the process's anonymous RSS, so it is
+ * the one that moves when the runtime's memory layout changes — a V8 build
+ * flag can halve the first while barely denting the process, or the reverse,
+ * and only having both tells you which happened.
+ *
+ * The RSS pair rides on `snapshot.process`, which is non-null only where
+ * `/proc` exists **and** node owns the process — i.e. Android's
+ * `:ComapeoCore`. On iOS node runs in-process, so an `rss` there would be the
+ * whole app, not the backend; `memory-snapshot.js` returns null and these two
+ * are simply not emitted. `rss_peak_bytes` is `VmHWM`, the high-water mark
+ * that Android's low-memory killer effectively scores the process on.
+ *
+ * All four sit at the **diagnostic** tier, matching `heap_used_bytes`, which
+ * has always been diagnostic. They describe the process's own resource use at
+ * a fixed low cadence, name nothing the user did, and — measured at boot —
+ * are overwhelmingly a property of the build and the device rather than of
+ * the data. Free *device* memory is deliberately still absent: that lives in
+ * the `node_resources` context and stays usage-tier, because read-at-capture
+ * frequency is itself usage-shape data.
+ *
+ * `runtime` is the nodejs-mobile revision, the dimension you group by to
+ * compare two runtime builds in the field. It is one value per shipped build
+ * — low cardinality, and no more identifying than the app version already on
+ * every event.
+ *
+ * These carry `device_class` / `os_major` too, unlike the duration metrics
+ * where they are a nice-to-have. Memory is the metric whose whole point is
+ * the low-RAM device: `heap_used_bytes` shipped without them and, three
+ * months in, its 15k samples cannot answer "is the tail coming from cheap
+ * hardware" at all — which is the only question worth asking of it.
+ *
+ * @param {import("./memory-snapshot.js").MemorySnapshot} snapshot
  */
-export function backendMemorySample() {
+export function backendMemorySample(snapshot) {
   const metrics = api();
   if (!metrics) return;
-  const mem = process.memoryUsage();
-  gauge("comapeo.backend.heap_used_bytes", mem.heapUsed, "byte", {});
+  const attrs = { ...deviceTags(), runtime: snapshot.runtime };
+  gauge("comapeo.backend.heap_used_bytes", snapshot.heap.usedBytes, "byte", attrs);
+  gauge(
+    "comapeo.backend.heap_physical_bytes",
+    snapshot.heap.physicalBytes,
+    "byte",
+    attrs,
+  );
+  if (!snapshot.process) return;
+  gauge("comapeo.backend.rss_bytes", snapshot.process.rssBytes, "byte", attrs);
+  gauge(
+    "comapeo.backend.rss_peak_bytes",
+    snapshot.process.peakRssBytes,
+    "byte",
+    attrs,
+  );
 }
 
 /**
