@@ -19,6 +19,14 @@ data class DeviceTags(
     val deviceClass: String,
     val osMajor: String,
 ) {
+    /** The attribute names the backend's metrics layer uses, so a native
+     *  metric and a Node one slice identically in one Explore query. */
+    fun asMetricAttributes(): Map<String, String> = mapOf(
+        "platform" to platform,
+        "device_class" to deviceClass,
+        "os_major" to osMajor,
+    )
+
     companion object {
         const val PLATFORM = "android"
 

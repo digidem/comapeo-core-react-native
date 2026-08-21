@@ -1182,11 +1182,29 @@ cross-referenceable post-mortem — `info` otherwise), the headline
 `oem.killer.suspected` — `signaled` + SIGKILL +
 foreground/foreground-service importance, the signature of OEM custom
 killers reaching past FGS protection — plus `description`, `pss_kb`,
-`rss_kb`, `exit_timestamp_ms`, and the coarse duration buckets
+`rss_kb`, `exit_timestamp_ms`, the shared `platform` / `device_class` /
+`os_major` attributes, and the coarse duration buckets
 `uptime_bucket` / `bg_duration_bucket` /
 `comapeo.fgs.killed_in_background`. The buckets sit at diagnostic
 (not usage) tier deliberately: they're aggregate, low-resolution
 cohort axes, not a per-user timeline.
+
+The device attributes are threaded in by the collector rather than by a
+metrics layer: these emissions go to `Sentry.metrics()` directly, because
+the main process has no `SentryFgsBridge.init` to hang shared attributes
+off. Without them an OOM statistic cannot be attributed to a device class,
+which is the first thing anyone asks of one.
+
+Two companion **distributions** carry the process footprint at the moment
+of death, in bytes, with the same attributes: `comapeo.app.exit.rss_bytes`
+and `comapeo.app.exit.pss_bytes`. They exist because `rss_kb` / `pss_kb`
+are *numeric* attributes and Explore cannot group by those — the same
+reason the durations here are pre-bucketed strings — so as attributes
+alone the footprint was unreadable. A zero from `ApplicationExitInfo`
+(some reasons, some vendors) means "not measured" and is skipped rather
+than recorded as a real zero. These pair with
+`comapeo.backend.rss_peak_bytes` from the running process: one says what
+it grew to, the other what it died holding.
 
 App-usage-tier additions (only when `applicationUsageData` is on):
 the exact `alive_for_ms` / `backgrounded_for_ms` values — millisecond

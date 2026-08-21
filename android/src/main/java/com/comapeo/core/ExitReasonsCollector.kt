@@ -24,10 +24,22 @@ internal data class ExitRecord(
     val description: String?,
 )
 
-/** Decoded emission for one exit record: a `comapeo.app.exit` count of 1
- *  with these attributes. */
+/**
+ * Decoded emission for one exit record: a `comapeo.app.exit` count of 1 with
+ * these attributes, plus — when the OS supplied them — the process footprint
+ * at the moment it died, as distributions.
+ *
+ * The footprint also rides along as the numeric `rss_kb` / `pss_kb`
+ * attributes, but Explore cannot group by a numeric attribute (the same
+ * reason the durations here are pre-bucketed strings), so as attributes alone
+ * they were unreadable. As distributions they give fleet percentiles of "how
+ * big was the process when the kernel took it", sliced by the same
+ * attributes.
+ */
 internal data class ExitReasonMetric(
     val attributes: Map<String, Any>,
+    val rssBytes: Long? = null,
+    val pssBytes: Long? = null,
 )
 
 /**
@@ -72,6 +84,12 @@ internal class ExitReasonsCollector(
     private val snapshot: AnchorSnapshot,
     private val applicationUsageData: Boolean,
     private val nowMs: () -> Long = System::currentTimeMillis,
+    // Merged into every emission. Unlike the backend's metrics layer, which
+    // injects these centrally, the exit metrics go to `Sentry.metrics()`
+    // directly (the main process has no `SentryFgsBridge.init`), so they have
+    // to be threaded in here — without them a kill cannot be attributed to a
+    // device class, which is the first question anyone asks of it.
+    private val deviceTags: Map<String, String> = emptyMap(),
 ) {
     /** [newLastSeenMs] is non-null when there are metrics to report; the
      *  caller persists it only AFTER the captures run, so a record consumed
@@ -103,6 +121,7 @@ internal class ExitReasonsCollector(
 
     private fun decode(record: ExitRecord, procKey: String): ExitReasonMetric {
         val attributes = buildMap {
+            putAll(deviceTags)
             put(SentryTags.PROC, procKey)
             put(SentryTags.EXIT_REASON, ExitReasonTags.decodeReason(record.reason))
             put(SentryTags.EXIT_PROCESS_STATE, ExitReasonTags.decodeImportance(record.importance))
@@ -140,12 +159,24 @@ internal class ExitReasonsCollector(
                 }
             }
         }
-        return ExitReasonMetric(attributes)
+        // `ApplicationExitInfo` reports 0 for both on some reasons and some
+        // vendors; a zero is "not measured", not "the process was empty".
+        return ExitReasonMetric(
+            attributes = attributes,
+            rssBytes = record.rssKb.takeIf { it > 0 }?.times(1024),
+            pssBytes = record.pssKb.takeIf { it > 0 }?.times(1024),
+        )
     }
 
     companion object {
         /** One count per exit, sliceable by attribute in Sentry's Explore UI. */
         const val METRIC_NAME = "comapeo.app.exit"
+
+        /** Process footprint at the moment of death, when the OS reported it.
+         *  Pairs with `comapeo.backend.rss_peak_bytes` from the running
+         *  process: one says what it grew to, the other what it died holding. */
+        const val RSS_METRIC_NAME = "comapeo.app.exit.rss_bytes"
+        const val PSS_METRIC_NAME = "comapeo.app.exit.pss_bytes"
 
         /** Per-process cap after filtering. The OS retains only a handful of
          *  records per package anyway (~16 on AOSP); this just bounds a
@@ -204,6 +235,7 @@ internal class ExitReasonsCollector(
                     anchors = anchors,
                     snapshot = snapshot,
                     applicationUsageData = applicationUsageData,
+                    deviceTags = DeviceTags.compute(context).asMetricAttributes(),
                 ).collect(processName, procKey, queryRecords(context))
                 log("[${SentryCategories.EXIT}] $procKey: ${result.metrics.size} new exit record(s)")
                 if (result.metrics.isEmpty()) return
@@ -303,12 +335,14 @@ internal class ExitReasonsCollector(
          */
         private fun capture(metric: ExitReasonMetric) {
             try {
-                Sentry.metrics().count(
-                    METRIC_NAME,
-                    1.0,
-                    null,
-                    SentryMetricsParameters.create(metric.attributes),
-                )
+                val params = SentryMetricsParameters.create(metric.attributes)
+                Sentry.metrics().count(METRIC_NAME, 1.0, null, params)
+                metric.rssBytes?.let {
+                    Sentry.metrics().distribution(RSS_METRIC_NAME, it.toDouble(), "byte", params)
+                }
+                metric.pssBytes?.let {
+                    Sentry.metrics().distribution(PSS_METRIC_NAME, it.toDouble(), "byte", params)
+                }
             } catch (t: Throwable) {
                 Log.w(TAG, "exit-reason metric threw", t)
             }
