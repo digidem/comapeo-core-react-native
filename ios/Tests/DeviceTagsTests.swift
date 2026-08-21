@@ -32,4 +32,17 @@ final class DeviceTagsTests: XCTestCase {
         XCTAssertEqual(DeviceTags.osMajor(systemVersion: "16.5.1"), "ios.16")
         XCTAssertEqual(DeviceTags.osMajor(systemVersion: ""), "ios.0")
     }
+
+    func testAsMetricAttributesUsesTheBackendsAttributeNames() {
+        // These names must match `deviceTags()` in backend/lib/metrics.js, or
+        // a native metric and a Node one will not slice in one Explore query.
+        let attrs = DeviceTags(
+            platform: "ios",
+            deviceClass: DeviceTags.classMid,
+            osMajor: "ios.17"
+        ).asMetricAttributes()
+        XCTAssertEqual(attrs["platform"] as? String, "ios")
+        XCTAssertEqual(attrs["device_class"] as? String, "mid")
+        XCTAssertEqual(attrs["os_major"] as? String, "ios.17")
+    }
 }

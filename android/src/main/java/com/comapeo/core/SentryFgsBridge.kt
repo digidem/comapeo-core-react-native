@@ -52,6 +52,11 @@ object SentryFgsBridge {
     @Volatile
     private var initialized: Boolean = false
 
+    /** Merged into every metric by [countMetric]. Computed once at [init] —
+     *  `DeviceTags.compute` reads `ActivityManager`, and the answer cannot
+     *  change within a process. */
+    private var deviceAttributes: Map<String, String> = emptyMap()
+
     /** Idempotent. Caller must pass a non-null `SentryConfig`; skip the call
      *  entirely when `loadFromManifest` returns null. `userId` is the derived
      *  Sentry user.id (monthly or permanent hash — never the root ID).
@@ -66,6 +71,7 @@ object SentryFgsBridge {
     ) {
         if (initialized) return
         try {
+            deviceAttributes = DeviceTags.compute(context.applicationContext).asMetricAttributes()
             // Parse once here rather than in the event processor on every capture.
             val backendModules: Map<String, String>? =
                 config.backendModulesJson?.let { json ->
@@ -226,6 +232,12 @@ object SentryFgsBridge {
     ) {
         if (!initialized) return
         try {
+            // Every metric picks up platform/device_class/os_major here,
+            // mirroring what the backend's metrics layer injects centrally: a
+            // call site cannot forget them, and without them a fleet
+            // statistic cannot be attributed to a class of hardware. Call-site
+            // attributes win on a key collision.
+            val attributes = deviceAttributes + attributes
             // Silently drop a metric carrying a forbidden name/attribute — an
             // expected, innocuous gate that isn't worth a log line.
             if (SentryMetricScrub.isForbiddenMetric(name, attributes)) return
@@ -416,6 +428,7 @@ object SentryFgsBridge {
     @JvmStatic
     internal fun resetForTests() {
         initialized = false
+        deviceAttributes = emptyMap()
     }
 
     /**

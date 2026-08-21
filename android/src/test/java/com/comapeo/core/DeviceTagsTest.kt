@@ -49,4 +49,23 @@ class DeviceTagsTest {
         assertEquals("android.0", DeviceTags.osMajor(null))
         assertEquals("android.0", DeviceTags.osMajor(""))
     }
+
+    @Test
+    fun asMetricAttributesUsesTheBackendsAttributeNames() {
+        // These names must match `deviceTags()` in backend/lib/metrics.js, or
+        // a native metric and a Node one will not slice in one Explore query.
+        val attrs = DeviceTags(
+            platform = "android",
+            deviceClass = DeviceTags.CLASS_MID,
+            osMajor = "android.14",
+        ).asMetricAttributes()
+        assertEquals(
+            mapOf(
+                "platform" to "android",
+                "device_class" to "mid",
+                "os_major" to "android.14",
+            ),
+            attrs,
+        )
+    }
 }

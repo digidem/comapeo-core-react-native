@@ -1189,11 +1189,15 @@ killers reaching past FGS protection — plus `description`, `pss_kb`,
 (not usage) tier deliberately: they're aggregate, low-resolution
 cohort axes, not a per-user timeline.
 
-The device attributes are threaded in by the collector rather than by a
-metrics layer: these emissions go to `Sentry.metrics()` directly, because
-the main process has no `SentryFgsBridge.init` to hang shared attributes
-off. Without them an OOM statistic cannot be attributed to a device class,
-which is the first thing anyone asks of one.
+`platform` / `device_class` / `os_major` ride on **every** native metric,
+mirroring what the backend's metrics layer injects centrally: they are
+merged in by `SentryFgsBridge.countMetric` on Android and
+`SentryNativeBridge.countMetric` on iOS, so a call site cannot forget them
+and a native metric slices identically to a Node one. The exit collector is
+the exception that threads them itself — it calls `Sentry.metrics()`
+directly, because the main process has no `SentryFgsBridge.init` to hang
+shared attributes off. Without them a fleet statistic cannot be attributed
+to a class of hardware, which is the first thing anyone asks of one.
 
 Two companion **distributions** carry the process footprint at the moment
 of death, in bytes, with the same attributes: `comapeo.app.exit.rss_bytes`

@@ -16,6 +16,17 @@ struct DeviceTags: Equatable {
     let deviceClass: String
     let osMajor: String
 
+    /// The attribute names the backend's metrics layer uses, so a native
+    /// metric and a Node one slice identically in one Explore query.
+    /// Mirrors `DeviceTags.asMetricAttributes()` in `DeviceTags.kt`.
+    func asMetricAttributes() -> [String: Any] {
+        [
+            "platform": platform,
+            "device_class": deviceClass,
+            "os_major": osMajor,
+        ]
+    }
+
     static let platformTag = "ios"
 
     static let classLow = "low"
