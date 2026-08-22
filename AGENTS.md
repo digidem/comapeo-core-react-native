@@ -113,7 +113,7 @@ Mirrored verbatim from Expo's official [`expo/skills`](https://github.com/expo/s
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — process model, IPC channels and framing, boot handshake, lifecycle state machines, error handling, Sentry observability, alternatives considered.
 - [`docs/BUILD.md`](docs/BUILD.md) — the `build-backend.ts` pipeline, the versioned addon-filename scheme, runtime addon loading, the native-modules source-of-truth model.
 - [`docs/TESTING.md`](docs/TESTING.md) — the seven test layers, the workflows, the merge queue and required checks, the e2e device suite, the secrets/trust boundary.
-- [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md) — measuring the backend's memory footprint: the Sentry gauges that answer the question across the fleet, what they measure and why, including the consent-tier reasoning.
+- [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md) — measuring the backend's memory footprint: the local A/B cold-boot harness (`npm run bench:android`) and the Sentry gauges that answer the same question across the fleet, including the consent-tier reasoning.
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — setup, every `npm run` script, per-layer test commands, commit/PR/release conventions.
 
 Open work is tracked in [GitHub issues](https://github.com/digidem/comapeo-core-react-native/issues).
