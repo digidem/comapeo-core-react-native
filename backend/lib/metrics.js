@@ -18,6 +18,7 @@
 // so the chunk stays unloaded when Sentry is off.
 
 import { isForbiddenMetric } from "../before-send.js";
+import { runtimeVersion } from "./memory-snapshot.js";
 
 /** @type {typeof import("@sentry/node-core") | null} */
 let Sentry = null;
@@ -26,6 +27,7 @@ let Sentry = null;
  *   platform: string,
  *   deviceClass: string,
  *   osMajor: string,
+ *   runtime: string,
  *   applicationUsageData: boolean,
  * } | null}
  */
@@ -46,6 +48,9 @@ export function init(args) {
     platform: args.platform,
     deviceClass: args.deviceClass,
     osMajor: args.osMajor,
+    // Derived, not injected: sharing `runtimeVersion()` with the
+    // `nodejs_mobile` event tag is what lets events and metrics join.
+    runtime: runtimeVersion(),
     applicationUsageData: args.applicationUsageData,
   };
 }
@@ -67,6 +72,9 @@ function defaultTags() {
   return { platform: config?.platform ?? "unknown" };
 }
 
+// Mirrored by `asMetricAttributes()` in android's `DeviceTags.kt` and
+// `ios/DeviceTags.swift`; the names must stay in lock-step or native and
+// backend metrics stop joining.
 function deviceTags() {
   return {
     device_class: config?.deviceClass ?? "unknown",
@@ -197,19 +205,35 @@ export function syncSession(outcome, ms, peersBucket, bytesBucket) {
   }
 }
 
-// ── Backend health (60s sampler) ────────────────────────────────
+// ── Backend health (boot sample, then 60s sampler) ──────────────
 
 /**
- * Heap-used gauge. `rss` is intentionally omitted: node's `rss` is the whole
- * OS process, which on iOS is the entire app (node runs in-process), so it
- * wouldn't measure "the backend". `heapUsed` is the V8 JS heap and is
- * meaningful on both platforms.
+ * Backend footprint gauges, at the diagnostic tier. What each number measures,
+ * why the RSS pair is Android-only and why this tier: docs/BENCHMARKING.md.
+ *
+ * @param {import("./memory-snapshot.js").MemorySnapshot} snapshot
+ * @param {"boot" | "interval"} sample Which of the two call sites emitted it —
+ *   without it the boot samples are indistinguishable from the 60s series and
+ *   a population change reads as a footprint change.
  */
-export function backendMemorySample() {
-  const metrics = api();
-  if (!metrics) return;
-  const mem = process.memoryUsage();
-  gauge("comapeo.backend.heap_used_bytes", mem.heapUsed, "byte", {});
+export function backendMemorySample(snapshot, sample) {
+  if (!api()) return;
+  const attrs = {
+    ...deviceTags(),
+    runtime: config?.runtime ?? "unknown",
+    sample,
+  };
+  const values = {
+    "comapeo.backend.heap_used_bytes": snapshot.heap.usedBytes,
+    "comapeo.backend.heap_physical_bytes": snapshot.heap.physicalBytes,
+    ...(snapshot.process && {
+      "comapeo.backend.rss_bytes": snapshot.process.rssBytes,
+      "comapeo.backend.rss_peak_bytes": snapshot.process.peakRssBytes,
+    }),
+  };
+  for (const [name, value] of Object.entries(values)) {
+    gauge(name, value, "byte", attrs);
+  }
 }
 
 /**

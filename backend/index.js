@@ -7,6 +7,7 @@ import { ComapeoRpc } from "./lib/comapeo-rpc.js";
 import { flushCompileCacheAfterBoot } from "./lib/compile-cache.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { createMapServer } from "./lib/create-map-server.js";
+import { memorySnapshot } from "./lib/memory-snapshot.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
 import * as sentry from "./lib/sentry.js";
 import * as metrics from "./lib/metrics.js";
@@ -15,6 +16,12 @@ import { observeSyncSessions } from "./lib/sync-observer.js";
 // 60s sampler cadence for backend memory + uptime gauges. No-op
 // when Sentry is off (the metrics layer never got its SDK).
 const MEMORY_SAMPLE_INTERVAL_MS = 60_000;
+
+// One extra sample this long after `ready`, so a short-lived process still
+// reports its boot footprint. `ready` lands ~1.8s in and `VmHWM` stops
+// climbing at ~2s, so 3s captures the peak and still reports inside the
+// window a killed process survives.
+const BOOT_MEMORY_SAMPLE_DELAY_MS = 3_000;
 
 // `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` mirrors this
 // directory into the on-device bundle.
@@ -333,11 +340,22 @@ async function withPhase(phase, fn) {
  * iOS suspends the app, a background suspension is correctly NOT counted as delay.
  */
 function startMemorySampler() {
+  // Boot sample. The log line is unconditional — one line per launch, no PII,
+  // and it is what `scripts/benchmark-boot.sh` reads to compare builds on a
+  // device that may have telemetry switched off entirely. The metric emission
+  // is still gated, by `backendMemorySample` itself.
+  const bootTimer = setTimeout(() => {
+    const snapshot = memorySnapshot();
+    console.log(`[comapeo.memory] boot ${JSON.stringify(snapshot)}`);
+    metrics.backendMemorySample(snapshot, "boot");
+  }, BOOT_MEMORY_SAMPLE_DELAY_MS);
+  bootTimer.unref?.();
+
   if (!metrics.isEnabled()) return;
   const eld = monitorEventLoopDelay({ resolution: 10 });
   eld.enable();
   const timer = setInterval(() => {
-    metrics.backendMemorySample();
+    metrics.backendMemorySample(memorySnapshot(), "interval");
     metrics.eventLoopDelaySample(eld.max / 1e6);
     eld.reset();
   }, MEMORY_SAMPLE_INTERVAL_MS);
