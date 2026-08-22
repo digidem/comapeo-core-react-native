@@ -1190,14 +1190,23 @@ killers reaching past FGS protection — plus `description`, `pss_kb`,
 cohort axes, not a per-user timeline.
 
 `platform` / `device_class` / `os_major` ride on **every** native metric,
-mirroring what the backend's metrics layer injects centrally: they are
-merged in by `SentryFgsBridge.countMetric` on Android and
-`SentryNativeBridge.countMetric` on iOS, so a call site cannot forget them
-and a native metric slices identically to a Node one. The exit collector is
-the exception that threads them itself — it calls `Sentry.metrics()`
-directly, because the main process has no `SentryFgsBridge.init` to hang
-shared attributes off. Without them a fleet statistic cannot be attributed
-to a class of hardware, which is the first thing anyone asks of one.
+so a call site cannot forget them — without them a fleet statistic cannot
+be attributed to a class of hardware, which is the first thing anyone asks
+of one. On Android all metric emission (the FGS bridge's `countMetric` and
+the exit collector, in both processes) funnels through `SentryMetricEmit`,
+which injects them and runs the metric scrub; on iOS
+`SentryNativeBridge.countMetric` does the same, and the exit collector
+(`AppExitMetricsCollector`) emits through it. Call-site attributes win on
+a key collision. Note the parity with Node metrics is partial: the
+backend's metrics layer injects `platform` centrally but adds
+`device_class` / `os_major` only to the backend memory gauges — Node
+*count* metrics (`comapeo.boot.outcome`, `comapeo.ipc.errors`, …) carry
+neither, so a cross-layer Explore query grouped by `device_class` slices
+native metrics and the memory gauges only.
+
+One caveat on `os_major`: exit records are decoded on the launch after the
+death, so it reflects the OS at report time — an exit that straddles an OS
+update is tagged with the post-update version.
 
 Two companion **distributions** carry the process footprint at the moment
 of death, in bytes, with the same attributes: `comapeo.app.exit.rss_bytes`

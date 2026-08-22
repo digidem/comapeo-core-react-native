@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(UIKit)
-import UIKit
-#endif
 
 /// Low-cardinality device classification. Buckets the device
 /// into low/mid/high by RAM + CPU cores so a metric like
@@ -16,14 +13,13 @@ struct DeviceTags: Equatable {
     let deviceClass: String
     let osMajor: String
 
-    /// The attribute names the backend's metrics layer uses, so a native
-    /// metric and a Node one slice identically in one Explore query.
-    /// Mirrors `DeviceTags.asMetricAttributes()` in `DeviceTags.kt`.
+    /// Keyed by the attribute names the backend's metrics layer uses
+    /// (`deviceTags()` in backend/lib/metrics.js). Mirrors `DeviceTags.kt`.
     func asMetricAttributes() -> [String: Any] {
         [
-            "platform": platform,
-            "device_class": deviceClass,
-            "os_major": osMajor,
+            SentryTags.platform: platform,
+            SentryTags.deviceClass: deviceClass,
+            SentryTags.osMajor: osMajor,
         ]
     }
 
@@ -61,15 +57,13 @@ struct DeviceTags: Equatable {
         return "\(platformTag).\(safe)"
     }
 
+    /// `ProcessInfo` only — no UIKit, so this is safe off the main thread
+    /// (the first caller can be MetricKit's background delivery queue).
     static func compute() -> DeviceTags {
         let totalMem = ProcessInfo.processInfo.physicalMemory
         let cores = ProcessInfo.processInfo.processorCount
-        #if canImport(UIKit)
-        let version = UIDevice.current.systemVersion
-        #else
         let v = ProcessInfo.processInfo.operatingSystemVersion
         let version = "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
-        #endif
         return DeviceTags(
             platform: platformTag,
             deviceClass: classify(totalMemBytes: totalMem, cores: cores),

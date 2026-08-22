@@ -49,6 +49,12 @@ object SentryTags {
     /** Boot-time scope tag on pre-API-30 devices (exit reasons unavailable). */
     const val EXIT_REASONS_SUPPORTED = "exitReasons.supported"
 
+    // Shared metric attributes injected by SentryMetricEmit. Spelling must
+    // match `deviceTags()` in backend/lib/metrics.js.
+    const val PLATFORM = "platform"
+    const val DEVICE_CLASS = "device_class"
+    const val OS_MAJOR = "os_major"
+
     // proc values
     const val PROC_MAIN = "main"
     const val PROC_FGS = "fgs"

@@ -21,6 +21,12 @@ enum SentryTags {
     /// attribute (metrics have no event level).
     static let exitSeverity = "exit.severity"
 
+    // Shared metric attributes injected by SentryNativeBridge.countMetric.
+    // Spelling must match `deviceTags()` in backend/lib/metrics.js.
+    static let platform = "platform"
+    static let deviceClass = "device_class"
+    static let osMajor = "os_major"
+
     // proc values — iOS is single-process, so always "main"
     static let procMain = "main"
 

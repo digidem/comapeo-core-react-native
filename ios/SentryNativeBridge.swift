@@ -104,19 +104,18 @@ enum SentryNativeBridge {
     /// `ExitReasonsCollector.METRIC_NAME` spelling.
     static let appExitMetricName = "comapeo.app.exit"
 
-    /// Computed once — `DeviceTags.compute()` reads `ProcessInfo`, and the
-    /// answer cannot change within a process.
+    /// Computed once — `DeviceTags.compute()` reads only `ProcessInfo`
+    /// (thread-safe; the first caller is MetricKit's background queue), and
+    /// the answer cannot change within a process.
     private static let deviceAttributes: [String: Any] = DeviceTags.compute().asMetricAttributes()
 
     /// Forward a count to Sentry's metrics pipeline. The SDK no-ops when
     /// not started, and drops with a log when `options.enableMetrics` is
     /// false (it defaults to true).
     ///
-    /// Every metric picks up `platform` / `device_class` / `os_major` here,
-    /// mirroring what the backend's metrics layer injects centrally — a call
-    /// site cannot forget them, and without them a fleet statistic cannot be
-    /// attributed to a class of hardware. Call-site attributes win on a key
-    /// collision.
+    /// Injects the shared device attributes so a call site cannot forget
+    /// them; call-site attributes win on a key collision. Rationale in
+    /// docs/sentry-integration.md.
     static func countMetric(_ key: String, value: UInt, attributes: [String: Any]) {
         let attributes = deviceAttributes.merging(attributes) { _, callSite in callSite }
         // Silently drop a metric carrying a forbidden name/attribute — an

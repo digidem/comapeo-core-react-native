@@ -30,7 +30,6 @@ class ExitReasonsCollectorTest {
             snapshot = AnchorSnapshot.from(anchors, procKey),
             applicationUsageData = applicationUsageData,
             nowMs = { now },
-            deviceTags = DEVICE_TAGS,
         )
 
     private fun record(
@@ -434,25 +433,9 @@ class ExitReasonsCollectorTest {
         }
     }
 
-    // ── Device attribution + footprint at death ────────────────────
-
-    @Test
-    fun everyEmissionCarriesTheDeviceAttributes() {
-        // Without these a kill cannot be attributed to a device class, which
-        // is the first thing anyone asks of an OOM statistic.
-        seedLastSeen(MAIN)
-        val metric = collectMetrics(records = listOf(record())).single()
-        assertEquals("android", metric.attributes["platform"])
-        assertEquals(DeviceTags.CLASS_LOW, metric.attributes["device_class"])
-        assertEquals("android.11", metric.attributes["os_major"])
-    }
-
-    @Test
-    fun deviceAttributesNeverOverrideTheExitAttributes() {
-        seedLastSeen(MAIN)
-        val metric = collectMetrics(records = listOf(record())).single()
-        assertEquals(MAIN, metric.attributes[SentryTags.PROC])
-    }
+    // ── Footprint at death ─────────────────────────────────────────
+    // (Device attribution is injected at emission time; see
+    // SentryMetricEmitTest.)
 
     @Test
     fun footprintAtDeathIsReportedInBytes() {
@@ -476,12 +459,6 @@ class ExitReasonsCollectorTest {
     }
 
     private companion object {
-        val DEVICE_TAGS = DeviceTags(
-            platform = "android",
-            deviceClass = DeviceTags.CLASS_LOW,
-            osMajor = "android.11",
-        ).asMetricAttributes()
-
         const val MAIN = SentryTags.PROC_MAIN
         const val FGS = SentryTags.PROC_FGS
         const val MAIN_PROC_NAME = "com.example.app"
