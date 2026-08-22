@@ -18,12 +18,9 @@ import { observeSyncSessions } from "./lib/sync-observer.js";
 const MEMORY_SAMPLE_INTERVAL_MS = 60_000;
 
 // One extra sample this long after `ready`, so a short-lived process still
-// reports its boot footprint — a 60s-only sampler silently biases the fleet
-// data towards the processes that survived, which are not the interesting
-// ones. Short-lived is common: 88 of the FGS exits reported from production
-// in the last 90 days sit in the `<10s` uptime bucket. `ready` lands ~1.8s in
-// and `VmHWM` stops climbing at ~2s, so 3s captures the peak and still
-// reports inside that window.
+// reports its boot footprint. `ready` lands ~1.8s in and `VmHWM` stops
+// climbing at ~2s, so 3s captures the peak and still reports inside the
+// window a killed process survives.
 const BOOT_MEMORY_SAMPLE_DELAY_MS = 3_000;
 
 // `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` mirrors this
@@ -350,7 +347,7 @@ function startMemorySampler() {
   const bootTimer = setTimeout(() => {
     const snapshot = memorySnapshot();
     console.log(`[comapeo.memory] boot ${JSON.stringify(snapshot)}`);
-    metrics.backendMemorySample(snapshot);
+    metrics.backendMemorySample(snapshot, "boot");
   }, BOOT_MEMORY_SAMPLE_DELAY_MS);
   bootTimer.unref?.();
 
@@ -358,7 +355,7 @@ function startMemorySampler() {
   const eld = monitorEventLoopDelay({ resolution: 10 });
   eld.enable();
   const timer = setInterval(() => {
-    metrics.backendMemorySample(memorySnapshot());
+    metrics.backendMemorySample(memorySnapshot(), "interval");
     metrics.eventLoopDelaySample(eld.max / 1e6);
     eld.reset();
   }, MEMORY_SAMPLE_INTERVAL_MS);

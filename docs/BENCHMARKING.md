@@ -51,12 +51,21 @@ The same snapshot feeds four gauges, emitted once about three seconds after
 | `comapeo.backend.rss_bytes` | byte | Android |
 | `comapeo.backend.rss_peak_bytes` | byte | Android |
 
-All four carry `device_class`, `os_major` and `runtime`.
+All four carry `device_class`, `os_major`, `runtime` and `sample`.
+
+`sample` is `boot` or `interval`, naming which of the two call sites emitted
+the gauge. Without it the boot samples and the 60-second series are one
+population, so a release that changes how long processes live — or how often
+the boot sample lands at all — moves the percentiles on its own and reads as a
+footprint change. Filter to one before comparing two builds.
 
 `runtime` is `process.versions.mobile`, the nodejs-mobile revision — the
 dimension you group by to compare two runtime builds in the field, and the
 reason a staged rollout can answer "did the new libnode help" without a
-bespoke experiment.
+bespoke experiment. It is one value per shipped build, so it costs nothing in
+cardinality and is no more identifying than the app version already on every
+event. The same value is the `nodejs_mobile` tag on Sentry events (both read
+`runtimeVersion()` in `memory-snapshot.js`), so events and metrics join on it.
 
 `device_class` and `os_major` are there because memory is the metric whose
 whole point is the cheap device. `heap_used_bytes` originally shipped without
@@ -74,7 +83,11 @@ rollout you intend to measure.
 
 The extra boot-time sample exists because a process killed before the first
 60-second tick is precisely the case worth knowing about; without it, the
-fleet data would be silently biased towards processes that survived.
+fleet data would be silently biased towards processes that survived. That case
+is common: 88 of the FGS exits reported from production in the last 90 days
+sit in the `<10s` uptime bucket. It fires 3s after `ready` — `ready` lands
+~1.8s in and `VmHWM` stops climbing at ~2s, so 3s captures the boot peak and
+still reports inside the window a short-lived process survives.
 
 ### Cost
 

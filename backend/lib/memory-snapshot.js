@@ -1,32 +1,22 @@
-// Process + V8 memory snapshot for the backend.
-//
-// Two sources that deliberately stay separate because they measure different
-// things:
-//
-//   - V8 heap statistics describe the JavaScript heap only, and are
-//     meaningful on both platforms.
-//   - `/proc/self/status` describes the whole OS process. That is only "the
-//     backend" on Android, where node runs in its own `:ComapeoCore` process.
-//     On iOS node shares the app process, so the same numbers would describe
-//     the UI too — which is why `metrics.backendMemorySample` has always
-//     omitted `process.memoryUsage().rss`. iOS has no `/proc`, so the reader
-//     returns `null` there and the caller emits nothing: the platform gate is
-//     the filesystem, not a flag that could drift out of sync.
-//
-// `VmHWM` is the peak resident set since process start. It is the number that
-// decides whether Android's low-memory killer picks this process (oom_score
-// scales with footprint), and it is monotonic — so one late read still
-// captures the boot peak, and no high-rate sampling is needed to find it.
-//
-// `total_physical_size` is the V8 heap memory actually committed and touched,
-// as opposed to `used_heap_size` (live objects) or `total_heap_size`
-// (reserved). It is the heap figure that tracks the process's anonymous RSS,
-// so it is the one that moves when the runtime's memory layout changes.
+// V8 heap statistics plus, where `/proc` exists (Android only), whole-process
+// memory. What each number means and why it is the one reported:
+// docs/BENCHMARKING.md.
 
 import fs from "node:fs";
 import v8 from "node:v8";
 
 const PROC_SELF_STATUS = "/proc/self/status";
+
+/**
+ * nodejs-mobile revision (`process.versions.mobile`, e.g. `24.19.0-0`). Shared
+ * so the Sentry `nodejs_mobile` event tag and the `runtime` metric attribute
+ * always join on the same value.
+ *
+ * @param {Record<string, string | undefined>} [versions] test seam
+ */
+export function runtimeVersion(versions = process.versions) {
+  return versions.mobile ?? "unknown";
+}
 
 /**
  * @typedef {{
@@ -129,10 +119,8 @@ export function readHeapStats(deps = {}) {
 }
 
 /**
- * One combined snapshot. `runtime` is the nodejs-mobile revision
- * (`process.versions.mobile`, e.g. `24.19.0-0`) — the dimension you slice by
- * when comparing one runtime build against another, and the reason a fleet
- * gauge can answer "did the new libnode help" without a bespoke experiment.
+ * One combined snapshot, `runtime` included so the log line names the
+ * nodejs-mobile build it measured.
  *
  * @param {{
  *   readFileSync?: (path: string, encoding: string) => string,
@@ -141,9 +129,8 @@ export function readHeapStats(deps = {}) {
  * }} [deps] test seam
  */
 export function memorySnapshot(deps = {}) {
-  const versions = deps.versions ?? process.versions;
   return {
-    runtime: versions.mobile ?? "unknown",
+    runtime: runtimeVersion(deps.versions),
     heap: readHeapStats(deps),
     process: readProcessMemory(deps),
   };

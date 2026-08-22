@@ -18,6 +18,7 @@
 // so the chunk stays unloaded when Sentry is off.
 
 import { isForbiddenMetric } from "../before-send.js";
+import { runtimeVersion } from "./memory-snapshot.js";
 
 /** @type {typeof import("@sentry/node-core") | null} */
 let Sentry = null;
@@ -26,6 +27,7 @@ let Sentry = null;
  *   platform: string,
  *   deviceClass: string,
  *   osMajor: string,
+ *   runtime: string,
  *   applicationUsageData: boolean,
  * } | null}
  */
@@ -46,6 +48,9 @@ export function init(args) {
     platform: args.platform,
     deviceClass: args.deviceClass,
     osMajor: args.osMajor,
+    // Derived, not injected: sharing `runtimeVersion()` with the
+    // `nodejs_mobile` event tag is what lets events and metrics join.
+    runtime: runtimeVersion(),
     applicationUsageData: args.applicationUsageData,
   };
 }
@@ -67,6 +72,9 @@ function defaultTags() {
   return { platform: config?.platform ?? "unknown" };
 }
 
+// Mirrored by `asMetricAttributes()` in android's `DeviceTags.kt` and
+// `ios/DeviceTags.swift`; the names must stay in lock-step or native and
+// backend metrics stop joining.
 function deviceTags() {
   return {
     device_class: config?.deviceClass ?? "unknown",
@@ -200,62 +208,32 @@ export function syncSession(outcome, ms, peersBucket, bytesBucket) {
 // ── Backend health (boot sample, then 60s sampler) ──────────────
 
 /**
- * Backend footprint gauges.
- *
- * The heap pair is emitted everywhere: `heap_used_bytes` is the live object
- * graph, `heap_physical_bytes` the heap memory actually committed and
- * touched. The second is what tracks the process's anonymous RSS, so it is
- * the one that moves when the runtime's memory layout changes — a V8 build
- * flag can halve the first while barely denting the process, or the reverse,
- * and only having both tells you which happened.
- *
- * The RSS pair rides on `snapshot.process`, which is non-null only where
- * `/proc` exists **and** node owns the process — i.e. Android's
- * `:ComapeoCore`. On iOS node runs in-process, so an `rss` there would be the
- * whole app, not the backend; `memory-snapshot.js` returns null and these two
- * are simply not emitted. `rss_peak_bytes` is `VmHWM`, the high-water mark
- * that Android's low-memory killer effectively scores the process on.
- *
- * All four sit at the **diagnostic** tier, matching `heap_used_bytes`, which
- * has always been diagnostic. They describe the process's own resource use at
- * a fixed low cadence, name nothing the user did, and — measured at boot —
- * are overwhelmingly a property of the build and the device rather than of
- * the data. Free *device* memory is deliberately still absent: that lives in
- * the `node_resources` context and stays usage-tier, because read-at-capture
- * frequency is itself usage-shape data.
- *
- * `runtime` is the nodejs-mobile revision, the dimension you group by to
- * compare two runtime builds in the field. It is one value per shipped build
- * — low cardinality, and no more identifying than the app version already on
- * every event.
- *
- * These carry `device_class` / `os_major` too, unlike the duration metrics
- * where they are a nice-to-have. Memory is the metric whose whole point is
- * the low-RAM device: `heap_used_bytes` shipped without them and, three
- * months in, its 15k samples cannot answer "is the tail coming from cheap
- * hardware" at all — which is the only question worth asking of it.
+ * Backend footprint gauges, at the diagnostic tier. What each number measures,
+ * why the RSS pair is Android-only and why this tier: docs/BENCHMARKING.md.
  *
  * @param {import("./memory-snapshot.js").MemorySnapshot} snapshot
+ * @param {"boot" | "interval"} sample Which of the two call sites emitted it —
+ *   without it the boot samples are indistinguishable from the 60s series and
+ *   a population change reads as a footprint change.
  */
-export function backendMemorySample(snapshot) {
-  const metrics = api();
-  if (!metrics) return;
-  const attrs = { ...deviceTags(), runtime: snapshot.runtime };
-  gauge("comapeo.backend.heap_used_bytes", snapshot.heap.usedBytes, "byte", attrs);
-  gauge(
-    "comapeo.backend.heap_physical_bytes",
-    snapshot.heap.physicalBytes,
-    "byte",
-    attrs,
-  );
-  if (!snapshot.process) return;
-  gauge("comapeo.backend.rss_bytes", snapshot.process.rssBytes, "byte", attrs);
-  gauge(
-    "comapeo.backend.rss_peak_bytes",
-    snapshot.process.peakRssBytes,
-    "byte",
-    attrs,
-  );
+export function backendMemorySample(snapshot, sample) {
+  if (!api()) return;
+  const attrs = {
+    ...deviceTags(),
+    runtime: config?.runtime ?? "unknown",
+    sample,
+  };
+  const values = {
+    "comapeo.backend.heap_used_bytes": snapshot.heap.usedBytes,
+    "comapeo.backend.heap_physical_bytes": snapshot.heap.physicalBytes,
+    ...(snapshot.process && {
+      "comapeo.backend.rss_bytes": snapshot.process.rssBytes,
+      "comapeo.backend.rss_peak_bytes": snapshot.process.peakRssBytes,
+    }),
+  };
+  for (const [name, value] of Object.entries(values)) {
+    gauge(name, value, "byte", attrs);
+  }
 }
 
 /**

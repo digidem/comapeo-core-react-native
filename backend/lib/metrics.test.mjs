@@ -1,6 +1,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
+import { runtimeVersion } from "./memory-snapshot.js";
 import * as metrics from "./metrics.js";
 
 /**
@@ -65,7 +66,7 @@ beforeEach(() => metrics.resetForTests());
 test("no-ops entirely when Sentry is off (init never ran)", () => {
   // No init → no SDK. Calls must not throw and record nothing.
   metrics.rpcServer("read.doc", "ok", 12);
-  metrics.backendMemorySample(snapshot());
+  metrics.backendMemorySample(snapshot(), "boot");
   metrics.storageSizeBucket("<10MB");
   // Nothing to assert beyond "did not throw"; the absence of an SDK is
   // the whole point.
@@ -128,21 +129,22 @@ test("backendMemorySample emits the heap gauges in bytes, tagged by runtime", ()
   const { sdk, calls } = fakeSentry();
   initWith(sdk);
   // No `process` block — this is the iOS shape, where node shares the app
-  // process so an rss would describe the UI too. Uptime was dropped (a
-  // sampled monotonic gauge has no actionable aggregate).
-  metrics.backendMemorySample(snapshot({ process: null }));
+  // process so an rss would describe the UI too.
+  metrics.backendMemorySample(snapshot({ process: null }), "interval");
   assert.deepEqual(
     calls.gauge.map((g) => g.name),
     ["comapeo.backend.heap_used_bytes", "comapeo.backend.heap_physical_bytes"],
   );
   assert.ok(calls.gauge.every((g) => g.unit === "byte"));
-  assert.ok(calls.gauge.every((g) => g.attributes.runtime === "24.19.0-0"));
+  // The config value, shared with the `nodejs_mobile` event tag — not the
+  // snapshot's own `runtime`, which the fixture sets to something else.
+  assert.ok(calls.gauge.every((g) => g.attributes.runtime === runtimeVersion()));
 });
 
 test("backendMemorySample carries device tags — the slice memory is about", () => {
   const { sdk, calls } = fakeSentry();
   initWith(sdk);
-  metrics.backendMemorySample(snapshot());
+  metrics.backendMemorySample(snapshot(), "interval");
   assert.ok(
     calls.gauge.every(
       (g) => g.attributes.device_class === "mid" && g.attributes.os_major === "android.14",
@@ -150,10 +152,22 @@ test("backendMemorySample carries device tags — the slice memory is about", ()
   );
 });
 
+test("backendMemorySample marks which call site sampled", () => {
+  const { sdk, calls } = fakeSentry();
+  initWith(sdk);
+  metrics.backendMemorySample(snapshot(), "boot");
+  metrics.backendMemorySample(snapshot(), "interval");
+  assert.equal(calls.gauge.length, 8);
+  assert.ok(calls.gauge.slice(0, 4).every((g) => g.attributes.sample === "boot"));
+  assert.ok(
+    calls.gauge.slice(4).every((g) => g.attributes.sample === "interval"),
+  );
+});
+
 test("backendMemorySample adds the rss pair where node owns the process", () => {
   const { sdk, calls } = fakeSentry();
   initWith(sdk);
-  metrics.backendMemorySample(snapshot());
+  metrics.backendMemorySample(snapshot(), "interval");
   assert.deepEqual(
     calls.gauge.map((g) => g.name),
     [
