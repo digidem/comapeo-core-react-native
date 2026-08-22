@@ -9,7 +9,7 @@ import android.os.Build
  * into low/mid/high by RAM + CPU cores so a metric like
  * "low-end devices are 4× slower at observation.create" is a dashboard
  * query rather than a 2,000-model cardinality explosion. Computed once
- * at process start and cached on [SentryConfig].
+ * per process (memoized in [compute]).
  *
  * Raw model/manufacturer stay on the event/trace scope (native SDK
  * attaches them); only the bucket rides on metrics.
@@ -19,6 +19,14 @@ data class DeviceTags(
     val deviceClass: String,
     val osMajor: String,
 ) {
+    /** Keyed by the attribute names the backend's metrics layer uses
+     *  (`deviceTags()` in backend/lib/metrics.js). */
+    fun asMetricAttributes(): Map<String, String> = mapOf(
+        SentryTags.PLATFORM to platform,
+        SentryTags.DEVICE_CLASS to deviceClass,
+        SentryTags.OS_MAJOR to osMajor,
+    )
+
     companion object {
         const val PLATFORM = "android"
 
@@ -63,8 +71,14 @@ data class DeviceTags(
             return "$PLATFORM.$major"
         }
 
+        @Volatile
+        private var cached: DeviceTags? = null
+
+        /** Memoized — the answer cannot change within a process, and several
+         *  startup paths ask for it. */
         @JvmStatic
         fun compute(context: Context): DeviceTags {
+            cached?.let { return it }
             val activityManager =
                 context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
             val memInfo = ActivityManager.MemoryInfo()
@@ -74,7 +88,7 @@ data class DeviceTags(
                 platform = PLATFORM,
                 deviceClass = classify(memInfo.totalMem, cores),
                 osMajor = osMajor(Build.VERSION.RELEASE),
-            )
+            ).also { cached = it }
         }
     }
 }

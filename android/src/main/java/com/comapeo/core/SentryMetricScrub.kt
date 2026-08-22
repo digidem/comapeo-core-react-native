@@ -36,11 +36,11 @@ internal object SentryMetricScrub {
      * is on the forbidden list, or any attribute value matches a forbidden
      * pattern (defensive gate).
      */
-    fun isForbiddenMetric(name: String, attributes: Map<String, String>): Boolean {
+    fun isForbiddenMetric(name: String, attributes: Map<String, Any>): Boolean {
         if (name in FORBIDDEN_METRIC_TAG_NAMES) return true
         for ((tagName, tagValue) in attributes) {
             if (tagName in FORBIDDEN_METRIC_TAG_NAMES) return true
-            if (FORBIDDEN_METRIC_VALUE_PATTERNS.any { it.containsMatchIn(tagValue) }) {
+            if (FORBIDDEN_METRIC_VALUE_PATTERNS.any { it.containsMatchIn(tagValue.toString()) }) {
                 return true
             }
         }

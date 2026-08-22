@@ -6,6 +6,7 @@ import io.sentry.ITransportFactory
 import io.sentry.Sentry
 import io.sentry.SentryEnvelope
 import io.sentry.SentryEvent
+import io.sentry.SentryMetricsEvent
 import io.sentry.SentryOptions
 import io.sentry.SpanStatus
 import io.sentry.protocol.Device
@@ -267,7 +268,7 @@ class SentryFgsBridgeTest {
 
     @Test
     fun countMetricWithForbiddenAttributeIsDropped() {
-        val recorded = mutableListOf<String>()
+        val recorded = mutableListOf<SentryMetricsEvent>()
         initBridgeViaSentryOptions(onMetric = { recorded.add(it) })
         SentryFgsBridge.countMetric(
             "comapeo.app.exit",
@@ -281,7 +282,7 @@ class SentryFgsBridgeTest {
 
     @Test
     fun countMetricWithOrdinaryExitAttributesReachesTheSdk() {
-        val recorded = mutableListOf<String>()
+        val recorded = mutableListOf<SentryMetricsEvent>()
         initBridgeViaSentryOptions(onMetric = { recorded.add(it) })
         SentryFgsBridge.countMetric(
             "comapeo.app.exit",
@@ -291,7 +292,30 @@ class SentryFgsBridgeTest {
                 SentryTags.EXIT_INTENTIONAL to "false",
             ),
         )
-        assertEquals(listOf("comapeo.app.exit"), recorded)
+        assertEquals(listOf("comapeo.app.exit"), recorded.map { it.name })
+    }
+
+    @Test
+    fun countMetricInjectsTheDeviceAttributesViaTheEmitter() {
+        // Pins the delegation to SentryMetricEmit: dropping the delegation
+        // (or the emitter's merge) loses fleet attribution silently.
+        val recorded = mutableListOf<SentryMetricsEvent>()
+        initBridgeViaSentryOptions(onMetric = { recorded.add(it) })
+        SentryMetricEmit.setDeviceAttributesForTests(
+            DeviceTags(
+                platform = "android",
+                deviceClass = DeviceTags.CLASS_LOW,
+                osMajor = "android.11",
+            ).asMetricAttributes(),
+        )
+        SentryFgsBridge.countMetric(
+            "comapeo.rootkey.load",
+            attributes = mapOf(SentryTags.SOURCE to "keystore"),
+        )
+        val metric = recorded.single()
+        assertEquals(DeviceTags.CLASS_LOW, metric.attributes?.get(SentryTags.DEVICE_CLASS)?.value)
+        assertEquals("android.11", metric.attributes?.get(SentryTags.OS_MAJOR)?.value)
+        assertEquals("keystore", metric.attributes?.get(SentryTags.SOURCE)?.value)
     }
 
     // ── NormalizeDeviceFamilyProcessor tests ───────────────────────
@@ -343,7 +367,7 @@ class SentryFgsBridgeTest {
      */
     private fun initBridgeViaSentryOptions(
         tracesSampleRate: Double = 1.0,
-        onMetric: ((name: String) -> Unit)? = null,
+        onMetric: ((metric: SentryMetricsEvent) -> Unit)? = null,
     ) {
         transport = RecordingTransport()
         Sentry.init { options: SentryOptions ->
@@ -359,7 +383,7 @@ class SentryFgsBridgeTest {
                 // recorded name proves the bridge forwarded the emission —
                 // no need to wait out the metrics batch window.
                 options.metrics.setBeforeSend { metric, _ ->
-                    onMetric(metric.name)
+                    onMetric(metric)
                     metric
                 }
             }

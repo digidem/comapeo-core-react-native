@@ -8,7 +8,6 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import io.sentry.Breadcrumb
 import io.sentry.Sentry
-import io.sentry.metrics.SentryMetricsParameters
 
 /** The `ApplicationExitInfo` fields the decoder reads, as a plain data class
  *  so JVM tests can hand-build records (the real class can't be constructed
@@ -24,10 +23,16 @@ internal data class ExitRecord(
     val description: String?,
 )
 
-/** Decoded emission for one exit record: a `comapeo.app.exit` count of 1
- *  with these attributes. */
+/**
+ * Decoded emission for one exit record: a `comapeo.app.exit` count of 1 with
+ * these attributes, plus — when the OS supplied them — the footprint at death
+ * as distributions (Explore cannot group by the numeric `rss_kb` / `pss_kb`
+ * attributes; see docs/sentry-integration.md).
+ */
 internal data class ExitReasonMetric(
     val attributes: Map<String, Any>,
+    val rssBytes: Long? = null,
+    val pssBytes: Long? = null,
 )
 
 /**
@@ -140,12 +145,22 @@ internal class ExitReasonsCollector(
                 }
             }
         }
-        return ExitReasonMetric(attributes)
+        // `ApplicationExitInfo` reports 0 for both on some reasons and some
+        // vendors; a zero is "not measured", not "the process was empty".
+        return ExitReasonMetric(
+            attributes = attributes,
+            rssBytes = record.rssKb.takeIf { it > 0 }?.times(1024),
+            pssBytes = record.pssKb.takeIf { it > 0 }?.times(1024),
+        )
     }
 
     companion object {
         /** One count per exit, sliceable by attribute in Sentry's Explore UI. */
         const val METRIC_NAME = "comapeo.app.exit"
+
+        /** Process footprint at the moment of death, when the OS reported it. */
+        const val RSS_METRIC_NAME = "comapeo.app.exit.rss_bytes"
+        const val PSS_METRIC_NAME = "comapeo.app.exit.pss_bytes"
 
         /** Per-process cap after filtering. The OS retains only a handful of
          *  records per package anyway (~16 on AOSP); this just bounds a
@@ -199,6 +214,7 @@ internal class ExitReasonsCollector(
                     log("[${SentryCategories.EXIT}] $procKey: Sentry not initialised, leaving exit records pending")
                     return
                 }
+                SentryMetricEmit.ensureDeviceAttributes(context)
                 val anchors = BackgroundAnchors.open(context)
                 val result = ExitReasonsCollector(
                     anchors = anchors,
@@ -297,20 +313,18 @@ internal class ExitReasonsCollector(
         }
 
         /**
-         * `Sentry.metrics()` (not the FGS bridge) so one path serves both
-         * processes: main-side Sentry is initialised by @sentry/react-native,
-         * FGS-side by [SentryFgsBridge.init].
+         * [SentryMetricEmit] (not the FGS bridge, whose pre-init gate never
+         * opens in the main process) so one path serves both processes:
+         * main-side Sentry is initialised by @sentry/react-native, FGS-side
+         * by [SentryFgsBridge.init].
          */
         private fun capture(metric: ExitReasonMetric) {
-            try {
-                Sentry.metrics().count(
-                    METRIC_NAME,
-                    1.0,
-                    null,
-                    SentryMetricsParameters.create(metric.attributes),
-                )
-            } catch (t: Throwable) {
-                Log.w(TAG, "exit-reason metric threw", t)
+            SentryMetricEmit.count(METRIC_NAME, metric.attributes)
+            metric.rssBytes?.let {
+                SentryMetricEmit.distribution(RSS_METRIC_NAME, it.toDouble(), "byte", metric.attributes)
+            }
+            metric.pssBytes?.let {
+                SentryMetricEmit.distribution(PSS_METRIC_NAME, it.toDouble(), "byte", metric.attributes)
             }
         }
 

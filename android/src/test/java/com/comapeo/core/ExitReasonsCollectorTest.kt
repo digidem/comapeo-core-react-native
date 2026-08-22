@@ -433,6 +433,31 @@ class ExitReasonsCollectorTest {
         }
     }
 
+    // ── Footprint at death ─────────────────────────────────────────
+    // (Device attribution is injected at emission time; see
+    // SentryMetricEmitTest.)
+
+    @Test
+    fun footprintAtDeathIsReportedInBytes() {
+        seedLastSeen(MAIN)
+        val metric = collectMetrics(
+            records = listOf(record(rssKb = 150_000, pssKb = 120_000)),
+        ).single()
+        assertEquals(150_000L * 1024, metric.rssBytes)
+        assertEquals(120_000L * 1024, metric.pssBytes)
+    }
+
+    @Test
+    fun zeroFootprintIsTreatedAsNotMeasured() {
+        // ApplicationExitInfo reports 0 for both on some reasons and some
+        // vendors; emitting that as a real measurement would drag every
+        // percentile towards zero.
+        seedLastSeen(MAIN)
+        val metric = collectMetrics(records = listOf(record(rssKb = 0, pssKb = 0))).single()
+        assertNull(metric.rssBytes)
+        assertNull(metric.pssBytes)
+    }
+
     private companion object {
         const val MAIN = SentryTags.PROC_MAIN
         const val FGS = SentryTags.PROC_FGS

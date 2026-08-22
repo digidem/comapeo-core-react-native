@@ -1182,11 +1182,42 @@ cross-referenceable post-mortem — `info` otherwise), the headline
 `oem.killer.suspected` — `signaled` + SIGKILL +
 foreground/foreground-service importance, the signature of OEM custom
 killers reaching past FGS protection — plus `description`, `pss_kb`,
-`rss_kb`, `exit_timestamp_ms`, and the coarse duration buckets
+`rss_kb`, `exit_timestamp_ms`, the shared `platform` / `device_class` /
+`os_major` attributes, and the coarse duration buckets
 `uptime_bucket` / `bg_duration_bucket` /
 `comapeo.fgs.killed_in_background`. The buckets sit at diagnostic
 (not usage) tier deliberately: they're aggregate, low-resolution
 cohort axes, not a per-user timeline.
+
+`platform` / `device_class` / `os_major` ride on **every** native metric,
+so a call site cannot forget them — without them a fleet statistic cannot
+be attributed to a class of hardware, which is the first thing anyone asks
+of one. On Android all metric emission (the FGS bridge's `countMetric` and
+the exit collector, in both processes) funnels through `SentryMetricEmit`,
+which injects them and runs the metric scrub; on iOS
+`SentryNativeBridge.countMetric` does the same, and the exit collector
+(`AppExitMetricsCollector`) emits through it. Call-site attributes win on
+a key collision. Note the parity with Node metrics is partial: the
+backend's metrics layer injects `platform` centrally but adds
+`device_class` / `os_major` only to the backend memory gauges — Node
+*count* metrics (`comapeo.boot.outcome`, `comapeo.ipc.errors`, …) carry
+neither, so a cross-layer Explore query grouped by `device_class` slices
+native metrics and the memory gauges only.
+
+One caveat on `os_major`: exit records are decoded on the launch after the
+death, so it reflects the OS at report time — an exit that straddles an OS
+update is tagged with the post-update version.
+
+Two companion **distributions** carry the process footprint at the moment
+of death, in bytes, with the same attributes: `comapeo.app.exit.rss_bytes`
+and `comapeo.app.exit.pss_bytes`. They exist because `rss_kb` / `pss_kb`
+are *numeric* attributes and Explore cannot group by those — the same
+reason the durations here are pre-bucketed strings — so as attributes
+alone the footprint was unreadable. A zero from `ApplicationExitInfo`
+(some reasons, some vendors) means "not measured" and is skipped rather
+than recorded as a real zero. These pair with
+`comapeo.backend.rss_peak_bytes` from the running process: one says what
+it grew to, the other what it died holding.
 
 App-usage-tier additions (only when `applicationUsageData` is on):
 the exact `alive_for_ms` / `backgrounded_for_ms` values — millisecond

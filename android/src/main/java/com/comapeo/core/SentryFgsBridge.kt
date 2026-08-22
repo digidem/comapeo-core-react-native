@@ -28,7 +28,6 @@ import io.sentry.TransactionOptions
 import io.sentry.android.core.InternalSentrySdk
 import io.sentry.android.core.SentryAndroid
 import io.sentry.logger.SentryLogParameters
-import io.sentry.metrics.SentryMetricsParameters
 import io.sentry.protocol.SentryTransaction
 import org.json.JSONException
 import org.json.JSONObject
@@ -65,6 +64,7 @@ object SentryFgsBridge {
         applicationUsageData: Boolean = false,
     ) {
         if (initialized) return
+        SentryMetricEmit.ensureDeviceAttributes(context.applicationContext)
         try {
             // Parse once here rather than in the event processor on every capture.
             val backendModules: Map<String, String>? =
@@ -225,18 +225,8 @@ object SentryFgsBridge {
         attributes: Map<String, String> = emptyMap(),
     ) {
         if (!initialized) return
-        try {
-            // Silently drop a metric carrying a forbidden name/attribute — an
-            // expected, innocuous gate that isn't worth a log line.
-            if (SentryMetricScrub.isForbiddenMetric(name, attributes)) return
-            val attrs = attributes.entries
-                .map { (k, v) -> SentryAttribute.stringAttribute(k, v) }
-                .toTypedArray()
-            val params = SentryMetricsParameters.create(SentryAttributes.of(*attrs))
-            Sentry.metrics().count(name, 1.0, null, params)
-        } catch (t: Throwable) {
-            Log.w(TAG, "countMetric($name) threw", t)
-        }
+        // Device attributes + scrub live in the emitter; see docs/sentry-integration.md.
+        SentryMetricEmit.count(name, attributes)
     }
 
     /**
@@ -416,6 +406,7 @@ object SentryFgsBridge {
     @JvmStatic
     internal fun resetForTests() {
         initialized = false
+        SentryMetricEmit.resetForTests()
     }
 
     /**
