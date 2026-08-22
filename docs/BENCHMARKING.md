@@ -7,8 +7,14 @@ backend makes it a less attractive victim than the foreground UI. That makes
 "what does this change cost in memory" a question worth being able to answer
 cheaply and repeatedly.
 
-The backend measures its own footprint and reports it across the fleet as
-Sentry gauges, from every install with diagnostics on. The numbers come from
+There are two ways to answer it, and they share one implementation.
+
+| | Where | What it answers |
+|---|---|---|
+| [`scripts/benchmark-boot.sh`](../scripts/benchmark-boot.sh) | one device you control | "Is build B lighter than build A?" — an A/B you run before merging |
+| [Sentry gauges](#the-fleet-view-sentry-gauges) | every install with diagnostics on | "Did it hold up on real devices?" — after shipping |
+
+Both read the same numbers from
 [`backend/lib/memory-snapshot.js`](../backend/lib/memory-snapshot.js).
 
 ## What gets measured, and why those numbers
@@ -38,6 +44,95 @@ The process-level numbers come from `/proc/self/status`, which exists only on
 Android. On iOS node runs in-process, so the same fields would describe the UI
 too; the reader returns `null` there and only the V8 numbers are reported. The
 platform gate is the filesystem, not a flag that could drift.
+
+## Running an A/B locally
+
+The harness is built for comparing two builds, not for producing absolute
+figures. Emulator numbers do not transfer to a physical device — V8 sizes its
+heap from physical RAM, among other things — but the *difference* between two
+builds measured the same way usually does.
+
+The simple case, when you have two APKs:
+
+```sh
+./scripts/benchmark-boot.sh --ab /tmp/before.apk /tmp/after.apk \
+    --rounds 3 --per-round 5
+```
+
+That runs 15 cold boots of each, alternating which build goes first every
+round, and prints a comparison at the end. If you only have one thing to
+measure, run it twice and compare the files:
+
+```sh
+./scripts/benchmark-boot.sh --label before --iterations 10
+# …change something, rebuild…
+./scripts/benchmark-boot.sh --label after --iterations 10
+node scripts/benchmark-report.mjs benchmark-results/before.json \
+                                  benchmark-results/after.json
+```
+
+With no `--apk` or `--ab` it builds `apps/integration` in Release first.
+Benchmark against Release, never debug: `startForeground` alone is about ten
+times slower in a debug build.
+
+Useful flags: `--device <serial>` (required when more than one is attached),
+`--iterations`, `--rounds` / `--per-round`, `--duration` (seconds to watch each
+boot, default 20), `--abi`, `--skip-build`, `--out`.
+
+Output lands in `benchmark-results/` (gitignored): one JSON per label plus the
+raw per-boot logcat captures under `raw/`, which are worth keeping when a run
+looks strange.
+
+### Reading the output
+
+```
+metric                   baseline  candidate     delta       %        p
+-----------------------------------------------------------------------
+Peak RSS (MB)               274.4      261.0     -13.4    -4.9   <0.001
+Anonymous RSS (MB)          103.3       92.5     -10.8   -10.5    0.029
+V8 live heap (MB)            25.4       15.8      -9.6   -37.8   <0.001
+
+per-round medians (peak RSS, MB):
+round      baseline  candidate
+1             274.2      261.2
+2             274.4      261.0
+3             275.1      261.1
+```
+
+Medians, not means: boot measurements are skewed by the occasional scheduling
+stall, and one stalled boot drags a mean around. The p-values are two-sided
+Mann–Whitney U over the individual boots — they say whether *these* boots
+differ, not whether the effect holds on hardware you did not test.
+
+**The per-round table is the one to check first.** A development machine is
+usually doing other things, and host load drifts over the twenty-odd minutes a
+full run takes. If the two builds separate the same way in every round, the
+difference is the build. If the rounds disagree, you measured the machine.
+
+### Things that will bite you
+
+- **Steady-state RSS is bimodal.** By the time the sample is taken, a ~24 MB
+  block has either been released back or not, and which happens varies boot to
+  boot. Peak RSS does not have this problem, which is another reason to lead
+  with it. If you need the settled number, take enough boots to see both modes
+  in each build and compare them mode-for-mode.
+- **The compile cache is wiped before every boot** so that swapping APKs
+  doesn't leave one build paying for a cache the other wrote. Measured boots
+  are therefore cold-cache boots, which is the worst case and the one that
+  matters for a process that may be killed at startup.
+- **The first boot after each install is discarded** — it faults the freshly
+  written APK in.
+- **`VmSize` is not a footprint.** A V8 build with pointer compression reserves
+  a 4 GB cage per isolate, which never becomes resident. The harness does not
+  report it for exactly this reason.
+
+### Without root
+
+`adb root` (emulators, userdebug builds) enables a 50 ms `/proc` timeline for
+the trajectory. It is optional: peak RSS, RSS and the heap breakdown come from
+the backend's own `[comapeo.memory] boot` log line, which reads `/proc/self`
+and needs no privilege, so the harness works unmodified on a production
+device.
 
 ## The fleet view: Sentry gauges
 
@@ -77,7 +172,7 @@ question worth asking of it.
 It only separates builds that carry different revisions, though. A libnode
 built from an unmerged branch reports whatever tag it was based on, so two such
 builds are indistinguishable by this attribute — locally that does not matter
-(you know which APK you installed), but anything shipped to devices for
+(the harness knows which APK it installed), but anything shipped to devices for
 comparison needs its own revision. Bump the nodejs-mobile tag before a staged
 rollout you intend to measure.
 
