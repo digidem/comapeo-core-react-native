@@ -10,8 +10,8 @@ set -euo pipefail
 #   ./scripts/download-nodejs-mobile.sh                          # both platforms
 #   ./scripts/download-nodejs-mobile.sh --platform android       # Android only
 #   ./scripts/download-nodejs-mobile.sh --platform ios            # iOS only
-#   ./scripts/download-nodejs-mobile.sh --platform all v24.19.0-1  # explicit version
-#   NODEJS_MOBILE_VERSION=v24.19.0-1 ./scripts/...                 # via env var
+#   ./scripts/download-nodejs-mobile.sh --platform all v24.19.0-0  # explicit version
+#   NODEJS_MOBILE_VERSION=v24.19.0-0 ./scripts/...                 # via env var
 #   NODEJS_MOBILE_FLAVOR=full ./scripts/...                        # full runtime
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,7 +26,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-VERSION="${VERSION:-${NODEJS_MOBILE_VERSION:-v24.19.0-1}}"
+VERSION="${VERSION:-${NODEJS_MOBILE_VERSION:-v24.19.0-0}}"
 TAG="$VERSION"
 [[ "$TAG" != v* ]] && TAG="v$TAG"
 FILE_VERSION="${TAG#v}"
