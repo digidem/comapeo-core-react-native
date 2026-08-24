@@ -494,6 +494,18 @@ class NodeJSService {
         case .sentryEnvelope(let data):
             SentryNativeBridge.captureEnvelopeBase64(data)
         case .migrating(let context):
+            self.lock.lock()
+            let currentState = self.state
+            self.lock.unlock()
+            if currentState != .starting && currentState != .migrating {
+                logCrumb(
+                    category: SentryCategories.control,
+                    message: "ignoring migrating frame in state \(currentState.rawValue)",
+                    level: .warning,
+                    data: ["context": context, "state": currentState.rawValue]
+                )
+                return
+            }
             // Coarse state change (`.starting` → `.migrating`) fires via
             // `applyAndEmit`'s `onStateChange`; each tick's `context` goes
             // out the separate `onMigrationProgress` channel (state doesn't
@@ -506,6 +518,18 @@ class NodeJSService {
             applyAndEmit { self.backendState = .migrating(context: context) }
             self.onMigrationProgress?(context)
         case .migrationError(let message, let stack):
+            self.lock.lock()
+            let currentState = self.state
+            self.lock.unlock()
+            guard currentState == .migrating else {
+                logCrumb(
+                    category: SentryCategories.control,
+                    message: "ignoring migration-error frame in state \(currentState.rawValue)",
+                    level: .warning,
+                    data: ["message": message, "state": currentState.rawValue]
+                )
+                return
+            }
             // Recoverable: the backend stays alive awaiting a `retry`, so
             // this deliberately does NOT set `backendState` to `.error`.
             logCapture(
@@ -518,6 +542,18 @@ class NodeJSService {
                 self.backendState = .migrationError(message: message, stack: stack)
             }
         case .lowSpace(let spaceNeeded):
+            self.lock.lock()
+            let currentState = self.state
+            self.lock.unlock()
+            guard currentState == .migrating else {
+                logCrumb(
+                    category: SentryCategories.control,
+                    message: "ignoring low-space frame in state \(currentState.rawValue)",
+                    level: .warning,
+                    data: ["spaceNeeded": spaceNeeded, "state": currentState.rawValue]
+                )
+                return
+            }
             logCrumb(
                 category: SentryCategories.control,
                 message: "received: low-space",
@@ -639,6 +675,17 @@ class NodeJSService {
     /// `availableDiskSpace` is a placeholder (0) until the native layer can
     /// report real free space.
     func sendRetryFrame(forceSkipMigrate: Bool) {
+        lock.lock()
+        let currentState = state
+        lock.unlock()
+        guard currentState == .migrationError || currentState == .lowSpace else {
+            logCrumb(
+                category: SentryCategories.control,
+                message: "retry frame rejected: state is \(currentState.rawValue), must be MIGRATION_ERROR or LOW_SPACE",
+                level: .warning
+            )
+            return
+        }
         guard let ipc = controlIPC else { return }
         let payload: [String: Any] = [
             "type": "retry",

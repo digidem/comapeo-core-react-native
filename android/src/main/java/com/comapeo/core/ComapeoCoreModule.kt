@@ -330,6 +330,12 @@ class ComapeoCoreModule : Module() {
         }
 
         Function("retryInit") { forceSkipMigrate: Boolean? ->
+            val current = synchronized(stateLock) { jsState }
+            if (current != JsState.MIGRATION_ERROR && current != JsState.LOW_SPACE) {
+                throw IllegalStateException(
+                    "retryInit called from state $current; must be MIGRATION_ERROR or LOW_SPACE",
+                )
+            }
             val availableDiskSpace : Int = 0
             val message = """
             {

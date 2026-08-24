@@ -718,6 +718,16 @@ class NodeJSService(
                 SentryFgsBridge.captureEnvelopeBase64(frame.data)
             }
             is ControlFrame.Migrating -> {
+                val current = getState()
+                if (current != State.STARTING && current != State.MIGRATING) {
+                    logCrumb(
+                        SentryCategories.CONTROL,
+                        "ignoring migrating frame in state $current",
+                        level = "warning",
+                        data = mapOf("context" to frame.context, "state" to current.name),
+                    )
+                    return
+                }
                 logCrumb(
                     SentryCategories.CONTROL,
                     "received: migrating",
@@ -727,6 +737,15 @@ class NodeJSService(
                 onMigrationProgress?.invoke(frame.context)
             }
             is ControlFrame.MigrationError -> {
+                if (getState() != State.MIGRATING) {
+                    logCrumb(
+                        SentryCategories.CONTROL,
+                        "ignoring migration-error frame in state ${getState()}",
+                        level = "warning",
+                        data = mapOf("message" to frame.message, "state" to getState().name),
+                    )
+                    return
+                }
                 logCapture(
                     SentryCategories.CONTROL,
                     "storage migration failed: ${frame.message}",
@@ -738,6 +757,15 @@ class NodeJSService(
                 }
             }
             is ControlFrame.LowSpace -> {
+                if (getState() != State.MIGRATING) {
+                    logCrumb(
+                        SentryCategories.CONTROL,
+                        "ignoring low-space frame in state ${getState()}",
+                        level = "warning",
+                        data = mapOf("spaceNeeded" to frame.spaceNeeded.toString(), "state" to getState().name),
+                    )
+                    return
+                }
                 logCrumb(
                     SentryCategories.CONTROL,
                     "received: low-space",
