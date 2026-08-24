@@ -1,6 +1,7 @@
 package com.comapeo.core
 
 import android.Manifest
+import android.os.StatFs
 import expo.modules.interfaces.permissions.Permissions
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
@@ -336,7 +337,11 @@ class ComapeoCoreModule : Module() {
                     "retryInit called from state $current; must be MIGRATION_ERROR or LOW_SPACE",
                 )
             }
-            val availableDiskSpace : Int = 0
+            val availableDiskSpace = try {
+                StatFs(appContext.persistentFilesDirectory.absolutePath).availableBytes
+            } catch (e: Exception) {
+                0L
+            }
             val message = """
             {
               "type":"retry",

@@ -671,9 +671,6 @@ class NodeJSService {
 
     /// Sends a `retry` frame on the control socket so the backend re-runs
     /// init + `startComapeo`. Must only be called after a low-space warning.
-    ///
-    /// `availableDiskSpace` is a placeholder (0) until the native layer can
-    /// report real free space.
     func sendRetryFrame(forceSkipMigrate: Bool) {
         lock.lock()
         let currentState = state
@@ -687,10 +684,11 @@ class NodeJSService {
             return
         }
         guard let ipc = controlIPC else { return }
+        let availableDiskSpace = getAvailableDiskSpace()
         let payload: [String: Any] = [
             "type": "retry",
             "forceSkipMigrate": forceSkipMigrate,
-            "availableDiskSpace": 0, // TODO: report real free space
+            "availableDiskSpace": availableDiskSpace,
         ]
         guard
             let data = try? JSONSerialization.data(withJSONObject: payload),
@@ -701,6 +699,22 @@ class NodeJSService {
         }
         ipc.sendMessage(json)
         logCrumb(category: SentryCategories.control, message: "retry frame sent")
+    }
+
+    /// Returns available disk space in bytes for the app's document
+    /// directory. Used at boot and on retry so the backend can decide
+    /// whether a migration is feasible.
+    private func getAvailableDiskSpace() -> Int {
+        guard
+            let docsURL = try? FileManager.default
+                .url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false),
+            let capacity = try? docsURL
+                .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+                .volumeAvailableCapacityForImportantUsage
+        else {
+            return 0
+        }
+        return Int(capacity)
     }
 
     /// Gracefully stops Node.js. `timeout` bounds the wait for the
@@ -788,6 +802,9 @@ class NodeJSService {
         let defaultConfigPath = resolveDefaultConfigPath() ?? ""
         // 5th positional: consumer's online map style URL, or "" when unset.
         let defaultOnlineStyleUrl = resolveDefaultOnlineStyleUrl() ?? ""
+        // 6th positional: available disk space in bytes, so the backend can
+        // decide whether a migration is feasible.
+        let availableDiskSpace = getAvailableDiskSpace()
         var args: [String] = ["node"]
         args.append(contentsOf: [
             jsPath,
@@ -796,6 +813,7 @@ class NodeJSService {
             privateStorageDir,
             defaultConfigPath,
             defaultOnlineStyleUrl,
+            String(availableDiskSpace),
         ])
         args.append(contentsOf: buildSentryArgs())
         let exitCode = nodeEntryPoint(args)

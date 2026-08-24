@@ -1,6 +1,7 @@
 package com.comapeo.core
 
 import android.content.ContextWrapper
+import android.os.StatFs
 import android.util.Base64
 import android.util.Log
 import androidx.annotation.VisibleForTesting
@@ -431,6 +432,9 @@ class NodeJSService(
         // 5th positional: consumer's online map style URL, or "" when unset.
         val defaultOnlineStyleUrl =
             SentryConfig.readApplicationMetaDataString(this, META_DEFAULT_ONLINE_STYLE_URL) ?: ""
+        // 6th positional: available disk space in bytes, so the backend can
+        // decide whether a migration is feasible.
+        val availableDiskSpace = getAvailableDiskSpace()
         val args = mutableListOf("node")
         args += listOf(
             entryPath,
@@ -439,6 +443,7 @@ class NodeJSService(
             dataDir,
             defaultConfigPath,
             defaultOnlineStyleUrl,
+            availableDiskSpace.toString(),
         )
         sentryConfig?.let { cfg ->
             args += "--sentryDsn=${cfg.dsn}"
@@ -839,6 +844,19 @@ class NodeJSService(
         serviceScope.launch {
             ipcDeferred.await().sendMessage(frame)
             logCrumb(SentryCategories.BOOT, "init frame sent")
+        }
+    }
+
+    /**
+     * Returns available disk space in bytes for the app's data directory.
+     * Used at boot and on retry so the backend can decide whether a
+     * migration is feasible.
+     */
+    private fun getAvailableDiskSpace(): Long {
+        return try {
+            StatFs(dataDir).availableBytes
+        } catch (e: Exception) {
+            0L
         }
     }
 
