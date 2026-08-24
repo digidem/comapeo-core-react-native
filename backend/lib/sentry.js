@@ -7,6 +7,7 @@
 /** @typedef {import("./sentry-frame.js").SentryFrame} SentryFrame */
 
 import { scrubEvent, scrubLog } from "../before-send.js";
+import { runtimeVersion } from "./memory-snapshot.js";
 import * as metrics from "./metrics.js";
 import { createNodeResourcesProcessor } from "./node-resources.js";
 
@@ -190,7 +191,7 @@ export function init({ Sentry: sdk, argv, envelopeToFrame: toFrame, storageDir }
       tags: {
         proc: "fgs",
         layer: "node",
-        nodejs_mobile: process.versions.mobile ?? "unknown",
+        nodejs_mobile: runtimeVersion(),
       },
       // Native-derived user.id (monthly/permanent hash) — same value the
       // FGS and RN layers set, so one launch reports one user.
