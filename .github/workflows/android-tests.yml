@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  NODEJS_MOBILE_VERSION: v24.19.0-1
+  NODEJS_MOBILE_VERSION: v24.19.0-2
   # NDK the generated example app builds against. Sourced from React Native's
   # node_modules/react-native/gradle/libs.versions.toml (Expo's default); keep
   # in sync on RN bumps. We install it explicitly (with retry) so Gradle never
