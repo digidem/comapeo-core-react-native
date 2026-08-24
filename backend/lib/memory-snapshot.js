@@ -12,7 +12,7 @@ const PROC_SELF_STATUS = "/proc/self/status";
  * so the Sentry `nodejs_mobile` event tag and the `runtime` metric attribute
  * always join on the same value.
  *
- * @param {Record<string, string | undefined>} [versions] test seam
+ * @param {Record<string, string | undefined>} [versions]
  */
 export function runtimeVersion(versions = process.versions) {
   return versions.mobile ?? "unknown";
@@ -53,7 +53,6 @@ const PROC_FIELDS = {
 
 /**
  * Parses the `Key: <n> kB` lines of `/proc/<pid>/status` into bytes.
- * Split out from the read so it can be tested against fixture text.
  *
  * @param {string} text Contents of a `/proc/<pid>/status` file.
  * @returns {Record<string, number>} Bytes, keyed by the names in `PROC_FIELDS`.
@@ -71,21 +70,13 @@ export function parseProcStatus(text) {
 }
 
 /**
- * Whole-process memory, or `null` where `/proc` is unavailable (iOS) or
- * unreadable. Best-effort by design: this is telemetry, never a boot
- * dependency.
+ * Whole-process memory from `/proc/<pid>/status` text, or `null` when the
+ * meaningful fields are absent.
  *
- * @param {{ readFileSync?: (path: string, encoding: string) => string }} [deps] test seam
+ * @param {string} text Contents of a `/proc/<pid>/status` file.
  * @returns {ProcessMemory | null}
  */
-export function readProcessMemory(deps = {}) {
-  const readFileSync = deps.readFileSync ?? fs.readFileSync;
-  let text;
-  try {
-    text = readFileSync(PROC_SELF_STATUS, "utf8");
-  } catch {
-    return null;
-  }
+export function processMemoryFrom(text) {
   const parsed = parseProcStatus(text);
   // VmRSS and VmHWM are the two that carry the meaning; without them the
   // sample is not worth emitting.
@@ -102,13 +93,12 @@ export function readProcessMemory(deps = {}) {
 }
 
 /**
- * V8 heap statistics, in bytes.
+ * The V8 heap fields we report, in bytes.
  *
- * @param {{ getHeapStatistics?: () => v8.HeapInfo }} [deps] test seam
+ * @param {v8.HeapInfo} heap
+ * @returns {HeapStats}
  */
-export function readHeapStats(deps = {}) {
-  const getHeapStatistics = deps.getHeapStatistics ?? v8.getHeapStatistics;
-  const heap = getHeapStatistics();
+export function heapStatsFrom(heap) {
   return {
     usedBytes: heap.used_heap_size,
     physicalBytes: heap.total_physical_size,
@@ -120,18 +110,22 @@ export function readHeapStats(deps = {}) {
 
 /**
  * One combined snapshot, `runtime` included so the log line names the
- * nodejs-mobile build it measured.
+ * nodejs-mobile build it measured. `process` is `null` where `/proc` is
+ * unavailable (iOS) or unreadable — best-effort by design: this is telemetry,
+ * never a boot dependency.
  *
- * @param {{
- *   readFileSync?: (path: string, encoding: string) => string,
- *   getHeapStatistics?: () => v8.HeapInfo,
- *   versions?: Record<string, string | undefined>,
- * }} [deps] test seam
+ * @returns {MemorySnapshot}
  */
-export function memorySnapshot(deps = {}) {
+export function memorySnapshot() {
+  let process_ = null;
+  try {
+    process_ = processMemoryFrom(fs.readFileSync(PROC_SELF_STATUS, "utf8"));
+  } catch {
+    // No `/proc` here.
+  }
   return {
-    runtime: runtimeVersion(deps.versions),
-    heap: readHeapStats(deps),
-    process: readProcessMemory(deps),
+    runtime: runtimeVersion(),
+    heap: heapStatsFrom(v8.getHeapStatistics()),
+    process: process_,
   };
 }

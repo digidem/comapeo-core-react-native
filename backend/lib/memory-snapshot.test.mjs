@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  heapStatsFrom,
   memorySnapshot,
   parseProcStatus,
-  readHeapStats,
-  readProcessMemory,
+  processMemoryFrom,
+  runtimeVersion,
 } from "./memory-snapshot.js";
 
 const PROC_STATUS = `Name:\tnode
@@ -58,9 +59,8 @@ test("parseProcStatus ignores fields outside the allowlist", () => {
   assert.equal(Object.keys(parsed).length, 5);
 });
 
-test("readProcessMemory returns bytes from /proc/self/status", () => {
-  const mem = readProcessMemory({ readFileSync: () => PROC_STATUS });
-  assert.deepEqual(mem, {
+test("processMemoryFrom maps a full status file", () => {
+  assert.deepEqual(processMemoryFrom(PROC_STATUS), {
     rssBytes: 192_600 * 1024,
     peakRssBytes: 261_000 * 1024,
     anonBytes: 92_500 * 1024,
@@ -69,25 +69,12 @@ test("readProcessMemory returns bytes from /proc/self/status", () => {
   });
 });
 
-test("readProcessMemory returns null where /proc is unavailable (iOS)", () => {
-  const mem = readProcessMemory({
-    readFileSync: () => {
-      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-    },
-  });
-  assert.equal(mem, null);
+test("processMemoryFrom returns null when the meaningful fields are missing", () => {
+  assert.equal(processMemoryFrom("Name:\tnode\nThreads:\t3\n"), null);
 });
 
-test("readProcessMemory returns null when the meaningful fields are missing", () => {
-  const mem = readProcessMemory({ readFileSync: () => "Name:\tnode\nThreads:\t3\n" });
-  assert.equal(mem, null);
-});
-
-test("readProcessMemory tolerates a status file without the optional fields", () => {
-  const mem = readProcessMemory({
-    readFileSync: () => "VmHWM:\t  100 kB\nVmRSS:\t   80 kB\n",
-  });
-  assert.deepEqual(mem, {
+test("processMemoryFrom tolerates a status file without the optional fields", () => {
+  assert.deepEqual(processMemoryFrom("VmHWM:\t  100 kB\nVmRSS:\t   80 kB\n"), {
     rssBytes: 80 * 1024,
     peakRssBytes: 100 * 1024,
     anonBytes: 0,
@@ -96,9 +83,8 @@ test("readProcessMemory tolerates a status file without the optional fields", ()
   });
 });
 
-test("readHeapStats maps the V8 fields we report", () => {
-  const heap = readHeapStats({ getHeapStatistics: () => HEAP });
-  assert.deepEqual(heap, {
+test("heapStatsFrom maps the V8 fields we report", () => {
+  assert.deepEqual(heapStatsFrom(HEAP), {
     usedBytes: 16_598_748,
     physicalBytes: 27_484_160,
     totalBytes: 35_233_792,
@@ -107,25 +93,25 @@ test("readHeapStats maps the V8 fields we report", () => {
   });
 });
 
-test("memorySnapshot carries the nodejs-mobile revision as `runtime`", () => {
-  const snapshot = memorySnapshot({
-    readFileSync: () => PROC_STATUS,
-    getHeapStatistics: () => HEAP,
-    versions: { mobile: "24.19.0-0" },
-  });
-  assert.equal(snapshot.runtime, "24.19.0-0");
-  assert.equal(snapshot.heap.physicalBytes, 27_484_160);
-  assert.equal(snapshot.process?.peakRssBytes, 261_000 * 1024);
+test("runtimeVersion reads the nodejs-mobile revision", () => {
+  assert.equal(runtimeVersion({ mobile: "24.19.0-0" }), "24.19.0-0");
+  assert.equal(runtimeVersion({}), "unknown");
 });
 
-test("memorySnapshot falls back to `unknown` off nodejs-mobile", () => {
-  const snapshot = memorySnapshot({
-    readFileSync: () => {
-      throw new Error("no /proc");
-    },
-    getHeapStatistics: () => HEAP,
-    versions: {},
-  });
-  assert.equal(snapshot.runtime, "unknown");
-  assert.equal(snapshot.process, null);
+// The real production path, end to end. `/proc/self/status` genuinely exists
+// on Linux and genuinely doesn't on macOS/iOS, so between dev machines and CI
+// both sides of the platform gate run for real.
+test("memorySnapshot returns a well-formed snapshot of this process", () => {
+  const snapshot = memorySnapshot();
+  assert.equal(typeof snapshot.runtime, "string");
+  assert.ok(snapshot.heap.usedBytes > 0);
+  assert.ok(snapshot.heap.physicalBytes > 0);
+  assert.ok(snapshot.heap.limitBytes > 0);
+  if (process.platform === "linux") {
+    assert.ok(snapshot.process !== null);
+    assert.ok(snapshot.process.rssBytes > 0);
+    assert.ok(snapshot.process.peakRssBytes >= snapshot.process.rssBytes);
+  } else {
+    assert.equal(snapshot.process, null);
+  }
 });
