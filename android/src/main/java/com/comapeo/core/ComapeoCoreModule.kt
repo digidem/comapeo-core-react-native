@@ -53,7 +53,7 @@ class ComapeoCoreModule : Module() {
 
     private fun buildEventPayload(
         state: JsState,
-        errorPayload: Map<String, String>?,
+        errorPayload: Map<String, Any>?,
     ): Map<String, Any> = buildMap {
         put("state", state.name)
         errorPayload?.let { putAll(it) }
@@ -141,7 +141,9 @@ class ComapeoCoreModule : Module() {
                             when (synchronized(stateLock) { jsState }) {
                                 JsState.ERROR -> {}
                                 JsState.STOPPING, JsState.STOPPED -> setState(JsState.STOPPED)
-                                JsState.STARTING, JsState.STARTED -> setState(
+                                JsState.STARTING, JsState.STARTED,
+                                JsState.MIGRATING, JsState.MIGRATION_ERROR,
+                                JsState.LOW_SPACE -> setState(
                                     JsState.ERROR,
                                     mapOf(
                                         "errorPhase" to "node-runtime-unexpected",

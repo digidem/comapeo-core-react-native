@@ -359,7 +359,7 @@ class NodeJSService(
                 State.STARTED -> "ok"
                 State.ERROR -> "internal_error"
                 State.STOPPING, State.STOPPED -> "cancelled"
-                State.STARTING -> null
+                State.STARTING, State.MIGRATING, State.MIGRATION_ERROR, State.LOW_SPACE -> null
             }
             if (terminalStatus != null) {
                 // Drain in-flight phase spans BEFORE finishing the parent: Sentry's
