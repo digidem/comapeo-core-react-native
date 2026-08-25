@@ -95,8 +95,7 @@ class NodeJSService(
     enum class State {
         STOPPED, STARTING, STARTED, STOPPING, ERROR,
         /**
-         * Storage migration in flight; the backend is streaming progress
-         * via `onMigrationProgress`. Non-terminal: resolves to `.started`
+         * Storage migration in flight. Non-terminal: resolves to `.started`
          * on success or `.migrationError`/`.lowSpace` on failure.
          */
         MIGRATING,
@@ -211,16 +210,6 @@ class NodeJSService(
      */
     @Volatile
     var onStateChange: ((State) -> Unit)? = null
-
-    /**
-     * Fires on each `migrating` control frame with the progress string
-     * (e.g. `"2/5"`, `""` before the first core finishes). Informational
-     * only — does not change lifecycle state (the service is already in
-     * `.migrating`); the coarse transition is delivered via `onStateChange`.
-     * Single-slot, last-writer-wins, like `onStateChange`.
-     */
-    @Volatile
-    var onMigrationProgress: ((String) -> Unit)? = null
 
     /** Atomic state container — `getAndUpdate` is a CAS loop, so the
      *  `(nodeRuntime, backendState, stopRequested, state, lastError)` tuple is always coherent. */
@@ -739,7 +728,6 @@ class NodeJSService(
                     data = mapOf("context" to frame.context),
                 )
                 applyAndEmit { it.copy(backendState = BackendState.Migrating(frame.context)) }
-                onMigrationProgress?.invoke(frame.context)
             }
             is ControlFrame.MigrationError -> {
                 if (getState() != State.MIGRATING) {
