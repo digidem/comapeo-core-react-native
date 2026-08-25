@@ -1,7 +1,14 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 import ensureError from "ensure-error";
 import Fastify from "fastify";
+
+import {
+  checkShouldMigrate,
+  migrateStorage,
+  MIGRATION_REASON_NO_SPACE,
+} from "@comapeo/core/migration.js";
 
 import { ComapeoRpc } from "./lib/comapeo-rpc.js";
 import { flushCompileCacheAfterBoot } from "./lib/compile-cache.js";
@@ -19,7 +26,11 @@ const MEMORY_SAMPLE_INTERVAL_MS = 60_000;
 // `KEEP_THESE_FROM_BACKEND` in `scripts/build-backend.ts` mirrors this
 // directory into the on-device bundle.
 const MIGRATIONS_FOLDER_PATH = fileURLToPath(
-  new URL("./node_modules/@comapeo/core/drizzle", import.meta.url),
+  new URL("./node_modules/@comapeo/core/drizzle", import.meta.url)
+);
+
+const OLD_MIGRATIONS_FOLDER_PATH = fileURLToPath(
+  new URL("./node_modules/comapeo-core-old/drizzle", import.meta.url)
 );
 
 console.log("Starting Comapeo Node server...");
@@ -31,15 +42,21 @@ console.log("Starting Comapeo Node server...");
 // string when unset) so the `--sentry*` flags that follow can't land in
 // them. Empty 4th → undefined → MapeoManager applies no default config;
 // empty 5th → undefined → createComapeo falls back to its built-in URL.
+// 6th positional is a free-disk-space (bytes) figure native
+// reports so the storage-migration check can decide whether there's
+// room; empty or non-numeric → 0 (unknown).
 const [
   comapeoSocketPath,
   controlSocketPath,
   privateStorageDir,
   configArg,
   styleUrlArg,
+  availableDiskSpaceArg,
 ] = process.argv.slice(2);
 const defaultConfigPath = configArg || undefined;
 const defaultOnlineStyleUrl = styleUrlArg || undefined;
+const parsedDiskSpace = availableDiskSpaceArg ? parseInt(availableDiskSpaceArg, 10) : 0;
+const availableDiskSpace = Number.isNaN(parsedDiskSpace) ? 0 : parsedDiskSpace;
 
 const fastify = Fastify();
 
@@ -62,6 +79,8 @@ const initPromise = new Promise((resolve, reject) => {
   rejectInit = reject;
 });
 let initConsumed = false;
+/** True while a `startComapeo` run (boot IIFE or retry) is executing. */
+let startInFlight = false;
 
 const controlIpcServer = new SimpleRpcServer({
   /**
@@ -79,8 +98,8 @@ const controlIpcServer = new SimpleRpcServer({
     if (typeof message.rootKey !== "string") {
       rejectInit(
         new Error(
-          `init.rootKey must be a base64 string, got ${typeof message.rootKey}`,
-        ),
+          `init.rootKey must be a base64 string, got ${typeof message.rootKey}`
+        )
       );
       initConsumed = true;
       return;
@@ -92,8 +111,8 @@ const controlIpcServer = new SimpleRpcServer({
       rejectInit(
         new Error(
           `init.rootKey is not strict-base64 of 16 bytes (expected ` +
-            `/^[A-Za-z0-9+/]{22}==$/, got ${message.rootKey.length} chars)`,
-        ),
+            `/^[A-Za-z0-9+/]{22}==$/, got ${message.rootKey.length} chars)`
+        )
       );
       initConsumed = true;
       return;
@@ -102,8 +121,8 @@ const controlIpcServer = new SimpleRpcServer({
     if (rootKey.byteLength !== 16) {
       rejectInit(
         new Error(
-          `init.rootKey must decode to 16 bytes, got ${rootKey.byteLength}`,
-        ),
+          `init.rootKey must decode to 16 bytes, got ${rootKey.byteLength}`
+        )
       );
       initConsumed = true;
       return;
@@ -122,7 +141,7 @@ const controlIpcServer = new SimpleRpcServer({
      */
     const settle = (label, p) =>
       Promise.resolve(p).catch((e) =>
-        console.error(`shutdown: ${label} close failed`, e),
+        console.error(`shutdown: ${label} close failed`, e)
       );
     // withSpan records each phase to `comapeo.shutdown.phase_duration_ms`
     // even when traces are off, mirroring the boot phases.
@@ -131,17 +150,75 @@ const controlIpcServer = new SimpleRpcServer({
         settle("control", controlIpcServer.close()),
         settle("fastify", fastify.close()),
         ...(comapeoRpcServer ? [settle("rpc", comapeoRpcServer.close())] : []),
-      ]),
+      ])
     );
     if (comapeoManager) {
       await sentry.withSpan("shutdown.close-manager", () =>
-        settle("manager", comapeoManager.close()),
+        settle("manager", comapeoManager.close())
       );
     }
     if (mapServer) {
       await sentry.withSpan("shutdown.close-map-server", () =>
-        settle("map-server", mapServer.close()),
+        settle("map-server", mapServer.close())
       );
+    }
+  },
+  /**
+   * Re-runs `startComapeo` with the resolved root key.
+   *
+   * Rejections are FATAL on purpose: an `error` frame is a terminal frame
+   * (replayed to late-connecting clients, native transitions to ERROR), so
+   * the only honest way to send one is to actually die. A non-fatal
+   * rejection would leave native in ERROR while a healthy backend keeps
+   * running. Rejects if a start (boot or an earlier retry) is already in
+   * flight, or if the manager was already created.
+   *
+   * @param {{
+   *   forceSkipMigrate: boolean;
+   *   availableDiskSpace: number;
+   * }} message
+   */
+  retry: async (message) => {
+    try {
+      // Reject loudly rather than race a running start or rebuild a
+      // live manager: there is no RPC error response, so the rejection
+      // takes the backend down (phase "retry") and native enters ERROR.
+      if (startInFlight) {
+        throw new Error("retry rejected: start already in flight");
+      }
+      if (comapeoManager) {
+        throw new Error("retry rejected: manager already created");
+      }
+      const rootKey = await withPhase("init", () => initPromise);
+      // Re-check after the await: boot may have begun its start while
+      // we waited on init.
+      if (startInFlight || comapeoManager) {
+        throw new Error("retry rejected: start already underway");
+      }
+      if (typeof message.forceSkipMigrate !== "boolean") {
+        throw new Error(
+          `retry.forceSkipMigrate must be a boolean, got ${typeof message.forceSkipMigrate}`
+        );
+      }
+      if (typeof message.availableDiskSpace !== "number") {
+        throw new Error(
+          `retry.availableDiskSpace must be a number, got ${typeof message.availableDiskSpace}`
+        );
+      }
+      startInFlight = true;
+      try {
+        await startComapeo(
+          rootKey,
+          message.availableDiskSpace,
+          message.forceSkipMigrate
+        );
+      } finally {
+        startInFlight = false;
+      }
+    } catch (error) {
+      const phase = getStringProp(error, "phase") || "retry";
+      metrics.bootOutcome("error", phase);
+      handleFatal(phase, error);
     }
   },
   /**
@@ -231,7 +308,7 @@ async function withPhase(phase, fn) {
 (async () => {
   try {
     await withPhase("listen-control", () =>
-      controlIpcServer.listen(controlSocketPath),
+      controlIpcServer.listen(controlSocketPath)
     );
     console.log(`Control socket listening on ${controlSocketPath}`);
 
@@ -245,78 +322,159 @@ async function withPhase(phase, fn) {
     // same trace; a duplicate would only add noise.
     const rootKey = await withPhase("init", () => initPromise);
 
-    // Dashboard label (`boot.manager-init`) vs. wire phase (`construct`)
-    // used by native error frames.
-    await withPhase("construct", () =>
-      sentry.withSpan("boot.manager-init", async () => {
-        comapeoManager = createComapeo({
-          privateStorageDir,
-          fastify,
-          migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
-          defaultConfigPath,
-          defaultOnlineStyleUrl,
-          rootKey,
-        });
-
-        observeSyncSessions(comapeoManager);
-
-        // Start the MapeoManager's Fastify so its blob/icon server is
-        // reachable. `$blobs.getUrl()` / `$icons.getUrl()` await the server's
-        // address (5s timeout, else AbortError). Non-fatal: surface listen
-        // failures to getUrl() callers only.
-        fastify.listen({ host: "127.0.0.1", port: 0 }).catch(() => {});
-
-        // Map server is non-critical: boot must still reach "ready" if it
-        // fails. Isolate construction *and* listen() inside one promise so any
-        // failure — a synchronous createMapServer() throw included — surfaces
-        // only to getBaseUrl() callers, never aborting the manager's boot or
-        // tripping the global unhandledRejection handler (which exits).
-        const mapServerListenPromise = Promise.resolve().then(() => {
-          mapServer = createMapServer({
-            privateStorageDir,
-            rootKey,
-            defaultOnlineStyleUrl,
-          });
-          return mapServer.listen();
-        });
-        mapServerListenPromise.catch((err) => {
-          sentry.captureFatal(
-            "map-server-init",
-            ensureError(err),
-            "create-map-server",
-          );
-        });
-        /** @type {import("@comapeo/ipc/server.js").ComapeoServicesApi} */
-        const comapeoServices = {
-          mapServer: {
-            async getBaseUrl() {
-              const { localPort } = await mapServerListenPromise;
-              return `http://127.0.0.1:${localPort}`;
-            },
-          },
-        };
-
-        comapeoRpcServer = new ComapeoRpc(
-          { comapeoManager, comapeoServices },
-          { onRequestHook: sentry.rpcHook() },
-        );
-
-        await comapeoRpcServer.listen(comapeoSocketPath);
-      }),
-    );
-    console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
-
-    controlIpcServer.setReadinessPhase("ready");
-    metrics.bootOutcome("started");
-    flushCompileCacheAfterBoot();
-    startMemorySampler();
-    sampleStorageSize(privateStorageDir);
+    // Shared with the retry handler: a retry frame arriving mid-start
+    // must be rejected, not race a second startComapeo.
+    startInFlight = true;
+    try {
+      await startComapeo(rootKey, availableDiskSpace);
+    } finally {
+      startInFlight = false;
+    }
   } catch (error) {
     const phase = getStringProp(error, "phase") || "boot";
     metrics.bootOutcome("error", phase);
     handleFatal(phase, error);
   }
 })();
+
+/**
+ * @param {Buffer} rootKey
+ * @param {number} availableDiskSpace Free bytes on the device, from
+ *   native; 0 → the migration check assumes space is unknown.
+ * @param {boolean} [forceSkipMigrate] Native sets this after the user
+ *   hits Skip on a migration failure or low-space prompt.
+ */
+async function startComapeo(
+  rootKey,
+  availableDiskSpace,
+  forceSkipMigrate = false,
+) {
+  // Same layout createComapeo() builds — the migration must inspect the
+  // exact dir the manager will open.
+  const indexDir = path.join(privateStorageDir, "core-storage");
+  let useOldVersion = forceSkipMigrate;
+
+  if (!forceSkipMigrate) {
+    const {
+      shouldUpgrade,
+      useFallback,
+      reason,
+      spaceNeeded,
+    } = await withPhase("migrate", () =>
+      checkShouldMigrate(indexDir, availableDiskSpace)
+    );
+    useOldVersion = useOldVersion || useFallback;
+
+    if (shouldUpgrade) {
+      controlIpcServer.broadcast({ type: "migrating", context: "" });
+      try {
+        const migrationResults = await migrateStorage(indexDir, (
+          doneSoFar,
+          totalCores,
+        ) => {
+          controlIpcServer.broadcast({
+            type: "migrating",
+            context: `${doneSoFar}/${totalCores}`,
+          });
+        });
+        const failedMigration = Object.values(migrationResults).find(
+          ({ migrated }) => !migrated,
+        );
+        if (failedMigration) {
+          throw failedMigration.error || new Error("Storage migration failed");
+        }
+      } catch (reason) {
+        // Non-fatal on purpose: the manager was never created, so a
+        // `retry` frame can re-run us with forceSkipMigrate (or after
+        // the user frees up space).
+        const err = ensureError(reason);
+        metrics.bootOutcome("error", "migrate");
+        sentry.captureFatal("migrate", err, "migration");
+        controlIpcServer.broadcast({
+          type: "migration-error",
+          error: err.message,
+          stack: err.stack,
+        });
+        return;
+      }
+    } else if (reason === MIGRATION_REASON_NO_SPACE) {
+      controlIpcServer.broadcast({
+        type: "low-space",
+        spaceNeeded: spaceNeeded?.toString(),
+      });
+      return;
+    }
+  }
+
+  // Dashboard label (`boot.manager-init`) vs. wire phase (`construct`)
+  // used by native error frames.
+  await withPhase("construct", () =>
+    sentry.withSpan("boot.manager-init", async () => {
+      comapeoManager = createComapeo({
+        privateStorageDir,
+        fastify,
+        migrationsFolderPath: MIGRATIONS_FOLDER_PATH,
+        oldMigrationsFolderPath: OLD_MIGRATIONS_FOLDER_PATH,
+        defaultConfigPath,
+        defaultOnlineStyleUrl,
+        rootKey,
+        useOldVersion,
+      });
+
+      observeSyncSessions(comapeoManager);
+
+      // Start the MapeoManager's Fastify so its blob/icon server is
+      // reachable. `$blobs.getUrl()` / `$icons.getUrl()` await the server's
+      // address (5s timeout, else AbortError). Non-fatal: surface listen
+      // failures to getUrl() callers only.
+      fastify.listen({ host: "127.0.0.1", port: 0 }).catch(() => {});
+
+      // Map server is non-critical: boot must still reach "ready" if it
+      // fails. Isolate construction *and* listen() inside one promise so any
+      // failure — a synchronous createMapServer() throw included — surfaces
+      // only to getBaseUrl() callers, never aborting the manager's boot or
+      // tripping the global unhandledRejection handler (which exits).
+      const mapServerListenPromise = Promise.resolve().then(() => {
+        mapServer = createMapServer({
+          privateStorageDir,
+          rootKey,
+          defaultOnlineStyleUrl,
+        });
+        return mapServer.listen();
+      });
+      mapServerListenPromise.catch((err) => {
+        sentry.captureFatal(
+          "map-server-init",
+          ensureError(err),
+          "create-map-server"
+        );
+      });
+      /** @type {import("@comapeo/ipc/server.js").ComapeoServicesApi} */
+      const comapeoServices = {
+        mapServer: {
+          async getBaseUrl() {
+            const { localPort } = await mapServerListenPromise;
+            return `http://127.0.0.1:${localPort}`;
+          },
+        },
+      };
+
+      comapeoRpcServer = new ComapeoRpc(
+        { comapeoManager, comapeoServices },
+        { onRequestHook: sentry.rpcHook() }
+      );
+
+      await comapeoRpcServer.listen(comapeoSocketPath);
+    })
+  );
+  console.log(`Comapeo socket listening on ${comapeoSocketPath}`);
+
+  controlIpcServer.setReadinessPhase("ready");
+  metrics.bootOutcome("started");
+  flushCompileCacheAfterBoot();
+  startMemorySampler();
+  sampleStorageSize(privateStorageDir);
+}
 
 /**
  * 60s sampler for backend heap + event-loop delay. `unref()` so the timer

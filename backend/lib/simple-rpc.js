@@ -7,12 +7,26 @@ import * as metrics from "./metrics.js";
  */
 
 /**
+ * @typedef {{ type: "migrating", context: string } |
+ *   { type: "migration-error", error: string, stack?: string } |
+ *   { type: "low-space", spaceNeeded?: string } } TransientFrame
+ */
+
+/**
  * Control-socket server. Routes inbound requests by `type`, broadcasts
  * lifecycle transitions, and replays them so late-connecting clients
  * converge on the same state.
  *
  * Readiness phases: `pre-listening` → `started` (socket bound, awaiting
  * `init` from native) → `ready` (manager built, RPC socket bound).
+ *
+ * Transient states: `migrating`, `migration-error`, and `low-space` frames
+ * are non-terminal (native recovers via a `retry` frame), but a
+ * late-connecting client would otherwise converge on `started` while the
+ * backend sits in a migration state. The latest such frame is replayed on
+ * connect. `migration-error` is preceded by a synthetic `migrating` frame
+ * (matching the live path, which always sends one first); `low-space` is
+ * not, since the live `low-space` path skips the `migrating` frame.
  *
  * Method handlers receive the full message so they can read fields
  * beyond `type` (e.g. `init.rootKey`).
@@ -27,6 +41,8 @@ export class SimpleRpcServer extends ServerHelper {
   #readinessPhase = "pre-listening";
   /** @type {TerminalFrame | null} */
   #terminalFrame = null;
+  /** @type {TransientFrame | null} */
+  #activeTransientState = null;
   // Replayed on every connect: on Android both FGS and main-app
   // connect, only FGS owns sentry-android, and connect order isn't
   // guaranteed — replay-once would lose frames on a bad ordering.
@@ -68,6 +84,20 @@ export class SimpleRpcServer extends ServerHelper {
     }
     if (this.#readinessPhase === "ready") {
       messagePort.postMessage({ type: "ready" });
+    }
+    // A terminal frame supersedes any transient state (`ready` clears it
+    // in setReadinessPhase), so replay the transient only when no
+    // terminal frame will follow it.
+    if (this.#terminalFrame === null && this.#activeTransientState !== null) {
+      if (this.#activeTransientState.type === "migration-error") {
+        // The live path always sends a `migrating` frame before
+        // `migration-error` (inside the `shouldUpgrade` branch), so a
+        // late-connecting client needs the transition replayed too.
+        // (`low-space` has no preceding `migrating` in the live path,
+        // so no synthetic frame is injected for it.)
+        messagePort.postMessage({ type: "migrating", context: "1/2" });
+      }
+      messagePort.postMessage(this.#activeTransientState);
     }
     if (this.#terminalFrame !== null) {
       messagePort.postMessage(this.#terminalFrame);
@@ -120,6 +150,11 @@ export class SimpleRpcServer extends ServerHelper {
       );
     }
     this.#readinessPhase = phase;
+    if (phase === "ready") {
+      // Boot finished or a retry succeeded: the migration state no
+      // longer exists to converge on.
+      this.#activeTransientState = null;
+    }
     for (const client of this.#clients) {
       client.postMessage({ type: phase });
     }
@@ -129,10 +164,23 @@ export class SimpleRpcServer extends ServerHelper {
     return this.#readinessPhase;
   }
 
+  /** @returns {TransientFrame | null} */
+  get activeTransientState() {
+    return this.#activeTransientState;
+  }
+
   /** @param {TerminalFrame | { type: string } & import("type-fest").JsonObject} message */
   broadcast(message) {
     if (message.type === "stopping" || message.type === "error") {
       this.#terminalFrame = /** @type {TerminalFrame} */ (message);
+      // Terminal wins: no transient state survives a shutdown or fatal.
+      this.#activeTransientState = null;
+    } else if (
+      message.type === "migrating" ||
+      message.type === "migration-error" ||
+      message.type === "low-space"
+    ) {
+      this.#activeTransientState = /** @type {TransientFrame} */ (message);
     }
     if (message.type === "sentry-event" || message.type === "sentry-envelope") {
       if (

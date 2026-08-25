@@ -20,18 +20,30 @@ export type OnLoadEventPayload = {
  *                Android, recreate the service / restart on iOS, prompt
  *                the user, log a report). `state.getLastError()` carries
  *                structured detail.
+ * - `MIGRATING` — storage migration in flight between `STARTING` and
+ *                `STARTED`. Per-tick progress is delivered separately on
+ *                the `migrationProgress` event, not here.
+ * - `MIGRATION_ERROR` — storage migration failed. **Recoverable**: the
+ *                backend stays alive awaiting a `retryInit()` call, so the
+ *                app can retry without a full restart.
+ * - `LOW_SPACE` — not enough free space to migrate. Also recoverable via
+ *                `retryInit()`.
  */
 export type ComapeoState =
   | "STOPPED"
   | "STARTING"
   | "STARTED"
   | "STOPPING"
-  | "ERROR";
+  | "ERROR"
+  | "MIGRATING"
+  | "MIGRATION_ERROR"
+  | "LOW_SPACE";
 
 export type ComapeoCoreModuleEvents = {
   message: (params: MessageEventPayload) => void;
   messageerror: (params: MessageErrorEventPayload) => void;
   stateChange: (params: StateChangeEventPayload) => void;
+  migrationProgress: (params: MigrationProgressEventPayload) => void;
 };
 
 export type MessageEventPayload = {
@@ -56,15 +68,32 @@ export type MessageErrorEventPayload = {
 export type StateChangeEventPayload = {
   state: ComapeoState;
   /**
-   * Set when `state` is `"ERROR"`. `errorPhase` is one of the backend's
-   * boot phases (`listen-control`, `init`, `construct`, `runtime`) or a
-   * native-derived tag (`rootkey`, `node-runtime`, `shutdown-timeout`,
-   * `ipc`). `errorMessage` is the human-readable message suitable for
-   * developer logs; do not display it directly to end users without
-   * translation.
+   * Set when `state` is `"ERROR"` or `"MIGRATION_ERROR"`.
+   * For `"ERROR"`, `errorPhase` is one of the backend's boot phases
+   * (`listen-control`, `init`, `construct`, `runtime`) or a native-derived
+   * tag (`rootkey`, `node-runtime`, `shutdown-timeout`, `ipc`). For
+   * `"MIGRATION_ERROR"` it is `"migration-error"`.
+   * `errorMessage` is the human-readable message suitable for developer
+   * logs; do not display it directly to end users without translation.
    */
   errorPhase?: string;
   errorMessage?: string;
+  /**
+   * Set only when `state` is `"LOW_SPACE"` — the free-bytes figure the
+   * backend reported as the shortfall.
+   */
+  spaceNeeded?: number;
+};
+
+/**
+ * Payload for the `migrationProgress` event: a single per-tick progress
+ * string from the backend's storage migration (e.g. `"2/5"` — cores done
+ * over total — or `""` before the first core finishes). The lifecycle
+ * state stays `"MIGRATING"` across ticks, so this rides a dedicated event
+ * rather than re-firing `stateChange`.
+ */
+export type MigrationProgressEventPayload = {
+  context: string;
 };
 
 /**
@@ -75,6 +104,16 @@ export type ComapeoErrorInfo = {
   errorPhase: string;
   errorMessage: string;
 };
+
+export type LowSpaceDetails = {
+  spaceNeeded: number;
+};
+
+/**
+ * Detail payload for the `stateChange` event. Mutually exclusive shapes:
+ * error fields for `ERROR`/`MIGRATION_ERROR`, byte count for `LOW_SPACE`.
+ */
+export type StateChangeDetails = ComapeoErrorInfo | LowSpaceDetails;
 
 /**
  * Status of the notification permission. Mirrors expo-modules-core's

@@ -20,6 +20,19 @@ enum ControlFrame {
     /// check-ins, profiles). Base64 bytes handed to
     /// `PrivateSentrySDKOnly`. No native scope merging.
     case sentryEnvelope(data: String)
+    /// Storage migration is underway. `context` is a progress string
+    /// (e.g. `"2/5"`) or `""` before the first core finishes. Non-terminal:
+    /// drives the service into `.migrating` until `ready` (→ `.started`) or
+    /// a `migration-error`/`low-space` frame.
+    case migrating(context: String)
+    /// Storage migration failed. Non-terminal on purpose — the backend
+    /// parks awaiting a `retry` frame (after the user frees space or
+    /// skips), so this must NOT transition the service to `.error`.
+    /// `message` is the error's message; `stack` may be nil.
+    case migrationError(message: String, stack: String?)
+    /// Not enough free space to migrate. `spaceNeeded` is the byte deficit
+    /// the backend reported. Also non-terminal — the backend awaits a `retry`.
+    case lowSpace(spaceNeeded: Int)
     /// Not JSON, missing `type`, or `type` not in the well-known set.
     /// `detail` is developer-facing — surfaces in the JS `messageerror`.
     case malformed(detail: String)
@@ -59,6 +72,16 @@ enum ControlFrame {
                 return .malformed(detail: "sentry-envelope frame missing string `data`")
             }
             return .sentryEnvelope(data: data)
+        case "migrating":
+            let context = (obj["context"] as? String) ?? ""
+            return .migrating(context: context)
+        case "migration-error":
+            let message = (obj["error"] as? String) ?? "(no message)"
+            let stack = obj["stack"] as? String
+            return .migrationError(message: message, stack: stack)
+        case "low-space":
+            let spaceNeeded = (obj["spaceNeeded"] as? Int) ?? 0
+            return .lowSpace(spaceNeeded: spaceNeeded)
         default:
             return .malformed(detail: "Unknown control frame type=\"\(type)\"")
         }

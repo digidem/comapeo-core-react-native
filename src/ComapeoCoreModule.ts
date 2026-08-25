@@ -6,8 +6,10 @@ import {
   type ComapeoState,
   type MessageErrorEventPayload,
   type MessageEventPayload,
+  type MigrationProgressEventPayload,
   type NotificationPermissionResponse,
   type StateChangeEventPayload,
+  type StateChangeDetails,
 } from "./ComapeoCore.types.js";
 import type { MessagePortLike } from "rpc-reflector";
 import {
@@ -53,6 +55,10 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   postMessage(value: string): void;
   getState(): ComapeoState;
   getLastError(): ComapeoErrorInfo | null;
+  /* Retry initializing the backend.
+   * Must be called only after a low space warning.
+   */
+  retryInit(forceSkipMigrate?:boolean) : void;
   /**
    * Sentry options the Expo plugin baked into the native config.
    * Empty object when the plugin isn't registered (or DSN absent).
@@ -198,6 +204,11 @@ export function setDebugEnabledNative(value: boolean): Promise<void> {
  */
 export function readRootUserIdNative(): string {
   return nativeModule.getSentryRootUserId?.() ?? "";
+}
+
+/** Retry init after a low storage warning */
+export function retryInit(forceSkipMigrate: boolean = false): void {
+  return nativeModule.retryInit(forceSkipMigrate)
 }
 
 const GRANTED_PERMISSION: NotificationPermissionResponse = {
@@ -454,7 +465,16 @@ export const comapeo: ComapeoCoreClientApi = createComapeoCoreClient(
 );
 
 type StateEvents = {
-  stateChange: (state: ComapeoState, error: ComapeoErrorInfo | null) => void;
+  stateChange: (state: ComapeoState, details: StateChangeDetails | null) => void;
+  /**
+   * Fires on each backend storage-migration progress tick with the raw
+   * progress string (e.g. `"2/5"`, `""` before the first core finishes).
+   * The lifecycle state stays `"MIGRATING"` across ticks, so this is a
+   * separate channel from `stateChange` (which fires once on the
+   * `STARTING` → `MIGRATING` transition). Drives a progress UI while the
+   * state is `"MIGRATING"`.
+   */
+  migrationProgress: (context: string) => void;
   /**
    * Fires when the native control-socket parser receives a frame it
    * can't process (non-JSON, missing `type`, or unknown `type`).
@@ -499,6 +519,11 @@ class State extends EventEmitter<StateEvents> {
   ): void {
     if (eventName === "stateChange") {
       nativeModule.addListener("stateChange", this.#handleStateChangeEvent);
+    } else if (eventName === "migrationProgress") {
+      nativeModule.addListener(
+        "migrationProgress",
+        this.#handleMigrationProgressEvent,
+      );
     } else if (eventName === "messageerror") {
       nativeModule.addListener("messageerror", this.#handleMessageErrorEvent);
     }
@@ -509,6 +534,11 @@ class State extends EventEmitter<StateEvents> {
   ): void {
     if (eventName === "stateChange") {
       nativeModule.removeListener("stateChange", this.#handleStateChangeEvent);
+    } else if (eventName === "migrationProgress") {
+      nativeModule.removeListener(
+        "migrationProgress",
+        this.#handleMigrationProgressEvent,
+      );
     } else if (eventName === "messageerror") {
       nativeModule.removeListener(
         "messageerror",
@@ -518,11 +548,19 @@ class State extends EventEmitter<StateEvents> {
   }
 
   #handleStateChangeEvent = (event: StateChangeEventPayload) => {
-    const error: ComapeoErrorInfo | null =
-      event.state === "ERROR" && event.errorPhase && event.errorMessage
-        ? { errorPhase: event.errorPhase, errorMessage: event.errorMessage }
-        : null;
-    this.emit("stateChange", event.state, error);
+    let details: StateChangeDetails | null = null;
+    if (event.state === "ERROR" || event.state === "MIGRATION_ERROR") {
+      if (event.errorPhase && event.errorMessage) {
+        details = { errorPhase: event.errorPhase, errorMessage: event.errorMessage };
+      }
+    } else if (event.state === "LOW_SPACE" && event.spaceNeeded != null) {
+      details = { spaceNeeded: event.spaceNeeded };
+    }
+    this.emit("stateChange", event.state, details);
+  };
+
+  #handleMigrationProgressEvent = (event: MigrationProgressEventPayload) => {
+    this.emit("migrationProgress", event.context);
   };
 
   #handleMessageErrorEvent = (event: MessageErrorEventPayload) => {

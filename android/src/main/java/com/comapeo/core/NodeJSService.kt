@@ -1,6 +1,7 @@
 package com.comapeo.core
 
 import android.content.ContextWrapper
+import android.os.StatFs
 import android.util.Base64
 import android.util.Log
 import androidx.annotation.VisibleForTesting
@@ -92,7 +93,20 @@ class NodeJSService(
      * The node thread may still be alive on ERROR — `destroy()` releases it.
      */
     enum class State {
-        STOPPED, STARTING, STARTED, STOPPING, ERROR
+        STOPPED, STARTING, STARTED, STOPPING, ERROR,
+        /**
+         * Storage migration in flight. Non-terminal: resolves to `.started`
+         * on success or `.migrationError`/`.lowSpace` on failure.
+         */
+        MIGRATING,
+        /**
+         * Storage migration failed. **Recoverable** (unlike `.error`):
+         * the backend stays alive awaiting a `retry` frame, so the app
+         * can call `sendRetryFrame` and walk back to `.migrating`.
+         */
+        MIGRATION_ERROR,
+        /** Not enough free space to migrate. Also recoverable via `retry`. */
+        LOW_SPACE,
     }
 
     /**
@@ -133,6 +147,9 @@ class NodeJSService(
         object Ready : BackendState()
         object Stopping : BackendState()
         data class Error(val phase: String, val message: String) : BackendState()
+        data class Migrating(val context: String) : BackendState()
+        data class MigrationError(val message: String, val stack: String?) : BackendState()
+        data class LowSpace(val spaceNeeded: Long) : BackendState()
     }
 
     /**
@@ -331,7 +348,7 @@ class NodeJSService(
                 State.STARTED -> "ok"
                 State.ERROR -> "internal_error"
                 State.STOPPING, State.STOPPED -> "cancelled"
-                State.STARTING -> null
+                State.STARTING, State.MIGRATING, State.MIGRATION_ERROR, State.LOW_SPACE -> null
             }
             if (terminalStatus != null) {
                 // Drain in-flight phase spans BEFORE finishing the parent: Sentry's
@@ -404,6 +421,9 @@ class NodeJSService(
         // 5th positional: consumer's online map style URL, or "" when unset.
         val defaultOnlineStyleUrl =
             SentryConfig.readApplicationMetaDataString(this, META_DEFAULT_ONLINE_STYLE_URL) ?: ""
+        // 6th positional: available disk space in bytes, so the backend can
+        // decide whether a migration is feasible.
+        val availableDiskSpace = getAvailableDiskSpace()
         val args = mutableListOf("node")
         args += listOf(
             entryPath,
@@ -412,6 +432,7 @@ class NodeJSService(
             dataDir,
             defaultConfigPath,
             defaultOnlineStyleUrl,
+            availableDiskSpace.toString(),
         )
         sentryConfig?.let { cfg ->
             args += "--sentryDsn=${cfg.dsn}"
@@ -690,6 +711,63 @@ class NodeJSService(
             is ControlFrame.SentryEnvelope -> {
                 SentryFgsBridge.captureEnvelopeBase64(frame.data)
             }
+            is ControlFrame.Migrating -> {
+                val current = getState()
+                if (current != State.STARTING && current != State.MIGRATING) {
+                    logCrumb(
+                        SentryCategories.CONTROL,
+                        "ignoring migrating frame in state $current",
+                        level = "warning",
+                        data = mapOf("context" to frame.context, "state" to current.name),
+                    )
+                    return
+                }
+                logCrumb(
+                    SentryCategories.CONTROL,
+                    "received: migrating",
+                    data = mapOf("context" to frame.context),
+                )
+                applyAndEmit { it.copy(backendState = BackendState.Migrating(frame.context)) }
+            }
+            is ControlFrame.MigrationError -> {
+                if (getState() != State.MIGRATING) {
+                    logCrumb(
+                        SentryCategories.CONTROL,
+                        "ignoring migration-error frame in state ${getState()}",
+                        level = "warning",
+                        data = mapOf("message" to frame.message, "state" to getState().name),
+                    )
+                    return
+                }
+                logCapture(
+                    SentryCategories.CONTROL,
+                    "storage migration failed: ${frame.message}",
+                    level = "error",
+                    tags = mapOf(SentryTags.PHASE to "migrate"),
+                )
+                applyAndEmit(error = ErrorInfo(phase = "migration-error", message = frame.message)) {
+                    it.copy(backendState = BackendState.MigrationError(frame.message, frame.stack))
+                }
+            }
+            is ControlFrame.LowSpace -> {
+                if (getState() != State.MIGRATING) {
+                    logCrumb(
+                        SentryCategories.CONTROL,
+                        "ignoring low-space frame in state ${getState()}",
+                        level = "warning",
+                        data = mapOf("spaceNeeded" to frame.spaceNeeded.toString(), "state" to getState().name),
+                    )
+                    return
+                }
+                logCrumb(
+                    SentryCategories.CONTROL,
+                    "received: low-space",
+                    data = mapOf("spaceNeeded" to frame.spaceNeeded.toString()),
+                )
+                applyAndEmit {
+                    it.copy(backendState = BackendState.LowSpace(frame.spaceNeeded))
+                }
+            }
             is ControlFrame.Malformed -> {
                 // Logged but not raised to ERROR — a single bad frame shouldn't take
                 // down the lifecycle. The main-app Module surfaces `messageerror` separately.
@@ -758,6 +836,19 @@ class NodeJSService(
     }
 
     /**
+     * Returns available disk space in bytes for the app's data directory.
+     * Used at boot and on retry so the backend can decide whether a
+     * migration is feasible.
+     */
+    private fun getAvailableDiskSpace(): Long {
+        return try {
+            StatFs(dataDir).availableBytes
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
+    /**
      * Sends `{type:"error-native",phase,message}` to Node for cross-process
      * attribution. The backend re-broadcasts as an `error` frame to all control
      * clients and exits 1, so the main-app process sees the actual phase rather
@@ -802,9 +893,13 @@ class NodeJSService(
         // ERROR per-instance terminal for the public API (callers use destroy() to
         // release resources). The FGS teardown path uses [stopForTeardown] instead,
         // which drains gracefully even from ERROR.
+        // Migration states are stoppable too: `.migrating` is an active
+        // phase, and `.migrationError`/`.lowSpace` park the backend awaiting
+        // a `retry` — a user dismissing the prompt should be able to quit.
         val current = getState()
-        if (current != State.STARTING && current != State.STARTED) {
-            log("Cannot stop NodeJS service from state $current (not STARTING/STARTED)")
+        if (current != State.STARTING && current != State.STARTED &&
+            current != State.MIGRATING && current != State.MIGRATION_ERROR && current != State.LOW_SPACE) {
+            log("Cannot stop NodeJS service from state $current")
             return
         }
         drainNode()

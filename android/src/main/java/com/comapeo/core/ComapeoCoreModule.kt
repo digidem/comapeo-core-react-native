@@ -1,6 +1,7 @@
 package com.comapeo.core
 
 import android.Manifest
+import android.os.StatFs
 import expo.modules.interfaces.permissions.Permissions
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
@@ -12,9 +13,10 @@ private typealias JsState = NodeJSService.State
 class ComapeoCoreModule : Module() {
     private lateinit var ipc: NodeJSIPC
     /**
-     * Read-only observer of `control.sock`. The FGS owns the writeable side
-     * (init / shutdown frames); we only consume `started`/`ready`/`stopping`/`error`
-     * broadcasts to derive the JS-visible lifecycle state.
+     * Observer of `control.sock`. The FGS owns the init / shutdown frames; we
+     * consume `started`/`ready`/`stopping`/`error` broadcasts to derive the
+     * JS-visible lifecycle state, and send `retry` frames to re-run init after a
+     * low-space warning.
      */
     private lateinit var controlIpc: NodeJSIPC
 
@@ -28,9 +30,9 @@ class ComapeoCoreModule : Module() {
     private var jsState: JsState = JsState.STOPPED
 
     /** Cleared on any non-ERROR transition so a fresh cycle can't surface stale details. */
-    private var lastError: Map<String, String>? = null
+    private var lastError: Map<String, Any>? = null
 
-    private fun setState(next: JsState, errorPayload: Map<String, String>? = null) {
+    private fun setState(next: JsState, errorPayload: Map<String, Any>? = null) {
         val eventToEmit: Map<String, Any>? = synchronized(stateLock) {
             when {
                 jsState == next && next == JsState.ERROR && errorPayload != null -> {
@@ -51,7 +53,7 @@ class ComapeoCoreModule : Module() {
 
     private fun buildEventPayload(
         state: JsState,
-        errorPayload: Map<String, String>?,
+        errorPayload: Map<String, Any>?,
     ): Map<String, Any> = buildMap {
         put("state", state.name)
         errorPayload?.let { putAll(it) }
@@ -98,6 +100,31 @@ class ComapeoCoreModule : Module() {
                         // Capturing here would double-send.
                         is ControlFrame.SentryEvent -> {}
                         is ControlFrame.SentryEnvelope -> {}
+                        is ControlFrame.Migrating -> {
+                            // Coarse state change (`.starting` → `.migrating`) fires via
+                            // setState; each tick's `context` goes out the separate
+                            // `migrationProgress` event (state doesn't change, so
+                            // `stateChange` would not re-fire per tick).
+                            setState(JsState.MIGRATING)
+                            sendEvent("migrationProgress", mapOf("context" to frame.context))
+                        }
+                        is ControlFrame.MigrationError -> {
+                            // Recoverable: the backend stays alive awaiting a `retry`, so
+                            // this deliberately does NOT transition to ERROR.
+                            setState(
+                                JsState.MIGRATION_ERROR,
+                                mapOf(
+                                    "errorPhase" to "migration-error",
+                                    "errorMessage" to frame.message,
+                                ),
+                            )
+                        }
+                        is ControlFrame.LowSpace -> {
+                            setState(
+                                JsState.LOW_SPACE,
+                                mapOf("spaceNeeded" to frame.spaceNeeded),
+                            )
+                        }
                         is ControlFrame.Malformed -> emitMessageError(frame.detail)
                     }
                 },
@@ -114,7 +141,9 @@ class ComapeoCoreModule : Module() {
                             when (synchronized(stateLock) { jsState }) {
                                 JsState.ERROR -> {}
                                 JsState.STOPPING, JsState.STOPPED -> setState(JsState.STOPPED)
-                                JsState.STARTING, JsState.STARTED -> setState(
+                                JsState.STARTING, JsState.STARTED,
+                                JsState.MIGRATING, JsState.MIGRATION_ERROR,
+                                JsState.LOW_SPACE -> setState(
                                     JsState.ERROR,
                                     mapOf(
                                         "errorPhase" to "node-runtime-unexpected",
@@ -157,7 +186,7 @@ class ComapeoCoreModule : Module() {
 
         Name("ComapeoCore")
 
-        Events("message", "messageerror", "stateChange")
+        Events("message", "messageerror", "stateChange", "migrationProgress")
 
         Function("postMessage") { message: String ->
             ipc.sendMessage(message)
@@ -301,6 +330,29 @@ class ComapeoCoreModule : Module() {
                 promise,
                 Manifest.permission.POST_NOTIFICATIONS,
             )
+        }
+
+        Function("retryInit") { forceSkipMigrate: Boolean? ->
+            val current = synchronized(stateLock) { jsState }
+            if (current != JsState.MIGRATION_ERROR && current != JsState.LOW_SPACE) {
+                throw IllegalStateException(
+                    "retryInit called from state $current; must be MIGRATION_ERROR or LOW_SPACE",
+                )
+            }
+            val availableDiskSpace = try {
+                StatFs(appContext.persistentFilesDirectory.absolutePath).availableBytes
+            } catch (e: Exception) {
+                0L
+            }
+            val message = """
+            {
+              "type":"retry",
+              "availableDiskSpace": $availableDiskSpace,
+              "forceSkipMigrate": ${forceSkipMigrate ?: false}
+            }
+            """
+
+            controlIpc.sendMessage(message)
         }
     }
 }

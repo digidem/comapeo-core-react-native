@@ -10,6 +10,22 @@ import * as metrics from "./metrics.js";
 import { connectSocket, socketPath, waitFor } from "./test-helpers.mjs";
 
 /**
+ * Connect a client that records every inbound frame.
+ *
+ * @param {import('node:test').TestContext} t
+ * @param {string} path
+ */
+async function connectCollector(t, path) {
+  const socket = await connectSocket(t, path);
+  const client = new SocketMessagePort(socket);
+  /** @type {Array<{ type?: string } & import("type-fest").JsonObject>} */
+  const frames = [];
+  client.addEventListener("message", (event) => frames.push(event.data));
+  client.start();
+  return { frames };
+}
+
+/**
  * @param {import('node:test').TestContext} t
  * @param {Record<string, (message: any) => void>} methods
  */
@@ -221,6 +237,140 @@ test("invalid messages and malformed frames are logged without payload content",
   assert.ok(
     !flat.includes(SECRET.slice(0, 12)),
     `logged output must not contain key material, got: ${flat}`,
+  );
+});
+
+// The migration frames (`migrating`, `migration-error`, `low-space`) are
+// non-terminal — the backend stays up awaiting a `retry` frame — but a
+// late-connecting client (FGS reconnect, second client on Android) would
+// otherwise converge on `started` while the backend sits in a migration
+// state. SimpleRpcServer must replay the active transient state, in an
+// order the native state machine accepts.
+test("replays the latest migrating frame to a late-connecting client", async (t) => {
+  const { server, path } = await startServer(t, {});
+  server.setReadinessPhase("started");
+  server.broadcast({ type: "migrating", context: "" });
+  server.broadcast({ type: "migrating", context: "2/5" });
+  assert.equal(server.activeTransientState?.context, "2/5");
+
+  const { frames } = await connectCollector(t, path);
+
+  await waitFor(
+    () => frames.some((f) => f.type === "migrating"),
+    { message: "migrating replayed" },
+  );
+  // Only the latest progress tick matters for convergence.
+  const migrating = frames.filter((f) => f.type === "migrating");
+  assert.equal(migrating.length, 1, "one migrating frame replayed");
+  assert.equal(migrating[0].context, "2/5");
+  assert.ok(frames[0].type === "started", "started precedes the transient");
+});
+
+test("replays a synthetic migrating frame before migration-error", async (t) => {
+  const { server, path } = await startServer(t, {});
+  server.setReadinessPhase("started");
+  server.broadcast({ type: "migrating", context: "1/3" });
+  server.broadcast({ type: "migration-error", error: "boom", stack: "s" });
+
+  const { frames } = await connectCollector(t, path);
+
+  await waitFor(() => frames.some((f) => f.type === "migration-error"), {
+    message: "migration-error replayed",
+  });
+  const migratingIdx = frames.findIndex((f) => f.type === "migrating");
+  const errorIdx = frames.findIndex((f) => f.type === "migration-error");
+  assert.ok(migratingIdx !== -1, "migrating replayed");
+  // The real context was lost when migration-error replaced the transient
+  // state, so the replayed migrating frame carries a synthetic placeholder.
+  assert.equal(frames[migratingIdx].context, "1/2");
+  assert.ok(
+    migratingIdx < errorIdx,
+    "migrating must precede migration-error so native reaches MIGRATING",
+  );
+  assert.equal(migratingIdx, frames.findIndex((f) => f.type === "started") + 1);
+});
+
+test("replays low-space without a synthetic migrating frame", async (t) => {
+  const { server, path } = await startServer(t, {});
+  server.setReadinessPhase("started");
+  // low-space arrives with no preceding migrating broadcast (the
+  // no-space path skips straight to the frame), so the replay
+  // must not inject one either.
+  server.broadcast({ type: "low-space", spaceNeeded: "1048576" });
+
+  const { frames } = await connectCollector(t, path);
+
+  await waitFor(() => frames.some((f) => f.type === "low-space"), {
+    message: "low-space replayed",
+  });
+  assert.ok(
+    !frames.some((f) => f.type === "migrating"),
+    "no synthetic migrating frame for low-space (matches the live path)",
+  );
+  const lowSpaceIdx = frames.findIndex((f) => f.type === "low-space");
+  assert.equal(frames[lowSpaceIdx].spaceNeeded, "1048576");
+});
+
+test("ready clears the active transient state", async (t) => {
+  const { server, path } = await startServer(t, {});
+  server.setReadinessPhase("started");
+  server.broadcast({ type: "migrating", context: "1/3" });
+  assert.notEqual(server.activeTransientState, null);
+  server.setReadinessPhase("ready");
+  assert.equal(server.activeTransientState, null);
+
+  const { frames } = await connectCollector(t, path);
+
+  await waitFor(() => frames.some((f) => f.type === "ready"), {
+    message: "ready replayed",
+  });
+  assert.ok(
+    !frames.some((f) => f.type === "migrating"),
+    "no transient frame after ready",
+  );
+});
+
+test("a terminal frame supersedes the active transient state", async (t) => {
+  const { server, path } = await startServer(t, {});
+  server.setReadinessPhase("started");
+  server.broadcast({ type: "migrating", context: "1/3" });
+  server.broadcast({
+    type: "error",
+    phase: "construct",
+    message: "fatal",
+  });
+  assert.equal(server.activeTransientState, null);
+
+  const { frames } = await connectCollector(t, path);
+
+  await waitFor(() => frames.some((f) => f.type === "error"), {
+    message: "error replayed",
+  });
+  assert.ok(
+    !frames.some((f) => f.type === "migrating"),
+    "transient must not be replayed alongside a terminal frame",
+  );
+});
+
+test("a retry (fresh migrating after migration-error) replaces the transient state", async (t) => {
+  const { server, path } = await startServer(t, {});
+  server.setReadinessPhase("started");
+  server.broadcast({ type: "migrating", context: "" });
+  server.broadcast({ type: "migration-error", error: "boom" });
+  // Native sends a retry frame; the backend re-broadcasts migrating.
+  server.broadcast({ type: "migrating", context: "0/3" });
+
+  const { frames } = await connectCollector(t, path);
+
+  await waitFor(() => frames.some((f) => f.type === "migrating"), {
+    message: "migrating replayed",
+  });
+  const migrating = frames.filter((f) => f.type === "migrating");
+  assert.equal(migrating.length, 1, "only the latest migrating frame");
+  assert.equal(migrating[0].context, "0/3");
+  assert.ok(
+    !frames.some((f) => f.type === "migration-error"),
+    "superseded migration-error must not be replayed",
   );
 });
 

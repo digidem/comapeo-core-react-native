@@ -14,7 +14,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@comapeo/core": "7.4.0",
+    "@comapeo/core": "^8.0.0-next.1",
     "@comapeo/fallback-smp": "1.0.0",
     "@comapeo/ipc": "9.0.1",
     "@comapeo/map-server": "2.0.1",
@@ -28,6 +28,7 @@
     "@sentry/core": "^10.53.0",
     "@sentry/node-core": "^10.53.0",
     "@sentry/opentelemetry": "^10.53.0",
+    "comapeo-core-old": "npm:@comapeo/core@7.5.0",
     "ensure-error": "^5.0.0",
     "fastify": "4.29.1",
     "framed-stream": "1.0.1",
@@ -35,6 +36,7 @@
     "tiny-typed-emitter": "2.1.0"
   },
   "devDependencies": {
+    "@mapeo/mock-data": "^5.0.0",
     "@sentry/bundler-plugins": "10.70.0",
     "@sentry/rollup-plugin": "5.4.0",
     "@types/node": "24.12.2",

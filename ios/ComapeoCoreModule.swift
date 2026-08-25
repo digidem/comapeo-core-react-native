@@ -22,7 +22,7 @@ public class ComapeoCoreModule: Module {
     public func definition() -> ModuleDefinition {
         Name("ComapeoCore")
 
-        Events("message", "messageerror", "stateChange")
+        Events("message", "messageerror", "stateChange", "migrationProgress")
 
         OnCreate {
             let socketPath = ComapeoCoreModule.resolveSocketPath()
@@ -34,12 +34,23 @@ public class ComapeoCoreModule: Module {
             // practice; only one module instance is alive at a time.
             AppLifecycleDelegate.nodeService.onStateChange = { [weak self] state in
                 var payload: [String: Any] = ["state": state.rawValue]
-                if state == .error,
+                if state == .error || state == .migrationError,
                    let info = AppLifecycleDelegate.nodeService.getLastError() {
                     payload["errorPhase"] = info.phase
                     payload["errorMessage"] = info.message
                 }
+                if case .lowSpace(let spaceNeeded) = state {
+                    payload["spaceNeeded"] = spaceNeeded
+                }
                 self?.sendEvent("stateChange", payload)
+            }
+
+            // Per-tick migration progress (`"2/5"` etc.). Rides a separate
+            // channel from `stateChange` because the state stays
+            // `MIGRATING` across ticks and `onStateChange` fires only on
+            // the coarse transition.
+            AppLifecycleDelegate.nodeService.onMigrationProgress = { [weak self] context in
+                self?.sendEvent("migrationProgress", ["context": context])
             }
 
             // Mirrors DOM MessagePort `messageerror`: malformed frames
@@ -81,6 +92,13 @@ public class ComapeoCoreModule: Module {
                 return nil
             }
             return ["errorPhase": info.phase, "errorMessage": info.message]
+        }
+
+        // Retry backend init. Must only be called after a low-space warning.
+        Function("retryInit") { (forceSkipMigrate: Bool?) in
+            AppLifecycleDelegate.nodeService.sendRetryFrame(
+                forceSkipMigrate: forceSkipMigrate ?? false
+            )
         }
 
         // Plist-baked Sentry options, re-exported by the JS `/sentry`
