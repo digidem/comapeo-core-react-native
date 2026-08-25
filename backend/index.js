@@ -195,6 +195,16 @@ const controlIpcServer = new SimpleRpcServer({
       if (startInFlight || comapeoManager) {
         throw new Error("retry rejected: start already underway");
       }
+      if (typeof message.forceSkipMigrate !== "boolean") {
+        throw new Error(
+          `retry.forceSkipMigrate must be a boolean, got ${typeof message.forceSkipMigrate}`
+        );
+      }
+      if (typeof message.availableDiskSpace !== "number") {
+        throw new Error(
+          `retry.availableDiskSpace must be a number, got ${typeof message.availableDiskSpace}`
+        );
+      }
       startInFlight = true;
       try {
         await startComapeo(
