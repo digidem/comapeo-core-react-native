@@ -44,7 +44,7 @@ console.log("Starting Comapeo Node server...");
 // empty 5th → undefined → createComapeo falls back to its built-in URL.
 // 6th positional is a free-disk-space (bytes) figure native
 // reports so the storage-migration check can decide whether there's
-// room; empty → undefined → the check assumes space is unknown.
+// room; empty or non-numeric → 0 (unknown).
 const [
   comapeoSocketPath,
   controlSocketPath,
@@ -55,8 +55,8 @@ const [
 ] = process.argv.slice(2);
 const defaultConfigPath = configArg || undefined;
 const defaultOnlineStyleUrl = styleUrlArg || undefined;
-const availableDiskSpace = availableDiskSpaceArg
-  ? parseInt(availableDiskSpaceArg, 10) : 0;
+const parsedDiskSpace = availableDiskSpaceArg ? parseInt(availableDiskSpaceArg, 10) : 0;
+const availableDiskSpace = Number.isNaN(parsedDiskSpace) ? 0 : parsedDiskSpace;
 
 const fastify = Fastify();
 
@@ -330,7 +330,7 @@ async function withPhase(phase, fn) {
 /**
  * @param {Buffer} rootKey
  * @param {number} availableDiskSpace Free bytes on the device, from
- *   native; undefined → the migration check assumes plenty of space.
+ *   native; 0 → the migration check assumes space is unknown.
  * @param {boolean} [forceSkipMigrate] Native sets this after the user
  *   hits Skip on a migration failure or low-space prompt.
  */
