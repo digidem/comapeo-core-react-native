@@ -679,7 +679,7 @@ class NodeJSService {
         lock.lock()
         let currentState = state
         lock.unlock()
-        guard currentState == .migrationError || currentState == .lowSpace else {
+        guard currentState == .migrationError || currentState.rawValue == "LOW_SPACE" else {
             logCrumb(
                 category: SentryCategories.control,
                 message: "retry frame rejected: state is \(currentState.rawValue), must be MIGRATION_ERROR or LOW_SPACE",
