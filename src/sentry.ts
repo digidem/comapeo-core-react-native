@@ -461,20 +461,21 @@ function handleStateChange(s: ComapeoState, details: StateChangeDetails | null) 
   if (!sentryReady) return;
 
   const data = details ? { state: s, ...details } : { state: s };
+  const isError = s === "ERROR" || s === "MIGRATION_ERROR";
   Sentry.addBreadcrumb({
     category: "comapeo.state",
     type: "state",
-    level: s === "ERROR" ? "error" : "info",
+    level: isError ? "error" : "info",
     message: `comapeo state → ${s}`,
     data,
   });
-  const logFn = s === "ERROR" ? Sentry.logger.error : Sentry.logger.info;
+  const logFn = isError ? Sentry.logger.error : Sentry.logger.info;
   logFn(`comapeo state → ${s}`, data);
 
   // Synthesised Error name encodes the phase so Sentry's grouping
   // treats e.g. rootkey vs. starting-timeout as distinct issues
   // without us maintaining a fingerprint table.
-  if (s === "ERROR" && details && "errorMessage" in details) {
+  if (isError && details && "errorMessage" in details) {
     const e = new Error(details.errorMessage);
     e.name = `ComapeoError:${details.errorPhase}`;
     Sentry.captureException(e, {
