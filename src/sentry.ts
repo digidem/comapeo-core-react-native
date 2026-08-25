@@ -474,14 +474,14 @@ function handleStateChange(s: ComapeoState, details: StateChangeDetails | null) 
   // Synthesised Error name encodes the phase so Sentry's grouping
   // treats e.g. rootkey vs. starting-timeout as distinct issues
   // without us maintaining a fingerprint table.
-  if (s === "ERROR" && info) {
-    const e = new Error(info.errorMessage);
-    e.name = `ComapeoError:${info.errorPhase}`;
+  if (s === "ERROR" && details) {
+    const e = new Error(details.errorMessage);
+    e.name = `ComapeoError:${details.errorPhase}`;
     Sentry.captureException(e, {
       tags: {
         [SentryTags.layer]: SentryTags.layerRn,
         [SentryTags.proc]: SentryTags.procMain,
-        [SentryTags.phase]: info.errorPhase,
+        [SentryTags.phase]: details.errorPhase,
         [SentryTags.state]: s,
       },
     });
