@@ -106,4 +106,5 @@ export async function seedOldStorage(privateStorageDir, rootKeyBase64) {
 
   await project.close();
   await fastify.close();
+  await manager.close();
 }
