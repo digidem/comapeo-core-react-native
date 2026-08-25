@@ -26,7 +26,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-VERSION="${VERSION:-${NODEJS_MOBILE_VERSION:-v24.19.0-0}}"
+VERSION="${VERSION:-${NODEJS_MOBILE_VERSION:-v24.19.0-2}}"
 TAG="$VERSION"
 [[ "$TAG" != v* ]] && TAG="v$TAG"
 FILE_VERSION="${TAG#v}"
