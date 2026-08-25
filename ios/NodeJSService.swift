@@ -28,7 +28,7 @@ class NodeJSService {
     /// `NodeJSService`. The node thread may still be alive when
     /// `.error` is set — this layer doesn't tear it down; `cleanup()`
     /// does.
-    enum State {
+    enum State: Equatable {
         case stopped
         case starting
         case started
@@ -57,6 +57,10 @@ class NodeJSService {
             case .migrationError: return "MIGRATION_ERROR"
             case .lowSpace: return "LOW_SPACE"
             }
+        }
+
+        static func == (lhs: State, rhs: State) -> Bool {
+            lhs.rawValue == rhs.rawValue
         }
     }
 
