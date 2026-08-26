@@ -135,6 +135,11 @@ what each one verifies) has a root script:
 | iOS integration      | `npm run test:ios`                                         | needs the integration app prebuilt + a simulator |
 | End-to-end (local)   | `npm run e2e:ios` / `e2e:android`, then `npm run e2e:test` | Release build + Maestro; see below               |
 
+Measuring the backend's memory footprint (comparing two builds on a device,
+and the Sentry gauges that answer the same question across the fleet) is a
+separate exercise from testing: see
+[docs/BENCHMARKING.md](./docs/BENCHMARKING.md) and `npm run bench:android`.
+
 The native/integration commands are slower and platform-specific. The CI
 workflows remain the source of truth for the exact flags and device matrix:
 [ios-tests.yml](.github/workflows/ios-tests.yml),

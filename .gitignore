@@ -82,6 +82,9 @@ ios/Frameworks/
 build/
 *.tsbuildinfo
 
+# scripts/benchmark-boot.sh output (per-boot logcat captures + results JSON)
+benchmark-results/
+
 # eslint
 .eslintcache
 
