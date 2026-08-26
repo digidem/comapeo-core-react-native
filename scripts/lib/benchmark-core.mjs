@@ -20,17 +20,17 @@
 // ── Boot milestones ─────────────────────────────────────────────
 
 /**
- * Milestones in boot order. `pattern` matches the message part of a logcat
- * line; the first occurrence wins, because a retry after a failed boot
- * should not silently redefine t0.
+ * Milestones in boot order, all structured `[comapeo.*]` crumbs emitted by
+ * the Android module — free-text log messages are not stable surfaces and
+ * are deliberately not matched. `pattern` matches the message part of a
+ * logcat line; the first occurrence wins, because a retry after a failed
+ * boot should not silently redefine t0.
  */
 export const BOOT_MILESTONES = [
   { key: "fgsCreate", pattern: /\[comapeo\.fgs\] ComapeoCoreService\.onCreate/ },
-  { key: "foreground", pattern: /Starting the foreground service/ },
   { key: "nodeStart", pattern: /\[comapeo\.boot\] start\(\)/ },
   { key: "started", pattern: /\[comapeo\.control\] received: started/ },
   { key: "ready", pattern: /\[comapeo\.control\] received: ready/ },
-  { key: "stateStarted", pattern: /STARTING → STARTED/ },
 ];
 
 /** `logcat -v epoch` prefixes each line with "  <sec>.<ms> <pid> <tid> <level> <tag>: ". */
@@ -46,14 +46,12 @@ const MEMORY_LINE = /\[comapeo\.memory\] boot (\{.*\})\s*$/;
  * @returns {{
  *   milestones: Record<string, number>,
  *   memory: object | null,
- *   memoryEpoch: number | null,
  * }}
  */
 export function parseLogcat(text) {
   /** @type {Record<string, number>} */
   const milestones = {};
   let memory = null;
-  let memoryEpoch = null;
 
   for (const line of text.split("\n")) {
     const match = EPOCH_LINE.exec(line);
@@ -71,14 +69,13 @@ export function parseLogcat(text) {
     if (mem && !memory) {
       try {
         memory = JSON.parse(mem[1]);
-        memoryEpoch = epoch;
       } catch {
         // A truncated line loses the snapshot, never the run.
       }
     }
   }
 
-  return { milestones, memory, memoryEpoch };
+  return { milestones, memory };
 }
 
 /**
@@ -98,45 +95,21 @@ export function bootDurations(milestones, t0) {
   return out;
 }
 
-// ── Device memory readouts ──────────────────────────────────────
+// ── Run ids ─────────────────────────────────────────────────────
 
 /**
- * Total PSS in bytes from `dumpsys meminfo <pid>`. The TOTAL row's first
- * numeric column is Pss Total, in kB.
+ * Parses a run id of the exact form `<label>-r<round>-<index>` for the given
+ * label. Returns null for any other id — including one whose label merely
+ * starts with `label`, so `app` never absorbs `app-release`'s runs.
  *
- * @param {string} text
- * @returns {number | null}
+ * @param {string} id
+ * @param {string} label
+ * @returns {{ round: number, index: number } | null}
  */
-export function parseMeminfoPss(text) {
-  const match = /^\s*TOTAL(?:\s+PSS)?:?\s+(\d+)/m.exec(text);
-  return match ? Number(match[1]) * 1024 : null;
-}
-
-/**
- * Parses the timeline file written by scripts/lib/benchmark-sample.sh: one
- * whitespace-separated row per sample, `uptime rss hwm anon swap`, all the
- * memory columns in kB. Only produced when /proc of another process is
- * readable (a rooted emulator); the run is complete without it.
- *
- * @param {string} text
- * @returns {Array<{ t: number, rssBytes: number, peakRssBytes: number, anonBytes: number, swapBytes: number }>}
- */
-export function parseProcTimeline(text) {
-  const rows = [];
-  for (const line of text.split("\n")) {
-    const parts = line.trim().split(/\s+/);
-    if (parts.length < 5) continue;
-    const nums = parts.map(Number);
-    if (nums.some(Number.isNaN)) continue;
-    rows.push({
-      t: nums[0],
-      rssBytes: nums[1] * 1024,
-      peakRssBytes: nums[2] * 1024,
-      anonBytes: nums[3] * 1024,
-      swapBytes: nums[4] * 1024,
-    });
-  }
-  return rows;
+export function parseRunId(id, label) {
+  const match = /^(.*)-r(\d+)-(\d+)$/.exec(id);
+  if (!match || match[1] !== label) return null;
+  return { round: Number(match[2]), index: Number(match[3]) };
 }
 
 // ── Statistics ──────────────────────────────────────────────────
@@ -235,7 +208,6 @@ export const METRICS = [
   { key: "peakRss", label: "Peak RSS", unit: "MB", scale: 1 / 1048576, path: ["memory", "process", "peakRssBytes"] },
   { key: "rss", label: "RSS at sample", unit: "MB", scale: 1 / 1048576, path: ["memory", "process", "rssBytes"] },
   { key: "anon", label: "Anonymous RSS", unit: "MB", scale: 1 / 1048576, path: ["memory", "process", "anonBytes"] },
-  { key: "pss", label: "PSS", unit: "MB", scale: 1 / 1048576, path: ["pssBytes"] },
   { key: "heapUsed", label: "V8 live heap", unit: "MB", scale: 1 / 1048576, path: ["memory", "heap", "usedBytes"] },
   { key: "heapPhysical", label: "V8 heap committed", unit: "MB", scale: 1 / 1048576, path: ["memory", "heap", "physicalBytes"] },
   { key: "heapLimit", label: "V8 heap limit", unit: "MB", scale: 1 / 1048576, path: ["memory", "heap", "limitBytes"] },

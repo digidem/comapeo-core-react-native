@@ -7,53 +7,39 @@ import {
   mannWhitneyU,
   median,
   parseLogcat,
-  parseMeminfoPss,
-  parseProcTimeline,
+  parseRunId,
   perRoundMedians,
   stdev,
   summarise,
 } from "./benchmark-core.mjs";
 
 // Verbatim shapes from `adb logcat -v epoch` on a Pixel_7a_API_34 emulator
-// running the integration app, trimmed to the lines the parser looks for.
+// running the integration app, trimmed to the lines the parser looks for
+// (plus one free-text line it must ignore).
 const LOGCAT = `
          1787305093.601 17579 17579 I ComapeoCore: [comapeo.fgs] ComapeoCoreService.onCreate {category=comapeo.fgs}
-         1787305093.712 17579 17579 I ComapeoCore: Starting the foreground service
          1787305093.744 17579 17579 I ComapeoCore: [comapeo.boot] start() {category=comapeo.boot}
          1787305093.902 17579 17579 I ComapeoCore: STOPPED → STARTING {from=STOPPED, to=STARTING}
          1787305095.858 17579 17667 I ComapeoCore: [comapeo.control] received: started {category=comapeo.control}
          1787305096.193 17579 17667 I ComapeoCore: [comapeo.control] received: ready {category=comapeo.control}
-         1787305096.204 17579 17667 I ComapeoCore: STARTING → STARTED {from=STARTING, to=STARTED}
          1787305101.220 17579 17667 I Comapeo:NodeJS: [comapeo.memory] boot {"runtime":"24.19.0-0","heap":{"usedBytes":26654280,"physicalBytes":39010304,"totalBytes":43155456,"limitBytes":569114624,"externalBytes":10081445},"process":{"rssBytes":218136576,"peakRssBytes":280645632,"anonBytes":81002496,"fileBytes":101486592,"swapBytes":27136000}}
-`;
-
-const MEMINFO = `
-Applications Memory Usage (in Kilobytes):
-Uptime: 114629466 Realtime: 114629466
-
-** MEMINFO in pid 22137 [com.comapeo.core.integration:ComapeoCore] **
-                   Pss  Private  Private  SwapPss      Rss
-                 Total    Dirty    Clean    Dirty    Total
-                ------   ------   ------   ------   ------
-  Native Heap    17556    17504       16       62    18596
-     .so mmap      888      144        0       29    18628
-        TOTAL   109205    64200    34836     1161   186256
 `;
 
 describe("parseLogcat", () => {
   it("extracts every boot milestone in epoch seconds", () => {
     const { milestones } = parseLogcat(LOGCAT);
     assert.equal(milestones.fgsCreate, 1787305093.601);
-    assert.equal(milestones.foreground, 1787305093.712);
     assert.equal(milestones.nodeStart, 1787305093.744);
     assert.equal(milestones.started, 1787305095.858);
     assert.equal(milestones.ready, 1787305096.193);
-    assert.equal(milestones.stateStarted, 1787305096.204);
   });
 
-  it("does not mistake STOPPED → STARTING for the STARTED transition", () => {
+  it("ignores free-text lines that are not structured crumbs", () => {
     const { milestones } = parseLogcat(LOGCAT);
-    assert.equal(milestones.stateStarted, 1787305096.204);
+    assert.deepEqual(
+      Object.keys(milestones).sort(),
+      ["fgsCreate", "nodeStart", "ready", "started"],
+    );
   });
 
   it("keeps the first occurrence of a milestone, not the last", () => {
@@ -63,11 +49,10 @@ describe("parseLogcat", () => {
   });
 
   it("parses the backend boot memory snapshot", () => {
-    const { memory, memoryEpoch } = parseLogcat(LOGCAT);
+    const { memory } = parseLogcat(LOGCAT);
     assert.equal(memory.runtime, "24.19.0-0");
     assert.equal(memory.process.peakRssBytes, 280645632);
     assert.equal(memory.heap.physicalBytes, 39010304);
-    assert.equal(memoryEpoch, 1787305101.220);
   });
 
   it("survives a truncated snapshot line", () => {
@@ -99,27 +84,24 @@ describe("bootDurations", () => {
   });
 });
 
-describe("parseMeminfoPss", () => {
-  it("reads the TOTAL row's Pss Total column as bytes", () => {
-    assert.equal(parseMeminfoPss(MEMINFO), 109205 * 1024);
+describe("parseRunId", () => {
+  it("parses round and index for an exact label match", () => {
+    assert.deepEqual(parseRunId("before-r2-14", "before"), { round: 2, index: 14 });
   });
 
-  it("returns null when the process was gone", () => {
-    assert.equal(parseMeminfoPss("No process found for: 1234\n"), null);
-  });
-});
-
-describe("parseProcTimeline", () => {
-  it("converts kB columns to bytes", () => {
-    const rows = parseProcTimeline("0.10 100 120 40 5\n0.15 110 130 45 5\n");
-    assert.equal(rows.length, 2);
-    assert.equal(rows[0].rssBytes, 100 * 1024);
-    assert.equal(rows[1].peakRssBytes, 130 * 1024);
+  it("rejects ids whose label merely starts with the requested label", () => {
+    assert.equal(parseRunId("app-release-r1-2", "app"), null);
+    assert.deepEqual(parseRunId("app-release-r1-2", "app-release"), { round: 1, index: 2 });
   });
 
-  it("skips partial or non-numeric rows rather than poisoning the series", () => {
-    const rows = parseProcTimeline("0.10 100 120 40 5\nbroken row here x\n0.2 1\n");
-    assert.equal(rows.length, 1);
+  it("handles a label that itself ends in -r<digits>", () => {
+    assert.deepEqual(parseRunId("app-r1-r2-3", "app-r1"), { round: 2, index: 3 });
+  });
+
+  it("rejects ids that are not <label>-r<round>-<index>", () => {
+    assert.equal(parseRunId("warmup", "warmup"), null);
+    assert.equal(parseRunId("before-r1", "before"), null);
+    assert.equal(parseRunId("before-r1-2x", "before"), null);
   });
 });
 
@@ -155,7 +137,6 @@ function run(peak, ready, round = 1) {
   return {
     round,
     durations: { started: ready - 0.3, ready },
-    pssBytes: 130 * 1048576,
     memory: {
       runtime: "24.19.0-0",
       heap: {

@@ -4,31 +4,12 @@ set -euo pipefail
 # Cold-boot benchmark for the embedded Node backend on Android.
 #
 # Measures what the `:ComapeoCore` foreground-service process costs to start:
-# peak RSS, settled RSS, PSS, the V8 heap breakdown, and launch → `started` →
-# `ready` timings. Built for comparing two builds of anything that changes the
-# backend's footprint — a different libnode.so, a dependency bump, a lazy
-# import — not for absolute numbers.
-#
-# Two modes:
-#
-#   Single series — measure whatever is installed (or install one APK first):
-#     ./scripts/benchmark-boot.sh --label before --iterations 10
-#     ./scripts/benchmark-boot.sh --label after --apk /tmp/after.apk
-#     node scripts/benchmark-report.mjs benchmark-results/before.json \
-#                                       benchmark-results/after.json
-#
-#   Interleaved A/B — alternates blocks between two APKs, which is the only
-#   honest way to run this on a machine that is doing other work:
-#     ./scripts/benchmark-boot.sh --ab /tmp/before.apk /tmp/after.apk \
-#         --rounds 3 --per-round 5
-#
-# With no --apk/--ab it builds the integration app in Release first (debug
-# start-up is ~10x slower and not representative — see CONTRIBUTING.md).
-#
-# Peak RSS comes from the backend's own `[comapeo.memory] boot` log line,
-# which reads /proc/self and so needs no root. `adb root` (available on
-# emulators) additionally enables a 50 ms /proc timeline; without it the run
-# is complete, just without the trajectory.
+# peak RSS, settled RSS, the V8 heap breakdown, and launch → `started` →
+# `ready` timings — all read from the module's `[comapeo.*]` lifecycle crumbs
+# and the backend's own `[comapeo.memory] boot` log line, so no root is
+# needed for the numbers. Built for comparing two builds of anything that
+# changes the backend's footprint — a different libnode.so, a dependency
+# bump, a lazy import — not for absolute numbers. Run --help for usage.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -51,7 +32,36 @@ OUT_DIR="$PROJECT_ROOT/benchmark-results"
 SKIP_BUILD=0
 
 usage() {
-  sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+Cold-boot benchmark for the embedded Node backend on Android.
+
+Single series — measure whatever is installed (or install one APK first):
+  ./scripts/benchmark-boot.sh --label before --iterations 10
+  ./scripts/benchmark-boot.sh --label after --apk /tmp/after.apk
+  node scripts/benchmark-report.mjs benchmark-results/before.json \
+                                    benchmark-results/after.json
+
+Interleaved A/B — alternates blocks between two APKs, which is the only
+honest way to run this on a machine that is doing other work:
+  ./scripts/benchmark-boot.sh --ab /tmp/before.apk /tmp/after.apk \
+      --rounds 3 --per-round 5
+
+Options:
+  --label <name>        series label for a single-series run (default: current)
+  --iterations <n>      boots in a single-series run (default: 5)
+  --ab <a.apk> <b.apk>  interleaved A/B between two APKs
+  --rounds <n>          A/B rounds (default: 3)
+  --per-round <n>       boots per build per round (default: 5)
+  --duration <s>        seconds to watch each boot (default: 20)
+  --device <serial>     adb device (required when several are attached)
+  --apk <path>          install this APK before the run
+  --abi <abi>           ABI for the Release build (default: arm64-v8a)
+  --out <dir>           results directory (default: benchmark-results)
+  --skip-build          measure what is already installed
+
+With no --apk/--ab it builds the integration app in Release first (debug
+start-up is ~10x slower and not representative — see CONTRIBUTING.md).
+EOF
 }
 
 while [[ $# -gt 0 ]]; do
@@ -79,6 +89,11 @@ done
 ADB=(command adb)
 [ -n "$DEVICE" ] && ADB=(command adb -s "$DEVICE")
 
+# Run ids ("<label>-r<round>-<n>") reach the device shell unquoted, so keep
+# every label to a safe character set.
+safe_label() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+LABEL="$(safe_label "$LABEL")"
+
 # ---------------------------------------------------------------
 # Device
 # ---------------------------------------------------------------
@@ -101,17 +116,17 @@ ensure_device() {
   fi
 }
 
-# /proc of another process is root-only. Best-effort: `adb root` succeeds on
-# emulators and userdebug builds, fails harmlessly on a production device.
-try_root() {
-  if "${ADB[@]}" root >/dev/null 2>&1; then
-    "${ADB[@]}" wait-for-device
-    if "${ADB[@]}" shell 'id' 2>/dev/null | grep -q 'uid=0'; then
-      echo "==> adb root: on (per-sample /proc timeline enabled)"
-      return
-    fi
+# The compile-cache wipe before each boot needs a root shell (app data dirs
+# are private). Without it the wipe silently no-ops and measured boots are
+# warm-cache, so say so up front instead of letting the run overclaim.
+check_cache_wipe() {
+  if "${ADB[@]}" shell 'id' 2>/dev/null | grep -q 'uid=0'; then
+    echo "==> compile cache: wiped before each boot (cold-cache boots)"
+  else
+    echo "==> WARNING: adb shell is not root, so the compile-cache wipe is a no-op" >&2
+    echo "    and measured boots are warm-cache. Run 'adb root' first (emulator or" >&2
+    echo "    userdebug build) for the cold-cache boots docs/BENCHMARKING.md describes." >&2
   fi
-  echo "==> adb root: unavailable (peak RSS still comes from the backend's own log line)"
 }
 
 # ---------------------------------------------------------------
@@ -145,8 +160,9 @@ run_boot() {
 run_block() {
   local label="$1" count="$2" round="$3"
   # The first boot after an install faults the freshly written APK in and is
-  # not representative; measure after it.
-  "${ADB[@]}" shell "sh /data/local/tmp/benchmark-sample.sh $PKG $ACTIVITY warmup $DURATION" \
+  # not representative; measure after it. It only needs to reach `ready`
+  # (~2s), not the memory sample, so don't watch it for the full duration.
+  "${ADB[@]}" shell "sh /data/local/tmp/benchmark-sample.sh $PKG $ACTIVITY warmup 8" \
     >/dev/null 2>&1
   local i
   for i in $(seq 1 "$count"); do
@@ -161,7 +177,7 @@ echo "║  CoMapeo backend cold-boot benchmark       ║"
 echo "╚════════════════════════════════════════════╝"
 
 ensure_device
-try_root
+check_cache_wipe
 
 if [ -z "$APK" ] && [ -z "$AB_A" ] && [ "$SKIP_BUILD" -eq 0 ]; then
   build_release_apk
@@ -199,11 +215,9 @@ done
 
 if [ -n "$AB_A" ]; then
   # Label each series after its APK so the report names the builds rather than
-  # "a" and "b". Run ids reach a device shell unquoted, so keep them to a safe
-  # character set, and fall back when both files share a basename.
-  safe_label() { printf '%s' "$(basename "$1" .apk)" | tr -c 'A-Za-z0-9._-' '_'; }
-  LABEL_A="$(safe_label "$AB_A")"
-  LABEL_B="$(safe_label "$AB_B")"
+  # "a" and "b", and fall back when both files share a basename.
+  LABEL_A="$(safe_label "$(basename "$AB_A" .apk)")"
+  LABEL_B="$(safe_label "$(basename "$AB_B" .apk)")"
   if [ "$LABEL_A" = "$LABEL_B" ]; then LABEL_A="a-$LABEL_A"; LABEL_B="b-$LABEL_B"; fi
 
   echo "==> interleaved A/B: $ROUNDS rounds x $PER_ROUND boots per build"
@@ -231,10 +245,16 @@ else
 fi
 
 echo "==> collecting"
-RAW_DIR="$OUT_DIR/raw"
-rm -rf "$RAW_DIR"
+# One raw directory per invocation: the documented before/after workflow is
+# two invocations, and the second must not destroy the first's captures.
+RAW_DIR="$OUT_DIR/raw/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RAW_DIR"
-"${ADB[@]}" pull /data/local/tmp/comapeo-bench "$RAW_DIR" >/dev/null 2>&1
+if ! "${ADB[@]}" pull /data/local/tmp/comapeo-bench "$RAW_DIR" >/dev/null; then
+  echo "Error: adb pull failed. The captures are still on the device under" >&2
+  echo "/data/local/tmp/comapeo-bench — pull them manually and run" >&2
+  echo "scripts/benchmark-collect.mjs against that directory." >&2
+  exit 1
+fi
 
 for label in "${LABELS[@]}"; do
   node "$SCRIPT_DIR/benchmark-collect.mjs" \

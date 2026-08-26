@@ -80,8 +80,10 @@ Useful flags: `--device <serial>` (required when more than one is attached),
 boot, default 20), `--abi`, `--skip-build`, `--out`.
 
 Output lands in `benchmark-results/` (gitignored): one JSON per label plus the
-raw per-boot logcat captures under `raw/`, which are worth keeping when a run
-looks strange.
+raw per-boot logcat captures under a per-invocation `raw/<timestamp>/`
+directory — the second invocation of a before/after comparison does not
+overwrite the first's captures, which are worth keeping when a run looks
+strange.
 
 ### Reading the output
 
@@ -116,10 +118,15 @@ difference is the build. If the rounds disagree, you measured the machine.
   boot. Peak RSS does not have this problem, which is another reason to lead
   with it. If you need the settled number, take enough boots to see both modes
   in each build and compare them mode-for-mode.
-- **The compile cache is wiped before every boot** so that swapping APKs
-  doesn't leave one build paying for a cache the other wrote. Measured boots
-  are therefore cold-cache boots, which is the worst case and the one that
-  matters for a process that may be killed at startup.
+- **The compile cache is only wiped when adb runs as root.** The wipe exists
+  so that swapping APKs doesn't leave one build paying for a
+  `NODE_COMPILE_CACHE` the other wrote, but app cache directories are
+  private, so it only works after `adb root` (emulators, userdebug builds).
+  With root, measured boots are cold-cache — the worst case, and the one that
+  matters for a process that may be killed at startup. Without it the harness
+  prints a warning and the boots are warm-cache; the memory numbers are still
+  valid, but treat the timing comparison with suspicion, especially right
+  after swapping APKs.
 - **The first boot after each install is discarded** — it faults the freshly
   written APK in.
 - **`VmSize` is not a footprint.** A V8 build with pointer compression reserves
@@ -128,11 +135,11 @@ difference is the build. If the rounds disagree, you measured the machine.
 
 ### Without root
 
-`adb root` (emulators, userdebug builds) enables a 50 ms `/proc` timeline for
-the trajectory. It is optional: peak RSS, RSS and the heap breakdown come from
-the backend's own `[comapeo.memory] boot` log line, which reads `/proc/self`
-and needs no privilege, so the harness works unmodified on a production
-device.
+The harness works unmodified on a production device: the boot timings come
+from the module's `[comapeo.*]` lifecycle crumbs in logcat, and peak RSS, RSS
+and the heap breakdown come from the backend's own `[comapeo.memory] boot`
+log line, which reads `/proc/self` and needs no privilege. The only thing
+root buys is the compile-cache wipe above.
 
 ## The fleet view: Sentry gauges
 
