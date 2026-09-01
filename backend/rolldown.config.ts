@@ -65,6 +65,7 @@ const IOS_SOURCEMAPS =
  *   - `@comapeo/core/drizzle/`: SQL migration files read at runtime by
  *     drizzle-orm.
  *   - `@comapeo/fallback-smp/`: offline fallback map data.
+ *   - `smp-noto-glyphs/fixtures/glyphs`: offline fallback glyphs
  *
  * The default project config is NOT bundled here — the consuming app
  * supplies it via the Expo plugin (`app.plugin.js`), which drops the
@@ -82,6 +83,7 @@ const STATIC_ASSET_PATHS = [
   "package.json",
   "node_modules/@comapeo/core/drizzle",
   "node_modules/@comapeo/fallback-smp",
+  "node_modules/smp-noto-glyphs/fixtures/glyphs",
 ] as const;
 
 /**
