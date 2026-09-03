@@ -63,6 +63,7 @@ class RootKeyStoreTest {
         context.getSharedPreferences(RootKeyStore.PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .remove(RootKeyStore.PREFS_KEY)
+            .remove(RootKeyStore.MASTERKEY_PREFS_KEY)
             .commit()
         context.getSharedPreferences(
             LegacyRootKeyDecoder.SECURE_STORE_PREFS_NAME,
@@ -295,6 +296,96 @@ class RootKeyStoreTest {
         )
     }
 
+    @Test
+    fun masterKeyRoundTripsThroughTheCache() {
+        val rootKey = RootKeyStore(context).loadOrInitialize().key
+        RootKeyStore(context).storeMasterKey(MASTER_KEY, RootKeyStore.fingerprintOf(rootKey))
+
+        // A fresh instance proves the entry survives in persistent storage.
+        val loaded = RootKeyStore(context).loadMasterKey(rootKey)
+        assertArrayEquals("cache must return the stored bytes verbatim", MASTER_KEY, loaded)
+    }
+
+    @Test
+    fun corruptMasterKeyEnvelopeReturnsNullAndDeletesEntry() {
+        val rootKey = RootKeyStore(context).loadOrInitialize().key
+        RootKeyStore(context).storeMasterKey(MASTER_KEY, RootKeyStore.fingerprintOf(rootKey))
+
+        context.getSharedPreferences(RootKeyStore.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(RootKeyStore.MASTERKEY_PREFS_KEY, "not valid json {")
+            .commit()
+
+        assertNull(RootKeyStore(context).loadMasterKey(rootKey))
+        assertNull("corrupt entry must be deleted, not left to fail again", masterKeyEntry())
+    }
+
+    @Test
+    fun fingerprintMismatchReturnsNullAndDeletesEntry() {
+        val rootKey = RootKeyStore(context).loadOrInitialize().key
+        RootKeyStore(context).storeMasterKey(MASTER_KEY, RootKeyStore.fingerprintOf(rootKey))
+
+        // Same wrapper key, different rootkey — the `fp` binding is the only thing
+        // that can catch a rootkey change the cache never saw.
+        assertNull(RootKeyStore(context).loadMasterKey(KNOWN_BYTES))
+        assertNull("stale entry must be deleted", masterKeyEntry())
+    }
+
+    @Test
+    fun rootkeyGenerationClearsTheMasterKeyCache() {
+        // Seed a cache entry that predates the rootkey write.
+        context.getSharedPreferences(RootKeyStore.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(RootKeyStore.MASTERKEY_PREFS_KEY, "stale entry")
+            .commit()
+
+        RootKeyStore(context).loadOrInitialize()
+
+        assertNull("first-install rootkey write must clear the cache", masterKeyEntry())
+    }
+
+    @Test
+    fun legacyMigrationClearsTheMasterKeyCache() {
+        seedLegacyEntry(KNOWN_HEX, keychainAware = true)
+        val rootKey = RootKeyStore(context).loadOrInitialize().key
+        RootKeyStore(context).storeMasterKey(MASTER_KEY, RootKeyStore.fingerprintOf(rootKey))
+        assertNotNull(masterKeyEntry())
+
+        // Drop the native blob so the next load migrates from legacy again — a second
+        // rootkey write, which must take the cache with it.
+        context.getSharedPreferences(RootKeyStore.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(RootKeyStore.PREFS_KEY)
+            .commit()
+
+        RootKeyStore(context).loadOrInitialize()
+        assertNull("every rootkey write must clear the cache", masterKeyEntry())
+    }
+
+    @Test
+    fun wrongLengthMasterKeyIsRejected() {
+        val rootKey = RootKeyStore(context).loadOrInitialize().key
+
+        RootKeyStore(context).storeMasterKey(ByteArray(31), RootKeyStore.fingerprintOf(rootKey))
+
+        assertNull("a short master key must never be persisted", masterKeyEntry())
+        assertNull(RootKeyStore(context).loadMasterKey(rootKey))
+    }
+
+    @Test
+    fun wrongLengthFingerprintIsRejected() {
+        val rootKey = RootKeyStore(context).loadOrInitialize().key
+
+        RootKeyStore(context).storeMasterKey(MASTER_KEY, ByteArray(4))
+
+        assertNull("an entry the load path could never match must not be written", masterKeyEntry())
+        assertNull(RootKeyStore(context).loadMasterKey(rootKey))
+    }
+
+    private fun masterKeyEntry(): String? = context
+        .getSharedPreferences(RootKeyStore.PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(RootKeyStore.MASTERKEY_PREFS_KEY, null)
+
     /**
      * Writes a handcrafted `expo-secure-store` AES entry: generates the legacy
      * AndroidKeyStore alias the way `expo-secure-store@56` does, encrypts [hex] as a
@@ -365,5 +456,9 @@ class RootKeyStoreTest {
             0xCC.toByte(), 0xDD.toByte(), 0xEE.toByte(), 0xFF.toByte(),
         )
         private const val KNOWN_HEX = "00112233445566778899aabbccddeeff"
+
+        // Arbitrary 32 bytes — the cache stores whatever it is handed; the pinned
+        // derivation vector is exercised by MasterKeyDeriveContractTest.
+        private val MASTER_KEY = ByteArray(RootKeyStore.MASTERKEY_BYTE_LENGTH) { it.toByte() }
     }
 }

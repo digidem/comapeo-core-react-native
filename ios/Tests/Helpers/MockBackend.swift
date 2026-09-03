@@ -23,6 +23,9 @@ final class MockBackend {
     /// Captured init-frame `rootKey` bytes (base64-decoded). Set after the
     /// handshake completes; nil if no init frame was received.
     private(set) var receivedRootKey: Data?
+    /// Captured init-frame `masterKey` bytes, nil when the service sent a
+    /// rootkey-only frame.
+    private(set) var receivedMasterKey: Data?
     /// Set when the service sends `{"type":"shutdown"}` after the handshake.
     private(set) var receivedShutdown = false
     private var handshakeComplete = DispatchSemaphore(value: 0)
@@ -118,7 +121,8 @@ final class MockBackend {
             return
         }
         if let initFrame = frameAfterStarted {
-            receivedRootKey = MockBackend.extractRootKey(fromInitFrame: initFrame)
+            receivedRootKey = MockBackend.extractKey("rootKey", fromInitFrame: initFrame)
+            receivedMasterKey = MockBackend.extractKey("masterKey", fromInitFrame: initFrame)
         }
         MockNodeServer.sendFramedMessage(fd: fd, message: #"{"type":"ready"}"#)
         handshakeComplete.signal()
@@ -142,12 +146,13 @@ final class MockBackend {
         }
     }
 
-    /// Extracts the base64-decoded rootKey from a string like
-    /// `{"type":"init","rootKey":"<b64>"}`. Cheap manual parse — the format
-    /// is fixed-shape (Swift writes the JSON itself with no whitespace).
-    private static func extractRootKey(fromInitFrame frame: String) -> Data? {
+    /// Extracts a base64-decoded key field from a string like
+    /// `{"type":"init","rootKey":"<b64>","masterKey":"<b64>"}`. Cheap manual
+    /// parse — the format is fixed-shape (Swift writes the JSON itself with
+    /// no whitespace).
+    private static func extractKey(_ field: String, fromInitFrame frame: String) -> Data? {
         guard frame.contains("\"init\"") else { return nil }
-        guard let range = frame.range(of: "\"rootKey\":\"") else { return nil }
+        guard let range = frame.range(of: "\"\(field)\":\"") else { return nil }
         let valueStart = range.upperBound
         guard let endQuote = frame.range(of: "\"", range: valueStart..<frame.endIndex) else {
             return nil

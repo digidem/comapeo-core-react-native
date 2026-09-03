@@ -22,6 +22,7 @@ internal object SentryMetricScrub {
         "peer_id",
         "peer_count",
         "rootkey",
+        "masterkey",
     )
 
     private val FORBIDDEN_METRIC_VALUE_PATTERNS = listOf(

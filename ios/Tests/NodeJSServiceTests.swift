@@ -111,6 +111,100 @@ final class NodeJSServiceTests: XCTestCase {
         XCTAssertEqual(lastError?.message, "test rootkey unavailable")
     }
 
+    // MARK: - Master key on the init frame
+    //
+    // docs/master-key-cache-plan.md §6: a cache hit puts `masterKey` on the
+    // init frame; a miss degrades to a rootkey-only frame and the backend
+    // derives.
+
+    func testInitFrameCarriesCachedMasterKey() throws {
+        let cached = Data(repeating: 0x11, count: 32)
+        let (service, signalExit) = makeMockNodeService(
+            socketDir: testDir,
+            // Returns a key only for the rootkey that was loaded, so a
+            // mis-threaded argument shows up as a rootkey-only frame.
+            masterKeyCacheProvider: { $0 == mockTestRootKey ? cached : nil }
+        )
+        defer { signalExit() }
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+
+        XCTAssertTrue(backend.waitForHandshake())
+        XCTAssertEqual(backend.receivedRootKey, mockTestRootKey)
+        XCTAssertEqual(backend.receivedMasterKey, cached)
+    }
+
+    // MARK: - Caching the backend's master-key frame
+
+    func testMasterKeyFrameIsStoredAgainstTheRootKeyFingerprint() throws {
+        let derived = Data((0..<32).map { UInt8($0) })
+        let stored = expectation(description: "store provider called")
+        let captured = MasterKeyCapture()
+        let (service, signalExit) = makeMockNodeService(
+            socketDir: testDir,
+            masterKeyStoreProvider: { key, fingerprint in
+                captured.set(key: key, fingerprint: fingerprint)
+                stored.fulfill()
+            }
+        )
+        defer { signalExit() }
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+        XCTAssertTrue(backend.waitForHandshake())
+
+        XCTAssertTrue(
+            backend.sendFrame(
+                #"{"type":"master-key","masterKey":"\#(derived.base64EncodedString())"}"#
+            )
+        )
+
+        wait(for: [stored], timeout: 5)
+        XCTAssertEqual(captured.key, derived)
+        XCTAssertEqual(captured.fingerprint, RootKeyStore.fingerprint(of: mockTestRootKey))
+    }
+
+    func testMalformedMasterKeyFrameIsIgnored() throws {
+        let (service, signalExit) = makeMockNodeService(
+            socketDir: testDir,
+            masterKeyStoreProvider: { _, _ in
+                XCTFail("a frame that fails validation must not reach the cache")
+            }
+        )
+        defer { signalExit() }
+        let startedExpectation = expectation(description: "Reached started")
+        service.onStateChange = { if $0 == .started { startedExpectation.fulfill() } }
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+        XCTAssertTrue(backend.waitForHandshake())
+
+        // Right length, but `*` is outside the base64 alphabet — the decoder
+        // would silently accept it, so the character check is what rejects it.
+        let bad = String(repeating: "*", count: 43) + "="
+        XCTAssertTrue(backend.sendFrame(#"{"type":"master-key","masterKey":"\#(bad)"}"#))
+        XCTAssertTrue(
+            backend.sendFrame(#"{"type":"master-key","masterKey":"\#(Data(repeating: 1, count: 31).base64EncodedString())"}"#)
+        )
+
+        // A dropped frame must leave the boot untouched.
+        wait(for: [startedExpectation], timeout: 5)
+        XCTAssertEqual(service.state, .started)
+    }
+
+    func testInitFrameIsRootKeyOnlyOnCacheMiss() throws {
+        let (service, signalExit) = makeMockNodeService(socketDir: testDir)
+        defer { signalExit() }
+        let startedExpectation = expectation(description: "Reached started")
+        service.onStateChange = { if $0 == .started { startedExpectation.fulfill() } }
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+
+        XCTAssertTrue(backend.waitForHandshake())
+        XCTAssertEqual(backend.receivedRootKey, mockTestRootKey)
+        XCTAssertNil(backend.receivedMasterKey)
+        // A missing master key must not block boot.
+        wait(for: [startedExpectation], timeout: 5)
+    }
+
     /// Backend sends an `error` frame post-`ready`. The service should
     /// transition from STARTED to ERROR carrying the frame's phase and
     /// message. Verifies the §5.5 §2 path (backend-reported failures
@@ -677,5 +771,30 @@ final class NodeJSServiceTests: XCTestCase {
         wait(for: [callbackCompleted], timeout: 5)
 
         signalExit()
+    }
+}
+
+/// Capture box for the master-key store spy, which the service calls off the
+/// receive queue.
+private final class MasterKeyCapture {
+    private let lock = NSLock()
+    private var captured: (key: Data, fingerprint: Data)?
+
+    func set(key: Data, fingerprint: Data) {
+        lock.lock()
+        captured = (key, fingerprint)
+        lock.unlock()
+    }
+
+    var key: Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return captured?.key
+    }
+
+    var fingerprint: Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return captured?.fingerprint
     }
 }

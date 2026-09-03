@@ -94,6 +94,10 @@ class ComapeoCoreModule : Module() {
                                 "errorMessage" to frame.message,
                             ),
                         )
+                        // Targeted at the FGS connection that sent init, so it
+                        // should never arrive here — and the payload must never
+                        // be logged if it does.
+                        is ControlFrame.MasterKey -> {}
                         // Sentry frames belong to the FGS-side sentry-android SDK.
                         // Capturing here would double-send.
                         is ControlFrame.SentryEvent -> {}

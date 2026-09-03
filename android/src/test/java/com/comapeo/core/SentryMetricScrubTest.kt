@@ -31,6 +31,16 @@ class SentryMetricScrubTest {
     }
 
     @Test
+    fun keyTagNamesAreRejected() {
+        assertTrue(
+            SentryMetricScrub.isForbiddenMetric("comapeo.x", mapOf("rootkey" to "x")),
+        )
+        assertTrue(
+            SentryMetricScrub.isForbiddenMetric("comapeo.x", mapOf("masterkey" to "x")),
+        )
+    }
+
+    @Test
     fun coordinateShapedAttributeValueIsRejected() {
         assertTrue(
             SentryMetricScrub.isForbiddenMetric(

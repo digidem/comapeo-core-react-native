@@ -13,7 +13,9 @@ const DEFAULT_CUSTOM_MAP_FILE_NAME = "default.smp";
  * @param {string} [options.defaultConfigPath] Optional default project config (presets/categories) the consuming app bundles. Undefined → new projects get no default config.
  * @param {string} [options.defaultOnlineStyleUrl] Online map style URL the consuming app sets via the Expo plugin. Undefined → falls back to {@link DEFAULT_ONLINE_MAP_STYLE_URL}.
  * @param {Buffer} options.rootKey 16-byte device identity supplied by native code.
+ * @param {Buffer} [options.masterKey] 32-byte master key already derived from {@link options.rootKey}. Skips MapeoManager's own (expensive) derivation. Undefined → MapeoManager derives it.
  * @param {import('fastify').FastifyInstance} options.fastify
+ * @param {typeof MapeoManager} [options.managerClass] Test seam.
  */
 export function createComapeo({
   privateStorageDir,
@@ -21,12 +23,26 @@ export function createComapeo({
   defaultConfigPath,
   defaultOnlineStyleUrl,
   rootKey,
+  masterKey,
   fastify,
+  managerClass = MapeoManager,
 }) {
   if (!Buffer.isBuffer(rootKey) || rootKey.byteLength !== 16) {
     throw new Error(
       `createComapeo: rootKey must be a 16-byte Buffer, got ${
         Buffer.isBuffer(rootKey) ? `${rootKey.byteLength} bytes` : typeof rootKey
+      }`,
+    );
+  }
+  if (
+    masterKey !== undefined &&
+    (!Buffer.isBuffer(masterKey) || masterKey.byteLength !== 32)
+  ) {
+    throw new Error(
+      `createComapeo: masterKey must be a 32-byte Buffer, got ${
+        Buffer.isBuffer(masterKey)
+          ? `${masterKey.byteLength} bytes`
+          : typeof masterKey
       }`,
     );
   }
@@ -43,12 +59,13 @@ export function createComapeo({
   mkdirSync(indexFolder, { recursive: true });
   mkdirSync(customMapsDir, { recursive: true });
 
-  return new MapeoManager({
+  return new managerClass({
     dbFolder,
     coreStorage: indexFolder,
     projectMigrationsFolder: path.join(migrationsFolderPath, "project"),
     clientMigrationsFolder: path.join(migrationsFolderPath, "client"),
     rootKey,
+    masterKey,
     fastify,
     defaultConfigPath,
     defaultOnlineStyleUrl: defaultOnlineStyleUrl || DEFAULT_ONLINE_MAP_STYLE_URL,

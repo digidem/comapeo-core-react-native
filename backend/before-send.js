@@ -8,12 +8,11 @@
 // the same scrubbing + drop behaviour runs on Node-side events before
 // they leave the FGS.
 //
-// Mirrored from `src/sentry-scrub.ts`. rootKey protection filters on the
-// KEY, not the value's encoding: the marker rule reaches quoted values
-// (JSON / util.inspect forms), and object fields keyed
-// rootKey/root_key/root-key are redacted regardless of value type or
-// encoding. There is deliberately NO value-shape rule for bare (unmarked)
-// tokens — see the SCRUB_PATTERNS note in `src/sentry-scrub.ts`; the
+// Mirrored from `src/sentry-scrub.ts`. rootKey/masterKey protection filters
+// on the KEY, not the value's encoding: the marker rule reaches quoted values
+// (JSON / util.inspect forms), and object fields keyed rootKey/masterKey (any
+// separator) are redacted regardless of value type or encoding. There is
+// deliberately NO value-shape rule for bare (unmarked) tokens — see the SCRUB_PATTERNS note in `src/sentry-scrub.ts`; the
 // defence for bare values is that IPC code never logs frame payloads
 // (see lib/simple-rpc.js). Object fields keyed
 // lat/lng/latitude/longitude are redacted regardless of value type; lat/lng
@@ -27,16 +26,19 @@ const SCRUB_PATTERNS = [
   // quoted values in `{"rootKey":"…"}` (a logged init frame) and
   // `rootKey: '…'` (a console-formatted message object). The value stops at
   // a field delimiter (whitespace, `,;&`, quote) so co-located fields in a
-  // compact `rootKey=abc,method=x` string survive.
-  /\broot[_-]?key\b\s*["']?\s*[:=]\s*["']?[^\s,;&"']+/gi,
+  // compact `rootKey=abc,method=x` string survive. The leading `\w*` reaches
+  // identifiers that only end in the marker (`cachedMasterKey` is a real
+  // local in index.js); the trailing `\b` keeps `masterkeyboard` out.
+  /\b\w*(?:root|master)[_-]?key\b\s*["']?\s*[:=]\s*["']?[^\s,;&"']+/gi,
   // `lon` is the field name @comapeo/schema observations actually use.
   // Optional quote so JSON-serialized coordinates (`"lat":-12.3`) match.
   /\b(?:latitude|longitude|lat|lng|lon)\b\s*["']?\s*[:=]\s*-?\d+(?:\.\d+)?/gi,
 ];
 
-/** Object keys whose value is a raw coordinate or the device rootkey —
+/** Object keys whose value is a raw coordinate or one of the device keys —
  *  redacted regardless of value type or encoding. */
-const SENSITIVE_KEY_PATTERN = /^(lat|lng|lon|latitude|longitude|root[_-]?key)$/i;
+const SENSITIVE_KEY_PATTERN =
+  /^(lat|lng|lon|latitude|longitude|\w*(root|master)[_-]?key)$/i;
 
 // The native metric paths keep hand-mirrored copies of this list in
 // `android/src/main/java/com/comapeo/core/SentryMetricScrub.kt` and
@@ -55,6 +57,7 @@ const FORBIDDEN_METRIC_TAG_NAMES = new Set([
   "peer_id",
   "peer_count",
   "rootkey",
+  "masterkey",
 ]);
 
 /** @type {RegExp[]} */

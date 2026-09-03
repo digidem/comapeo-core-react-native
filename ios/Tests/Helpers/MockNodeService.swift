@@ -43,7 +43,9 @@ func makeMockNodeService(
     privateStorageDir: String? = nil,
     rootKeyProvider: @escaping NodeJSService.RootKeyProvider = {
         RootKeyResult(key: mockTestRootKey, generated: false)
-    }
+    },
+    masterKeyCacheProvider: @escaping NodeJSService.MasterKeyCacheProvider = { _ in nil },
+    masterKeyStoreProvider: @escaping NodeJSService.MasterKeyStoreProvider = { _, _ in }
 ) -> (service: NodeJSService, signalExit: () -> Void) {
     let (entryPoint, signal) = makeMockNodeEntryPoint()
     let service = NodeJSService(
@@ -52,7 +54,9 @@ func makeMockNodeService(
             ?? (socketDir as NSString).appendingPathComponent("private-storage"),
         nodeEntryPoint: entryPoint,
         resolveJSEntryPoint: { "/fake/index.mjs" },
-        rootKeyProvider: rootKeyProvider
+        rootKeyProvider: rootKeyProvider,
+        masterKeyCacheProvider: masterKeyCacheProvider,
+        masterKeyStoreProvider: masterKeyStoreProvider
     )
     return (service, signal)
 }

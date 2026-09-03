@@ -28,6 +28,15 @@ final class SentryMetricScrubTests: XCTestCase {
         )
     }
 
+    func testKeyTagNamesAreRejected() {
+        XCTAssertTrue(
+            SentryMetricScrub.isForbiddenMetric(name: "comapeo.x", attributes: ["rootkey": "x"])
+        )
+        XCTAssertTrue(
+            SentryMetricScrub.isForbiddenMetric(name: "comapeo.x", attributes: ["masterkey": "x"])
+        )
+    }
+
     func testCoordinateShapedAttributeValueIsRejected() {
         XCTAssertTrue(
             SentryMetricScrub.isForbiddenMetric(
