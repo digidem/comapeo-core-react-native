@@ -1,0 +1,77 @@
+diff --git a/node_modules/typebox/build/format/idn_email.mjs b/node_modules/typebox/build/format/idn_email.mjs
+index 1adc763..e9f65f2 100644
+--- a/node_modules/typebox/build/format/idn_email.mjs
++++ b/node_modules/typebox/build/format/idn_email.mjs
+@@ -1,4 +1,4 @@
+-const IdnEmail = /^(?:[A-Za-z0-9!#$%&'*+\/=?^_`{|}~\u{0080}-\u{10FFFF}-]+(?:\.[A-Za-z0-9!#$%&'*+\/=?^_`{|}~\u{0080}-\u{10FFFF}-]+)*|"(?:[^"\\]|\\.)*")@[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,62})(?<!-)(?:\.[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,62})(?<!-))*$/iu;
++const IdnEmail = /^(?:[A-Za-z0-9!#$%&'*+\/=?^_`{|}~\u{0080}-\u{10FFFF}-]+(?:\.[A-Za-z0-9!#$%&'*+\/=?^_`{|}~\u{0080}-\u{10FFFF}-]+)*|"(?:[^"\\]|\\.)*")@[A-Za-z0-9\u{0080}-\u{10FFFF}](?:[A-Za-z0-9\u{0080}-\u{10FFFF}-]{0,62})(?<!-)(?:\.[A-Za-z0-9\u{0080}-\u{10FFFF}](?:[A-Za-z0-9\u{0080}-\u{10FFFF}-]{0,62})(?<!-))*$/iu;
+ /**
+  * Returns true if the value is an IdnEmail
+  * @specification https://datatracker.ietf.org/doc/html/rfc4952
+diff --git a/node_modules/typebox/build/format/idna/pattern/pattern.mjs b/node_modules/typebox/build/format/idna/pattern/pattern.mjs
+index c127473..5d130ca 100644
+--- a/node_modules/typebox/build/format/idna/pattern/pattern.mjs
++++ b/node_modules/typebox/build/format/idna/pattern/pattern.mjs
+@@ -1,4 +1,8 @@
+ // deno-fmt-ignore-file
++// nodejs-mobile builds V8 with --with-intl=none, so a \p{...} escape is a parse-time
++// SyntaxError. Without Unicode tables every non-ASCII code point is treated as a
++// plain letter, which keeps ASCII input exactly upstream and keeps xn-- labels
++// (decoded to Unicode by IsPunyLabel) valid. `(?!)` never matches.
+ // -------------------------------------------------------------------
+ // Validation Rules
+ // -------------------------------------------------------------------
+@@ -8,8 +12,8 @@ export const RE_ASCII_LDH = /^[a-zA-Z0-9-]*$/;
+ // -------------------------------------------------------------------
+ // ASCII & Encoding
+ // -------------------------------------------------------------------
+-export const RE_ASCII = /^\p{ASCII}*$/u;
+-export const RE_NON_ASCII = /[^\p{ASCII}]/u;
++export const RE_ASCII = /^[\x00-\x7F]*$/u;
++export const RE_NON_ASCII = /[^\x00-\x7F]/u;
+ // -------------------------------------------------------------------
+ // Structural & Unicode Controls
+ // -------------------------------------------------------------------
+@@ -31,19 +35,19 @@ export const RE_EUROPEAN_SEPARATOR = /[\u{002d}\u{002b}]/u;
+ // -------------------------------------------------------------------
+ // General Categories
+ // -------------------------------------------------------------------
+-export const RE_MARK_NONSPACING = /\p{Mn}/u;
+-export const RE_MARK_SPACING_COMBINING = /\p{Mc}/u;
+-export const RE_MARK_ENCLOSING = /\p{Me}/u;
+-export const RE_COMBINING_MARK = /[\p{Mn}\p{Mc}\p{Me}]/u;
+-export const RE_LETTER = /\p{L}/u;
+-export const RE_NUMBER_DECIMAL = /\p{Nd}/u;
++export const RE_MARK_NONSPACING = /(?!)/u;
++export const RE_MARK_SPACING_COMBINING = /(?!)/u;
++export const RE_MARK_ENCLOSING = /(?!)/u;
++export const RE_COMBINING_MARK = /(?!)/u;
++export const RE_LETTER = /[a-zA-Z\u{0080}-\u{10FFFF}]/u;
++export const RE_NUMBER_DECIMAL = /[0-9]/u;
+ // -------------------------------------------------------------------
+ // Scripts
+ // -------------------------------------------------------------------
+-export const RE_SCRIPT_GREEK = /\p{Script=Greek}/u;
+-export const RE_SCRIPT_HEBREW = /\p{Script=Hebrew}/u;
+-export const RE_SCRIPT_JAPANESE = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+-export const RE_SCRIPT_ARABIC_LETTER = /[\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Mandaic}]/u;
++export const RE_SCRIPT_GREEK = /(?!)/u;
++export const RE_SCRIPT_HEBREW = /(?!)/u;
++export const RE_SCRIPT_JAPANESE = /(?!)/u;
++export const RE_SCRIPT_ARABIC_LETTER = /(?!)/u;
+ // -------------------------------------------------------------------
+ // RFC Specifications & Context Exceptions
+ // -------------------------------------------------------------------
+diff --git a/node_modules/typebox/build/guard/emit.mjs b/node_modules/typebox/build/guard/emit.mjs
+index 56b858b..f00e3d7 100644
+--- a/node_modules/typebox/build/guard/emit.mjs
++++ b/node_modules/typebox/build/guard/emit.mjs
+@@ -2,7 +2,7 @@ import * as G from './guard.mjs';
+ // ------------------------------------------------------------------
+ // Identifier
+ // ------------------------------------------------------------------
+-const identifierRegExp = /^[\p{ID_Start}_$][\p{ID_Continue}_$\u200C\u200D]*$/u;
++const identifierRegExp = /^[a-zA-Z_$][a-zA-Z0-9_$\u200C\u200D]*$/u;
+ /** Returns true if this value is a valid JavaScript identifier */
+ function IsIdentifier(value) {
+     return identifierRegExp.test(value);
