@@ -8,6 +8,10 @@ import {
   normalizeTags,
   spanOps,
 } from "./sentry-tripwire-core.mjs";
+import {
+  MASTERKEY_PADDED,
+  ROOTKEY_PADDED,
+} from "../../test-support/scrubber-cases.js";
 
 const TRACE_ID = "aaaabbbbccccddddeeeeffff00001111";
 
@@ -135,9 +139,39 @@ describe("findPii", () => {
     assert.match(hits[0], /rootKey=/);
   });
 
-  it("flags sensitive keys with unredacted values", () => {
-    const hits = findPii({ extra: { lat: -12.34, rootKey: "abc" } });
+  it("flags master-key markers in strings", () => {
+    const hits = findPii({ message: `init masterKey=${MASTERKEY_PADDED} sent` });
+    assert.equal(hits.length, 1);
+    assert.match(hits[0], /masterKey=/);
+  });
+
+  // The shape a leaked init frame actually has: both values quoted. Without
+  // the optional quote after the separator the tripwire waves this through.
+  it("flags the quoted JSON init-frame shape", () => {
+    const hits = findPii({
+      message: `{"type":"init","rootKey":"${ROOTKEY_PADDED}","masterKey":"${MASTERKEY_PADDED}"}`,
+    });
     assert.equal(hits.length, 2);
+    assert.match(hits[0], /rootKey/);
+    assert.match(hits[1], /masterKey/);
+  });
+
+  it("flags hyphenated and prefixed key names", () => {
+    assert.equal(
+      findPii({ extra: { "master-key": "x", "root-key": "y" } }).length,
+      2,
+    );
+    assert.equal(
+      findPii({ message: `cachedMasterKey='${MASTERKEY_PADDED}'` }).length,
+      1,
+    );
+  });
+
+  it("flags sensitive keys with unredacted values", () => {
+    const hits = findPii({
+      extra: { lat: -12.34, rootKey: "abc", masterKey: "def" },
+    });
+    assert.equal(hits.length, 3);
   });
 
   it("accepts redacted values and clean events", () => {

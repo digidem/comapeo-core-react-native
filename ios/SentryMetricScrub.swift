@@ -20,6 +20,7 @@ enum SentryMetricScrub {
         "peer_id",
         "peer_count",
         "rootkey",
+        "masterkey",
     ]
 
     private static let forbiddenMetricValuePatterns: [NSRegularExpression] = [

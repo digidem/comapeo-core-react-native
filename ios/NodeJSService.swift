@@ -9,6 +9,14 @@ struct RootKeyResult {
     let generated: Bool
 }
 
+/// Best-effort zeroing of a key buffer. `Data` doesn't guarantee single
+/// ownership of its buffer, so this is hygiene, not security.
+private func zeroBytes(_ rawBuf: UnsafeMutableRawBufferPointer) {
+    if let base = rawBuf.baseAddress {
+        memset(base, 0, rawBuf.count)
+    }
+}
+
 /// Manages the lifecycle of an embedded Node.js process on iOS.
 ///
 /// Unlike Android (which uses a foreground service in a separate
@@ -81,6 +89,16 @@ class NodeJSService {
     /// the backend's `started` broadcast.
     typealias RootKeyProvider = () throws -> RootKeyResult
 
+    /// Cache read for the master key derived from the rootkey; nil on a
+    /// miss, in which case the init frame carries the rootkey only and the
+    /// backend derives (docs/master-key-cache-plan.md §4).
+    typealias MasterKeyCacheProvider = (_ rootKey: Data) -> Data?
+
+    /// Cache write for the master key the backend sends back after deriving
+    /// it. Bound to the rootkey by its fingerprint, since the rootkey itself
+    /// is zeroed once the init frame is out.
+    typealias MasterKeyStoreProvider = (_ masterKey: Data, _ rootKeyFingerprint: Data) -> Void
+
     static let comapeoSocketFilename = "comapeo.sock"
     static let controlSocketFilename = "control.sock"
 
@@ -104,6 +122,14 @@ class NodeJSService {
     /// config (backend receives an empty positional).
     private let resolveDefaultConfigPath: () -> String?
     private let rootKeyProvider: RootKeyProvider
+    private let masterKeyCacheProvider: MasterKeyCacheProvider
+    private let masterKeyStoreProvider: MasterKeyStoreProvider
+
+    /// Fingerprint of the rootkey this boot shipped on the init frame, kept so
+    /// an inbound `master-key` frame can be bound to it. Written by
+    /// `sendInitFrame` and read by `handleControlMessage`, both of which run on
+    /// the IPC receive queue.
+    private var pendingRootKeyFingerprint: Data?
 
     /// Maximum time in `.starting` before the watchdog forces `.error`.
     /// Without it, a backend hang would leave `.starting` as a black hole.
@@ -170,6 +196,8 @@ class NodeJSService {
             Bundle.main.path(forResource: "comapeo-default-config", ofType: "comapeocat")
         },
         rootKeyProvider: @escaping RootKeyProvider,
+        masterKeyCacheProvider: @escaping MasterKeyCacheProvider = { _ in nil },
+        masterKeyStoreProvider: @escaping MasterKeyStoreProvider = { _, _ in },
         sentryConfig: SentryConfig? = SentryConfig.loadFromMainBundle(),
         applicationUsageData: Bool = false,
         debug: Bool = false,
@@ -202,6 +230,8 @@ class NodeJSService {
         self.resolveJSEntryPoint = resolveJSEntryPoint
         self.resolveDefaultConfigPath = resolveDefaultConfigPath
         self.rootKeyProvider = rootKeyProvider
+        self.masterKeyCacheProvider = masterKeyCacheProvider
+        self.masterKeyStoreProvider = masterKeyStoreProvider
         self.startupTimeout = startupTimeout
 
         try? FileManager.default.createDirectory(atPath: socketDir, withIntermediateDirectories: true)
@@ -446,6 +476,9 @@ class NodeJSService {
             applyAndEmit(error: info) {
                 self.backendState = .error(phase: phase, message: message)
             }
+        case .masterKey(let base64):
+            logCrumb(category: SentryCategories.control, message: "received: master-key")
+            storeMasterKey(base64: base64)
         case .sentryEvent(let payloadJson):
             SentryNativeBridge.captureEventJson(payloadJson)
         case .sentryEnvelope(let data):
@@ -463,8 +496,10 @@ class NodeJSService {
         }
     }
 
-    /// Loads the rootkey and ships the init frame on the control socket.
-    /// Called once per start cycle, on the backend's `started` broadcast.
+    /// Loads the rootkey (plus the cached master key, when the cache has
+    /// one) and ships the init frame on the control socket. Called once per
+    /// start cycle, on the backend's `started` broadcast. Only rootkey
+    /// failures are fatal; a cache miss just drops the field from the frame.
     ///
     /// Failures transition to `.error` and forward `error-native` to
     /// Node so the backend's `handleFatal` exits the runtime — without
@@ -510,19 +545,71 @@ class NodeJSService {
             }
             return
         }
+        var masterKeyBytes = masterKeyCacheProvider(keyBytes)
+        pendingRootKeyFingerprint = RootKeyStore.fingerprint(of: keyBytes)
         defer {
-            // Best-effort zeroing. `Data` doesn't guarantee single
-            // ownership of its buffer, so this is hygiene, not security.
-            keyBytes.withUnsafeMutableBytes { rawBuf in
-                if let base = rawBuf.baseAddress {
-                    memset(base, 0, rawBuf.count)
-                }
-            }
+            keyBytes.withUnsafeMutableBytes(zeroBytes)
+            masterKeyBytes?.withUnsafeMutableBytes(zeroBytes)
         }
         let b64 = keyBytes.base64EncodedString()
-        let frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
+        let frame: String
+        if let masterKey = masterKeyBytes {
+            frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\","
+                + "\"masterKey\":\"\(masterKey.base64EncodedString())\"}"
+        } else {
+            frame = "{\"type\":\"init\",\"rootKey\":\"\(b64)\"}"
+        }
         ipc.sendMessage(frame)
         logCrumb(category: SentryCategories.boot, message: "init frame sent")
+    }
+
+    /// Caches the master key the backend derived this boot so the next init
+    /// frame can carry it. Never fatal: a dropped frame costs the next boot a
+    /// derivation.
+    ///
+    /// The write hops off the receive queue — a keychain round trip can
+    /// outlast the `ready` frame that follows this one on a cache-miss boot.
+    private func storeMasterKey(base64: String) {
+        guard let fingerprint = pendingRootKeyFingerprint else {
+            logCrumb(
+                category: SentryCategories.boot,
+                message: "master-key frame arrived before the init frame, dropping",
+                level: .warning
+            )
+            return
+        }
+        guard var masterKey = NodeJSService.decodeMasterKey(base64) else {
+            // Length only: the payload is the key.
+            logCrumb(
+                category: SentryCategories.boot,
+                message: "master-key frame failed validation (\(base64.count) chars), dropping",
+                level: .warning
+            )
+            return
+        }
+        DispatchQueue.global(qos: .utility).async { [masterKeyStoreProvider] in
+            masterKeyStoreProvider(masterKey, fingerprint)
+            masterKey.withUnsafeMutableBytes(zeroBytes)
+        }
+    }
+
+    /// Base64 alphabet of a 32-byte key: 43 characters plus one `=`.
+    /// `Data(base64Encoded:)` accepts input the backend could not have sent,
+    /// so this check is the gate, not the decoder.
+    ///
+    /// No trailing-bits round-trip check (unlike `parse-init.js` inbound): the
+    /// sender is our own backend, whose `Buffer.toString("base64")` always
+    /// emits the standard encoding.
+    private static func decodeMasterKey(_ base64: String) -> Data? {
+        guard base64.count == 44, base64.hasSuffix("=") else { return nil }
+        let allowed = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        )
+        guard base64.dropLast().unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            return nil
+        }
+        guard let data = Data(base64Encoded: base64), data.count == 32 else { return nil }
+        return data
     }
 
     /// Sends `{type:"error-native",phase,message}` to Node on the

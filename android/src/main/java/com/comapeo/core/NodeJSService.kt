@@ -194,6 +194,13 @@ class NodeJSService(
     @Volatile
     var onStateChange: ((State) -> Unit)? = null
 
+    /** Fingerprint of the rootkey this boot shipped on the init frame, kept so
+     *  an inbound `master-key` frame can be bound to it after the rootkey
+     *  itself has been zeroed. Not secret (a truncated hash), so it lives for
+     *  the process lifetime. */
+    @Volatile
+    private var pendingRootKeyFingerprint: ByteArray? = null
+
     /** Atomic state container — `getAndUpdate` is a CAS loop, so the
      *  `(nodeRuntime, backendState, stopRequested, state, lastError)` tuple is always coherent. */
     private val stateFlow = MutableStateFlow(ComponentSnapshot())
@@ -684,6 +691,10 @@ class NodeJSService(
                     it.copy(backendState = BackendState.Error(frame.phase, frame.message))
                 }
             }
+            is ControlFrame.MasterKey -> {
+                logCrumb(SentryCategories.CONTROL, "received: master-key")
+                storeMasterKey(frame.base64)
+            }
             is ControlFrame.SentryEvent -> {
                 SentryFgsBridge.captureEventJson(frame.payloadJson)
             }
@@ -704,8 +715,10 @@ class NodeJSService(
     }
 
     /**
-     * Reads the rootkey, base64-encodes, and ships the init frame on the control
-     * socket. Failures transition to ERROR and forward `error-native` to Node so
+     * Reads the rootkey (plus the cached master key, when the cache has one),
+     * base64-encodes,
+     * and ships the init frame on the control socket. Rootkey failures alone are
+     * fatal: they transition to ERROR and forward `error-native` to Node so
      * the main-app process sees the same phase via re-broadcast. The node thread
      * is left alive — recovery (restart FGS, prompt user, …) is the application's
      * responsibility, exposed via the JS `stateChange` event.
@@ -718,8 +731,9 @@ class NodeJSService(
         if (rootkeyLoadSpan != null) {
             bootSpans["rootkey-load"] = rootkeyLoadSpan
         }
+        val store = RootKeyStore(applicationContext)
         val rootKeyBytes: ByteArray = try {
-            val result = RootKeyStore(applicationContext).loadOrInitialize()
+            val result = store.loadOrInitialize()
             bootSpans.remove("rootkey-load")?.let { sp ->
                 SentryFgsBridge.setSpanData(sp, "generated", result.generated)
                 SentryFgsBridge.finishSpan(sp, "ok")
@@ -748,12 +762,78 @@ class NodeJSService(
             }
             return
         }
-        val b64 = Base64.encodeToString(rootKeyBytes, Base64.NO_WRAP)
+        val masterKeyBytes = try {
+            store.loadMasterKey(rootKeyBytes)
+        } catch (t: Throwable) {
+            // Class name only: nothing about the keys reaches a log line.
+            logCrumb(
+                SentryCategories.BOOT,
+                "master key cache read threw (${t.javaClass.simpleName}), continuing uncached",
+                level = "warning",
+            )
+            null
+        }
+        val rootKeyB64 = Base64.encodeToString(rootKeyBytes, Base64.NO_WRAP)
+        pendingRootKeyFingerprint = RootKeyStore.fingerprintOf(rootKeyBytes)
         rootKeyBytes.fill(0)
-        val frame = "{\"type\":\"init\",\"rootKey\":\"$b64\"}"
+        val frame = if (masterKeyBytes == null) {
+            "{\"type\":\"init\",\"rootKey\":\"$rootKeyB64\"}"
+        } else {
+            val masterKeyB64 = Base64.encodeToString(masterKeyBytes, Base64.NO_WRAP)
+            masterKeyBytes.fill(0)
+            "{\"type\":\"init\",\"rootKey\":\"$rootKeyB64\",\"masterKey\":\"$masterKeyB64\"}"
+        }
         serviceScope.launch {
             ipcDeferred.await().sendMessage(frame)
             logCrumb(SentryCategories.BOOT, "init frame sent")
+        }
+    }
+
+    /**
+     * Caches the master key the backend derived this boot so the next init
+     * frame can carry it. Never fatal: a dropped frame costs the next boot a
+     * derivation.
+     *
+     * The write runs off the receive path — a StrongBox encrypt plus a
+     * synchronous `commit()` can outlast the `ready` frame that follows this
+     * one on a cache-miss boot.
+     */
+    private fun storeMasterKey(base64: String) {
+        val fingerprint = pendingRootKeyFingerprint
+        if (fingerprint == null) {
+            logCrumb(
+                SentryCategories.BOOT,
+                "master-key frame arrived before the init frame, dropping",
+                level = "warning",
+            )
+            metricCount(
+                RootKeyStore.METRIC_MASTERKEY_STORE,
+                mapOf("outcome" to "no-fingerprint"),
+            )
+            return
+        }
+        val masterKeyBytes = MasterKeyFrame.decode(base64)
+        if (masterKeyBytes == null) {
+            // Length only: the payload is the key.
+            logCrumb(
+                SentryCategories.BOOT,
+                "master-key frame failed validation (${base64.length} chars), dropping",
+                level = "warning",
+            )
+            metricCount(
+                RootKeyStore.METRIC_MASTERKEY_STORE,
+                mapOf("outcome" to "invalid-frame"),
+            )
+            return
+        }
+        serviceScope.launch {
+            withContext(Dispatchers.IO) {
+                try {
+                    RootKeyStore(applicationContext).storeMasterKey(masterKeyBytes, fingerprint)
+                } finally {
+                    masterKeyBytes.fill(0)
+                }
+            }
         }
     }
 

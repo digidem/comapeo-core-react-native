@@ -11,7 +11,7 @@ import { connectSocket, socketPath, waitFor } from "./test-helpers.mjs";
 
 /**
  * @param {import('node:test').TestContext} t
- * @param {Record<string, (message: any) => void>} methods
+ * @param {Record<string, (message: any, port: any) => void>} methods
  */
 async function startServer(t, methods) {
   const server = new SimpleRpcServer(methods);
@@ -39,6 +39,38 @@ test("a connecting client's message reaches the matching method handler", async 
 
   await waitFor(() => received.length === 1, { message: "init handled" });
   assert.deepEqual(received[0], { type: "init", rootKey: "deadbeef" });
+});
+
+// The `master-key` reply rides this: it must reach the connection that sent
+// `init` and no other. On Android the main app process holds a second,
+// read-only control connection that must never see the key.
+test("a handler's reply reaches only the client that called it", async (t) => {
+  const { path } = await startServer(t, {
+    init: (_message, port) => port.postMessage({ type: "master-key" }),
+  });
+
+  const caller = new SocketMessagePort(await connectSocket(t, path));
+  /** @type {Array<{ type?: string }>} */
+  const callerFrames = [];
+  caller.addEventListener("message", (event) => callerFrames.push(event.data));
+  caller.start();
+
+  const observer = new SocketMessagePort(await connectSocket(t, path));
+  /** @type {Array<{ type?: string }>} */
+  const observerFrames = [];
+  observer.addEventListener("message", (event) =>
+    observerFrames.push(event.data),
+  );
+  observer.start();
+
+  caller.postMessage({ type: "init" });
+  await waitFor(() => callerFrames.some((f) => f?.type === "master-key"), {
+    message: "reply delivered to the caller",
+  });
+
+  // A broadcast would have raced the caller's frame, so by the time the
+  // caller has it the observer would have it too.
+  assert.deepEqual(observerFrames, []);
 });
 
 test("replays readiness phases to a late-connecting client", async (t) => {

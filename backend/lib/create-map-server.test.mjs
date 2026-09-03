@@ -6,8 +6,14 @@ import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Buffer } from "node:buffer";
+import { KeyManager } from "@comapeo/crypto";
 
 import { createMapServer } from "./create-map-server.js";
+
+// index.js passes the identity keypair off its one shared KeyManager; the
+// tests build theirs the same way rather than hand-rolling key bytes.
+const identityKeypairFor = (/** @type {Buffer} */ rootKey) =>
+  new KeyManager(rootKey).getIdentityKeypair();
 
 /** @param {import('node:test').TestContext} t */
 async function tempDir(t) {
@@ -34,11 +40,31 @@ async function startStubStyleServer(t) {
   return `http://127.0.0.1:${address.port}/style.json`;
 }
 
+test("rejects an identityKeypair with the wrong key lengths or types", async (t) => {
+  const privateStorageDir = await tempDir(t);
+  const valid = identityKeypairFor(Buffer.alloc(16, 1));
+  const createWith = (/** @type {unknown} */ identityKeypair) => () =>
+    createMapServer({
+      privateStorageDir,
+      identityKeypair: /** @type {any} */ (identityKeypair),
+    });
+
+  assert.throws(createWith(undefined), /publicKey must be a 32-byte Buffer/);
+  assert.throws(
+    createWith({ ...valid, publicKey: Buffer.alloc(16) }),
+    /publicKey must be a 32-byte Buffer/,
+  );
+  assert.throws(
+    createWith({ ...valid, secretKey: new Uint8Array(64) }),
+    /secretKey must be a 64-byte Buffer/,
+  );
+});
+
 test("creates the maps dir and returns a server with listen/close", async (t) => {
   const privateStorageDir = await tempDir(t);
   const server = createMapServer({
     privateStorageDir,
-    rootKey: Buffer.alloc(16, 1),
+    identityKeypair: identityKeypairFor(Buffer.alloc(16, 1)),
   });
   t.after(() => server.close());
 
@@ -50,13 +76,13 @@ test("creates the maps dir and returns a server with listen/close", async (t) =>
   assert.equal(typeof server.close, "function");
 });
 
-test("derives the keypair deterministically from rootKey (same key, no throw)", async (t) => {
+test("accepts the same identity keypair twice (same key, no throw)", async (t) => {
   const privateStorageDir = await tempDir(t);
-  const rootKey = Buffer.alloc(16, 7);
-  const a = createMapServer({ privateStorageDir, rootKey });
-  const b = createMapServer({ privateStorageDir, rootKey });
+  const identityKeypair = identityKeypairFor(Buffer.alloc(16, 7));
+  const a = createMapServer({ privateStorageDir, identityKeypair });
+  const b = createMapServer({ privateStorageDir, identityKeypair });
   t.after(() => Promise.all([a.close(), b.close()]));
-  // Same rootKey + dir must not throw on a second construction.
+  // Same keypair + dir must not throw on a second construction.
   assert.ok(a);
   assert.ok(b);
 });
@@ -71,7 +97,7 @@ test("default map handler serves the configured defaultOnlineStyleUrl", async (t
   const privateStorageDir = await tempDir(t);
   const server = createMapServer({
     privateStorageDir,
-    rootKey: Buffer.alloc(16, 1),
+    identityKeypair: identityKeypairFor(Buffer.alloc(16, 1)),
     defaultOnlineStyleUrl: styleUrl,
   });
   t.after(() => server.close());
@@ -85,12 +111,4 @@ test("default map handler serves the configured defaultOnlineStyleUrl", async (t
 
   assert.equal(response.status, 302);
   assert.equal(response.headers.get("location"), styleUrl);
-});
-
-test("throws when rootKey is not 16 bytes", async (t) => {
-  const privateStorageDir = await tempDir(t);
-  assert.throws(
-    () => createMapServer({ privateStorageDir, rootKey: Buffer.alloc(8) }),
-    /rootKey must be 16 bytes/,
-  );
 });
