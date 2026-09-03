@@ -41,7 +41,7 @@ on:
         required: true
 
 env:
-  NODEJS_MOBILE_VERSION: v24.19.0-0
+  NODEJS_MOBILE_VERSION: v24.19.0-2
 
 jobs:
   # Decide whether the expensive build + paid BrowserStack device jobs run.
