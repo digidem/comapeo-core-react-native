@@ -53,6 +53,16 @@ const val DEFAULT_CONFIG_FILENAME = "comapeo-default-config.comapeocat"
 // `defaultOnlineStyleUrl`. Forwarded to the backend as the 5th argv
 // positional; absent → backend uses its built-in default.
 const val META_DEFAULT_ONLINE_STYLE_URL = "com.comapeo.core.map.defaultOnlineStyleUrl"
+// Android's asset merger gunzips any asset whose last extension is `.gz` and
+// drops that extension, with no way to opt out, so the backend build masks
+// those names with this suffix. See `maskGzExtensionsIn` in
+// backend/rolldown.config.ts — keep the two in sync.
+const val ANDROID_GZ_MASK = ".keepgz"
+
+/** Undoes the backend build's `.gz` masking: `x.pbf.gz.keepgz` -> `x.pbf.gz`. */
+fun extractedAssetName(assetName: String): String =
+    if (assetName.endsWith(".gz$ANDROID_GZ_MASK")) assetName.removeSuffix(ANDROID_GZ_MASK)
+    else assetName
 
 /** Bound on `ipcDeferred.await()` in [sendErrorNativeFrame] so a never-completing
  *  deferred (FGS failed before NodeJSIPC was constructed) doesn't pin a coroutine. */
@@ -983,12 +993,13 @@ class NodeJSService(
     private suspend fun copyAssetFolder(srcDirname: String, destDir: File): Unit = coroutineScope {
         assets.list(srcDirname)?.forEach { file ->
             val srcPath = "$srcDirname/$file"
-            val destFile = File(destDir, file)
 
             if (assets.list(srcPath)?.isNotEmpty() == true) {
+                val destFile = File(destDir, file)
                 destFile.mkdirs()
                 copyAssetFolder(srcPath, destFile)
             } else {
+                val destFile = File(destDir, extractedAssetName(file))
                 destFile.parentFile?.mkdirs()
                 assets.open(srcPath).use { input ->
                     destFile.outputStream().use { output ->

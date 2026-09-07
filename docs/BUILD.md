@@ -43,6 +43,26 @@ runtime/process side (how native talks to the backend over sockets) see
    most importantly the drizzle migration `.sql` files, which `@comapeo/core`
    reads from disk at migration time (see
    [build-architecture-plan.md §6](./build-architecture-plan.md)).
+
+   Two of those assets need care, both because their failure mode is a silent
+   wrong answer rather than a crash:
+   - `smp-noto-glyphs` (the map server's offline fallback glyphs) is marked
+     `external` rather than bundled. It finds its glyph files relative to its
+     own `import.meta.url`, and bundling rewrites that to the bundle's own
+     path; the package catches the resulting read failure and serves an empty
+     glyph range, so maps render with blank labels and nothing logs an error.
+     Left external, it resolves at runtime from the `node_modules/` copy in the
+     output dir, where the relative path still holds.
+   - On Android those glyph files are renamed `*.pbf.gz` → `*.pbf.gz.keepgz`.
+     Android's asset merger gunzips any asset whose *last* extension is `.gz`
+     and drops that extension, with no way to opt out, and it runs once per
+     merge stage (this library's, then the consuming app's). The `.keepgz` mask
+     hides the `.gz` from it; `NodeJSService.copyAssetFolder` strips the mask
+     during extraction, so the on-device tree matches iOS byte for byte. iOS
+     ships `ios/nodejs-project/` as a resource folder and needs no mask.
+
+   The e2e suite's "map server serves real Noto glyphs" spec covers both on a
+   real device.
 2. **Resolve native module versions** (§5). For each module declared native in
    `scripts/lib/native-modules.ts`, enumerate every installed `(name, version)`
    under `backend/node_modules` via `npm ls`.
