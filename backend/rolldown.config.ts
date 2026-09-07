@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs";
-import { cp } from "node:fs/promises";
+import { cp, readdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sentryRollupPlugin } from "@sentry/rollup-plugin";
@@ -65,7 +65,8 @@ const IOS_SOURCEMAPS =
  *   - `@comapeo/core/drizzle/`: SQL migration files read at runtime by
  *     drizzle-orm.
  *   - `@comapeo/fallback-smp/`: offline fallback map data.
- *   - `smp-noto-glyphs/fixtures/glyphs`: offline fallback glyphs
+ *   - `smp-noto-glyphs/`: offline fallback glyphs. Copied whole (not just
+ *     `fixtures/`) because it stays external — see `sharedInput.external`.
  *
  * The default project config is NOT bundled here — the consuming app
  * supplies it via the Expo plugin (`app.plugin.js`), which drops the
@@ -83,15 +84,26 @@ const STATIC_ASSET_PATHS = [
   "package.json",
   "node_modules/@comapeo/core/drizzle",
   "node_modules/@comapeo/fallback-smp",
-  "node_modules/smp-noto-glyphs/fixtures/glyphs",
+  "node_modules/smp-noto-glyphs",
 ] as const;
+
+/**
+ * Appended to `*.gz` to prevent Android's asset merger from automatically
+ * ungzipping the file.
+ */
+const ANDROID_GZ_MASK = ".keepgz";
 
 /**
  * Copies the static asset paths from `backend/` into `outDir` after the
  * rolldown write completes. Replaces the per-platform staging copy that
  * `scripts/build-backend.ts` used to do.
+ *
+ * `maskGzExtensions` is Android-only — see {@link maskGzExtensionsIn}
  */
-function copyStaticAssetsPlugin(outDir: string): Plugin {
+function copyStaticAssetsPlugin(
+  outDir: string,
+  { maskGzExtensions = false } = {},
+): Plugin {
   return {
     name: "copy-static-assets",
     async writeBundle() {
@@ -102,8 +114,28 @@ function copyStaticAssetsPlugin(outDir: string): Plugin {
           }),
         ),
       );
+      if (maskGzExtensions) await maskGzExtensionsIn(outDir);
     },
   };
+}
+
+/**
+ * Appends {@link ANDROID_GZ_MASK} to every `<name>.gz` file under `dir`.
+ *
+ * Android's asset merger gunzips any asset whose last extension is `.gz` and
+ * drops that extension. iOS ships `ios/nodejs-project/` as a resource folder
+ * with no such transform, so it takes the files as published.
+ */
+async function maskGzExtensionsIn(dir: string) {
+  const entries = await readdir(dir, { recursive: true, withFileTypes: true });
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".gz"))
+      .map((entry) => {
+        const filePath = path.join(entry.parentPath, entry.name);
+        return rename(filePath, filePath + ANDROID_GZ_MASK);
+      }),
+  );
 }
 
 /**
@@ -118,6 +150,8 @@ function copyStaticAssetsPlugin(outDir: string): Plugin {
  *     indirectly. `undici` is aliased the same way — Node 24 embeds it,
  *     so the npm copy `@comapeo/core` and `secret-stream-http` import is
  *     389 KB of duplicate bundle (see `lib/undici-shim.js`).
+ *   - `external` keeps `smp-noto-glyphs` unbundled: it locates its glyph
+ *     fixtures relative to its own `import.meta.url`
  *
  * CommonJS and JSON inputs are handled by rolldown natively, so the
  * former `@rollup/plugin-commonjs`, `@rollup/plugin-json`, and
@@ -125,8 +159,9 @@ function copyStaticAssetsPlugin(outDir: string): Plugin {
  * `require()` calls are left intact (the old `ignoreDynamicRequires`
  * behaviour) and serviced at runtime by rolldown's `require` polyfill.
  */
-const sharedInput: Pick<InputOptions, "platform" | "resolve"> = {
+const sharedInput: Pick<InputOptions, "platform" | "resolve" | "external"> = {
   platform: "node",
+  external: ["smp-noto-glyphs"],
   resolve: {
     alias: {
       "@node-rs/crc32": path.join(__dirname, "lib", "node-rs-crc32-shim.js"),
@@ -138,9 +173,11 @@ const sharedInput: Pick<InputOptions, "platform" | "resolve"> = {
 function buildPlugins({
   outDir,
   debugIdMap,
+  maskGzExtensions = false,
 }: {
   outDir: string;
   debugIdMap: Map<string, string>;
+  maskGzExtensions?: boolean;
 }): Plugin[] {
   return [
     // Native addon loader rewrite is identical for both platforms:
@@ -149,7 +186,7 @@ function buildPlugins({
     // per output via the platform-specific banner — see `output.banner`
     // entries below.
     addonLoaderPlugin(),
-    copyStaticAssetsPlugin(outDir),
+    copyStaticAssetsPlugin(outDir, { maskGzExtensions }),
     // Capture the debug ID sentry-rollup-plugin will compute for this
     // chunk so `relocateSourcemapsPlugin` can read it directly at
     // writeBundle. Must run *before* sentry-rollup-plugin in
@@ -237,6 +274,7 @@ const config: RolldownOptions[] = [
       ...buildPlugins({
         outDir: ANDROID_OUT_MAIN,
         debugIdMap: androidMainDebugIds,
+        maskGzExtensions: true,
       }),
       relocateSourcemapsPlugin(
         ANDROID_OUT_MAIN,

@@ -1,6 +1,14 @@
 import { comapeoServicesClient } from '@comapeo/core-react-native'
+import { fetch as expoFetch } from 'expo/fetch'
 
 import type { TestContext } from './utils'
+
+/**
+ * Size of the gzipped empty PBF `smp-noto-glyphs` serves for a range it has no
+ * fixture for. Zero if the platform HTTP stack gunzipped the body first, hence
+ * the inclusive bound at the callsite.
+ */
+const EMPTY_GLYPH_PBF_GZ_BYTES = 20
 
 // Black-box smoke coverage for the map server as it actually runs on
 // device: in-process inside nodejs-mobile, reached over loopback HTTP by
@@ -52,10 +60,43 @@ export function test({ describe, expect, it }: TestContext) {
 			expect(body.code).toBe('MAP_NOT_FOUND')
 		})
 
+		// Guards the packaging of `smp-noto-glyphs`: if its fixtures aren't
+		// reachable on device it silently serves the empty PBF for every
+		// range, and maps render unlabelled with no error anywhere.
+		it('serves real Noto glyphs, not the empty fallback', async () => {
+			const baseUrl = await comapeoServicesClient.mapServer.getBaseUrl()
+
+			const latin = await getGlyphRange(baseUrl, '0-255')
+			// CJK — deliberately not shipped, so MapLibre renders it client-side
+			// via `localIdeographFontFamily`. The control for the case above.
+			const cjk = await getGlyphRange(baseUrl, '19968-20223')
+
+			expect(latin.status).toBe(200)
+			expect(latin.contentType).toContain('application/x-protobuf')
+			// Every shipped range is tens of KB, gzipped or not.
+			expect(latin.byteLength).toBeGreaterThan(1000)
+
+			// An unshipped range must still be a 200 carrying the empty PBF, so
+			// MapLibre renders blank instead of erroring on a 404.
+			expect(cjk.status).toBe(200)
+			expect(cjk.byteLength).toBeLessThanOrEqual(EMPTY_GLYPH_PBF_GZ_BYTES)
+		})
+
 		it('includes permissive CORS headers', async () => {
 			const baseUrl = await comapeoServicesClient.mapServer.getBaseUrl()
 			const response = await fetch(`${baseUrl}/maps/fallback/style.json`)
 			expect(response.headers.get('access-control-allow-origin')).toBe('*')
 		})
 	})
+}
+
+async function getGlyphRange(baseUrl: string, range: string) {
+	const response = await expoFetch(
+		`${baseUrl}/maps/fallback/fonts/Noto%20Sans%20Regular/${range}.pbf.gz`,
+	)
+	return {
+		status: response.status,
+		contentType: response.headers.get('content-type'),
+		byteLength: (await response.arrayBuffer()).byteLength,
+	}
 }
