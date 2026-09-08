@@ -71,6 +71,14 @@ class ComapeoCoreService : Service() {
          */
         const val SELF_TERMINATE_GRACE_MS = 3_000L
 
+        /**
+         * The e2e test app's package. Test seams that must stay inert in
+         * production (e.g. [SIMULATE_PROCESS_KILL]) gate on the host being this
+         * app rather than on `BuildConfig.DEBUG`, which is false in the Release
+         * e2e build the flow drives.
+         */
+        const val E2E_APP_PACKAGE = "com.comapeo.core.e2e"
+
         /** The runtime gate for the FGS notification on API 33+. Below 33
          *  `checkSelfPermission` reports the manifest-declared permission as
          *  granted, so this returns `true` without a runtime grant. Pulled
@@ -215,6 +223,20 @@ class ComapeoCoreService : Service() {
                     nodeJSService.forceFatalErrorForTesting()
                 } else {
                     log("Ignoring SIMULATE_FATAL_ERROR (release build or service not started)")
+                }
+            }
+
+            // Test seam for the e2e app (fgs-restart-frontend.yaml): kill this process
+            // WITHOUT stopSelf so START_STICKY cold-restarts it while the main RN
+            // process stays alive — the production failure the frontend-restart path
+            // guards against. Gated on the host being the e2e app (not BuildConfig.DEBUG,
+            // which is false in the Release e2e build).
+            Actions.SIMULATE_PROCESS_KILL.name -> {
+                if (applicationContext.packageName == E2E_APP_PACKAGE && isServiceStarted) {
+                    log("SIMULATE_PROCESS_KILL: killing FGS process (e2e test seam)")
+                    Process.killProcess(Process.myPid())
+                } else {
+                    log("Ignoring SIMULATE_PROCESS_KILL (not the e2e app or service not started)")
                 }
             }
 

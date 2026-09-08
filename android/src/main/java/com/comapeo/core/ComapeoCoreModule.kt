@@ -1,6 +1,8 @@
 package com.comapeo.core
 
 import android.Manifest
+import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import com.jakewharton.processphoenix.ProcessPhoenix
@@ -240,6 +242,23 @@ class ComapeoCoreModule : Module() {
 
         Function("getLastError") {
             synchronized(stateLock) { lastError }
+        }
+
+        // Test seam for the e2e app (fgs-restart-frontend.yaml): tell the
+        // :ComapeoCore FGS to kill its own process (SIMULATE_PROCESS_KILL).
+        // START_STICKY cold-restarts it while this main process stays alive,
+        // exercising the frontend-restart path. The FGS handler re-gates on the
+        // e2e package, so this is inert in production.
+        AsyncFunction("crashBackendForTesting") { promise: Promise ->
+            val intent = Intent(appContext, ComapeoCoreService::class.java).apply {
+                action = Actions.SIMULATE_PROCESS_KILL.name
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                appContext.startForegroundService(intent)
+            } else {
+                appContext.startService(intent)
+            }
+            promise.resolve(null)
         }
 
         // `sentryConfig` — baked-in by app.plugin.js at prebuild; spread into
