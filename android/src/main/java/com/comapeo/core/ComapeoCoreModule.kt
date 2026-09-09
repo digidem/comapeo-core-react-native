@@ -113,7 +113,11 @@ class ComapeoCoreModule : Module() {
      * no loss to act on — one restart per FGS cold-start, no restart storm.
      */
     private fun restartFrontend() {
-        val ctx = appContext.reactContext ?: appContext
+        val ctx = appContext.reactContext
+        if (ctx == null) {
+            log("ComapeoCoreModule: no reactContext; cannot restart frontend")
+            return
+        }
         log("ComapeoCoreModule: backend restarted; restarting React Native frontend")
         // Hop to main: ProcessPhoenix builds a PendingIntent and posts the
         // relaunch through the main Looper.
@@ -250,13 +254,17 @@ class ComapeoCoreModule : Module() {
         // exercising the frontend-restart path. The FGS handler re-gates on the
         // e2e package, so this is inert in production.
         AsyncFunction("crashBackendForTesting") { promise: Promise ->
-            val intent = Intent(appContext, ComapeoCoreService::class.java).apply {
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "crashBackendForTesting called before native context attached",
+                )
+            val intent = Intent(ctx, ComapeoCoreService::class.java).apply {
                 action = Actions.SIMULATE_PROCESS_KILL.name
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appContext.startForegroundService(intent)
+                ctx.startForegroundService(intent)
             } else {
-                appContext.startService(intent)
+                ctx.startService(intent)
             }
             promise.resolve(null)
         }
