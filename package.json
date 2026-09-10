@@ -75,7 +75,8 @@
     "backend:test": "npm --prefix backend test",
     "e2e:ios": "npm --prefix apps/e2e run build:ios",
     "e2e:android": "npm --prefix apps/e2e run build:android",
-    "e2e:test": "maestro test maestro/e2e.yaml"
+    "e2e:test": "maestro test maestro/e2e.yaml",
+    "maestro:check-syntax": "node ./scripts/check-maestro-syntax.mjs"
   },
   "keywords": [
     "react-native",
