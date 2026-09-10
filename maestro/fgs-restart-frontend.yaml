@@ -34,14 +34,12 @@ env:
           notVisible:
             id: "fresh-launch"
           timeout: 30000
-      # FGS kills its own process; START_STICKY cold-restarts it, main process lives.
+      # FGS kills its own process; START_STICKY cold-restarts it (~1s), main
+      # process lives. Don't gate on the transient ERROR state — the fresh FGS
+      # re-binds the sockets before it can be latched, so just let it boot.
       - tapOn:
           id: "crash-backend"
-      # The main process sees the backend die.
-      - extendedWaitUntil:
-          visible:
-            id: "backend-state-ERROR"
-          timeout: 60000
+      - sleep: 5000
       # Background then foreground so the main process reconnects its control socket
       # and observes the fresh backend's `ready` (fires the frontend restart).
       - launchApp:
