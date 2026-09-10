@@ -172,6 +172,15 @@ dependencies {
     implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:${getSerializationVersion(project.ext.kotlinVersion())}"
 
     implementation "androidx.core:core-ktx:1.16.0"
+
+    // Full-process restart of the React Native frontend. Called from
+    // ComapeoCoreModule when the embedded backend (the :ComapeoCore FGS) is
+    // killed and cold-restarts, so the JS @comapeo/ipc client is rebuilt
+    // against the fresh backend. We depend on the engine directly —
+    // react-native-restart's Android restart is just this one static call —
+    // so no JS/codegen layer is pulled in.
+    implementation 'com.jakewharton:process-phoenix:2.2.0'
+
     compileOnly "com.facebook.fbjni:fbjni:0.3.0"
 
     // Sentry Android SDK. `@sentry/react-native` is a non-optional

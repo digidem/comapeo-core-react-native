@@ -1,6 +1,11 @@
 package com.comapeo.core
 
 import android.Manifest
+import android.content.Intent
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import com.jakewharton.processphoenix.ProcessPhoenix
 import expo.modules.interfaces.permissions.Permissions
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
@@ -29,6 +34,22 @@ class ComapeoCoreModule : Module() {
 
     /** Cleared on any non-ERROR transition so a fresh cycle can't surface stale details. */
     private var lastError: Map<String, String>? = null
+
+    /**
+     * Set when the control socket drops from a live (STARTING/STARTED) or
+     * already-errored state — i.e. the backend process died unexpectedly —
+     * and consumed the next time a `ready` frame arrives, which means a
+     * *fresh* backend came up. That loss→return transition is the signal to
+     * restart the React Native frontend so its `@comapeo/ipc` client is
+     * rebuilt against the new backend (a reconnected socket alone leaves the
+     * client bound to the dead transport).
+     *
+     * `@Volatile`: written from the control-IPC `onConnectionStateChange`
+     * coroutine, read/cleared from the `onMessage` coroutine (see
+     * [maybeRestartOnBackendReturn]).
+     */
+    @Volatile
+    private var backendWasLost = false
 
     private fun setState(next: JsState, errorPayload: Map<String, String>? = null) {
         val eventToEmit: Map<String, Any>? = synchronized(stateLock) {
@@ -66,6 +87,45 @@ class ComapeoCoreModule : Module() {
         sendEvent("messageerror", mapOf("data" to detail))
     }
 
+    /**
+     * Atomically consume [backendWasLost]. Returns `true` exactly once per
+     * backend-loss episode, so a restart is triggered at most once even if
+     * `started`/`ready` frames arrive concurrently or are replayed to a
+     * (re)connecting client.
+     */
+    private fun maybeRestartOnBackendReturn(): Boolean = synchronized(stateLock) {
+        val lost = backendWasLost
+        if (lost) backendWasLost = false
+        lost
+    }
+
+    /**
+     * Restart the React Native frontend so the `@comapeo/ipc` client and all
+     * JS state are rebuilt against the freshly-restarted backend.
+     *
+     * [ProcessPhoenix] does a full-process restart of the *main* app process.
+     * The `:ComapeoCore` FGS runs in a separate process, so it is untouched
+     * and survives — the relaunched app reconnects to the already-fresh
+     * backend.
+     *
+     * Loop-safe: [ProcessPhoenix] kills this process, so on relaunch
+     * [backendWasLost] is fresh and the surviving FGS's replayed `ready` finds
+     * no loss to act on — one restart per FGS cold-start, no restart storm.
+     */
+    private fun restartFrontend() {
+        val ctx = appContext.reactContext
+        if (ctx == null) {
+            log("ComapeoCoreModule: no reactContext; cannot restart frontend")
+            return
+        }
+        log("ComapeoCoreModule: backend restarted; restarting React Native frontend")
+        // Hop to main: ProcessPhoenix builds a PendingIntent and posts the
+        // relaunch through the main Looper.
+        Handler(Looper.getMainLooper()).post {
+            ProcessPhoenix.triggerRebirth(ctx)
+        }
+    }
+
     override fun definition() = ModuleDefinition {
         OnCreate {
             val socketFile =
@@ -85,7 +145,14 @@ class ComapeoCoreModule : Module() {
                 onMessage = { message ->
                     when (val frame = ControlFrame.parse(message)) {
                         ControlFrame.Started -> setState(JsState.STARTING)
-                        ControlFrame.Ready -> setState(JsState.STARTED)
+                        ControlFrame.Ready -> {
+                            setState(JsState.STARTED)
+                            // A `ready` after a recorded loss means the backend
+                            // process we were talking to died and a fresh one
+                            // came up — restart the frontend so the JS client is
+                            // rebuilt against it.
+                            if (maybeRestartOnBackendReturn()) restartFrontend()
+                        }
                         ControlFrame.Stopping -> setState(JsState.STOPPING)
                         is ControlFrame.Error -> setState(
                             JsState.ERROR,
@@ -116,15 +183,21 @@ class ComapeoCoreModule : Module() {
                             // error frames via `error-native` re-broadcast and hit the
                             // ControlFrame.Error branch above before we reach this.
                             when (synchronized(stateLock) { jsState }) {
-                                JsState.ERROR -> {}
+                                // Already errored: the backend had signalled trouble and
+                                // is now gone. Record the loss so a subsequent `ready`
+                                // (a fresh backend) triggers the frontend restart.
+                                JsState.ERROR -> backendWasLost = true
                                 JsState.STOPPING, JsState.STOPPED -> setState(JsState.STOPPED)
-                                JsState.STARTING, JsState.STARTED -> setState(
-                                    JsState.ERROR,
-                                    mapOf(
-                                        "errorPhase" to "node-runtime-unexpected",
-                                        "errorMessage" to "Backend disconnected unexpectedly",
-                                    ),
-                                )
+                                JsState.STARTING, JsState.STARTED -> {
+                                    backendWasLost = true
+                                    setState(
+                                        JsState.ERROR,
+                                        mapOf(
+                                            "errorPhase" to "node-runtime-unexpected",
+                                            "errorMessage" to "Backend disconnected unexpectedly",
+                                        ),
+                                    )
+                                }
                             }
                         }
                         is NodeJSIPC.State.Error -> setState(
@@ -173,6 +246,27 @@ class ComapeoCoreModule : Module() {
 
         Function("getLastError") {
             synchronized(stateLock) { lastError }
+        }
+
+        // Test seam for the e2e app (fgs-restart-frontend.yaml): tell the
+        // :ComapeoCore FGS to kill its own process (SIMULATE_PROCESS_KILL).
+        // START_STICKY cold-restarts it while this main process stays alive,
+        // exercising the frontend-restart path. The FGS handler re-gates on the
+        // e2e package, so this is inert in production.
+        AsyncFunction("crashBackendForTesting") { promise: Promise ->
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "crashBackendForTesting called before native context attached",
+                )
+            val intent = Intent(ctx, ComapeoCoreService::class.java).apply {
+                action = Actions.SIMULATE_PROCESS_KILL.name
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ctx.startForegroundService(intent)
+            } else {
+                ctx.startService(intent)
+            }
+            promise.resolve(null)
         }
 
         // `sentryConfig` — baked-in by app.plugin.js at prebuild; spread into

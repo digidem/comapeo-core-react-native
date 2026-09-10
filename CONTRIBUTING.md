@@ -67,8 +67,9 @@ the same repo. The short version (full detail in [AGENTS.md](./AGENTS.md)):
   plugins.
 - `apps/e2e/` + `maestro/e2e.yaml` — the end-to-end test app and its Maestro flow
   (run on BrowserStack in CI).
-- `scripts/` — build tooling and the local Android test runner
-  (`run-instrumented-tests.sh`).
+- `scripts/` — build tooling, the local Android test runner
+  (`run-instrumented-tests.sh`), and the Maestro flow syntax checker
+  (`check-maestro-syntax.mjs`).
 
 ## Development
 
@@ -115,7 +116,10 @@ there), use an app's own `ios` / `android` / `start` scripts, e.g.
 
 ## Tests
 
-Run `npm run lint` and `npm run test` before opening a PR.
+Run `npm run lint` and `npm run test` before opening a PR. If you touched a
+Maestro flow under `maestro/`, also run `npm run maestro:check-syntax` — it
+catches unknown commands locally instead of failing in CI as an opaque
+`BROWSERSTACK_TESTSUITE_PARSE_ERROR`.
 
 How the suites, workflows, and CI gating fit together (the merge queue, the
 e2e trust boundary, why some checks run where they do) is documented in
@@ -170,6 +174,18 @@ and the Release build is the one worth testing.
 
 For writing and debugging Maestro flows see the bundled
 [`maestro-mobile-e2e` skill](.claude/skills/maestro-mobile-e2e/SKILL.md).
+
+Validate any flow you edit before pushing. `maestro check-syntax` is stricter
+than plain YAML — it rejects unknown commands (a stray `sleep`, for example,
+is not a Maestro command) that only surface in CI as an opaque
+`BROWSERSTACK_TESTSUITE_PARSE_ERROR`:
+
+```bash
+npm run maestro:check-syntax   # syntax-checks every maestro/*.yaml flow
+```
+
+It wraps `maestro check-syntax` per file (the CLI takes a single file, not a
+directory) and exits non-zero if any flow fails.
 
 ### The native suites and the merge queue
 

@@ -1,0 +1,58 @@
+# CI/BrowserStack flow: the React Native frontend restarts (via ProcessPhoenix)
+# when the :ComapeoCore FGS process is killed and cold-restarts while the app
+# stays alive. This is the Android dual-process recovery path — on iOS Node runs
+# in-process, so the whole body is gated on `platform: Android` (via runFlow's
+# `when`) and is a no-op there.
+#
+# Trigger: the e2e app's "Crash backend (test)" button tells the FGS to kill its
+# own process (SIMULATE_PROCESS_KILL); START_STICKY cold-restarts it. The
+# `fresh-launch` testID renders only on a fresh JS process, so asserting it
+# reappears proves the *frontend* restarted (not just the backend recovering).
+#
+# The background->foreground round-trip matters: the main process only
+# reconnects its control socket on a foreground transition
+# (OnActivityEntersForeground), which picks up the fresh backend's `ready` and
+# fires the restart. Keep launch conventions in sync with e2e.yaml /
+# fgs-restart.yaml.
+appId: com.comapeo.core.e2e
+env:
+    TIMEOUT: 180000
+---
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - launchApp:
+          clearState: true
+      - extendedWaitUntil:
+          visible:
+            id: "backend-state-STARTED"
+          timeout: ${TIMEOUT}
+      # Settle: wait for the first-boot fresh-launch indicator to clear, so the
+      # fresh-launch we assert later is unambiguously from the restarted process.
+      - extendedWaitUntil:
+          notVisible:
+            id: "fresh-launch"
+          timeout: 30000
+      # FGS kills its own process; START_STICKY cold-restarts it (~1s), main
+      # process lives. Don't gate on the transient ERROR state — the fresh FGS
+      # re-binds the sockets before it can be latched.
+      - tapOn:
+          id: "crash-backend"
+      # Background then foreground so the main process reconnects its control socket
+      # and observes the fresh backend's `ready` (fires the frontend restart).
+      - launchApp:
+          appId: com.android.settings
+          stopApp: false
+      - launchApp:
+         stopApp: false
+      - extendedWaitUntil:
+          visible:
+            id: "fresh-launch"
+          timeout: ${TIMEOUT}
+      # Reconnected to the fresh backend.
+      - extendedWaitUntil:
+          visible:
+            id: "backend-state-STARTED"
+          timeout: ${TIMEOUT}
+      - takeScreenshot: fgs-restart-frontend-after

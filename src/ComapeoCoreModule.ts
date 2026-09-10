@@ -54,6 +54,13 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
   getState(): ComapeoState;
   getLastError(): ComapeoErrorInfo | null;
   /**
+   * Test seam (e2e app only): instructs the `:ComapeoCore` foreground service
+   * to kill its own process. `START_STICKY` cold-restarts it while the React
+   * Native process stays alive, exercising the frontend-restart path. No-op
+   * outside the e2e app (the native handler re-gates on the e2e package).
+   */
+  crashBackendForTesting(): Promise<void>;
+  /**
    * Sentry options the Expo plugin baked into the native config.
    * Empty object when the plugin isn't registered (or DSN absent).
    */
@@ -198,6 +205,16 @@ export function setDebugEnabledNative(value: boolean): Promise<void> {
  */
 export function readRootUserIdNative(): string {
   return nativeModule.getSentryRootUserId?.() ?? "";
+}
+
+/**
+ * Test seam (e2e app only): instructs the `:ComapeoCore` foreground service to
+ * kill its own process so the frontend-restart path can be exercised end to
+ * end. No-op outside the e2e app (the native handler re-gates on the e2e
+ * package); resolves immediately after the intent is dispatched.
+ */
+export function crashBackendForTesting(): Promise<void> {
+  return nativeModule.crashBackendForTesting?.() ?? Promise.resolve();
 }
 
 const GRANTED_PERMISSION: NotificationPermissionResponse = {
