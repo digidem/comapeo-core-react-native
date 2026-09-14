@@ -51,6 +51,22 @@ class ComapeoCoreModule : Module() {
     @Volatile
     private var backendWasLost = false
 
+    /**
+     * True once the backend has sent an explicit `stopping` frame and until the next
+     * lifecycle begins (`started`). This is the authoritative graceful-stop signal.
+     *
+     * It is deliberately *not* derived from the transport's `Disconnecting` state:
+     * `NodeJSIPC` emits `Disconnecting` on any teardown — including an unexpected
+     * peer death — so keying "graceful" off it would hide real deaths from the
+     * `Disconnected` branch below (the loss would never be recorded and the
+     * frontend-restart on backend return would never fire).
+     *
+     * `@Volatile`: written from the control-IPC `onMessage` coroutine, read from the
+     * `onConnectionStateChange` coroutine.
+     */
+    @Volatile
+    private var gracefulStopRequested = false
+
     private fun setState(next: JsState, errorPayload: Map<String, String>? = null) {
         val eventToEmit: Map<String, Any>? = synchronized(stateLock) {
             when {
@@ -144,7 +160,12 @@ class ComapeoCoreModule : Module() {
                 controlSocketFile,
                 onMessage = { message ->
                     when (val frame = ControlFrame.parse(message)) {
-                        ControlFrame.Started -> setState(JsState.STARTING)
+                        ControlFrame.Started -> {
+                            // A new lifecycle begins: any prior graceful-stop request
+                            // no longer applies to the coming `ready`.
+                            gracefulStopRequested = false
+                            setState(JsState.STARTING)
+                        }
                         ControlFrame.Ready -> {
                             setState(JsState.STARTED)
                             // A `ready` after a recorded loss means the backend
@@ -153,7 +174,12 @@ class ComapeoCoreModule : Module() {
                             // rebuilt against it.
                             if (maybeRestartOnBackendReturn()) restartFrontend()
                         }
-                        ControlFrame.Stopping -> setState(JsState.STOPPING)
+                        ControlFrame.Stopping -> {
+                            // Graceful stop: mark it so a subsequent socket drop is
+                            // treated as expected (no backend loss recorded).
+                            gracefulStopRequested = true
+                            setState(JsState.STOPPING)
+                        }
                         is ControlFrame.Error -> setState(
                             JsState.ERROR,
                             mapOf(
@@ -175,20 +201,37 @@ class ComapeoCoreModule : Module() {
                 onConnectionStateChange = { connState ->
                     when (connState) {
                         is NodeJSIPC.State.Connecting -> setState(JsState.STARTING)
-                        is NodeJSIPC.State.Disconnecting -> setState(JsState.STOPPING)
+                        // Transport state, not a lifecycle signal: `NodeJSIPC` emits
+                        // `Disconnecting` on any teardown (crash included), so it must
+                        // not move `jsState`. Doing so clobbered the true prior state
+                        // (STARTING/STARTED) before `Disconnected` fired, which made
+                        // every unexpected death look like a graceful stop. Graceful
+                        // stops are driven by the backend's `stopping` frame
+                        // (`gracefulStopRequested` above).
+                        is NodeJSIPC.State.Disconnecting -> {}
                         is NodeJSIPC.State.Disconnected -> {
-                            // A socket close from STARTING/STARTED without a preceding
-                            // `stopping` frame means the backend exited unexpectedly
-                            // (crash / OOM / abort). FGS-known errors arrive as real
-                            // error frames via `error-native` re-broadcast and hit the
-                            // ControlFrame.Error branch above before we reach this.
-                            when (synchronized(stateLock) { jsState }) {
-                                // Already errored: the backend had signalled trouble and
-                                // is now gone. Record the loss so a subsequent `ready`
-                                // (a fresh backend) triggers the frontend restart.
-                                JsState.ERROR -> backendWasLost = true
-                                JsState.STOPPING, JsState.STOPPED -> setState(JsState.STOPPED)
-                                JsState.STARTING, JsState.STARTED -> {
+                            // A socket drop records a backend loss unless the backend
+                            // had asked to stop first. `gracefulStopRequested` (set by
+                            // the `stopping` frame) is the authoritative signal — with
+                            // `Disconnecting` no longer moving state, `jsState` here
+                            // still reflects the true prior state. FGS-known errors
+                            // arrive as real error frames via `error-native`
+                            // re-broadcast and hit the ControlFrame.Error branch above
+                            // before we reach this.
+                            val (graceful, prior) = synchronized(stateLock) {
+                                gracefulStopRequested to jsState
+                            }
+                            when {
+                                graceful -> setState(JsState.STOPPED)
+                                prior == JsState.ERROR -> {
+                                    // Already errored: the backend had signalled trouble
+                                    // and is now gone. Record the loss so a subsequent
+                                    // `ready` (a fresh backend) triggers the restart.
+                                    backendWasLost = true
+                                }
+                                prior == JsState.STARTING || prior == JsState.STARTED -> {
+                                    // Was live and dropped with no `stopping` frame: the
+                                    // backend died (crash/OOM/abort).
                                     backendWasLost = true
                                     setState(
                                         JsState.ERROR,
@@ -198,6 +241,9 @@ class ComapeoCoreModule : Module() {
                                         ),
                                     )
                                 }
+                                // Already down (STOPPED/STOPPING) without a graceful
+                                // request: a stale/second drop, no loss to record.
+                                else -> {}
                             }
                         }
                         is NodeJSIPC.State.Error -> setState(
