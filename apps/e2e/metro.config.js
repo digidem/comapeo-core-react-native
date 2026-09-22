@@ -23,18 +23,9 @@ config.resolver.nodeModulesPaths = [
 // so every export reads back `undefined`. Symlink the workspace package
 // into node_modules so Metro resolves it through the normal node_modules
 // path (which honours `exports` correctly). Idempotent — runs whenever
-// Metro loads its config, including the CI release-bundle step.
-const fs = require('fs')
-const moduleLink = path.resolve(
-	__dirname,
-	'node_modules',
-	'@comapeo',
-	'core-react-native',
-)
-if (!fs.existsSync(moduleLink)) {
-	fs.mkdirSync(path.dirname(moduleLink), { recursive: true })
-	fs.symlinkSync(path.resolve(__dirname, '..', '..'), moduleLink, 'dir')
-}
+// Metro loads its config, including the CI release-bundle step. The CI
+// typecheck step runs the same script directly (tsc never loads Metro).
+require('./scripts/link-local-module').linkLocalModule()
 
 config.watchFolders = [path.resolve(__dirname, '..', '..')]
 

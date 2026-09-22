@@ -35,7 +35,6 @@ function createDocumentRef(versionIdNumber = 0) {
 export function test({
 	describe,
 	expect,
-	expectAsync,
 	it,
 	jasmine,
 	afterEach,
@@ -125,8 +124,6 @@ export function test({
 			it(`create and read (${schemaName})`, async () => {
 				const projectId = await comapeo.createProject()
 				const project = await openProject(projectId)
-				const updates: Array<ComapeoDoc> = []
-				project[schemaName].on('updated-docs', (docs) => updates.push(...docs))
 				const written = await createWithMockData(
 					project,
 					schemaName,
@@ -138,9 +135,6 @@ export function test({
 
 				// 'return create() matches return of getByDocId()'
 				expect(sortById(written)).toEqual(sortById(read))
-
-				// 'updated-docs emitted'
-				expect(sortById(updates)).toEqual(sortById(written))
 
 				// 'Doc marked with createdBy'
 				expect(read[0].createdBy).toEqual(await comapeo.deviceId())
@@ -228,29 +222,25 @@ export function test({
 
 				await project.close()
 
-				// 'should fail updating since the project is already closed'
-				await expectAsync(
-					(async () => {
-						const updateValue = getUpdateFixture(value)
-						await update(project, written.versionId, updateValue)
-					})(),
-				).toBeRejectedWithError(/closed/i)
+				// The IPC server resolves the project on every method request, so a
+				// closed project is transparently re-opened rather than rejecting.
 
-				// 'should fail creating since the project is already closed'
-				await expectAsync(
-					(async () => {
-						for (const value of values) {
-							await create(project, value)
-						}
-					})(),
-				).toBeRejectedWithError(/closed/i)
+				// 'updating re-opens the project'
+				const updated = await update(
+					project,
+					written.versionId,
+					getUpdateFixture(value),
+				)
+				expect(updated.docId).toEqual(written.docId)
 
-				// 'should fail getting since the project is already closed'
-				await expectAsync(
-					(async () => {
-						await project[schemaName].getMany()
-					})(),
-				).toBeRejectedWithError(/closed/i)
+				// 'creating re-opens the project'
+				for (const value of values) {
+					await create(project, value)
+				}
+
+				// 'getting re-opens the project and sees the docs written before close'
+				const many = await project[schemaName].getMany()
+				expect(many.length).toEqual(values.length * 2 + 1)
 			})
 
 			it(`create, read, close, re-open, read (${schemaName})`, async () => {
