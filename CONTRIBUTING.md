@@ -108,6 +108,16 @@ slower). They are _not_ the BrowserStack artifacts: CI builds those separately i
 `gradlew assembleRelease` (an APK) and iOS via `xcodebuild archive` (an unsigned
 arm64 _device_ `.ipa` that can't run on a simulator at all).
 
+The e2e app imports `@comapeo/core-react-native` (this repo) through a
+`node_modules/@comapeo/core-react-native` symlink to the repo root — deliberately
+**not** a tsconfig `paths` alias, which would make Metro load the module twice
+and collide the two IPC singletons' RPC message IDs.
+`apps/e2e/scripts/link-local-module.js` creates that symlink idempotently:
+`metro.config.js` calls it when Metro loads, and the CI typecheck step runs it
+directly, because `tsc` never loads Metro and `expo prebuild` doesn't create the
+link either. If you get `Cannot find module '@comapeo/core-react-native…'` while
+typechecking the e2e app, run `node apps/e2e/scripts/link-local-module.js` first.
+
 For a plain dev/demo run with Metro and fast JS reload (not e2e — see
 [§"End-to-end locally"](#end-to-end-locally) for why a dev build doesn't help
 there), use an app's own `ios` / `android` / `start` scripts, e.g.

@@ -185,11 +185,16 @@ jobs:
           npx expo prebuild --platform android --no-install
 
       # Runs here rather than in the fast lint gate because resolving
-      # `@comapeo/core-react-native` needs the node_modules symlink that
-      # `expo prebuild` creates. Fails before the APK and device runs.
+      # `@comapeo/core-react-native` needs the node_modules symlink created by
+      # scripts/link-local-module.js. `expo prebuild` does NOT create it — only
+      # Metro does, when it loads metro.config.js — and `tsc` never loads Metro,
+      # so we create it explicitly before typechecking. Fails before the APK and
+      # device runs.
       - name: Typecheck E2E app
         working-directory: apps/e2e
-        run: npx tsc --noEmit
+        run: |
+          node scripts/link-local-module.js
+          npx tsc --noEmit
 
       - name: Build APK
         working-directory: apps/e2e/android
