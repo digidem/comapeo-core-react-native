@@ -14,10 +14,10 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@comapeo/core": "7.5.1",
+    "@comapeo/core": "7.6.0",
     "@comapeo/crypto": "2.0.0",
     "@comapeo/fallback-smp": "1.0.0",
-    "@comapeo/ipc": "10.0.0",
+    "@comapeo/ipc": "10.1.0-pre.0",
     "@comapeo/map-server": "3.0.1",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/core": "^2.1.0",
