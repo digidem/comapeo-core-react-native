@@ -22,6 +22,9 @@ export const NATIVE_MODULES: readonly NativeModule[] = [
   { name: "rabin-native", usesNapi: true },
   { name: "simdle-native", usesNapi: true },
   { name: "sodium-native", usesNapi: true },
+  // UDP transport for the hyperdht DHT (loaded by dht-rpc). Pulled in by the
+  // hyperdht dep; NAPI.
+  { name: "udx-native", usesNapi: true },
 ];
 
 /**
