@@ -1,6 +1,6 @@
 {
   "name": "@comapeo/core-react-native",
-  "version": "1.0.0-pre.14",
+  "version": "1.0.0-pre.15",
   "description": "CoMapeo Core for React Native",
   "main": "build/index.js",
   "types": "build/index.d.ts",
