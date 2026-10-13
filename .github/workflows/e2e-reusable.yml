@@ -139,7 +139,7 @@ jobs:
         with:
           node-version-file: package.json
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 17
@@ -162,7 +162,7 @@ jobs:
         run: ./scripts/download-nodejs-mobile.sh
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
       # strict-allow-scripts (skip dependency install scripts via the committed
       # allowlists) requires npm >= 11.16; the runner image ships an older 11.x.
