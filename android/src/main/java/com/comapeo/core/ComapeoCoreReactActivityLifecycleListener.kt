@@ -1,10 +1,7 @@
 package com.comapeo.core
 
 import android.app.Activity
-import android.content.Intent
-import android.os.Build
 import android.os.Bundle
-import android.os.SystemClock
 import expo.modules.core.interfaces.ReactActivityLifecycleListener
 
 /** Intent extra key for the boot-tracing `serviceStartTimeMs` stamp. */
@@ -30,15 +27,6 @@ class ComapeoCoreReactActivityLifecycleListener : ReactActivityLifecycleListener
     }
 
     private fun actionOnService(activity: Activity, action: Actions) {
-        Intent(activity, ComapeoCoreService::class.java).also {
-            it.action = action.name
-            // Cross-process monotonic stamp the FGS reads to backdate the boot.fgs-launch span.
-            it.putExtra(EXTRA_SERVICE_START_ELAPSED_MS, SystemClock.elapsedRealtime())
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                activity.startForegroundService(it)
-            } else {
-                activity.startService(it)
-            }
-        }
+        ComapeoCoreService.sendWithPersistedContent(activity, action)
     }
 }

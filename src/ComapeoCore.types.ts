@@ -107,3 +107,16 @@ export type NotificationPermissionResponse = {
   /** Always `"never"`; notification grants don't expire. */
   expires: "never" | number;
 };
+
+/**
+ * Wording for the Android foreground-service notification (the ongoing
+ * "running in the background" notification; see
+ * `docs/ForegroundService.md`). Both fields are optional: an omitted or
+ * blank field falls back to the module's own default for that field. The
+ * notification channel's name and description, shown in system Settings,
+ * follow the phone's system language and are owned by the module.
+ */
+export type ServiceNotificationContent = {
+  title?: string;
+  body?: string;
+};
