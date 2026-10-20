@@ -55,6 +55,19 @@ are AF_UNIX sockets in the host app's `Application Support` directory;
 both ends of every socket-related interaction live inside the same
 `.app` bundle.
 
+**TCP listeners across suspension.** iOS can reclaim a suspended app's
+listening sockets ([TN2277](https://developer.apple.com/library/archive/technotes/tn2277/_index.html)):
+after resume the process and the AF_UNIX sockets are fine, but core's
+blob/icon server and the map server (loopback and peer-sharing ports) refuse
+connections. `AppLifecycleDelegate` sends `background` and `foreground`
+control frames; `backend/lib/listener-lifecycle.js` stops those servers
+listening on `background`, leaving open connections alone, and listens again
+on the same ports on `foreground`, so URLs cached on the JS side stay valid.
+`foreground` also rebinds a server that started listening after the app was
+backgrounded (still booting). If a port was taken in the meantime the server
+moves to a random port and a Sentry warning is captured; JS caches holding the
+old port are not invalidated.
+
 ### 2.2 Android — `:ComapeoCore` separate process
 
 The FGS is declared with `android:process=":ComapeoCore"` in
@@ -137,6 +150,7 @@ before it can construct `MapeoManager`. Frames in current use:
 | Node → native | `{type:"error",phase,message,stack?}` | Boot failure or uncaught throw at any phase. |
 | Native → Node | `{type:"shutdown"}` | Native requests graceful shutdown. |
 | Native → Node | `{type:"error-native",phase,message}` | FGS-side local failure (rootkey, watchdog) — backend re-broadcasts as an `error` frame and exits. |
+| Native → Node | `{type:"background"}` / `{type:"foreground"}` | iOS only. App entered the background / is returning to the foreground; the backend closes and reopens its TCP listeners (§2.1). |
 
 **The init frame's two keys.** `rootKey` is the device identity and is
 required: a missing or malformed one is fatal (the backend rejects, reports
