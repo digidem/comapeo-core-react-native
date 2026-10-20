@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="comapeo_core_notification_title">Funcionando en segundo plano</string>
+    <string name="comapeo_core_notification_body">La sincronización con los dispositivos conectados continúa en segundo plano</string>
+    <string name="comapeo_core_notification_channel_name">Sincronización en segundo plano</string>
+    <string name="comapeo_core_notification_channel_description">Se muestra mientras la app sigue funcionando en segundo plano para que la sincronización con los dispositivos conectados pueda continuar.</string>
+</resources>

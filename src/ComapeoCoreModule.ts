@@ -7,6 +7,7 @@ import {
   type MessageErrorEventPayload,
   type MessageEventPayload,
   type NotificationPermissionResponse,
+  type ServiceNotificationContent,
   type StateChangeEventPayload,
 } from "./ComapeoCore.types.js";
 import type { MessagePortLike } from "rpc-reflector";
@@ -114,6 +115,11 @@ declare class ComapeoCoreModule extends NativeModule<ComapeoCoreModuleEvents> {
    * `granted` without prompting.
    */
   requestNotificationPermissionsAsync(): Promise<NotificationPermissionResponse>;
+  /**
+   * Persist the foreground-service notification wording and apply it to the
+   * running service. Android only; a no-op on iOS.
+   */
+  setServiceNotification(content: ServiceNotificationContent): Promise<void>;
 }
 
 // This call loads the native module object from the JSI.
@@ -239,6 +245,22 @@ export function requestNotificationPermissionsAsync(): Promise<NotificationPermi
     nativeModule.requestNotificationPermissionsAsync?.() ??
     Promise.resolve(GRANTED_PERMISSION)
   );
+}
+
+/**
+ * Set the wording of the Android foreground-service notification. Call it
+ * at startup and whenever the app's language changes; the module persists
+ * the last value, so the next cold start shows it from the first frame.
+ * Omitted fields fall back to the module defaults; passing `{}` resets to
+ * them. See `docs/ForegroundService.md`.
+ *
+ * No-op on iOS and where the native module lacks the method (test
+ * contexts), so host code never has to branch on platform.
+ */
+export function setServiceNotification(
+  content: ServiceNotificationContent,
+): Promise<void> {
+  return nativeModule.setServiceNotification?.(content) ?? Promise.resolve();
 }
 
 type MessagePortEvents = {

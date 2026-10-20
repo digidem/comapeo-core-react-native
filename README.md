@@ -169,6 +169,30 @@ still starts (without a visible notification). If you already request
 `POST_NOTIFICATIONS` via `expo-notifications`, you don't need these helpers. See
 [`docs/ForegroundService.md`](docs/ForegroundService.md) for the rationale.
 
+### Foreground-service notification wording (Android)
+
+The ongoing notification tells the user the backend is still running. Its
+title and body are yours to set, and translate, from JS:
+
+```ts
+import { setServiceNotification } from "@comapeo/core-react-native";
+
+await setServiceNotification({
+  title: t("backgroundSync.title"),
+  body: t("backgroundSync.body"),
+});
+```
+
+Call it at startup and whenever the in-app language changes. The module
+persists the last value, so the next cold start shows it before JS runs. A
+field you omit falls back to the module's default ("Running in the background"
+/ "Sync with connected devices continues in the background", shipped in
+English, Spanish and Portuguese by system locale). The notification channel's
+name and description appear in system Settings, which the phone renders in its
+system language, so the module owns those and translates them the same way.
+The notification is silent, has no actions and, on Android 8 and later, never
+badges the app icon; on iOS the call is a no-op.
+
 ## Map Server
 
 The backend runs an offline-capable map server

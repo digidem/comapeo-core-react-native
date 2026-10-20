@@ -6,7 +6,8 @@ import androidx.core.content.edit
 import java.io.File
 
 /**
- * Persistent storage for Sentry-related user preferences. Snapshot-at-boot:
+ * Persistent storage for user preferences: the Sentry toggles here, plus the
+ * foreground-notification wording via [ServiceNotificationContent]. Snapshot-at-boot:
  * each process reads on its own cold start, so toggle changes only take effect
  * after the next launch. Flipping a toggle to `false` also wipes the on-disk
  * Sentry envelope cache so events queued in the current session never ship.
@@ -34,6 +35,11 @@ internal class ComapeoPrefs(
         fun getString(key: String): String?
         fun putString(key: String, value: String)
         fun remove(key: String)
+
+        /** All entries in one commit where the backing store can; a `null` value removes its key. */
+        fun putStrings(values: Map<String, String?>) {
+            for ((key, value) in values) if (value == null) remove(key) else putString(key, value)
+        }
     }
 
     data class Defaults(
@@ -176,6 +182,12 @@ internal class ComapeoPrefs(
             return ComapeoPrefs(SharedPrefsStore(sp), defaults)
         }
 
+        /** A raw store over the prefs file [name], for callers that must not pay
+         *  for [open]'s manifest read (e.g. every activity resume/pause). */
+        @JvmStatic
+        internal fun openStore(context: Context, name: String): Store =
+            SharedPrefsStore(context.getSharedPreferences(name, Context.MODE_PRIVATE))
+
         /**
          * Delete sentry-android's on-disk cache (`<cacheDir>/sentry/` — the SDK's
          * documented default) so a `diagnosticsEnabled=false` flip can't ship
@@ -226,6 +238,14 @@ internal class ComapeoPrefs(
 
         override fun remove(key: String) {
             sp.edit(commit = true) { remove(key) }
+        }
+
+        override fun putStrings(values: Map<String, String?>) {
+            sp.edit(commit = true) {
+                for ((key, value) in values) {
+                    if (value == null) remove(key) else putString(key, value)
+                }
+            }
         }
     }
 }
