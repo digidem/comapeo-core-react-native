@@ -127,6 +127,7 @@ const controlIpcServer = new SimpleRpcServer({
     // Broadcast BEFORE close: this only queues the frame, and close()
     // flushes each client's stream before destroying its socket.
     controlIpcServer.broadcast({ type: "stopping" });
+    await listeners.close();
     // Each close is isolated so one failure can't leak the others.
     /**
      * @param {string} label

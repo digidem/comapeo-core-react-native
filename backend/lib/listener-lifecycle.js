@@ -14,8 +14,9 @@ import { once } from "node:events";
  * map server refusing connections after resume while the process, and the
  * Unix-socket RPC, carry on as normal (Apple TN2277).
  *
- * Open connections are left alone, so a transfer survives a short app switch.
- * `foreground()` refreshes listeners whether or not `background()` reached
+ * Requests and transfers already in progress carry on (idle keep-alive
+ * connections are closed), so a transfer under way survives a short app
+ * switch; a new connection to a paused server is refused. `foreground()` refreshes listeners whether or not `background()` reached
  * them: a server that started listening after the app was backgrounded (boot
  * still running) would otherwise keep a reclaimed socket.
  *
@@ -33,14 +34,14 @@ export function createListenerLifecycle({ fastifyServer, onPortChange }) {
   let mapServerPorts;
   /** @type {Promise<unknown>} */
   let queue = Promise.resolve();
+  let closed = false;
 
   /**
-   * @template T
-   * @param {() => Promise<T>} fn
-   * @returns {Promise<T>}
+   * @param {() => Promise<void>} fn
+   * @returns {Promise<void>}
    */
   function serialize(fn) {
-    const result = queue.then(fn);
+    const result = queue.then(() => (closed ? undefined : fn()));
     queue = result.catch(() => {});
     return result;
   }
@@ -123,6 +124,16 @@ export function createListenerLifecycle({ fastifyServer, onPortChange }) {
         const failed = results.find((r) => r.status === "rejected");
         if (failed) throw failed.reason;
       });
+    },
+    /**
+     * Call before closing the servers at shutdown. Waits for any in-flight
+     * background/foreground and ignores later ones: a rebind that overlaps
+     * the servers closing would otherwise reopen one, keeping Node alive, or
+     * wait for a 'listening' event that never comes.
+     */
+    close() {
+      closed = true;
+      return queue.then(() => {});
     },
   };
 }

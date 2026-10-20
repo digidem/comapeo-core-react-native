@@ -222,3 +222,35 @@ test("shutdown while paused still closes cleanly", async (t) => {
   await listeners.background();
   await Promise.all([fastify.close(), server.close()]);
 });
+
+test("background/foreground after close() are ignored", async (t) => {
+  const { fastify } = await startFastify(t);
+  const { server, ports } = await startMapServer(t);
+  const { listeners } = createLifecycle(fastify.server);
+  listeners.setMapServer(server, ports);
+
+  await listeners.background();
+  await listeners.close();
+  await Promise.all([fastify.close(), server.close()]);
+
+  await listeners.foreground();
+  assert.equal(fastify.server.listening, false);
+});
+
+test("close() waits for an in-flight foreground before the servers close", async (t) => {
+  // Step the shutdown through successive microtasks so one lands while the
+  // foreground's rebind is waiting for 'listening'.
+  for (let ticks = 0; ticks < 10; ticks++) {
+    const { fastify } = await startFastify(t);
+    const { listeners } = createLifecycle(fastify.server);
+    await listeners.background();
+
+    const foregrounded = listeners.foreground();
+    for (let i = 0; i < ticks; i++) await null;
+    await listeners.close();
+    await fastify.close();
+
+    await foregrounded;
+    assert.equal(fastify.server.listening, false);
+  }
+});

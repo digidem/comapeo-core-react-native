@@ -61,12 +61,16 @@ after resume the process and the AF_UNIX sockets are fine, but core's
 blob/icon server and the map server (loopback and peer-sharing ports) refuse
 connections. `AppLifecycleDelegate` sends `background` and `foreground`
 control frames; `backend/lib/listener-lifecycle.js` stops those servers
-listening on `background`, leaving open connections alone, and listens again
-on the same ports on `foreground`, so URLs cached on the JS side stay valid.
-`foreground` also rebinds a server that started listening after the app was
-backgrounded (still booting). If a port was taken in the meantime the server
-moves to a random port and a Sentry warning is captured; JS caches holding the
-old port are not invalidated.
+listening on `background` and listens again on the same ports on `foreground`,
+so URLs cached on the JS side stay valid. Requests and transfers already in
+progress carry on, but idle keep-alive connections are closed and new
+connections are refused until `foreground`. `foreground` also rebinds a server
+that started listening after the app was backgrounded (still booting). If a
+port was taken in the meantime the server moves to a random port and a Sentry
+warning is captured; JS caches holding the old port are not invalidated. The
+`shutdown` handler closes the lifecycle first, so a late `foreground` can't
+reopen a server that is closing. Core's peer-discovery server is a separate
+listener and is not covered here.
 
 ### 2.2 Android — `:ComapeoCore` separate process
 
