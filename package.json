@@ -1,6 +1,6 @@
 {
   "name": "@comapeo/core-react-native",
-  "version": "1.0.0-pre.15",
+  "version": "1.1.0",
   "description": "CoMapeo Core for React Native",
   "main": "build/index.js",
   "types": "build/index.d.ts",
@@ -115,7 +115,7 @@
     "react-native": "*"
   },
   "dependencies": {
-    "@comapeo/ipc": "10.1.0-pre.0"
+    "@comapeo/ipc": "11.0.0"
   },
   "allowScripts": {
     "@sentry/cli": false,
