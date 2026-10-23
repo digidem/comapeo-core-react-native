@@ -221,6 +221,12 @@ public class AppLifecycleDelegate: ExpoAppDelegateSubscriber {
         log("applicationDidEnterBackground — Node.js continues running")
         // Don't stop Node on background: NodeMobileStartNode is
         // once-per-process. iOS may suspend or kill; next launch is fresh.
+        Self.nodeService.sendAppLifecycleEvent(.background)
+    }
+
+    public func applicationWillEnterForeground(_ application: UIApplication) {
+        log("applicationWillEnterForeground")
+        Self.nodeService.sendAppLifecycleEvent(.foreground)
     }
 
     public func applicationWillTerminate(_ application: UIApplication) {

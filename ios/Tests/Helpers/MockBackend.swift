@@ -30,6 +30,9 @@ final class MockBackend {
     private(set) var receivedShutdown = false
     private var handshakeComplete = DispatchSemaphore(value: 0)
     private let shutdownObserved = DispatchSemaphore(value: 0)
+    /// Raw frames read after the handshake, in arrival order. Guarded by `lock`.
+    private var postHandshakeFrames: [String] = []
+    private let frameObserved = DispatchSemaphore(value: 0)
 
     init(controlSocketPath: String) {
         self.server = MockNodeServer(socketPath: controlSocketPath)
@@ -63,6 +66,18 @@ final class MockBackend {
     @discardableResult
     func waitForShutdown(timeout: TimeInterval = 5) -> Bool {
         return shutdownObserved.wait(timeout: .now() + timeout) == .success
+    }
+
+    /// Blocks until `count` frames have arrived after the handshake, then
+    /// returns them; nil if `timeout` elapses first.
+    func waitForFrames(count: Int, timeout: TimeInterval = 5) -> [String]? {
+        let deadline = DispatchTime.now() + timeout
+        for _ in 0..<count {
+            guard frameObserved.wait(timeout: deadline) == .success else { return nil }
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(postHandshakeFrames.prefix(count))
     }
 
     /// Sends a raw frame string on the connected client socket. Tests use
@@ -135,6 +150,10 @@ final class MockBackend {
         // STARTED is classified as unexpected (= ERROR).
         while true {
             guard let frame = MockNodeServer.receiveFramedMessage(fd: fd) else { return }
+            lock.lock()
+            postHandshakeFrames.append(frame)
+            lock.unlock()
+            frameObserved.signal()
             if frame.contains("\"shutdown\"") {
                 lock.lock()
                 receivedShutdown = true
