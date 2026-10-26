@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Wording for the :ComapeoCore foreground-service notification. The title and
+  body are defaults the host app replaces at runtime via setServiceNotification
+  (in the app's own language). The channel name and description appear in
+  system Settings, which the phone renders in its system language, so they are
+  resolved from these per-locale resources and never set by the host.
+-->
+<resources>
+    <string name="comapeo_core_notification_title">Running in the background</string>
+    <string name="comapeo_core_notification_body">Sync with connected devices continues in the background</string>
+    <string name="comapeo_core_notification_channel_name">Background sync</string>
+    <string name="comapeo_core_notification_channel_description">Shown while the app keeps running in the background so sync with connected devices can continue.</string>
+</resources>

@@ -174,21 +174,19 @@ class ShutdownPathTest {
     }
 
     @Test
-    fun notificationStopActionStopsService() {
+    fun stopActionWhileBackgroundedStopsService() {
         startServiceWithAction(Actions.USER_FOREGROUND)
         assertTrue("Service should start", waitForServiceRunning())
         // Wait for Node.js to fully initialize
         Thread.sleep(5000)
 
-        // Simulate backgrounding to show the Stop button in notification
         startServiceWithAction(Actions.USER_BACKGROUND)
         Thread.sleep(2000)
 
-        // Send the STOP intent directly (same as what the notification PendingIntent does)
         startServiceWithAction(Actions.STOP)
 
         assertTrue(
-            "Service should stop after notification stop action",
+            "Service should stop after STOP action",
             waitForServiceStopped()
         )
     }
