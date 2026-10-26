@@ -1,6 +1,9 @@
 package com.comapeo.core.integration
 
+import android.Manifest
 import android.app.ActivityManager
+import android.app.Notification
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -9,6 +12,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import com.comapeo.core.Actions
 import com.comapeo.core.ComapeoCoreService
+import com.comapeo.core.ServiceNotificationContent
 import org.junit.After
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -43,6 +47,12 @@ class ServiceLifecycleTest {
     fun setUp() {
         context = InstrumentationRegistry.getInstrumentation().targetContext
         device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        // Without POST_NOTIFICATIONS the service still runs but Android 13+ hides
+        // its notification, so the wording assertions would time out.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            InstrumentationRegistry.getInstrumentation().uiAutomation
+                .grantRuntimePermission(context.packageName, Manifest.permission.POST_NOTIFICATIONS)
+        }
         // Ensure service is stopped before each test
         stopServiceAndWait()
     }
@@ -300,18 +310,55 @@ class ServiceLifecycleTest {
         )
     }
 
+    // Same UID as the service, so this sees the notification it posts from :ComapeoCore.
+    private fun activeNotificationTitles(): List<String> =
+        context.getSystemService(NotificationManager::class.java).activeNotifications
+            .mapNotNull { it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() }
+
+    /** True once [title] is the only notification showing, so a replaced wording is also gone. */
+    private fun waitForOnlyNotificationTitled(title: String, timeout: Long = 5_000L): Boolean {
+        val deadline = System.currentTimeMillis() + timeout
+        while (System.currentTimeMillis() < deadline) {
+            if (activeNotificationTitles() == listOf(title)) return true
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+        return false
+    }
+
+    /**
+     * The host's wording reaches the notification on start, replaces it while
+     * the service is already running, and an empty content resets to the
+     * module's resource defaults — the contract `setServiceNotification` and
+     * the activity lifecycle listener rely on.
+     */
     @Test
-    fun notificationExistsWhileRunning() {
-        startServiceWithAction(Actions.USER_FOREGROUND)
+    fun notificationShowsWordingCarriedByIntents() {
+        ComapeoCoreService.send(
+            context,
+            Actions.USER_FOREGROUND,
+            ServiceNotificationContent.of("Wording A title", "Wording A body"),
+        )
         assertTrue("Service should start", waitForServiceRunning())
-        // Wait for Node.js to fully initialize
-        Thread.sleep(5000)
-        val notifOutput = device.executeShellCommand(
-            "dumpsys notification --noredact | grep -A 5 'CoMapeo'"
+        assertTrue(
+            "Notification should show the wording carried by the start intent",
+            waitForOnlyNotificationTitled("Wording A title"),
+        )
+
+        ComapeoCoreService.send(
+            context,
+            Actions.USER_BACKGROUND,
+            ServiceNotificationContent.of("Wording B title", "Wording B body"),
         )
         assertTrue(
-            "Notification with 'CoMapeo' should exist",
-            notifOutput.contains("CoMapeo")
+            "Notification should update while the service is running",
+            waitForOnlyNotificationTitled("Wording B title"),
+        )
+
+        ComapeoCoreService.send(context, Actions.USER_FOREGROUND, ServiceNotificationContent())
+        val defaultTitle = context.getString(com.comapeo.core.R.string.comapeo_core_notification_title)
+        assertTrue(
+            "Empty content should reset to the module default",
+            waitForOnlyNotificationTitled(defaultTitle),
         )
     }
 }

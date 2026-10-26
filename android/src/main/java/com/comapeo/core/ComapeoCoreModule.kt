@@ -5,6 +5,8 @@ import expo.modules.interfaces.permissions.Permissions
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.records.Field
+import expo.modules.kotlin.records.Record
 import java.io.File
 
 private typealias JsState = NodeJSService.State
@@ -306,5 +308,28 @@ class ComapeoCoreModule : Module() {
                 Manifest.permission.POST_NOTIFICATIONS,
             )
         }
+
+        // Persist for the next cold start, then push to the running service.
+        // Pushed only while foregrounded: startForegroundService throws in this
+        // process from the background (API 31+), and the next lifecycle intent
+        // carries the persisted wording anyway. The lifecycle state can lag the
+        // real transition by ~700ms, so a throw here is logged, not surfaced.
+        AsyncFunction("setServiceNotification") { options: ServiceNotificationOptions ->
+            val ctx = appContext.reactContext
+                ?: throw IllegalStateException(
+                    "setServiceNotification called before native context attached",
+                )
+            ComapeoCoreService.setNotificationContent(
+                ctx,
+                ServiceNotificationContent.of(options.title, options.body),
+            )
+        }
     }
+}
+
+/** JS shape of `setServiceNotification`. Omitted or blank fields fall back to
+ *  the `comapeo_core_notification_*` string resources. */
+class ServiceNotificationOptions : Record {
+    @Field val title: String? = null
+    @Field val body: String? = null
 }

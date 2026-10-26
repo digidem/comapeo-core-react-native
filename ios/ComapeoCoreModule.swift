@@ -163,6 +163,10 @@ public class ComapeoCoreModule: Module {
         AsyncFunction("requestNotificationPermissionsAsync") { () -> [String: Any] in
             ComapeoCoreModule.grantedPermissionResponse
         }
+
+        // Wording for the Android foreground-service notification. iOS has no
+        // such notification, so this is a no-op kept for cross-platform hosts.
+        AsyncFunction("setServiceNotification") { (_: [String: Any]) in }
     }
 
     // Testable seam: the constant value both notification AsyncFunctions
