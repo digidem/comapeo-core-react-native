@@ -13,7 +13,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
-import android.widget.Toast
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -45,6 +45,8 @@ class ComapeoCoreService : Service() {
     private var debug: Boolean = false
     private var deviceTags: DeviceTags? = null
     private var sentryUserId: String? = null
+    /** Snapshot from prefs at cold start; any later intent is authoritative. */
+    private var notificationContent = ServiceNotificationContent()
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     /** Active self-terminate watchdog (see [onNodeStateChange]). Armed at most once
@@ -55,6 +57,8 @@ class ComapeoCoreService : Service() {
     private var selfTerminateJob: Job? = null
 
     companion object {
+        // Channel behaviour (importance, sound, badge) is frozen per install once
+        // created, so any change to those attributes needs a new id.
         const val CHANNEL_ID = "ComapeoServiceChannel"
         const val NOTIFICATION_ID = 1
         const val COMAPEO_SOCKET_FILENAME = "comapeo.sock"
@@ -80,6 +84,90 @@ class ComapeoCoreService : Service() {
                 context,
                 Manifest.permission.POST_NOTIFICATIONS,
             ) == PackageManager.PERMISSION_GRANTED
+
+        /** Sends [action] to the service with the host's wording attached. The
+         *  caller must be foregrounded: a background `startForegroundService`
+         *  throws in the caller's process on API 31+. */
+        fun send(context: Context, action: Actions, content: ServiceNotificationContent) {
+            val intent = content.applyTo(Intent(context, ComapeoCoreService::class.java))
+            intent.action = action.name
+            // Cross-process monotonic stamp the FGS reads to backdate the boot.fgs-launch span.
+            intent.putExtra(EXTRA_SERVICE_START_ELAPSED_MS, SystemClock.elapsedRealtime())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        // Serialises persisted-wording reads and writes with their sends, so a
+        // lifecycle intent can never carry an older snapshot after a newer one.
+        private val contentLock = Any()
+
+        /** Sends [action] with the host's persisted wording attached. */
+        fun sendWithPersistedContent(context: Context, action: Actions) {
+            synchronized(contentLock) {
+                send(context, action, ServiceNotificationContent.read(ServiceNotificationContent.store(context)))
+            }
+        }
+
+        /** Persists [content] and, while the app is foregrounded, re-sends it so
+         *  the shade updates at once; otherwise the next lifecycle intent carries it. */
+        fun setNotificationContent(context: Context, content: ServiceNotificationContent) {
+            synchronized(contentLock) {
+                content.write(ServiceNotificationContent.store(context))
+                val foregrounded = ProcessLifecycleOwner.get()
+                    .lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                if (!foregrounded) return
+                try {
+                    send(context, Actions.USER_FOREGROUND, content)
+                } catch (e: IllegalStateException) {
+                    log("setNotificationContent: deferred to next foreground: ${e.message}")
+                }
+            }
+        }
+
+        /** Idempotent; a re-create updates only the name and description, which
+         *  is how a system-language change reaches Settings. */
+        internal fun ensureNotificationChannel(context: Context) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                context.getString(R.string.comapeo_core_notification_channel_name),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = context.getString(R.string.comapeo_core_notification_channel_description)
+                setSound(null, null)
+                // A status notification, not something to read: no launcher dot or count.
+                setShowBadge(false)
+            }
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .createNotificationChannel(channel)
+        }
+
+        internal fun buildNotification(
+            context: Context,
+            content: ServiceNotificationContent,
+        ): Notification {
+            val body = content.body ?: context.getString(R.string.comapeo_core_notification_body)
+            val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setContentTitle(content.title ?: context.getString(R.string.comapeo_core_notification_title))
+                .setContentText(body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+                .setSmallIcon(R.drawable.ic_map_pin)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setSilent(true)
+                .setShowWhen(false)
+            context.packageManager.getLaunchIntentForPackage(context.packageName)?.let { launch ->
+                builder.setContentIntent(
+                    PendingIntent.getActivity(context, 0, launch, PendingIntent.FLAG_IMMUTABLE),
+                )
+            }
+            return builder.build()
+        }
     }
 
     override fun onCreate() {
@@ -91,6 +179,7 @@ class ComapeoCoreService : Service() {
         val sentryConfig = SentryConfig.loadFromManifest(applicationContext)
         val prefs = ComapeoPrefs.open(applicationContext)
         effectiveSentryConfig = if (prefs.readDiagnosticsEnabled()) sentryConfig else null
+        notificationContent = ServiceNotificationContent.read(ServiceNotificationContent.store(applicationContext))
 
         // Read debug + usage before SentryFgsBridge.init: readDebugEnabled()
         // may queue the auto_disabled breadcrumb, which init drains — read
@@ -171,6 +260,7 @@ class ComapeoCoreService : Service() {
         // the backend exists.
         val serviceStartElapsedMs =
             intent?.getLongExtra(EXTRA_SERVICE_START_ELAPSED_MS, -1L) ?: -1L
+        intent?.let { notificationContent = ServiceNotificationContent.fromIntent(it) }
 
         logCrumb(
             SentryCategories.FGS,
@@ -182,23 +272,18 @@ class ComapeoCoreService : Service() {
         )
 
         when (intent?.action) {
+            // startService re-posts the notification even when already started, so
+            // wording carried by the intent is applied either way. A USER_BACKGROUND
+            // intent can cold-start this process (the FGS was killed, then the app
+            // backgrounded); we were still launched via startForegroundService, so
+            // we must promote within the deadline — unless the OS forbids a
+            // background start, in which case startService stops us.
             Actions.USER_FOREGROUND.name -> {
-                if (startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_USER_FOREGROUND)) {
-                    updateNotification(true)
-                }
+                startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_USER_FOREGROUND)
             }
 
             Actions.USER_BACKGROUND.name -> {
-                // A USER_BACKGROUND intent can cold-start this process (the FGS was
-                // killed, then the app backgrounded). We were still launched via
-                // startForegroundService, so we must promote within the deadline —
-                // unless the OS forbids a background start, in which case startService
-                // stops us and we skip the notification update.
-                if (isServiceStarted) {
-                    updateNotification(false)
-                } else if (startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_USER_BACKGROUND)) {
-                    updateNotification(false)
-                }
+                startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_USER_BACKGROUND)
             }
 
             Actions.STOP.name -> {
@@ -219,14 +304,8 @@ class ComapeoCoreService : Service() {
             }
 
             null -> {
-                // System-driven restart (no intent): recover the foreground/background
-                // notification state from the app lifecycle.
-                val isAppInForeground = ProcessLifecycleOwner.get()
-                    .lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
-                log("Service restarted by system - app in foreground: $isAppInForeground")
-                if (startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_SYSTEM_RESTART)) {
-                    updateNotification(isAppInForeground)
-                }
+                log("Service restarted by system")
+                startService(serviceStartElapsedMs, SentryTags.BOOT_KIND_SYSTEM_RESTART)
             }
 
             else -> log("Unknown action in received intent: ${intent.action}")
@@ -305,7 +384,8 @@ class ComapeoCoreService : Service() {
      *  a background-start restriction forced it to stop. */
     private fun startService(serviceStartElapsedMs: Long, bootKind: String): Boolean {
         log("Starting the foreground service")
-        val notification = createNotification(true)
+        ensureNotificationChannel(this)
+        val notification = buildNotification(this, notificationContent)
         // On API 33+ the FGS notification is suppressed without a runtime
         // POST_NOTIFICATIONS grant, which lets the system deprioritise or kill
         // the service. The host app is responsible for requesting the grant
@@ -367,7 +447,6 @@ class ComapeoCoreService : Service() {
         // Arms the self-terminate watchdog on a terminal ERROR. Set before start()
         // so an error during boot (rootkey, startup watchdog) is observed.
         nodeJSService.onStateChange = ::onNodeStateChange
-        Toast.makeText(this, "Service starting", Toast.LENGTH_SHORT).show()
         nodeJSService.start(nodeJSServiceCallback)
         isServiceStarted = true
         return true
@@ -422,61 +501,6 @@ class ComapeoCoreService : Service() {
         } catch (e: Exception) {
             log("Service stopped without being started: ${e.message}")
         }
-    }
-
-    private fun createNotification(isForeground: Boolean): Notification {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager =
-                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "CoMapeo Service channel",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Channel for foreground service"
-                setSound(null, null)
-            }
-            notificationManager.createNotificationChannel(channel)
-        }
-
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        val pendingIntent: PendingIntent =
-            PendingIntent.getActivity(this, 0, launchIntent, PendingIntent.FLAG_IMMUTABLE)
-
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("CoMapeo")
-            .setContentText("Monitoring for nearby devices")
-            .setContentIntent(pendingIntent)
-            .setProgress(100, 25, true)
-            .setSmallIcon(R.drawable.ic_map_pin)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setTicker("Ticker text")
-
-        if (!isForeground) {
-            builder.addAction(createStopAction())
-        }
-
-        return builder.build()
-    }
-
-    private fun updateNotification(isForeground: Boolean) {
-        val notification = createNotification(isForeground)
-        val notificationManager =
-            getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(NOTIFICATION_ID, notification)
-    }
-
-    private fun createStopAction(): NotificationCompat.Action {
-        val stopIntent = Intent(this, ComapeoCoreService::class.java).apply {
-            action = Actions.STOP.name
-        }
-        val pendingIntent = PendingIntent.getService(
-            this,
-            0,
-            stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        return NotificationCompat.Action(R.drawable.ic_stop, "Stop", pendingIntent)
     }
 
     override fun onBind(p0: Intent): IBinder? {

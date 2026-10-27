@@ -72,6 +72,34 @@ the missing grant (visible in diagnostics) and never crashes on the missing-
 permission path. Request the permission to keep the service running reliably in
 the background.
 
+### The notification
+
+The service's notification is a status indicator saying the backend is still
+running so sync with connected devices can continue. Recent versions of Android
+will close the backend sooner if no notification is showing. It is posted at low
+importance, silent, ongoing, with no actions and `setShowBadge(false)` so
+launchers never show a dot or count for it.
+
+The title and body come from the host app, because the in-app language is often
+different to the phone's: the last value passed to `setServiceNotification` is
+persisted by the main process. If the host never calls
+`setServiceNotification`, the notification falls back to the module's
+`comapeo_core_notification_*` string resource, shipped in English, Spanish and
+Portuguese.
+
+The channel name and description appear in system Settings, which the phone
+renders in its system language, so the module owns them as per-locale resources
+and the host cannot set them.
+
+`setServiceNotification` persists first, then re-sends `USER_FOREGROUND` with
+the wording attached — only while the app is foregrounded, since a background
+`startForegroundService` throws in the caller on API 31+. The wording has its
+own prefs file that only the main process writes, and the write and the
+lifecycle listener's read each hold the same lock with their send, so no
+intent can carry a torn or older snapshot. `startService()`
+re-posts the notification even when the backend is already running, so that
+intent is enough to refresh the shade.
+
 ### User-initiated stopping
 
 Starting in Android 13 (API level 33), the user can stop an app from the
