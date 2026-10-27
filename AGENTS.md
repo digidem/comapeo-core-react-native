@@ -84,6 +84,13 @@ npm run open:android # open the integration app in Android Studio
 
 `npm install` alone does **not** build the embedded backend — run `npm run setup` (or `npm run backend:build`) before any native build. Per-layer test scripts (`test:swift`, `test:android`, `test:android:unit`, `test:ios`, `backend:test`) and the e2e scripts (`e2e:ios` / `e2e:android` Release build, then `e2e:test`) are documented in [`CONTRIBUTING.md`](./CONTRIBUTING.md#tests).
 
+### Updating `@comapeo/core`
+
+1. Pull the latest `main`, then branch: `git checkout main && git pull && git checkout -b chore/comapeo-core-X.Y.Z`
+2. Bump the version in `backend/package.json` (the embedded runtime) and `apps/e2e/package.json` (the e2e test app).
+3. `npm install` in each directory to update lockfiles.
+4. Commit with `core` in the message (e.g. `chore: bump core to 7.7.0`). CI rebuilds the backend bundle; no local rebuild needed.
+
 ## Testing
 
 Tests run in layers from cheap JS unit/lint up to the full e2e suite on real devices; the merge queue, required checks, and the secrets/trust model are documented in [`docs/TESTING.md`](docs/TESTING.md). Two test apps with different mechanisms:
