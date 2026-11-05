@@ -68,7 +68,7 @@ function initMetrics(sdk, applicationUsageData) {
 function fakeSyncApi(initialState) {
   const emitter = new EventEmitter();
   let state = initialState;
-  return {
+  const api = {
     on: emitter.on.bind(emitter),
     off: emitter.off.bind(emitter),
     getState: () => state,
@@ -76,7 +76,37 @@ function fakeSyncApi(initialState) {
       state = next;
       emitter.emit("sync-state", next);
     },
+    // Like core, stop() flips data sync off and emits synchronously.
+    stop() {
+      api.setState({ ...state, data: { isSyncEnabled: false } });
+    },
+    disconnectServers() {},
   };
+  return api;
+}
+
+const SERVER_ID = "fakeserverid";
+
+/** State with one connected server peer (plus any other `peers`). */
+function serverState({ dataEnabled, want, peers = {} }) {
+  return syncState({
+    dataEnabled,
+    devices: {
+      ...peers,
+      [SERVER_ID]: {
+        initial: { isSyncEnabled: true, want: 0, wanted: 0 },
+        data: { isSyncEnabled: true, want, wanted: 0 },
+      },
+    },
+  });
+}
+
+const getServerDeviceIds = async () => [SERVER_ID];
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+function serverDisconnects(rec) {
+  return rec.counts.filter((c) => c.name === "comapeo.sync.server_disconnect");
 }
 
 function deviceStates(n, { want = 0, wanted = 0 } = {}) {
@@ -306,6 +336,138 @@ test("watcher seeded from getState picks up a session already running", async ()
   );
   assert.ok(duration, "seeded session did not record on end");
   assert.equal(duration.attributes.outcome, "completed");
+
+  await Sentry.close();
+});
+
+test("disconnectServers() while the server still wants blocks records one server_disconnect count", async () => {
+  initSentry({ ...baseArgv, applicationUsageData: true });
+  const rec = recordingMetricsSdk();
+  initMetrics(rec.sdk, true);
+  setSink(() => {});
+
+  const api = fakeSyncApi(idleState);
+  const detach = watchSyncApi(api, { getServerDeviceIds });
+  // A phone peer with a bigger backlog sits alongside the server; only the
+  // server's outstanding blocks count.
+  api.setState(
+    serverState({
+      dataEnabled: true,
+      want: 50,
+      peers: deviceStates(1, { want: 500 }),
+    }),
+  );
+  await tick();
+  api.disconnectServers();
+  detach();
+
+  const events = serverDisconnects(rec);
+  assert.equal(events.length, 1, "expected exactly one server_disconnect");
+  const { attributes } = events[0];
+  assert.equal(attributes.reason, "disconnect");
+  assert.equal(attributes.server_want_bucket, "11-100");
+  assert.equal(attributes.data_enabled, true);
+  const serialized = JSON.stringify(attributes);
+  assert.ok(
+    !serialized.includes(SERVER_ID) && !serialized.includes("fakepeerid"),
+    "server_disconnect leaked a peer id",
+  );
+
+  await Sentry.close();
+});
+
+test("stop() mid-upload records reason=stop once; the following disconnectServers() does not repeat it", async () => {
+  initSentry({ ...baseArgv, applicationUsageData: true });
+  const rec = recordingMetricsSdk();
+  initMetrics(rec.sdk, true);
+  setSink(() => {});
+
+  const api = fakeSyncApi(idleState);
+  const detach = watchSyncApi(api, { getServerDeviceIds });
+  api.setState(serverState({ dataEnabled: true, want: 5 }));
+  await tick();
+  api.stop();
+  api.disconnectServers();
+
+  let events = serverDisconnects(rec);
+  assert.equal(events.length, 1, "expected exactly one server_disconnect");
+  assert.equal(events[0].attributes.reason, "stop");
+  assert.equal(events[0].attributes.server_want_bucket, "1-10");
+
+  // The server leaves and comes back: a later disconnect is recorded again.
+  api.setState(syncState({ dataEnabled: false, devices: {} }));
+  api.setState(serverState({ dataEnabled: false, want: 5 }));
+  api.disconnectServers();
+  detach();
+
+  events = serverDisconnects(rec);
+  assert.equal(events.length, 2, "expected a second server_disconnect");
+  assert.equal(events[1].attributes.reason, "disconnect");
+
+  await Sentry.close();
+});
+
+test("no server peer connected: disconnectServers() and stop() record nothing", async () => {
+  initSentry({ ...baseArgv, applicationUsageData: true });
+  const rec = recordingMetricsSdk();
+  initMetrics(rec.sdk, true);
+  setSink(() => {});
+
+  const api = fakeSyncApi(idleState);
+  const detach = watchSyncApi(api, { getServerDeviceIds });
+  api.setState(
+    syncState({ dataEnabled: true, devices: deviceStates(1, { want: 50 }) }),
+  );
+  await tick();
+  api.disconnectServers();
+  api.stop();
+  detach();
+
+  assert.equal(serverDisconnects(rec).length, 0);
+
+  await Sentry.close();
+});
+
+test("autostop with a server connected records reason=autostop and bucket 0", async () => {
+  initSentry({ ...baseArgv, applicationUsageData: true });
+  const rec = recordingMetricsSdk();
+  initMetrics(rec.sdk, true);
+  setSink(() => {});
+
+  const api = fakeSyncApi(idleState);
+  const detach = watchSyncApi(api, { getServerDeviceIds });
+  api.setState(serverState({ dataEnabled: true, want: 0 }));
+  await tick();
+  api.setState(serverState({ dataEnabled: false, want: 0 }));
+  detach();
+
+  const events = serverDisconnects(rec);
+  assert.equal(events.length, 1, "expected exactly one server_disconnect");
+  assert.equal(events[0].attributes.reason, "autostop");
+  assert.equal(events[0].attributes.server_want_bucket, "0");
+  assert.equal(events[0].attributes.data_enabled, true);
+
+  await Sentry.close();
+});
+
+test("usage OFF: server_disconnect still records, without the want bucket", async () => {
+  initSentry({ ...baseArgv, applicationUsageData: false });
+  const rec = recordingMetricsSdk();
+  initMetrics(rec.sdk, false);
+  setSink(() => {});
+
+  const api = fakeSyncApi(idleState);
+  const detach = watchSyncApi(api, { getServerDeviceIds });
+  api.setState(serverState({ dataEnabled: false, want: 20 }));
+  await tick();
+  api.disconnectServers();
+  detach();
+
+  const events = serverDisconnects(rec);
+  assert.equal(events.length, 1, "expected exactly one server_disconnect");
+  assert.equal(events[0].attributes.reason, "disconnect");
+  assert.equal(events[0].attributes.data_enabled, false);
+  assert.equal(events[0].attributes.server_want_bucket, undefined);
 
   await Sentry.close();
 });
