@@ -208,6 +208,22 @@ export function syncSession(outcome, ms, peersBucket, bytesBucket) {
   }
 }
 
+/**
+ * The phone stopped serving a connected server peer (`disconnectServers()`,
+ * `stop()` or autostop). `server_want_bucket` is a data-volume bucket, so it
+ * is usage-gated like `bytes_bucket`.
+ *
+ * @param {"disconnect" | "stop" | "autostop"} reason
+ * @param {string} serverWantBucket
+ * @param {boolean} dataEnabled
+ */
+export function syncServerDisconnect(reason, serverWantBucket, dataEnabled) {
+  /** @type {Record<string, string | boolean>} */
+  const attrs = { reason, data_enabled: dataEnabled };
+  if (config?.applicationUsageData) attrs.server_want_bucket = serverWantBucket;
+  count("comapeo.sync.server_disconnect", attrs);
+}
+
 // ── Backend health (60s sampler) ────────────────────────────────
 
 /**
@@ -265,6 +281,15 @@ export function peersBucket(peers) {
   if (peers <= 3) return "1-3";
   if (peers <= 10) return "4-10";
   return "10+";
+}
+
+/** @param {number} blocks @returns {string} */
+export function serverWantBucket(blocks) {
+  if (blocks <= 0) return "0";
+  if (blocks <= 10) return "1-10";
+  if (blocks <= 100) return "11-100";
+  if (blocks <= 1000) return "101-1000";
+  return "1000+";
 }
 
 /** @param {number} bytes @returns {string} */

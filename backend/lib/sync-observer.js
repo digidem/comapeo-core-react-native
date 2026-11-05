@@ -27,7 +27,12 @@ import * as sentry from "./sentry.js";
  *   getState: () => SyncApiState,
  *   on: (event: "sync-state", listener: (state: SyncApiState) => void) => unknown,
  *   off: (event: "sync-state", listener: (state: SyncApiState) => void) => unknown,
+ *   stop: () => void,
+ *   disconnectServers: () => void,
  * }} SyncApiLike
+ * @typedef {{
+ *   getServerDeviceIds?: () => Promise<string[]>,
+ * }} WatchOptions
  */
 
 // The sync API exposes remaining block counts, not byte counters, so a
@@ -52,10 +57,20 @@ export function observeSyncSessions(manager) {
     const project = await getProject(projectPublicId);
     if (!observed.has(project.$sync)) {
       observed.add(project.$sync);
-      watchSyncApi(project.$sync);
+      watchSyncApi(project.$sync, {
+        getServerDeviceIds: () => getServerDeviceIds(project.$member),
+      });
     }
     return project;
   };
+}
+
+/** @param {import("@comapeo/core").MapeoProject["$member"]} memberApi */
+async function getServerDeviceIds(memberApi) {
+  const members = await memberApi.getMany();
+  return members
+    .filter((m) => m.deviceType === "selfHostedServer")
+    .map((m) => m.deviceId);
 }
 
 /**
@@ -66,9 +81,15 @@ export function observeSyncSessions(manager) {
  * is not derivable — the noise/protomux handshake is internal to core.
  * Returns a detach function (used by tests).
  *
+ * Also wraps `stop()` / `disconnectServers()` so that when the phone stops
+ * serving a connected server peer (either call, or the autostop edge) one
+ * `comapeo.sync.server_disconnect` metric records how much the server still
+ * wanted — once per data-sync session on a server connection.
+ *
  * @param {SyncApiLike} syncApi
+ * @param {WatchOptions} [options]
  */
-export function watchSyncApi(syncApi) {
+export function watchSyncApi(syncApi, { getServerDeviceIds } = {}) {
   /**
    * @type {{
    *   startedAt: number,
@@ -80,11 +101,73 @@ export function watchSyncApi(syncApi) {
    */
   let session = null;
 
+  // The wrappers run synchronously but membership is async, so cache the
+  // server ids and refresh whenever a peer we have not seen before appears.
+  /** @type {Set<string>} */
+  let serverIds = new Set();
+  /** @type {Set<string>} */
+  const seenPeers = new Set();
+  let serverReported = false;
+
+  const refreshServerIds = () => {
+    getServerDeviceIds?.().then(
+      (ids) => {
+        serverIds = new Set(ids);
+      },
+      () => {},
+    );
+  };
+
+  /**
+   * Blocks the connected server peers still want from us, or `null` when
+   * no server peer is connected.
+   *
+   * @param {SyncApiState} state
+   */
+  const serverWant = (state) => {
+    /** @type {number | null} */
+    let want = null;
+    for (const [peerId, peer] of Object.entries(state.remoteDeviceSyncState)) {
+      if (serverIds.has(peerId)) want = (want ?? 0) + peer.data.want;
+    }
+    return want;
+  };
+
+  /**
+   * @param {"disconnect" | "stop" | "autostop"} reason
+   * @param {SyncApiState} state
+   * @param {boolean} [dataEnabled]
+   */
+  const reportServerDisconnect = (
+    reason,
+    state,
+    dataEnabled = state.data.isSyncEnabled,
+  ) => {
+    if (serverReported) return;
+    const want = serverWant(state);
+    if (want === null) return;
+    serverReported = true;
+    metrics.syncServerDisconnect(
+      reason,
+      metrics.serverWantBucket(want),
+      dataEnabled,
+    );
+  };
+
   /** @param {SyncApiState} state */
   const onSyncState = (state) => {
-    const peers = Object.keys(state.remoteDeviceSyncState).length;
+    const peerIds = Object.keys(state.remoteDeviceSyncState);
+    const peers = peerIds.length;
+    if (peerIds.some((id) => !seenPeers.has(id))) {
+      for (const id of peerIds) seenPeers.add(id);
+      refreshServerIds();
+    }
+    if (serverWant(state) === null) serverReported = false;
     if (!session) {
       if (!state.data.isSyncEnabled) return;
+      serverReported = false;
+      // A server's deviceType may not have synced when it first appeared.
+      refreshServerIds();
       session = {
         startedAt: performance.now(),
         maxPeers: 0,
@@ -105,6 +188,8 @@ export function watchSyncApi(syncApi) {
       }
     }
     if (!state.data.isSyncEnabled) {
+      // Any edge not already reported by the stop() wrapper is the autostop.
+      reportServerDisconnect("autostop", state, true);
       const outcome = session.synced ? "completed" : "stopped";
       const durationMs = performance.now() - session.startedAt;
       const peersBucket = metrics.peersBucket(session.maxPeers);
@@ -123,12 +208,34 @@ export function watchSyncApi(syncApi) {
     }
   };
 
+  // Report before delegating: core's stop() emits the data-disabled edge
+  // synchronously, which would otherwise read as an autostop.
+  const { stop, disconnectServers } = syncApi;
+  /** @param {"disconnect" | "stop"} reason */
+  const reportBeforeCall = (reason) => {
+    try {
+      reportServerDisconnect(reason, syncApi.getState());
+    } catch {
+      // Telemetry must never block the real call.
+    }
+  };
+  syncApi.stop = () => {
+    reportBeforeCall("stop");
+    return stop.call(syncApi);
+  };
+  syncApi.disconnectServers = () => {
+    reportBeforeCall("disconnect");
+    return disconnectServers.call(syncApi);
+  };
+
   syncApi.on("sync-state", onSyncState);
   // Seed from the current state in case data sync was already running
   // when the watcher attached.
   onSyncState(syncApi.getState());
   return () => {
     syncApi.off("sync-state", onSyncState);
+    syncApi.stop = stop;
+    syncApi.disconnectServers = disconnectServers;
   };
 }
 
