@@ -1,0 +1,42 @@
+version: 0.1
+
+android_test_host: amazon_linux_2
+
+phases:
+  install:
+    commands:
+      - devicefarm-cli use java 17 || true
+      - java -version
+      - adb devices
+      - echo "DEVICEFARM_DEVICE_UDID=$DEVICEFARM_DEVICE_UDID"
+      - export MAESTRO_VERSION=2.11.0
+      - curl -fsSL "https://get.maestro.mobile.dev" | bash
+      - export PATH="$PATH:$HOME/.maestro/bin"
+      - maestro --version
+
+  pre_test:
+    commands:
+      - cd "$DEVICEFARM_TEST_PACKAGE_PATH" && tar xzf *.tgz
+      - export FLOWS="$DEVICEFARM_TEST_PACKAGE_PATH/package/flows"
+      - ls -la "$FLOWS"
+
+  test:
+    commands:
+      - export PATH="$PATH:$HOME/.maestro/bin"
+      # Slow devices miss Maestro's default driver startup window.
+      - export MAESTRO_DRIVER_STARTUP_TIMEOUT=180000
+      # takeScreenshot writes relative to cwd, so run from the collected log dir.
+      - cd "$DEVICEFARM_LOG_DIR"
+      - >-
+        maestro --device "$DEVICEFARM_DEVICE_UDID" test
+        --format junit --output "$DEVICEFARM_LOG_DIR/report.xml"
+        --test-output-dir "$DEVICEFARM_LOG_DIR/maestro"
+        --debug-output "$DEVICEFARM_LOG_DIR/maestro-debug"
+        "$FLOWS/e2e.yaml"
+
+  post_test:
+    commands:
+      - adb -s "$DEVICEFARM_DEVICE_UDID" logcat -d -v threadtime > "$DEVICEFARM_LOG_DIR/logcat.txt" || true
+
+artifacts:
+  - $DEVICEFARM_LOG_DIR
