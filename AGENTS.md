@@ -31,7 +31,7 @@ This module is the bridge that lets `comapeo-mobile` use `@comapeo/core` (a Node
 
 The module runs CoMapeo Core inside an embedded Node.js runtime and talks to the React Native layer over Unix domain sockets carrying length-prefixed JSON frames. The process model differs per platform:
 
-- **Android** — dual-process: the UI runs in the main app process and Node.js runs in a separate `:ComapeoCore` `dataSync` foreground service, so sync survives backgrounding.
+- **Android** — dual-process: the UI runs in the main app process and Node.js runs in a separate `:ComapeoCore` `connectedDevice` foreground service, so sync survives backgrounding.
 - **iOS** — in-process on a dedicated thread (`nodejs-mobile`'s `NodeMobileStartNode`, which is **once-per-process**): Node.js starts on first foreground, stays alive across background/foreground transitions, and stops only on `applicationWillTerminate`.
 
 Two sockets carry the traffic: `comapeo.sock` (main RPC, surfaced as `messagePort` in JS) and `control.sock` (lifecycle signals — `started`, `ready`, `shutdown`).

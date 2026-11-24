@@ -4,7 +4,7 @@ How the embedded backend is structured, how the React Native layer talks
 to it, and the alternatives we considered along the way. Companion docs:
 
 - [`ForegroundService.md`](./ForegroundService.md) — Android FGS specifics
-  (timeout policy, user-stop handling, `dataSync` service type).
+  (user-stop handling, `connectedDevice` service type).
 - [`root-key-storage-and-migration-plan.md`](./root-key-storage-and-migration-plan.md)
   — design rationale for the Kotlin/Swift-native rootkey stores.
 - [`bare-architecture.md`](./bare-architecture.md),
@@ -74,7 +74,7 @@ its own AndroidKeyStore client. The main React Native UI process
    `better-sqlite3` mmap regions plus `sodium-native` buffers. Keeping
    that out of the RN process means the OS can kill RN under memory
    pressure without taking the backend with it (and vice versa).
-3. **Foreground service grammar.** The `dataSync` FGS type
+3. **Foreground service grammar.** The `connectedDevice` FGS type
    (see [ForegroundService.md](./ForegroundService.md)) requires a
    long-lived service component; running it in the UI process would
    mean any RN-process death stops the sync notification too.
