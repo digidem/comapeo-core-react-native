@@ -458,6 +458,70 @@ jobs:
             "Samsung Galaxy M32-11.0"
             ]
 
+  # Real low-end devices on AWS Device Farm, including 32-bit ARM, which
+  # BrowserStack doesn't offer. Not part of `gate` until its flake rate is
+  # known. Runs only where the `devicefarm` environment allows (main, the
+  # merge queue, and pull_request_target, whose ref is main); a plain PR's ref
+  # can't assume the AWS role.
+  test-android-devicefarm:
+    name: Run tests (Android, Device Farm)
+    needs: [build-android]
+    if: >-
+      github.event_name == 'merge_group' ||
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: devicefarm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # No `ref`, for the same reason as the BrowserStack job: the script that
+      # holds the AWS credentials must come from the base ref, never a PR head.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/devicefarm
+            maestro
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: e2e-apk
+          path: artifact
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEVICEFARM_ROLE_ARN }}
+          aws-region: us-west-2
+          role-duration-seconds: 3600
+
+      - name: Run on Device Farm
+        id: run
+        env:
+          DEVICEFARM_PROJECT_ARN: ${{ vars.DEVICEFARM_PROJECT_ARN }}
+          DEVICEFARM_DEVICE_IDS: ${{ vars.DEVICEFARM_DEVICE_IDS }}
+          DEVICEFARM_RUN_NAME: e2e ${{ github.sha }} ${{ github.event_name }}
+          DEVICEFARM_OUT_DIR: ${{ runner.temp }}/devicefarm
+        run: scripts/devicefarm/run.sh artifact/app-release.apk
+
+      # The script's own trap may not run when the job is cancelled, and a
+      # run left going keeps billing devices until its job timeout.
+      - name: Stop Device Farm run
+        if: cancelled() && steps.run.outputs.run_arn != ''
+        env:
+          RUN_ARN: ${{ steps.run.outputs.run_arn }}
+        run: aws devicefarm stop-run --arn "$RUN_ARN"
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: devicefarm-diagnostics
+          path: ${{ runner.temp }}/devicefarm
+          retention-days: 7
+          if-no-files-found: ignore
+
   test-ios:
     name: Run tests (iOS)
     needs: [upload-ios, upload-test-suite]

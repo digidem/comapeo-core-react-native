@@ -3,28 +3,18 @@ version: 0.1
 android_test_host: amazon_linux_2
 
 phases:
-  install:
-    commands:
-      - devicefarm-cli use java 17 || true
-      - java -version
-      - adb devices
-      - echo "DEVICEFARM_DEVICE_UDID=$DEVICEFARM_DEVICE_UDID"
-      - export MAESTRO_VERSION=2.11.0
-      - curl -fsSL "https://get.maestro.mobile.dev" | bash
-      - export PATH="$PATH:$HOME/.maestro/bin"
-      - maestro --version
-
-  pre_test:
-    commands:
-      - cd "$DEVICEFARM_TEST_PACKAGE_PATH" && tar xzf *.tgz
-      - export FLOWS="$DEVICEFARM_TEST_PACKAGE_PATH/package/flows"
-      - ls -la "$FLOWS"
-
+  # Device Farm only fails the job on errors in the `test` phase, so setup
+  # that must not fail silently lives there too.
   test:
     commands:
-      - export PATH="$PATH:$HOME/.maestro/bin"
+      - devicefarm-cli use java 17
+      - curl -fsSL -o /tmp/maestro.zip https://github.com/mobile-dev-inc/maestro/releases/download/cli-2.11.0/maestro.zip
+      - echo "5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e1283a  /tmp/maestro.zip" | sha256sum -c -
+      - unzip -q /tmp/maestro.zip -d "$HOME"
+      - export PATH="$PATH:$HOME/maestro/bin"
+      - cd "$DEVICEFARM_TEST_PACKAGE_PATH" && tar xzf *.tgz
       # Slow devices miss Maestro's default driver startup window.
-      - export MAESTRO_DRIVER_STARTUP_TIMEOUT=180000
+      - export MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 MAESTRO_CLI_NO_ANALYTICS=1
       # takeScreenshot writes relative to cwd, so run from the collected log dir.
       - cd "$DEVICEFARM_LOG_DIR"
       - >-
@@ -32,7 +22,7 @@ phases:
         --format junit --output "$DEVICEFARM_LOG_DIR/report.xml"
         --test-output-dir "$DEVICEFARM_LOG_DIR/maestro"
         --debug-output "$DEVICEFARM_LOG_DIR/maestro-debug"
-        "$FLOWS/e2e.yaml"
+        "$DEVICEFARM_TEST_PACKAGE_PATH/package/flows/e2e.yaml"
 
   post_test:
     commands:

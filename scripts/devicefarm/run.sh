@@ -1,112 +1,151 @@
 #!/usr/bin/env bash
 # Run the Maestro e2e flow on AWS Device Farm real devices.
 #
-#   scripts/devicefarm/run.sh <app-release.apk> [smoke|low-end|<device-id,...>]
+#   DEVICEFARM_PROJECT_ARN=... scripts/devicefarm/run.sh <app-release.apk> [low-end|<device-id,...>]
 #
-# Device Farm only exists in us-west-2. Artifacts land in .devicefarm/<run-id>/.
+# Devices default to $DEVICEFARM_DEVICE_IDS. Exits non-zero unless every device
+# passes. Artifacts land in $DEVICEFARM_OUT_DIR (default .devicefarm/<run-id>/).
 set -euo pipefail
+shopt -s inherit_errexit
 
+# Device Farm only exists in us-west-2.
 export AWS_REGION=us-west-2 AWS_PAGER=""
 
-PROJECT_NAME=comapeo-core-e2e
 JOB_TIMEOUT_MINUTES=15
+RUN_DEADLINE_MINUTES="${DEVICEFARM_RUN_DEADLINE_MINUTES:-35}"
+UPLOAD_DEADLINE_SECONDS=300
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
-APK="${1:?usage: run.sh <app-release.apk> [smoke|low-end|<device-id,...>]}"
-SELECTION="${2:-smoke}"
+PROJECT="${DEVICEFARM_PROJECT_ARN:?set DEVICEFARM_PROJECT_ARN}"
+APK="${1:?usage: run.sh <app-release.apk> [low-end|<device-id,...>]}"
+SELECTION="${2:-${DEVICEFARM_DEVICE_IDS:-}}"
+RUN_NAME="${DEVICEFARM_RUN_NAME:-e2e $(basename "$APK")}"
 
 case "$SELECTION" in
-  smoke) DEVICE_IDS="F1C3B0D61013491A8EE2FA19FAA80306" ;; # Pixel 3a, Android 10
   low-end)
-    DEVICE_IDS="2EFF1E0D1C734B68A8F584C6CF9D617A" # LG Stylo 5, Android 9
+    DEVICE_IDS="2EFF1E0D1C734B68A8F584C6CF9D617A"   # LG Stylo 5, Android 9
     DEVICE_IDS+=",1DA66BB0A625454CBF96D3CDE68F818C" # Galaxy Tab A 10.1", Android 10, 32-bit
     DEVICE_IDS+=",D48BBC9AF1644AEFBAC7B431CAE21DD6" # Galaxy A13 5G, Android 11, 32-bit
     DEVICE_IDS+=",96552C5C5A6E4FC7820C6085622D5F03" # Redmi Note 10 5G, Android 11
     DEVICE_IDS+=",1BE3F573D4EC41F5A0AFC690CC800FD4" # Galaxy Tab A7 Lite, Android 13
     ;;
+  "") echo "no devices: pass a selection or set DEVICEFARM_DEVICE_IDS" >&2; exit 2 ;;
   *) DEVICE_IDS="$SELECTION" ;;
 esac
 
 log() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 
-project_arn() {
-  local arn
-  arn=$(aws devicefarm list-projects \
-    --query "projects[?name=='$PROJECT_NAME'].arn | [0]" --output text)
-  if [[ "$arn" == "None" || -z "$arn" ]]; then
-    arn=$(aws devicefarm create-project --name "$PROJECT_NAME" \
-      --default-job-timeout-minutes "$JOB_TIMEOUT_MINUTES" \
-      --query project.arn --output text)
+WORK="$(mktemp -d)"
+RUN_ARN=""
+RUN_DONE=false
+UPLOADS=()
+
+cleanup() {
+  # A run left behind keeps billing devices until its job timeout.
+  if [[ -n "$RUN_ARN" && "$RUN_DONE" != true ]]; then
+    log "Stopping run $RUN_ARN"
+    aws devicefarm stop-run --arn "$RUN_ARN" >/dev/null || true
   fi
-  echo "$arn"
+  if [[ "$RUN_DONE" == true ]]; then
+    for arn in "${UPLOADS[@]}"; do
+      aws devicefarm delete-upload --arn "$arn" >/dev/null || true
+    done
+  fi
+  rm -rf "$WORK"
 }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 # create-upload, PUT the file, then wait for Device Farm's validation.
 upload() {
-  local project="$1" type="$2" file="$3" arn url status
-  read -r arn url < <(aws devicefarm create-upload --project-arn "$project" \
+  local type="$1" file="$2" arn url status deadline
+  read -r arn url < <(aws devicefarm create-upload --project-arn "$PROJECT" \
     --name "$(basename "$file")" --type "$type" \
     --query '[upload.arn, upload.url]' --output text)
+  [[ -n "$arn" && -n "$url" ]] || return 1
   curl -fsS -T "$file" "$url" >/dev/null
-  while :; do
+  deadline=$((SECONDS + UPLOAD_DEADLINE_SECONDS))
+  while ((SECONDS < deadline)); do
     status=$(aws devicefarm get-upload --arn "$arn" --query upload.status --output text)
     case "$status" in
-      SUCCEEDED) break ;;
+      SUCCEEDED) echo "$arn"; return 0 ;;
       FAILED)
         aws devicefarm get-upload --arn "$arn" --query upload.message --output text >&2
         return 1 ;;
     esac
     sleep 3
   done
-  echo "$arn"
+  echo "upload $file still $status after ${UPLOAD_DEADLINE_SECONDS}s" >&2
+  return 1
 }
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
 # The Appium Node package type wants a zip holding an npm tarball; the spec
-# unpacks it and only uses the flows inside.
+# unpacks it and only uses the flow inside.
 mkdir -p "$WORK/pkg/flows"
-cp "$ROOT/maestro/"*.yaml "$WORK/pkg/flows/"
+cp "$ROOT/maestro/e2e.yaml" "$WORK/pkg/flows/"
 printf '{"name":"comapeo-e2e-flows","version":"0.0.0"}\n' >"$WORK/pkg/package.json"
 (cd "$WORK/pkg" && npm pack --silent --pack-destination "$WORK" >/dev/null)
 (cd "$WORK" && zip -q flows.zip ./*.tgz)
 
-PROJECT=$(project_arn)
-log "Project $PROJECT"
-
 log "Uploading app $(basename "$APK")"
-APP_ARN=$(upload "$PROJECT" ANDROID_APP "$APK")
+APP_ARN=$(upload ANDROID_APP "$APK")
+UPLOADS+=("$APP_ARN")
 log "Uploading test package"
-PKG_ARN=$(upload "$PROJECT" APPIUM_NODE_TEST_PACKAGE "$WORK/flows.zip")
+PKG_ARN=$(upload APPIUM_NODE_TEST_PACKAGE "$WORK/flows.zip")
+UPLOADS+=("$PKG_ARN")
 log "Uploading test spec"
-SPEC_ARN=$(upload "$PROJECT" APPIUM_NODE_TEST_SPEC "$HERE/testspec-android.yml")
+SPEC_ARN=$(upload APPIUM_NODE_TEST_SPEC "$HERE/testspec-android.yml")
+UPLOADS+=("$SPEC_ARN")
 
 DEVICE_ARNS=$(tr ',' '\n' <<<"$DEVICE_IDS" | sed 's/^/arn:aws:devicefarm:us-west-2::device:/' | jq -Rn '[inputs]')
+DEVICE_COUNT=$(jq length <<<"$DEVICE_ARNS")
 SELECTION_JSON=$(jq -n --argjson arns "$DEVICE_ARNS" \
   '{filters: [{attribute: "ARN", operator: "IN", values: $arns}], maxDevices: ($arns | length)}')
 
-log "Scheduling run on $(jq length <<<"$DEVICE_ARNS") device(s), ${JOB_TIMEOUT_MINUTES}m job timeout"
+log "Scheduling \"$RUN_NAME\" on $DEVICE_COUNT device(s), ${JOB_TIMEOUT_MINUTES}m job timeout"
 RUN_ARN=$(aws devicefarm schedule-run --project-arn "$PROJECT" \
-  --name "e2e $(git -C "$ROOT" rev-parse --short HEAD) $SELECTION" \
+  --name "$RUN_NAME" \
   --app-arn "$APP_ARN" \
   --device-selection-configuration "$SELECTION_JSON" \
   --test "type=APPIUM_NODE,testPackageArn=$PKG_ARN,testSpecArn=$SPEC_ARN" \
-  --execution-configuration "jobTimeoutMinutes=$JOB_TIMEOUT_MINUTES" \
+  --execution-configuration "jobTimeoutMinutes=$JOB_TIMEOUT_MINUTES,videoCapture=false" \
   --query run.arn --output text)
 log "Run $RUN_ARN"
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then echo "run_arn=$RUN_ARN" >>"$GITHUB_OUTPUT"; fi
 
+# A retired device drops out of the selection silently; don't let the run pass
+# with fewer (e.g. no 32-bit) devices than asked for.
+MATCHED=$(aws devicefarm get-run --arn "$RUN_ARN" \
+  --query run.deviceSelectionResult.matchedDevicesCount --output text)
+if [[ "$MATCHED" != "$DEVICE_COUNT" ]]; then
+  echo "only $MATCHED of $DEVICE_COUNT requested devices are available" >&2
+  exit 1
+fi
+
+deadline=$((SECONDS + RUN_DEADLINE_MINUTES * 60))
+failures=0
 while :; do
-  read -r status counters < <(aws devicefarm get-run --arn "$RUN_ARN" \
-    --query '[run.status, join(`/`, [to_string(run.completedJobs), to_string(run.totalJobs)])]' --output text)
-  log "$status ($counters jobs done)"
+  if ((SECONDS >= deadline)); then
+    echo "run not finished after ${RUN_DEADLINE_MINUTES}m" >&2
+    exit 1
+  fi
+  if ! state=$(aws devicefarm get-run --arn "$RUN_ARN" \
+    --query '[run.status, run.completedJobs, run.totalJobs]' --output text); then
+    ((++failures < 5)) || exit 1
+    sleep 30
+    continue
+  fi
+  failures=0
+  read -r status done_jobs total_jobs <<<"$state"
+  log "$status ($done_jobs/$total_jobs jobs done)"
   [[ "$status" == "COMPLETED" ]] && break
   sleep 30
 done
+RUN_DONE=true
 
-OUT="$ROOT/.devicefarm/${RUN_ARN##*/}"
+OUT="${DEVICEFARM_OUT_DIR:-$ROOT/.devicefarm/${RUN_ARN##*/}}"
 mkdir -p "$OUT"
 
 aws devicefarm list-jobs --arn "$RUN_ARN" --output json |
@@ -115,13 +154,15 @@ aws devicefarm list-jobs --arn "$RUN_ARN" --output json |
     printf '%-32s %-8s %-8s %s min\n' "$name" "$os" "$result" "$minutes"
     dir="$OUT/$(tr ' /"' '___' <<<"$name-$os")"
     mkdir -p "$dir"
+    # Names repeat across the setup/test/teardown suites, so key files by ARN too.
     aws devicefarm list-artifacts --arn "$job" --type FILE --output json |
-      jq -r '.artifacts[] | select(.type != "VIDEO") | [.name, .extension, .url] | @tsv' |
-      while IFS=$'\t' read -r aname ext url; do
-        curl -fsS -o "$dir/$(tr ' /' '__' <<<"$aname").$ext" "$url" || true
+      jq -r '.artifacts[] | [.name, (.arn | split("/") | last), .extension, .url] | @tsv' |
+      while IFS=$'\t' read -r aname aid ext url; do
+        curl -fsS -o "$dir/$(tr ' /' '__' <<<"$aname")-$aid.$ext" "$url" || true
       done
   done
 
-aws devicefarm get-run --arn "$RUN_ARN" \
-  --query '{result: run.result, deviceMinutes: run.deviceMinutes}' --output json
-log "Artifacts in $OUT"
+read -r result minutes < <(aws devicefarm get-run --arn "$RUN_ARN" \
+  --query '[run.result, run.deviceMinutes.total]' --output text)
+log "Result $result, $minutes device minutes. Artifacts in $OUT"
+[[ "$result" == "PASSED" ]]
