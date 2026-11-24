@@ -450,14 +450,12 @@ jobs:
           browserstack_access_key: ${{ secrets.BROWSERSTACK_ACCESS_KEY_TESTS }}
           timeout: 1200
           # Keep the device count low: BrowserStack queues sessions past
-          # the parallel quota (5 here), and older/scarcer devices (the
-          # 2018 Galaxy Note 9 on 8.1) can sit queued long enough to
-          # overrun the poll. These two passed quickly; re-add a faster
-          # low-API device for older-OS coverage once timing is known.
+          # the parallel quota (5 here). The Galaxy M32 is the low-end,
+          # low-RAM device; BrowserStack offers nothing below Android 10.
           devices: >-
             [
             "Google Pixel 9-16.0",
-            "Xiaomi Redmi Note 11-11.0"
+            "Samsung Galaxy M32-11.0"
             ]
 
   test-ios:
