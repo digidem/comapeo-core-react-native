@@ -36,7 +36,8 @@ export async function packageAndroidJniLibs({
       const abiDir = join(jniLibsDir, androidAbiForArch(arch));
       mkdirSync(abiDir, { recursive: true });
 
-      for (const { name, version } of pairs) {
+      for (const { name, version, skipAndroidArchs } of pairs) {
+        if (skipAndroidArchs?.includes(arch)) continue;
         const srcNode = await findNodeForArch(
           prebuildsDir,
           name,

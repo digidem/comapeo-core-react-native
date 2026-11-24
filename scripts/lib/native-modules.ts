@@ -2,7 +2,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { $ } from "execa";
 
-export type NativeModule = { name: string; usesNapi: boolean };
+import type { AndroidArch } from "./prebuilds.ts";
+
+export type NativeModule = {
+  name: string;
+  usesNapi: boolean;
+  // Left out of these jniLibs ABIs, so the module's JS fallback loads there.
+  skipAndroidArchs?: readonly AndroidArch[];
+};
 
 /**
  * Native modules bundled into the nodejs-mobile backend. `usesNapi`
@@ -14,9 +21,10 @@ export const NATIVE_MODULES: readonly NativeModule[] = [
   // N-API since 13.0.0; earlier majors were raw V8 and needed a prebuild per
   // Node ABI.
   { name: "better-sqlite3", usesNapi: true },
-  // Native module seems may cause issues on some devices. If so, exclude from list to use JS version.
+  // libcrc's ARM path reads unaligned words, which SIGBUSes on 32-bit ARM
+  // (#312); crc-universal falls back to JS when the addon fails to load.
   // https://github.com/digidem/comapeo-mobile/issues/1096
-  { name: "crc-native", usesNapi: true },
+  { name: "crc-native", usesNapi: true, skipAndroidArchs: ["arm"] },
   { name: "fs-native-extensions", usesNapi: true },
   { name: "quickbit-native", usesNapi: true },
   { name: "rabin-native", usesNapi: true },
@@ -37,6 +45,7 @@ export type NativePair = {
   name: string;
   version: string;
   usesNapi: boolean;
+  skipAndroidArchs?: readonly AndroidArch[];
 };
 
 export async function collectNativePairs(
@@ -68,8 +77,8 @@ export async function collectNativePairs(
     const name = moduleInfo.slice(0, -version.length - 1);
     const nativeModule = modules.find((m) => m.name === name);
     if (!nativeModule) continue;
-    const { usesNapi } = nativeModule;
-    pairs.push({ name, version, usesNapi });
+    const { usesNapi, skipAndroidArchs } = nativeModule;
+    pairs.push({ name, version, usesNapi, skipAndroidArchs });
   }
   return pairs;
 }
