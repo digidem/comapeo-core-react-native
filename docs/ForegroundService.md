@@ -4,18 +4,28 @@ The NodeJS (which runs CoMapeo Core) is run in a foreground service in a
 separate process. This allows it to continue running even when the app is in the
 background or killed by the system.
 
-### `dataSync` foreground service type
+### `connectedDevice` foreground service type
 
-According to the Android documentation, the
-[`dataSync` foreground service type](https://developer.android.com/develop/background-work/services/fgs/service-types#data-sync)
-is appropriate for data transfer operations, such as:
+The service runs as a
+[`connectedDevice` foreground service](https://developer.android.com/develop/background-work/services/fgs/service-types#connected-device),
+which Android recommends for transferring data to a locally connected device,
+including over a local network. CoMapeo Core syncs with other devices over the
+local network, which fits this type better than `dataSync` (uploads, downloads,
+backup, and device-to-cloud transfer).
 
-- Data upload or download
-- Backup-and-restore operations
-- Import or export operations
-- Fetch data
-- Local file processing
-- Transfer data between a device and the cloud over a network
+On Android 14 (API level 34) and above, a `connectedDevice` service must hold
+`FOREGROUND_SERVICE_CONNECTED_DEVICE` and meet at least one prerequisite. The
+module declares `CHANGE_WIFI_MULTICAST_STATE`, a normal permission granted at
+install, so no runtime prompt is needed. Without a prerequisite,
+`startForeground` throws a `SecurityException` and the backend does not start.
+
+Unlike `dataSync`, `connectedDevice` services have no Android 15 time limit
+(the 6 hours per 24 hours cap applies only to `dataSync` and
+`mediaProcessing`), so the service does not need to handle
+`Service.onTimeout`.
+
+Apps published on Google Play must complete the foreground service declaration
+for `connectedDevice` in the Play Console.
 
 ### Notification permission (Android 13+)
 
@@ -179,35 +189,3 @@ once-per-process and survives background/foreground (it stops only on
 relaunch** (the user closing and reopening the app, or the OS terminating it). There
 is no separate process to self-terminate. Host crash-recovery UI on iOS should ask
 the user to fully close and reopen the app.
-
-### Timeout behavior
-
-The system permits `dataSync` foreground services to run for a total of 6 hours
-in a 24-hour period, after which the system calls the running service's
-`Service.onTimeout(int, int)` method (introduced in Android 15).
-
-If the service does not call `Service.stopSelf()` within a few seconds of when
-the system calls `Service.onTimeout(int, int)`, the system throws an internal
-exception. The exception is logged in Logcat with the following message:
-
-```
-Fatal Exception: android.app.RemoteServiceException: "A foreground service of
-type [service type] did not stop within its timeout: [component name]"
-```
-
-When the user brings the app to the foreground, the timer resets.
-
-### Testing timeout behavior
-
-Enable timeouts (on a device running Android 15 or higher) by executing the
-following command in a terminal:
-
-```bash
-adb shell am compat enable FGS_INTRODUCE_TIME_LIMITS PACKAGE_NAME
-```
-
-Adjust the timeout period:
-
-```bash
-adb shell device_config put activity_manager data_sync_fgs_timeout_duration duration-in-milliseconds
-```
