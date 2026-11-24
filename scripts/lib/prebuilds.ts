@@ -9,6 +9,7 @@ import type { NativePair } from "./native-modules.ts";
 type PrebuildTarget = { platform: "android" | "ios"; arch: string };
 
 export const ANDROID_ARCHS = ["arm", "arm64", "x64"] as const;
+export type AndroidArch = (typeof ANDROID_ARCHS)[number];
 // Device + simulator. xcframework packaging combines them into one
 // multi-slice artifact per addon — Xcode picks the right slice at app build
 // time based on the build destination. No x86_64 simulator: nodejs-mobile 24
