@@ -469,6 +469,14 @@ the APK and flow, runs them in a custom test environment
 the run if it overruns, and exits non-zero unless every device passes. It isn't
 part of `gate` yet.
 
+Spend is capped two ways while Device Farm runs on the free trial minutes only.
+With `DEVICEFARM_TRIAL_ONLY=true` (an environment variable on `devicefarm`), the
+script refuses to schedule unless the remaining trial minutes cover every device
+running to its 15-minute timeout. An AWS Budget ("Device Farm CI (trial only)",
+$1/month, credits excluded) emails at 50% and 100%, and at 100% attaches a deny
+policy (`comapeo-devicefarm-ci-deny`) to the CI role. Billing data lags by hours,
+so the script's check is the one that stops spend promptly.
+
 AWS access uses GitHub OIDC; there are no long-lived keys. The IAM role trusts
 only the `devicefarm` environment of this repo, and that environment only
 deploys from `main` and `gh-readonly-queue/main/*`, so plain PRs can't assume

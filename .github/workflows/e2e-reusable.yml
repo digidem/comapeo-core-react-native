@@ -502,6 +502,8 @@ jobs:
         env:
           DEVICEFARM_PROJECT_ARN: ${{ vars.DEVICEFARM_PROJECT_ARN }}
           DEVICEFARM_DEVICE_IDS: ${{ vars.DEVICEFARM_DEVICE_IDS }}
+          # Refuses to schedule unless the free trial minutes cover the run.
+          DEVICEFARM_TRIAL_ONLY: ${{ vars.DEVICEFARM_TRIAL_ONLY }}
           DEVICEFARM_RUN_NAME: e2e ${{ github.sha }} ${{ github.event_name }}
           DEVICEFARM_OUT_DIR: ${{ runner.temp }}/devicefarm
         run: scripts/devicefarm/run.sh artifact/app-release.apk

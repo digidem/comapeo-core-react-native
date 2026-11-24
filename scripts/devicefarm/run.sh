@@ -81,6 +81,24 @@ upload() {
   return 1
 }
 
+DEVICE_ARNS=$(tr ',' '\n' <<<"$DEVICE_IDS" | sed 's/^/arn:aws:devicefarm:us-west-2::device:/' | jq -Rn '[inputs]')
+DEVICE_COUNT=$(jq length <<<"$DEVICE_ARNS")
+SELECTION_JSON=$(jq -n --argjson arns "$DEVICE_ARNS" \
+  '{filters: [{attribute: "ARN", operator: "IN", values: $arns}], maxDevices: ($arns | length)}')
+
+# Budget alerts lag billing by hours, so refuse up front rather than spend.
+if [[ "${DEVICEFARM_TRIAL_ONLY:-}" == true ]]; then
+  remaining=$(aws devicefarm get-account-settings \
+    --query 'accountSettings.trialMinutes.remaining' --output text)
+  [[ "$remaining" =~ ^[0-9.]+$ ]] || remaining=0
+  needed=$((DEVICE_COUNT * JOB_TIMEOUT_MINUTES))
+  if awk -v r="$remaining" -v n="$needed" 'BEGIN { exit !(r < n) }'; then
+    echo "::error::Only $remaining Device Farm trial minutes left; this run could need $needed. Not scheduling." >&2
+    exit 1
+  fi
+  log "$remaining trial minutes left"
+fi
+
 # The Appium Node package type wants a zip holding an npm tarball; the spec
 # unpacks it and only uses the flow inside.
 mkdir -p "$WORK/pkg/flows"
@@ -98,11 +116,6 @@ UPLOADS+=("$PKG_ARN")
 log "Uploading test spec"
 SPEC_ARN=$(upload APPIUM_NODE_TEST_SPEC "$HERE/testspec-android.yml")
 UPLOADS+=("$SPEC_ARN")
-
-DEVICE_ARNS=$(tr ',' '\n' <<<"$DEVICE_IDS" | sed 's/^/arn:aws:devicefarm:us-west-2::device:/' | jq -Rn '[inputs]')
-DEVICE_COUNT=$(jq length <<<"$DEVICE_ARNS")
-SELECTION_JSON=$(jq -n --argjson arns "$DEVICE_ARNS" \
-  '{filters: [{attribute: "ARN", operator: "IN", values: $arns}], maxDevices: ($arns | length)}')
 
 log "Scheduling \"$RUN_NAME\" on $DEVICE_COUNT device(s), ${JOB_TIMEOUT_MINUTES}m job timeout"
 RUN_ARN=$(aws devicefarm schedule-run --project-arn "$PROJECT" \
