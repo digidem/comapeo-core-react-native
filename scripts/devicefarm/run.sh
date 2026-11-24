@@ -40,7 +40,6 @@ log() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 WORK="$(mktemp -d)"
 RUN_ARN=""
 RUN_DONE=false
-UPLOADS=()
 
 cleanup() {
   # A run left behind keeps billing devices until its job timeout.
@@ -48,10 +47,11 @@ cleanup() {
     log "Stopping run $RUN_ARN"
     aws devicefarm stop-run --arn "$RUN_ARN" >/dev/null || true
   fi
-  if [[ "$RUN_DONE" == true ]]; then
-    for arn in "${UPLOADS[@]}"; do
+  # Uploads are only safe to delete once no run is using them.
+  if [[ -z "$RUN_ARN" || "$RUN_DONE" == true ]] && [[ -f "$WORK/uploads" ]]; then
+    while read -r arn; do
       aws devicefarm delete-upload --arn "$arn" >/dev/null || true
-    done
+    done <"$WORK/uploads"
   fi
   rm -rf "$WORK"
 }
@@ -65,6 +65,7 @@ upload() {
     --name "$(basename "$file")" --type "$type" \
     --query '[upload.arn, upload.url]' --output text)
   [[ -n "$arn" && -n "$url" ]] || return 1
+  echo "$arn" >>"$WORK/uploads"
   curl -fsS -T "$file" "$url" >/dev/null
   deadline=$((SECONDS + UPLOAD_DEADLINE_SECONDS))
   while ((SECONDS < deadline)); do
@@ -109,13 +110,10 @@ printf '{"name":"comapeo-e2e-flows","version":"0.0.0"}\n' >"$WORK/pkg/package.js
 
 log "Uploading app $(basename "$APK")"
 APP_ARN=$(upload ANDROID_APP "$APK")
-UPLOADS+=("$APP_ARN")
 log "Uploading test package"
 PKG_ARN=$(upload APPIUM_NODE_TEST_PACKAGE "$WORK/flows.zip")
-UPLOADS+=("$PKG_ARN")
 log "Uploading test spec"
 SPEC_ARN=$(upload APPIUM_NODE_TEST_SPEC "$HERE/testspec-android.yml")
-UPLOADS+=("$SPEC_ARN")
 
 log "Scheduling \"$RUN_NAME\" on $DEVICE_COUNT device(s), ${JOB_TIMEOUT_MINUTES}m job timeout"
 RUN_ARN=$(aws devicefarm schedule-run --project-arn "$PROJECT" \
