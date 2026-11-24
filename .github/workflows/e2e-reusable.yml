@@ -460,16 +460,13 @@ jobs:
 
   # Real low-end devices on AWS Device Farm, including 32-bit ARM, which
   # BrowserStack doesn't offer. Not part of `gate` until its flake rate is
-  # known. Runs only where the `devicefarm` environment allows (main, the
-  # merge queue, and pull_request_target, whose ref is main); a plain PR's ref
-  # can't assume the AWS role.
+  # known. The `devicefarm` environment's branch allowlist (main and the merge
+  # queue; pull_request_target's ref is main) is what keeps the AWS role away
+  # from PR code; plain PR events are skipped rather than left to fail there.
   test-android-devicefarm:
     name: Run tests (Android, Device Farm)
     needs: [build-android]
-    if: >-
-      github.event_name == 'merge_group' ||
-      github.event_name == 'pull_request_target' ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: devicefarm
