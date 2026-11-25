@@ -197,7 +197,7 @@ order):
 | `upload-test-suite` (Upload test suite) | **yes** | no | Zips + uploads the `maestro/` CI flows (`e2e.yaml`, `fgs-restart.yaml`, `rootkey-persistence.yaml`) |
 | `test-android` (Run tests (Android)) | **yes** | no (action from base ref) | Triggers + polls the Android device run |
 | `test-ios` (Run tests (iOS)) | **yes** | no (action from base ref) | Triggers + polls the iOS device run |
-| `test-android-devicefarm` (Run tests (Android, Device Farm)) | **yes** (AWS role via OIDC) | no (script from base ref) | Runs `maestro/e2e.yaml` on low-end AWS Device Farm devices, including 32-bit ARM; not in `gate` ([§7.3](#73-aws-device-farm-low-end-and-32-bit-devices)) |
+| `test-android-devicefarm` (Run tests (Android, Device Farm)) | **yes** (AWS role via OIDC) | no (script from base ref) | Runs `maestro/e2e.yaml` on low-end AWS Device Farm devices, including 32-bit ARM; skipped on plain PRs ([§7.3](#73-aws-device-farm-low-end-and-32-bit-devices)) |
 | `gate` (Gate) | no | no | The single required check — always reports ([§4.2](#42-skipping-a-required-check-without-leaving-it-pending)) |
 
 The "holds secrets / runs PR code" split is the trust boundary —
@@ -466,8 +466,9 @@ Farm devices listed in the `DEVICEFARM_DEVICE_IDS` variable, through
 [`scripts/devicefarm/run.sh`](../scripts/devicefarm/run.sh). That script uploads
 the APK and flow, runs them in a custom test environment
 ([`testspec-android.yml`](../scripts/devicefarm/testspec-android.yml)), stops
-the run if it overruns, and exits non-zero unless every device passes. It isn't
-part of `gate` yet.
+the run if it overruns, and exits non-zero unless every device passes. `gate`
+requires it everywhere except plain `pull_request` runs, where it skips because
+that event can't use the `devicefarm` environment.
 
 Spend is capped two ways while Device Farm runs on the free trial minutes only.
 With `DEVICEFARM_TRIAL_ONLY=true` (an environment variable on `devicefarm`), the
@@ -475,7 +476,9 @@ script refuses to schedule unless the remaining trial minutes cover every device
 running to its 15-minute timeout. An AWS Budget ("Device Farm CI (trial only)",
 $1/month, credits excluded) emails at 50% and 100%, and at 100% attaches a deny
 policy (`comapeo-devicefarm-ci-deny`) to the CI role. Billing data lags by hours,
-so the script's check is the one that stops spend promptly.
+so the script's check is the one that stops spend promptly. Either cap fails the
+job and so the gate: once the trial minutes run out, the merge queue blocks
+until Device Farm is funded or the job is taken out of `gate`.
 
 AWS access uses GitHub OIDC; there are no long-lived keys. The IAM role trusts
 only the `devicefarm` environment of this repo, and that environment only
