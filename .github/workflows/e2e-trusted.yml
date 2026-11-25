@@ -41,6 +41,8 @@ jobs:
       contents: read
       # Lets the reusable workflow's path-detection job list the PR's files.
       pull-requests: read
+      # OIDC for the Device Farm job's AWS role.
+      id-token: write
     uses: ./.github/workflows/e2e-reusable.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
