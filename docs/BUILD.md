@@ -73,6 +73,12 @@ runtime/process side (how native talks to the backend over sockets) see
 4. **Audit 16 KB alignment.** `scripts/lib/check-16k-alignment.ts` parses every
    shipped `.so` and fails the build if any `PT_LOAD` segment isn't aligned to
    `0x4000` — required for Android 15's 16 KB page sizes.
+5. **Audit minimum API.** `scripts/lib/check-android-min-api.ts` fails the
+   build if any shipped `.so` was built for an Android API above our
+   `minSdkVersion` (24) or carries RELR relocations (`DT_RELR` /
+   `DT_ANDROID_RELR`). Bionic before API 28 ignores those tags, so such a
+   library loads with unrelocated pointers and crashes the backend on
+   Android 7–8.
 
 The iOS xcframework-wrapping step (`xcodebuild -create-xcframework`,
 `install_name_tool`) is **darwin-gated**: on Linux CI the script builds
@@ -251,6 +257,8 @@ exist:
   native-module declarations + `npm ls` version resolution.
 - [`scripts/lib/check-16k-alignment.ts`](../scripts/lib/check-16k-alignment.ts)
   — the alignment audit.
+- [`scripts/lib/check-android-min-api.ts`](../scripts/lib/check-android-min-api.ts)
+  — the minimum-API / RELR audit.
 - [`backend/rollup-plugins/rollup-plugin-addon-loader.js`](../backend/rollup-plugins/rollup-plugin-addon-loader.js)
   — the addon `require` rewrite + `__loadAddon` banner.
 - `android/build.gradle`, `android/src/main/AndroidManifest.xml`,

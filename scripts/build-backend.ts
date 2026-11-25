@@ -9,6 +9,7 @@ import { downloadPrebuilds } from "./lib/prebuilds.ts";
 import { packageAndroidJniLibs } from "./lib/android-jni.ts";
 import { packageIosFrameworks } from "./lib/ios-frameworks.ts";
 import { audit16kAlignment } from "./lib/check-16k-alignment.ts";
+import { auditAndroidMinApi } from "./lib/check-android-min-api.ts";
 
 // ------------------------------------------------
 // Paths
@@ -112,6 +113,14 @@ await packageAndroidJniLibs({
 //    build so an upstream regression can't slip a misaligned .so
 //    into the APK.
 await audit16kAlignment({
+  roots: [ANDROID_JNILIBS_DIR, ANDROID_LIBNODE_DIR].filter(existsSync),
+  cwd: PROJECT_ROOT,
+});
+
+// 6b. Audit that every Android .so loads on our minSdkVersion: target API
+//     <= MIN_SDK and no RELR relocations, which Bionic before API 28 skips
+//     silently, so the backend crashes at load on Android 7–8.
+await auditAndroidMinApi({
   roots: [ANDROID_JNILIBS_DIR, ANDROID_LIBNODE_DIR].filter(existsSync),
   cwd: PROJECT_ROOT,
 });
