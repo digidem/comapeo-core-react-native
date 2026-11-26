@@ -117,9 +117,8 @@ await audit16kAlignment({
   cwd: PROJECT_ROOT,
 });
 
-// 6b. Audit that every Android .so loads on our minSdkVersion: target API
-//     <= MIN_SDK and no RELR relocations, which Bionic before API 28 skips
-//     silently, so the backend crashes at load on Android 7–8.
+// 6b. Audit that every Android .so works on our minSdkVersion. A library
+//     built for a newer Android version crashed CoMapeo 13.1 on Android 8.
 await auditAndroidMinApi({
   roots: [ANDROID_JNILIBS_DIR, ANDROID_LIBNODE_DIR].filter(existsSync),
   cwd: PROJECT_ROOT,

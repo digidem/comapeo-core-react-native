@@ -12,11 +12,12 @@ const DT_ANDROID_RELR = 0x6fffe000n;
 
 /**
  * Build a minimal little-endian ELF shared object with one PT_DYNAMIC and,
- * optionally, one PT_NOTE carrying the NDK's Android ident note.
+ * optionally, one PT_NOTE carrying the NDK's Android note, optionally after a
+ * GNU build-id note as real NDK output has.
  *
- * @param {{ bits: 32 | 64, apiLevel?: number, dynTags: bigint[] }} opts
+ * @param {{ bits: 32 | 64, apiLevel?: number, dynTags: bigint[], buildIdNote?: boolean }} opts
  */
-function makeElf({ bits, apiLevel, dynTags }) {
+function makeElf({ bits, apiLevel, dynTags, buildIdNote = false }) {
   const is64 = bits === 64;
   const ehsize = is64 ? 64 : 52;
   const phentsize = is64 ? 56 : 32;
@@ -28,16 +29,27 @@ function makeElf({ bits, apiLevel, dynTags }) {
     else dyn.writeUInt32LE(Number(tag), i * 8);
   });
 
-  let note = Buffer.alloc(0);
-  if (apiLevel !== undefined) {
-    // namesz, descsz, type, "Android\0", desc (API level + NDK version padding)
-    note = Buffer.alloc(12 + 8 + 0x84);
-    note.writeUInt32LE(8, 0);
-    note.writeUInt32LE(0x84, 4);
-    note.writeUInt32LE(1, 8);
-    note.write("Android\0", 12, "latin1");
-    note.writeUInt32LE(apiLevel, 20);
+  const notes = [];
+  if (buildIdNote) {
+    // name length, data length, type 3, "GNU\0", 20-byte build ID
+    const gnu = Buffer.alloc(12 + 4 + 20);
+    gnu.writeUInt32LE(4, 0);
+    gnu.writeUInt32LE(20, 4);
+    gnu.writeUInt32LE(3, 8);
+    gnu.write("GNU\0", 12, "latin1");
+    notes.push(gnu);
   }
+  if (apiLevel !== undefined) {
+    // name length, data length, type 1, "Android\0", API level + NDK version
+    const android = Buffer.alloc(12 + 8 + 0x84);
+    android.writeUInt32LE(8, 0);
+    android.writeUInt32LE(0x84, 4);
+    android.writeUInt32LE(1, 8);
+    android.write("Android\0", 12, "latin1");
+    android.writeUInt32LE(apiLevel, 20);
+    notes.push(android);
+  }
+  const note = Buffer.concat(notes);
 
   const phdrs = [{ type: 2, data: dyn }];
   if (note.length > 0) phdrs.push({ type: 4, data: note });
@@ -118,6 +130,16 @@ describe("checkSoMinApi", () => {
     assert.deepEqual(report.relrTags, ["DT_RELR"]);
   });
 
+  it("finds the Android note after another note", async () => {
+    const file = join(dir, "twonotes.so");
+    await writeFile(
+      file,
+      makeElf({ bits: 32, apiLevel: 29, dynTags: [], buildIdNote: true })
+    );
+    const report = await checkSoMinApi(file);
+    assert.equal(report.apiLevel, 29);
+  });
+
   it("rejects non-ELF input", async () => {
     const file = join(dir, "bogus.so");
     await writeFile(file, Buffer.alloc(64));
@@ -158,7 +180,7 @@ describe("auditAndroidMinApi", () => {
     );
     await assert.rejects(
       auditAndroidMinApi({ roots: [root], cwd: dir, minSdk: 24 }),
-      /newapi\/a\.so \(ELF64\): built for API 29/
+      /newapi\/a\.so \(64-bit\): built for API 29/
     );
   });
 
@@ -171,7 +193,17 @@ describe("auditAndroidMinApi", () => {
     );
     await assert.rejects(
       auditAndroidMinApi({ roots: [root], cwd: dir, minSdk: 24 }),
-      /relr\/a\.so \(ELF32\): DT_RELR/
+      /relr\/a\.so \(32-bit\): uses RELR relocations \(DT_RELR\)/
+    );
+  });
+
+  it("fails on a library with no Android note", async () => {
+    const root = join(dir, "nonote");
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, "a.so"), makeElf({ bits: 64, dynTags: [] }));
+    await assert.rejects(
+      auditAndroidMinApi({ roots: [root], cwd: dir, minSdk: 24 }),
+      /nonote\/a\.so \(64-bit\): no Android version note/
     );
   });
 

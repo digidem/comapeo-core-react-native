@@ -1,24 +1,43 @@
-import { glob, open } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { relative } from "node:path";
+
+import { type Elf, findSoFiles, readWord, withElf } from "./elf.ts";
 
 // Keep in sync with the minSdkVersion default in android/build.gradle.
 export const MIN_SDK = 24;
 
-// Bionic before API 28 skips dynamic tags it doesn't know, so a .so with
-// packed RELR relocations loads with those pointers unrelocated and crashes
-// on first use (COMAPEO-2KX / COMAPEO-2QK: sodium-native built for API 29).
-// The NDK turns RELR on by itself when targeting API >= 28, so checking the
-// target API in the Android note catches the cause; the dynamic-tag check
-// catches RELR enabled explicitly or by a toolchain that writes no note.
-const RELR_TAGS = new Map<bigint, string>([
-  [36n, "DT_RELR"],
-  [0x6fffe000n, "DT_ANDROID_RELR"],
+// This check catches two ways a native library can crash on older phones
+// even though it works on newer ones (CoMapeo 13.1 shipped sodium-native
+// with both problems and crashed on every launch on Android 8:
+// COMAPEO-2KX, COMAPEO-2QK).
+//
+// 1. Built for a newer Android version. The NDK writes a note into every
+//    library saying which Android version it was built for. A library built
+//    for a version above our minSdk can call system functions that older
+//    phones don't have.
+//
+// 2. RELR relocations. When a library loads, the loader has to fix up the
+//    pointers inside it to match where it landed in memory. RELR is a
+//    compact format for that list of fix-ups. Loaders before Android 9 don't
+//    know it and skip the list without an error, so the pointers stay wrong
+//    and the app crashes the first time it uses one.
+
+// Segment types (p_type), from the ELF spec.
+const DYNAMIC_SEGMENT = 2; // PT_DYNAMIC: settings for the loader
+const NOTE_SEGMENT = 4; // PT_NOTE: labels written by the build tools
+
+// The loader settings are a list of (tag, value) pairs, ended by tag 0.
+// These tags mean the library uses RELR.
+const RELR_TAGS = new Map([
+  [36, "DT_RELR"], // standard format, understood from Android 11 (API 30)
+  [0x6fffe000, "DT_ANDROID_RELR"], // Android's own, understood from Android 9 (API 28)
 ]);
 
-const PT_DYNAMIC = 2;
-const PT_NOTE = 4;
-const NT_ANDROID_TYPE_IDENT = 1;
-const ELF_HEADER_BYTES = 64;
+// A note is a 12-byte header (name length, data length, type), then the
+// name and the data, each padded to a multiple of 4 bytes. The NDK's note
+// is named "Android", has type 1, and its data starts with the API level.
+const NOTE_HEADER_BYTES = 12;
+const ANDROID_NOTE_NAME = "Android\0";
+const ANDROID_NOTE_TYPE = 1;
 
 export type MinApiReport = {
   file: string;
@@ -27,115 +46,72 @@ export type MinApiReport = {
   relrTags: string[];
 };
 
-type Segment = { type: number; offset: number; filesz: number };
-
-export async function checkSoMinApi(filePath: string): Promise<MinApiReport> {
-  const fh = await open(filePath, "r");
-  try {
-    const read = async (offset: number, length: number): Promise<Buffer> => {
-      const buf = Buffer.alloc(length);
-      const { bytesRead } = await fh.read(buf, 0, length, offset);
-      if (bytesRead < length) {
-        throw new Error(
-          `${filePath}: truncated read at 0x${offset.toString(16)}`
-        );
-      }
-      return buf;
-    };
-
-    const header = await read(0, ELF_HEADER_BYTES);
-    if (header.readUInt32BE(0) !== 0x7f454c46) {
-      throw new Error(`${filePath}: not an ELF file`);
-    }
-    if (header[5] !== 1) {
-      throw new Error(`${filePath}: big-endian ELF not supported`);
-    }
-    const eiClass = header[4];
-    if (eiClass !== 1 && eiClass !== 2) {
-      throw new Error(`${filePath}: invalid EI_CLASS=${eiClass}`);
-    }
-    const is64 = eiClass === 2;
-
-    const phoff = Number(
-      is64 ? header.readBigUInt64LE(0x20) : header.readUInt32LE(0x1c)
-    );
-    const phentsize = header.readUInt16LE(is64 ? 0x36 : 0x2a);
-    const phnum = header.readUInt16LE(is64 ? 0x38 : 0x2c);
-    const phTable = await read(phoff, phentsize * phnum);
-
-    const segments: Segment[] = [];
-    for (let i = 0; i < phnum; i++) {
-      const base = i * phentsize;
-      const type = phTable.readUInt32LE(base);
-      if (type !== PT_DYNAMIC && type !== PT_NOTE) continue;
-      segments.push({
-        type,
-        offset: Number(
-          is64
-            ? phTable.readBigUInt64LE(base + 0x08)
-            : phTable.readUInt32LE(base + 0x04)
-        ),
-        filesz: Number(
-          is64
-            ? phTable.readBigUInt64LE(base + 0x20)
-            : phTable.readUInt32LE(base + 0x10)
-        ),
-      });
-    }
-
-    let apiLevel: number | undefined;
-    const relrTags: string[] = [];
-    for (const seg of segments) {
-      const data = await read(seg.offset, seg.filesz);
-      if (seg.type === PT_DYNAMIC) {
-        relrTags.push(...findRelrTags(data, is64));
-      } else {
-        apiLevel ??= findAndroidApiLevel(data);
-      }
-    }
-
-    return { file: filePath, bits: is64 ? 64 : 32, apiLevel, relrTags };
-  } finally {
-    await fh.close();
-  }
+export function checkSoMinApi(filePath: string): Promise<MinApiReport> {
+  return withElf(filePath, async (elf) => ({
+    file: filePath,
+    bits: elf.bits,
+    apiLevel: await findApiLevel(elf),
+    relrTags: await findRelrTags(elf),
+  }));
 }
 
-function findRelrTags(dynamic: Buffer, is64: boolean): string[] {
-  const entSize = is64 ? 16 : 8;
-  const found: string[] = [];
-  for (let off = 0; off + entSize <= dynamic.length; off += entSize) {
-    const tag = is64
-      ? dynamic.readBigUInt64LE(off)
-      : BigInt(dynamic.readUInt32LE(off));
-    if (tag === 0n) break;
-    const name = RELR_TAGS.get(tag);
-    if (name && !found.includes(name)) found.push(name);
+async function findRelrTags(elf: Elf): Promise<string[]> {
+  const found = new Set<string>();
+  const entryBytes = (elf.bits / 8) * 2; // tag + value
+  for (const segment of elf.segments) {
+    if (segment.type !== DYNAMIC_SEGMENT) continue;
+    const data = await elf.readSegment(segment);
+    for (let off = 0; off + entryBytes <= data.length; off += entryBytes) {
+      const tag = readWord(data, off, elf.bits);
+      if (tag === 0) break;
+      const name = RELR_TAGS.get(tag);
+      if (name) found.add(name);
+    }
   }
-  return found;
+  return [...found];
 }
 
-function findAndroidApiLevel(notes: Buffer): number | undefined {
-  const align4 = (n: number) => (n + 3) & ~3;
-  let off = 0;
-  while (off + 12 <= notes.length) {
-    const namesz = notes.readUInt32LE(off);
-    const descsz = notes.readUInt32LE(off + 4);
-    const type = notes.readUInt32LE(off + 8);
-    const nameStart = off + 12;
-    const descStart = nameStart + align4(namesz);
-    const name = notes.toString("latin1", nameStart, nameStart + namesz);
-    if (name === "Android\0" && type === NT_ANDROID_TYPE_IDENT && descsz >= 4) {
-      return notes.readUInt32LE(descStart);
+async function findApiLevel(elf: Elf): Promise<number | undefined> {
+  const padded = (n: number) => Math.ceil(n / 4) * 4;
+  for (const segment of elf.segments) {
+    if (segment.type !== NOTE_SEGMENT) continue;
+    const notes = await elf.readSegment(segment);
+    let off = 0;
+    while (off + NOTE_HEADER_BYTES <= notes.length) {
+      const nameLength = notes.readUInt32LE(off);
+      const dataLength = notes.readUInt32LE(off + 4);
+      const type = notes.readUInt32LE(off + 8);
+      const nameStart = off + NOTE_HEADER_BYTES;
+      const dataStart = nameStart + padded(nameLength);
+      if (dataStart + dataLength > notes.length) break;
+      const name = notes.toString("latin1", nameStart, nameStart + nameLength);
+      if (
+        name === ANDROID_NOTE_NAME &&
+        type === ANDROID_NOTE_TYPE &&
+        dataLength >= 4
+      ) {
+        return notes.readUInt32LE(dataStart);
+      }
+      off = dataStart + padded(dataLength);
     }
-    off = descStart + align4(descsz);
   }
   return undefined;
 }
 
-/**
- * Fail the build if any shipped .so targets an Android API above MIN_SDK or
- * uses RELR relocations, either of which breaks loading on older devices.
- */
+function problems(r: MinApiReport, minSdk: number): string[] {
+  const found: string[] = [];
+  if (r.apiLevel === undefined) {
+    found.push("no Android version note, so its target API is unknown");
+  } else if (r.apiLevel > minSdk) {
+    found.push(`built for API ${r.apiLevel}`);
+  }
+  if (r.relrTags.length > 0) {
+    found.push(`uses RELR relocations (${r.relrTags.join(", ")})`);
+  }
+  return found;
+}
+
+/** Fail the build if any shipped .so would crash at load on our minSdkVersion. */
 export async function auditAndroidMinApi({
   roots,
   cwd,
@@ -145,49 +121,32 @@ export async function auditAndroidMinApi({
   cwd: string;
   minSdk?: number;
 }): Promise<void> {
-  const files: string[] = [];
-  for (const root of roots) {
-    for await (const match of glob("**/*.so", { cwd: root })) {
-      files.push(join(root, match));
-    }
-  }
-  files.sort();
-
-  if (files.length === 0) {
-    throw new Error(
-      `Android min-API audit: no .so files found under ${roots
-        .map((r) => relative(cwd, r))
-        .join(", ")}`
-    );
-  }
-
+  const files = await findSoFiles({
+    roots,
+    cwd,
+    checkName: "Android min-API audit",
+  });
   const reports = await Promise.all(files.map((f) => checkSoMinApi(f)));
-  const bad = reports.filter(
-    (r) =>
-      r.relrTags.length > 0 || (r.apiLevel !== undefined && r.apiLevel > minSdk)
-  );
 
-  if (bad.length > 0) {
-    const lines = bad.map((r) => {
-      const problems: string[] = [];
-      if (r.apiLevel !== undefined && r.apiLevel > minSdk) {
-        problems.push(`built for API ${r.apiLevel}`);
-      }
-      if (r.relrTags.length > 0) problems.push(r.relrTags.join(", "));
-      return `  ${relative(cwd, r.file)} (ELF${r.bits}): ${problems.join(
-        "; "
-      )}`;
-    });
+  const failures = reports
+    .map((r) => ({ r, found: problems(r, minSdk) }))
+    .filter(({ found }) => found.length > 0)
+    .map(
+      ({ r, found }) =>
+        `  ${relative(cwd, r.file)} (${r.bits}-bit): ${found.join("; ")}`
+    );
+
+  if (failures.length > 0) {
     throw new Error(
-      `Android min-API audit failed for ${bad.length} .so file(s).\n` +
-        `Each must target API <= ${minSdk} (our minSdkVersion) and have no RELR ` +
-        `relocations, or it will crash at load on older Android versions.\n` +
-        lines.join("\n")
+      `Android min-API audit failed for ${failures.length} .so file(s).\n` +
+        `Each must be built for API ${minSdk} or lower (our minSdkVersion) and ` +
+        `must not use RELR relocations, or it will crash on older Android versions.\n` +
+        failures.join("\n")
     );
   }
 
   console.log(
     `Android min-API OK: ${reports.length} .so file(s) verified ` +
-      `(target API <= ${minSdk}, no RELR relocations).`
+      `(built for API <= ${minSdk}, no RELR relocations).`
   );
 }
