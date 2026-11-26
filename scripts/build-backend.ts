@@ -9,6 +9,7 @@ import { downloadPrebuilds } from "./lib/prebuilds.ts";
 import { packageAndroidJniLibs } from "./lib/android-jni.ts";
 import { packageIosFrameworks } from "./lib/ios-frameworks.ts";
 import { audit16kAlignment } from "./lib/check-16k-alignment.ts";
+import { auditAndroidMinApi } from "./lib/check-android-min-api.ts";
 
 // ------------------------------------------------
 // Paths
@@ -112,6 +113,13 @@ await packageAndroidJniLibs({
 //    build so an upstream regression can't slip a misaligned .so
 //    into the APK.
 await audit16kAlignment({
+  roots: [ANDROID_JNILIBS_DIR, ANDROID_LIBNODE_DIR].filter(existsSync),
+  cwd: PROJECT_ROOT,
+});
+
+// 6b. Audit that every Android .so works on our minSdkVersion. A library
+//     built for a newer Android version crashed CoMapeo 13.1 on Android 8.
+await auditAndroidMinApi({
   roots: [ANDROID_JNILIBS_DIR, ANDROID_LIBNODE_DIR].filter(existsSync),
   cwd: PROJECT_ROOT,
 });

@@ -73,6 +73,12 @@ runtime/process side (how native talks to the backend over sockets) see
 4. **Audit 16 KB alignment.** `scripts/lib/check-16k-alignment.ts` parses every
    shipped `.so` and fails the build if any `PT_LOAD` segment isn't aligned to
    `0x4000` — required for Android 15's 16 KB page sizes.
+5. **Audit minimum API.** `scripts/lib/check-android-min-api.ts` fails the
+   build if any shipped `.so` was built for an Android version above our
+   `minSdkVersion` (API 24), or uses RELR relocations, a compact format for
+   the pointer fix-ups done at load time that Android 8 and older skip. Either
+   one makes the library crash on older phones, as sodium-native did in
+   CoMapeo 13.1.
 
 The iOS xcframework-wrapping step (`xcodebuild -create-xcframework`,
 `install_name_tool`) is **darwin-gated**: on Linux CI the script builds
@@ -251,6 +257,10 @@ exist:
   native-module declarations + `npm ls` version resolution.
 - [`scripts/lib/check-16k-alignment.ts`](../scripts/lib/check-16k-alignment.ts)
   — the alignment audit.
+- [`scripts/lib/elf.ts`](../scripts/lib/elf.ts) — the small `.so` reader both
+  audits share.
+- [`scripts/lib/check-android-min-api.ts`](../scripts/lib/check-android-min-api.ts)
+  — the minimum Android version audit.
 - [`backend/rollup-plugins/rollup-plugin-addon-loader.js`](../backend/rollup-plugins/rollup-plugin-addon-loader.js)
   — the addon `require` rewrite + `__loadAddon` banner.
 - `android/build.gradle`, `android/src/main/AndroidManifest.xml`,
