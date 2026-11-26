@@ -8,7 +8,7 @@ export const MIN_SDK = 24;
 // This check catches two ways a native library can crash on older phones
 // even though it works on newer ones (CoMapeo 13.1 shipped sodium-native
 // with both problems and crashed on every launch on Android 8:
-// COMAPEO-2KX, COMAPEO-2QK).
+// Sentry errors COMAPEO-2KX, COMAPEO-2QK).
 //
 // 1. Built for a newer Android version. The NDK writes a note into every
 //    library saying which Android version it was built for. A library built
