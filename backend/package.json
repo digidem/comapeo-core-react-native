@@ -49,6 +49,7 @@
   },
   "overrides": {
     "better-sqlite3": "13.0.3",
+    "hyperbee": "2.24.3",
     "require-addon": "1.1.0",
     "sodium-native": "5.1.0",
     "sodium-universal": "5.0.1",
