@@ -8,6 +8,7 @@ import { flushCompileCacheAfterBoot } from "./lib/compile-cache.js";
 import { createComapeo } from "./lib/create-comapeo.js";
 import { createKeyManager } from "./lib/create-key-manager.js";
 import { createMapServer } from "./lib/create-map-server.js";
+import { createListenerLifecycle } from "./lib/listener-lifecycle.js";
 import { masterKeyFrame } from "./lib/master-key-frame.js";
 import { parseInit } from "./lib/parse-init.js";
 import { SimpleRpcServer } from "./lib/simple-rpc.js";
@@ -45,6 +46,16 @@ const defaultConfigPath = configArg || undefined;
 const defaultOnlineStyleUrl = styleUrlArg || undefined;
 
 const fastify = Fastify();
+
+const listeners = createListenerLifecycle({
+  fastifyServer: fastify.server,
+  onPortChange: (name, from, to) => {
+    // Cached URLs on the JS side still point at the old port.
+    const message = `${name} port ${from} was taken while paused; now listening on ${to}`;
+    console.warn(message);
+    sentry.captureWarning("runtime", message);
+  },
+});
 
 // Manager construction is gated on native sending the rootKey; hold
 // these so shutdown can close them if construction succeeded.
@@ -116,6 +127,7 @@ const controlIpcServer = new SimpleRpcServer({
     // Broadcast BEFORE close: this only queues the frame, and close()
     // flushes each client's stream before destroying its socket.
     controlIpcServer.broadcast({ type: "stopping" });
+    await listeners.close();
     // Each close is isolated so one failure can't leak the others.
     /**
      * @param {string} label
@@ -145,6 +157,18 @@ const controlIpcServer = new SimpleRpcServer({
       );
     }
   },
+  // iOS only: see listener-lifecycle.js. Android's foreground service is
+  // never suspended.
+  background: () =>
+    listeners.background().catch((e) => {
+      console.error("Failed to pause listeners", e);
+      sentry.captureWarning("runtime", `pause listeners: ${ensureError(e).message}`);
+    }),
+  foreground: () =>
+    listeners.foreground().catch((e) => {
+      console.error("Failed to resume listeners", e);
+      sentry.captureFatal("runtime", ensureError(e), "listener-lifecycle");
+    }),
   /**
    * Android-only attribution channel: FGS-local failures (rootkey load,
    * startup watchdog) send this so the main-app process gets a real
@@ -322,12 +346,16 @@ function sendMasterKeyFrame(keyManager) {
         // only to getBaseUrl() callers, never aborting the manager's boot or
         // tripping the global unhandledRejection handler (which exits).
         const mapServerListenPromise = Promise.resolve().then(() => {
-          mapServer = createMapServer({
+          const server = createMapServer({
             privateStorageDir,
             identityKeypair: keyManager.getIdentityKeypair(),
             defaultOnlineStyleUrl,
           });
-          return mapServer.listen();
+          mapServer = server;
+          return server.listen().then((ports) => {
+            listeners.setMapServer(server, ports);
+            return ports;
+          });
         });
         mapServerListenPromise.catch((err) => {
           sentry.captureFatal(
@@ -340,7 +368,8 @@ function sendMasterKeyFrame(keyManager) {
         const comapeoServices = {
           mapServer: {
             async getBaseUrl() {
-              const { localPort } = await mapServerListenPromise;
+              const ports = await mapServerListenPromise;
+              const { localPort } = listeners.getMapServerPorts() ?? ports;
               return `http://127.0.0.1:${localPort}`;
             },
           },

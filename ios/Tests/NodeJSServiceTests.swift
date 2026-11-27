@@ -327,6 +327,31 @@ final class NodeJSServiceTests: XCTestCase {
         service.cleanup()
     }
 
+    // MARK: - App Lifecycle Tests
+
+    func testAppLifecycleEventsAreSentOverControlSocket() throws {
+        let (service, signalExit) = makeTestService()
+        defer {
+            signalExit()
+            service.cleanup()
+        }
+        let startedExpectation = expectation(description: "State reached STARTED")
+        service.onStateChange = { state in
+            if state == .started { startedExpectation.fulfill() }
+        }
+        let backend = try startServiceWithMockBackend(service)
+        defer { backend.stop() }
+        wait(for: [startedExpectation], timeout: 5)
+
+        service.sendAppLifecycleEvent(.background)
+        service.sendAppLifecycleEvent(.foreground)
+
+        XCTAssertEqual(
+            backend.waitForFrames(count: 2),
+            [#"{"type":"background"}"#, #"{"type":"foreground"}"#]
+        )
+    }
+
     // MARK: - Shutdown Tests
 
     func testStopSendsShutdownMessageOverIPC() throws {

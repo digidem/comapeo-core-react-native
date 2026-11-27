@@ -612,6 +612,21 @@ class NodeJSService {
         return data
     }
 
+    enum AppLifecycleEvent: String {
+        case background
+        case foreground
+    }
+
+    /// Tells the backend the app changed state. It closes its TCP listeners on
+    /// `background` and reopens them on `foreground`, because iOS can reclaim a
+    /// suspended app's listening sockets (backend/lib/listener-lifecycle.js).
+    /// Queued if the control socket isn't connected yet.
+    func sendAppLifecycleEvent(_ event: AppLifecycleEvent) {
+        guard let ipc = controlIPC else { return }
+        ipc.sendMessage("{\"type\":\"\(event.rawValue)\"}")
+        logCrumb(category: SentryCategories.control, message: "sent: \(event.rawValue)")
+    }
+
     /// Sends `{type:"error-native",phase,message}` to Node on the
     /// control socket. The backend's `error-native` handler routes
     /// through `handleFatal`, which broadcasts an `error` frame to all
