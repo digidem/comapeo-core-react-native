@@ -20,10 +20,11 @@ Companion docs:
   [`comapeo-core PR #1051`](https://github.com/digidem/comapeo-core/pull/1051).
 
 > **Mandatory peer dep.** `@sentry/react-native` is a **non-optional peer
-> dependency** of this module. On iOS, `Sentry` is a hard CocoaPods
-> dep of the module's podspec **and** Sentry-Cocoa is a hard SPM dep of
-> `ios/Package.swift`, pinned to the same version in both places (enforced by
-> `scripts/check-sentry-cocoa-pin.mjs`). The **runtime** gating still applies:
+> dependency** of this module. On iOS the podspec depends on `RNSentry` and
+> compiles against the `Sentry.xcframework` it downloads, so it follows whatever
+> sentry-cocoa `@sentry/react-native` ships; `ios/Package.swift` pins the oldest
+> supported version for `swift test` (`scripts/check-sentry-cocoa-pin.mjs`
+> keeps the two in order). The **runtime** gating still applies:
 > when the Expo plugin is registered without a `sentry` argument, no DSN is
 > baked into the native config and `initSentry()` returns early — Sentry is
 > installed but inert.

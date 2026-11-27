@@ -94,7 +94,7 @@
   "devDependencies": {
     "@eslint/compat": "2.1.1",
     "@eslint/js": "9.39.5",
-    "@sentry/react-native": "^8.13.0",
+    "@sentry/react-native": "^8.18.0",
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",
     "babel-preset-expo": "^56.0.15",
@@ -110,7 +110,7 @@
     "typescript-eslint": "8.72.1"
   },
   "peerDependencies": {
-    "@sentry/react-native": "^8.13.0",
+    "@sentry/react-native": "^8.18.0",
     "expo": "*",
     "react": "*",
     "react-native": "*"
@@ -123,5 +123,8 @@
     "better-sqlite3": false,
     "fsevents": false,
     "protobufjs": false
+  },
+  "overrides": {
+    "expo-router": "~56.0.0"
   }
 }

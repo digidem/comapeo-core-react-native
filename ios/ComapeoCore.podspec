@@ -1,6 +1,24 @@
 require 'json'
+require 'open3'
 
 package = JSON.parse(File.read(File.join(__dir__, '..', 'package.json')))
+
+# sentry-cocoa ships only as an xcframework that RNSentry wires into its own
+# target and the app, so borrow its search paths for `import Sentry` here.
+# The link flags stay with RNSentry so Sentry is linked exactly once.
+rn_sentry_pkg, status = Open3.capture2(
+  'node', '--print', "require.resolve('@sentry/react-native/package.json')",
+  chdir: defined?(Pod::Config) ? Pod::Config.instance.installation_root.to_s : __dir__
+)
+raise '[ComapeoCore] @sentry/react-native is not installed' unless status.success?
+rn_sentry = Pod::Specification.from_file(File.join(File.dirname(rn_sentry_pkg.strip), 'RNSentry.podspec'))
+sentry_search_paths = (rn_sentry.attributes_hash['user_target_xcconfig'] || {}).select do |key, _|
+  key.start_with?('SENTRY_FRAMEWORK_SEARCH_PATHS', 'SENTRY_MACOS_SLICE') || key == 'FRAMEWORK_SEARCH_PATHS'
+end
+unless sentry_search_paths.keys.any? { |key| key.start_with?('SENTRY_FRAMEWORK_SEARCH_PATHS') }
+  raise "[ComapeoCore] RNSentry #{rn_sentry.version} sets no Sentry.xcframework search paths; " \
+        'ComapeoCore needs @sentry/react-native >= 8.18.0'
+end
 
 Pod::Spec.new do |s|
   s.name           = 'ComapeoCore'
@@ -21,21 +39,7 @@ Pod::Spec.new do |s|
 
   s.dependency 'ExpoModulesCore'
 
-  # `Sentry` so `SentryNativeBridge` can import `Sentry` (including
-  # the `@_spi(Private)` `SentryEventDecoder` and
-  # `PrivateSentrySDKOnly` entrypoints we rely on for Node-event
-  # forwarding). sentry-cocoa 9 dropped the `HybridSDK` subspec —
-  # `@sentry/react-native@8.x`'s `RNSentry.podspec` depends on the
-  # plain `Sentry` pod, and so do we. The exact pin tracks its
-  # `sentry_cocoa_version`, so CocoaPods deduplicates to a single
-  # Sentry pod build in the workspace. A version mismatch surfaces at
-  # install time via the invariant check in
-  # `scripts/check-sentry-cocoa-pin.mjs` so a downstream
-  # `pod install` doesn't hit two-versions-of-Sentry first.
-  # "Opt-in" is preserved at runtime: `SentrySDK` no-ops all calls
-  # until `SentrySDK.start(...)` runs, which only happens when the
-  # host calls `initSentry()` with a DSN.
-  s.dependency 'Sentry', '9.18.0'
+  s.dependency 'RNSentry'
 
   # `NodeMobile.xcframework` provides the embedded Node.js runtime.
   # Per-addon xcframeworks under `Frameworks/<name>__<version>.xcframework`
@@ -50,7 +54,7 @@ Pod::Spec.new do |s|
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'ENABLE_BITCODE' => 'NO',
-  }
+  }.merge(sentry_search_paths)
 
   if !(defined?(Expo::PackagesConfig) && Expo::PackagesConfig.instance.try_link_with_prebuilt_xcframework(s))
     s.source_files = "*.{h,m,mm,swift,hpp,cpp}"

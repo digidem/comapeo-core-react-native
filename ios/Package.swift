@@ -5,12 +5,11 @@ let package = Package(
     name: "ComapeoCore",
     platforms: [.macOS(.v13), .iOS(.v16)],
     dependencies: [
-        // Pinned to match the `Sentry` dep in ComapeoCore.podspec (and
-        // the `scripts/check-sentry-cocoa-pin.mjs` invariant). The bridge
-        // uses `@_spi(Private)` symbols — drift is a manual-review event.
+        // What @sentry/react-native 8.18.0, our floor, ships; so `swift test`
+        // proves the oldest supported sentry-cocoa still compiles.
         .package(
             url: "https://github.com/getsentry/sentry-cocoa",
-            exact: "9.18.0"
+            exact: "9.19.1"
         ),
     ],
     targets: [
