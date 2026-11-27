@@ -119,10 +119,10 @@ class NodeJSService(
      * unexpected exit (native-addon crash, `process.abort()`) derives to ERROR
      * rather than STOPPED.
      */
-    sealed class NodeRuntimeState {
-        object NotRunning : NodeRuntimeState()
-        object Running : NodeRuntimeState()
-        data class Exited(val code: Int, val reason: ExitReason) : NodeRuntimeState()
+    sealed class NodeRuntimeState(val label: String) {
+        object NotRunning : NodeRuntimeState("NotRunning")
+        object Running : NodeRuntimeState("Running")
+        data class Exited(val code: Int, val reason: ExitReason) : NodeRuntimeState("Exited")
     }
 
     enum class ExitReason {
@@ -137,12 +137,12 @@ class NodeJSService(
      * the same slot). `Unknown` = no frames yet; `ControlBound` = saw `started`,
      * awaiting init→ready.
      */
-    sealed class BackendState {
-        object Unknown : BackendState()
-        object ControlBound : BackendState()
-        object Ready : BackendState()
-        object Stopping : BackendState()
-        data class Error(val phase: String, val message: String) : BackendState()
+    sealed class BackendState(val label: String) {
+        object Unknown : BackendState("Unknown")
+        object ControlBound : BackendState("ControlBound")
+        object Ready : BackendState("Ready")
+        object Stopping : BackendState("Stopping")
+        data class Error(val phase: String, val message: String) : BackendState("Error")
     }
 
     /**
@@ -264,7 +264,7 @@ class NodeJSService(
                         // applyAndEmit captures the ERROR derived from a bad disconnect — crumb only here.
                         logCrumb(
                             SentryCategories.IPC,
-                            "control IPC: ${ipcState.javaClass.simpleName}",
+                            "control IPC: ${ipcState.label}",
                             level = if (ipcState is NodeJSIPC.State.Error) "warning" else "info",
                             data = if (ipcState is NodeJSIPC.State.Error) {
                                 mapOf("error" to (ipcState.exception.message ?: ipcState.exception.javaClass.simpleName))
@@ -335,8 +335,8 @@ class NodeJSService(
                 data = mapOf(
                     "from" to prev.state.name,
                     "to" to committed.state.name,
-                    "backendState" to committed.backendState.javaClass.simpleName,
-                    "nodeRuntime" to committed.nodeRuntime.javaClass.simpleName,
+                    "backendState" to committed.backendState.label,
+                    "nodeRuntime" to committed.nodeRuntime.label,
                     "stopRequested" to committed.stopRequested,
                 ),
             )
