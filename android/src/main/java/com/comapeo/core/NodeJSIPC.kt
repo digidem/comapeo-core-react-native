@@ -54,12 +54,12 @@ class NodeJSIPC(
     private val sendLengthBuffer = ByteArray(4)
     private val receiveMessageBuffer = ByteArray(1024)
 
-    sealed class State {
-        data object Connecting : State()
-        data object Connected : State()
-        data object Disconnected : State()
-        data object Disconnecting : State()
-        data class Error(val exception: Throwable) : State()
+    sealed class State(val label: String) {
+        data object Connecting : State("Connecting")
+        data object Connected : State("Connected")
+        data object Disconnected : State("Disconnected")
+        data object Disconnecting : State("Disconnecting")
+        data class Error(val exception: Throwable) : State("Error")
     }
 
     private val state = MutableStateFlow<State>(State.Disconnected)

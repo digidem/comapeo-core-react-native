@@ -27,6 +27,7 @@
     "expo-module.config.json",
     "app.plugin.js",
     "android/build.gradle",
+    "android/consumer-rules.pro",
     "android/CMakeLists.txt",
     "android/src/main/",
     "android/libnode/",
