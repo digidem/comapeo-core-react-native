@@ -1,0 +1,32 @@
+version: 0.1
+
+android_test_host: amazon_linux_2
+
+phases:
+  # Device Farm only fails the job on errors in the `test` phase, so setup
+  # that must not fail silently lives there too.
+  test:
+    commands:
+      - devicefarm-cli use java 17
+      - curl -fsSL -o /tmp/maestro.zip https://github.com/mobile-dev-inc/maestro/releases/download/cli-2.11.0/maestro.zip
+      - echo "5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e1283a  /tmp/maestro.zip" | sha256sum -c -
+      - unzip -q /tmp/maestro.zip -d "$HOME"
+      - export PATH="$PATH:$HOME/maestro/bin"
+      - cd "$DEVICEFARM_TEST_PACKAGE_PATH" && tar xzf *.tgz
+      # Slow devices miss Maestro's default driver startup window.
+      - export MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 MAESTRO_CLI_NO_ANALYTICS=1
+      # takeScreenshot writes relative to cwd, so run from the collected log dir.
+      - cd "$DEVICEFARM_LOG_DIR"
+      - >-
+        maestro --device "$DEVICEFARM_DEVICE_UDID" test
+        --format junit --output "$DEVICEFARM_LOG_DIR/report.xml"
+        --test-output-dir "$DEVICEFARM_LOG_DIR/maestro"
+        --debug-output "$DEVICEFARM_LOG_DIR/maestro-debug"
+        "$DEVICEFARM_TEST_PACKAGE_PATH/package/flows/e2e.yaml"
+
+  post_test:
+    commands:
+      - adb -s "$DEVICEFARM_DEVICE_UDID" logcat -d -v threadtime > "$DEVICEFARM_LOG_DIR/logcat.txt" || true
+
+artifacts:
+  - $DEVICEFARM_LOG_DIR

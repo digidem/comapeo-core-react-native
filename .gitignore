@@ -101,3 +101,6 @@ src/version.ts
 # Claude Code reads CLAUDE.md, not AGENTS.md; ours just imports AGENTS.md.
 # Re-include it here because a global gitignore commonly ignores CLAUDE.md.
 !CLAUDE.md
+
+# AWS Device Farm run artifacts
+.devicefarm/

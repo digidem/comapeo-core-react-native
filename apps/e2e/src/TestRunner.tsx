@@ -3,6 +3,7 @@ import jasmineRequire, {
   type JasmineDoneInfo,
 } from "jasmine-core/lib/jasmine-core/jasmine";
 import { Button, ScrollView, Text, View, type ErrorUtils } from "react-native";
+import { state, type ComapeoErrorInfo } from "@comapeo/core-react-native";
 
 import { test as basicTest } from "./tests/basic";
 import { test as mapServerTest } from "./tests/map-server";
@@ -19,8 +20,12 @@ type TestState =
   | { status: "idle" | "pending"; results: Array<TestResult> }
   | {
       status: "done";
-      overallStatus: JasmineDoneInfo["overallStatus"] | "timedOut";
-      timedOutDuring?: string;
+      overallStatus:
+        | JasmineDoneInfo["overallStatus"]
+        | "timedOut"
+        | "backendError";
+      abortedDuring?: string;
+      backendError?: ComapeoErrorInfo | null;
       results: Array<TestResult>;
     };
 
@@ -44,6 +49,10 @@ const rnGlobal = globalThis as {
 function formatError(error: unknown): string {
   if (error instanceof Error) return error.stack || String(error);
   return String(error);
+}
+
+function formatBackendError(error: ComapeoErrorInfo | null | undefined) {
+  return error ? `${error.errorPhase}: ${error.errorMessage}` : "(no detail)";
 }
 
 type GlobalErrorListener = (error: unknown, event?: unknown) => void;
@@ -142,7 +151,7 @@ export function TestRunner() {
     });
 
     let runningSpec: string | null = null;
-    let watchdogFired = false;
+    let suiteAborted = false;
 
     jasmineEnv.addReporter({
       jasmineStarted: () => {
@@ -153,7 +162,7 @@ export function TestRunner() {
       },
       jasmineDone: (info) => {
         console.log(`[e2e] jasmine done: ${info.overallStatus}`);
-        if (watchdogFired) return;
+        if (suiteAborted) return;
         setTestState((prev) => {
           if (prev.status === "done") {
             throw new Error(
@@ -189,7 +198,7 @@ export function TestRunner() {
           }
         }
 
-        if (watchdogFired) return;
+        if (suiteAborted) return;
         setTestState((prev) => {
           if (prev.status === "done") {
             throw new Error(
@@ -246,22 +255,46 @@ export function TestRunner() {
     projectCrudTest(ctx);
 
     let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let backendError: ComapeoErrorInfo | null = null;
+    let stateSubscription: { remove(): void } | undefined;
+    // No spec restarts the backend on purpose, so an ERROR means every later
+    // spec would just wait out its RPC timeout against a crashing backend.
+    const backendFailed = new Promise<"backendError">((resolve) => {
+      const onError = (error: ComapeoErrorInfo | null) => {
+        backendError = error;
+        resolve("backendError");
+      };
+      stateSubscription = state.addListener("stateChange", (next, error) => {
+        if (next === "ERROR") onError(error);
+      });
+      if (state.getState() === "ERROR") onError(state.getLastError());
+    });
+
     const outcome = await Promise.race([
       jasmineEnv.execute().then(() => "done" as const),
-      new Promise<"timeout">((resolve) => {
-        watchdog = setTimeout(() => resolve("timeout"), WATCHDOG_TIMEOUT_MS);
+      new Promise<"timedOut">((resolve) => {
+        watchdog = setTimeout(() => resolve("timedOut"), WATCHDOG_TIMEOUT_MS);
       }),
+      backendFailed,
     ]);
     clearTimeout(watchdog);
+    stateSubscription?.remove();
 
-    if (outcome === "timeout") {
-      watchdogFired = true;
+    if (outcome !== "done") {
+      suiteAborted = true;
       const during = runningSpec ?? "(no spec started)";
-      console.error(`[e2e] Suite timed out during: ${during}`);
+      console.error(
+        outcome === "timedOut"
+          ? `[e2e] Suite timed out during: ${during}`
+          : `[e2e] Backend ERROR during: ${during} — ${formatBackendError(
+              backendError
+            )}`
+      );
       setTestState((prev) => ({
         status: "done",
-        overallStatus: "timedOut",
-        timedOutDuring: during,
+        overallStatus: outcome,
+        abortedDuring: during,
+        backendError,
         results: prev.results,
       }));
     }
@@ -300,7 +333,11 @@ export function TestRunner() {
           testState.overallStatus !== "passed" ? (
             <Text testID="all-tests-failed">
               {testState.overallStatus === "timedOut"
-                ? `Tests failed (timedOut). Suite timed out during: ${testState.timedOutDuring}`
+                ? `Tests failed (timedOut). Suite timed out during: ${testState.abortedDuring}`
+                : testState.overallStatus === "backendError"
+                ? `Tests failed (backendError). Backend ERROR during: ${
+                    testState.abortedDuring
+                  } — ${formatBackendError(testState.backendError)}`
                 : `Tests failed (${testState.overallStatus}).`}
             </Text>
           ) : null}
