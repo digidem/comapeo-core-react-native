@@ -46,9 +46,8 @@ Pod::Spec.new do |s|
   # `.framework` at build time.
   s.vendored_frameworks = ['NodeMobile.xcframework', 'Frameworks/*.xcframework']
 
-  # The vendored xcframeworks have no x86_64 simulator slice, and Release
-  # simulator builds default to every arch, so CocoaPods would copy none.
-  simulator_archs = { 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'x86_64' }
+  # The vendored xcframeworks have no x86_64 simulator slice.
+  simulator_archs = { 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => '$(inherited) x86_64' }
   s.user_target_xcconfig = simulator_archs
 
   # Swift/Objective-C compatibility
