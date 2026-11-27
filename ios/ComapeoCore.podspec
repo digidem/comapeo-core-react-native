@@ -17,7 +17,7 @@ sentry_search_paths = (rn_sentry.attributes_hash['user_target_xcconfig'] || {}).
 end
 unless sentry_search_paths.keys.any? { |key| key.start_with?('SENTRY_FRAMEWORK_SEARCH_PATHS') }
   raise "[ComapeoCore] RNSentry #{rn_sentry.version} sets no Sentry.xcframework search paths; " \
-        'ComapeoCore needs @sentry/react-native >= 8.18.0'
+        'ComapeoCore needs @sentry/react-native >= 8.18.0 with SENTRY_USE_XCFRAMEWORK unset'
 end
 
 Pod::Spec.new do |s|

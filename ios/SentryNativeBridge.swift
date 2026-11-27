@@ -1,6 +1,5 @@
 import Foundation
-// `@_spi(Private)` opts in to sentry-cocoa's hybrid-SDK API, which can change in
-// minor releases (9.29.0 removed `PrivateSentrySDKOnly`); see ComapeoCore.podspec.
+// `@_spi(Private)` opts in to sentry-cocoa's hybrid-SDK API, which can change in minor releases.
 @_spi(Private) import Sentry
 
 enum SpanStatus: String {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Fails when the sentry-cocoa that `@sentry/react-native` ships (and the iOS
-// pod compiles against) is older than the `ios/Package.swift` pin, the oldest
-// version `swift test` proves our `@_spi(Private)` bridge compiles with.
+// Repo-local guard (npm skips `prepare` for registry installs): fails when the
+// sentry-cocoa that the dev `@sentry/react-native` ships is older than the
+// `ios/Package.swift` pin, so `swift test` never claims a floor we don't meet.
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -21,8 +21,8 @@ function extract(path, re) {
 
 /** @param {string} a @param {string} b */
 function compareVersions(a, b) {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
+  const pa = a.split(/[.-]/, 3).map(Number);
+  const pb = b.split(/[.-]/, 3).map(Number);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
     const d = (pa[i] ?? 0) - (pb[i] ?? 0);
     if (d !== 0) return Math.sign(d);
