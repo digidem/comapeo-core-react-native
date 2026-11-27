@@ -11,7 +11,7 @@
     "build:ios": "expo run:ios --configuration Release --no-install"
   },
   "dependencies": {
-    "@sentry/react-native": "^8.13.0",
+    "@sentry/react-native": "^8.18.0",
     "babel-preset-expo": "~56.0.0",
     "expo": "56.0.12",
     "expo-crypto": "56.0.4",

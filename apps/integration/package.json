@@ -13,7 +13,7 @@
     "test:ios": "cd ios && xcodebuild test -workspace corereactnativeintegration.xcworkspace -scheme corereactnativeintegration -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES"
   },
   "dependencies": {
-    "@sentry/react-native": "^8.13.0",
+    "@sentry/react-native": "^8.18.0",
     "babel-preset-expo": "~56.0.0",
     "expo": "^56.0.12",
     "react": "19.2.3",

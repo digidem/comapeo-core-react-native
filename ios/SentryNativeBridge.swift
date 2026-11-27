@@ -1,8 +1,5 @@
 import Foundation
-// `@_spi(Private)` opts in to `SentryEventDecoder.decodeEvent(jsonData:)` —
-// the JSON → SentryEvent path sentry-cocoa exposes for hybrid SDKs. Stability
-// is gated by the exact `Sentry` pin in `ComapeoCore.podspec` and the
-// matching SPM pin in `Package.swift`; re-validate when bumping.
+// `@_spi(Private)` opts in to sentry-cocoa's hybrid-SDK API, which can change in minor releases.
 @_spi(Private) import Sentry
 
 enum SpanStatus: String {
@@ -196,17 +193,10 @@ enum SentryNativeBridge {
     /// Hand a base64-encoded Sentry envelope to sentry-cocoa's hybrid
     /// envelope-capture entrypoint. Native scope is NOT applied;
     /// envelopes carry their own.
-    ///
-    /// `#if !SWIFT_PACKAGE` because `PrivateSentrySDKOnly` lives in
-    /// sentry-cocoa's CocoaPods-only `PrivateHeaders/`. SPM consumers
-    /// can't see these symbols; we stub it out for `swift test`. The
-    /// on-device CocoaPods build retains the full implementation.
     static func captureEnvelopeBase64(_ data: String) {
-        #if !SWIFT_PACKAGE
         guard let bytes = Data(base64Encoded: data) else { return }
-        guard let envelope = PrivateSentrySDKOnly.envelope(with: bytes) else { return }
-        PrivateSentrySDKOnly.capture(envelope)
-        #endif
+        guard let envelope = SentrySDK.internal.envelope.deserialize(from: bytes) else { return }
+        SentrySDK.internal.envelope.capture(envelope)
     }
 
     /// Trace header for cross-process propagation to the Node hub. Node's
