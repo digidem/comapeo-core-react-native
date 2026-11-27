@@ -64,7 +64,7 @@
     "test:android": "./scripts/run-instrumented-tests.sh",
     "test:android:unit": "./scripts/run-instrumented-tests.sh --unit-only",
     "test:ios": "npm --prefix apps/integration run test:ios",
-    "prepare": "node scripts/write-version.mjs && node scripts/check-sentry-cocoa-pin.mjs && expo-module build --watch false",
+    "prepare": "node scripts/write-version.mjs && node scripts/check-sentry-cocoa-pin.mjs && node scripts/check-sentry-single-copy.mjs && expo-module build --watch false",
     "prepublishOnly": "expo-module prepublishOnly",
     "prepack": "node scripts/write-version.mjs && npm run backend:build",
     "open:ios": "xed apps/integration/ios",
